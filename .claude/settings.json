@@ -1,4 +1,7 @@
 {
+  "env": {
+    "FM_PROJECTS_OVERRIDE": "C:\\Users\\kiman\\firstmate\\armada"
+  },
   "hooks": {
     "PreToolUse": [
       {
