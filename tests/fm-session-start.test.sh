@@ -126,6 +126,10 @@ case "$*" in
   *" -o "*) printf 'ps: unknown option -- o\n' >&2; exit 1 ;;
   *"-l"*)
     printf '      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND\n'
+    if [ "${FM_FAKE_PROCESS_GAP:-0}" = 1 ]; then
+      printf '%9s %7s %7s %10s  ?         197609 13:02:34 /usr/bin/bash\n' "$pid" 1 "$pid" 27905
+      exit 0
+    fi
     if [ "$pid" = "${FM_FAKE_HOLDER_PID:?}" ]; then
       printf '%9s %7s %7s %10s  ?         197609 13:02:33 /usr/bin/claude\n' "$pid" 1 "$pid" 27904
     else
@@ -135,6 +139,10 @@ case "$*" in
     ;;
   *"-f"*)
     printf '   UID     PID    PPID  TTY        STIME COMMAND\n'
+    if [ "${FM_FAKE_PROCESS_GAP:-0}" = 1 ]; then
+      printf ' kiman %7s %7s ?        13:02:34 /usr/bin/bash -c tool-call\n' "$pid" 1
+      exit 0
+    fi
     if [ "$pid" = "$FM_FAKE_HOLDER_PID" ]; then
       printf ' kiman %7s %7s ?        13:02:33 /usr/bin/claude --session test\n' "$pid" 1
     else
@@ -406,6 +414,28 @@ EOF
   assert_contains "$lock_status" "lock: held by live harness pid $holder_pid" "holder_alive did not use the Cygwin-compatible process lookup"
 
   pass "Cygwin ps acquires the fleet lock and recognizes its live holder"
+}
+
+test_cygwin_native_parent_gap_is_distinct_from_conflict() {
+  local rec root home fakebin out status
+  rec=$(new_world cygwin-native-parent-gap)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_cygwin_ps "$fakebin"
+  printf '%s\n' claude > "$home/config/crew-harness"
+
+  status=0
+  out=$(FM_FAKE_PROCESS_GAP=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+
+  expect_code 0 "$status" "fm-session-start.sh must complete its safe digest across a native-parent process gap"
+  assert_contains "$out" "FLEET LOCK IDENTITY COULD NOT BE VERIFIED" "native-parent gap did not get its distinct banner"
+  assert_contains "$out" "cannot determine harness identity from process ancestry" "lock failure did not explain the unavailable identity"
+  assert_contains "$out" "This does not prove another session is running" "native-parent gap implied a live conflict"
+  assert_not_contains "$out" "ANOTHER LIVE FIRSTMATE SESSION HOLDS THE FLEET LOCK" "native-parent gap was falsely reported as a live conflict"
+
+  pass "a Cygwin native-parent gap degrades safely without claiming another session is live"
 }
 
 # --- output ordering ----------------------------------------------------------
@@ -771,6 +801,7 @@ EOF
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
 test_cygwin_ps_acquires_lock_and_identifies_holder
+test_cygwin_native_parent_gap_is_distinct_from_conflict
 test_output_ordering_diagnostics_lead
 test_status_tail_bounding
 test_orphan_status_logs_are_printed
