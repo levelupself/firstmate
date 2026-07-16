@@ -422,13 +422,15 @@ test_watch_restart_rejects_reused_pid() {
 }
 
 test_watch_restart_reports_healthy_peer_without_attaching() {
-  local dir state fakebin out peer identity armpid status
+  local dir state fakebin out ready peer identity armpid status
   dir=$(make_case restart-healthy-peer)
   state="$dir/state"
   fakebin="$dir/fakebin"
   out="$dir/restart.out"
-  node -e 'process.on("SIGTERM", () => {}); setTimeout(() => {}, 300000)' &
+  ready="$dir/peer.ready"
+  node -e 'process.on("SIGTERM", () => {}); require("fs").writeFileSync(process.argv[1], ""); setTimeout(() => {}, 300000)' "$ready" &
   peer=$!
+  while [ ! -e "$ready" ]; do sleep 0.01; done
   identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$peer") || fail "could not identify peer pid"
   mkdir "$state/.watch.lock"
   printf '%s\n' "$peer" > "$state/.watch.lock/pid"
