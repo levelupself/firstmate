@@ -147,16 +147,23 @@ LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" 2>&1)
 LOCK_RC=$?
 printf '%s\n' "$LOCK_OUT"
 READ_ONLY=0
+LOCK_UNAVAILABLE=0
 if [ "$LOCK_RC" -ne 0 ]; then
   READ_ONLY=1
+  [ "$LOCK_RC" -eq 2 ] && LOCK_UNAVAILABLE=1
   BAR='●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
   {
     printf '%s\n' "$BAR"
-    printf '●  READ-ONLY SESSION - ANOTHER LIVE FIRSTMATE SESSION HOLDS THE FLEET LOCK\n'
+    if [ "$LOCK_UNAVAILABLE" -eq 1 ]; then
+      printf '●  READ-ONLY SESSION - FLEET LOCK IDENTITY COULD NOT BE VERIFIED\n'
+    else
+      printf '●  READ-ONLY SESSION - ANOTHER LIVE FIRSTMATE SESSION HOLDS THE FLEET LOCK\n'
+    fi
     printf '●  %s\n' "$LOCK_OUT"
     printf '●  Skipping every mutating step: secondmate sync, X-mode artifacts,\n'
     printf '●  fleet sync, and wake-queue drain. Detect-only bootstrap diagnostics and\n'
     printf '●  the rest of this read-only-safe digest still ran below.\n'
+    [ "$LOCK_UNAVAILABLE" -eq 1 ] && printf '●  This does not prove another session is running; lock safety is degraded.\n'
     printf '●  Operate read-only until this resolves - do not spawn, steer, merge, or\n'
     printf '●  otherwise mutate fleet state from this session.\n'
     printf '%s\n' "$BAR"
@@ -180,15 +187,15 @@ fi
 # Drained records are this turn's first work queue (AGENTS.md section 8); the
 # drain also runs fm-guard.sh internally on the locked path, so the
 # tangle/watcher-liveness banners land right here too, ahead of the bulk
-# digest below. The read-only path never touches the queue (another session
-# may be actively draining it) but still runs fm-guard.sh directly with
+# digest below. The read-only path never touches the queue (a lock-owning
+# session may be actively draining it) but still runs fm-guard.sh directly with
 # non-mutating advisory text, so the same alarms surface without repair
 # commands.
 subsection "WAKE QUEUE"
 if [ "$READ_ONLY" -eq 1 ]; then
   QLEN=0
   [ -s "$STATE/.wake-queue" ] && QLEN=$(grep -c . "$STATE/.wake-queue" 2>/dev/null || printf '0')
-  printf 'skipped (read-only session) - %s record(s) remain queued for the session holding the lock.\n' "$QLEN"
+  printf 'skipped (read-only session) - %s record(s) remain queued until a session acquires the lock.\n' "$QLEN"
   GUARD_OUT=$(FM_GUARD_READ_ONLY=1 "$SCRIPT_DIR/fm-guard.sh" 2>&1)
   [ -n "$GUARD_OUT" ] && printf '%s\n' "$GUARD_OUT"
 else
@@ -291,8 +298,8 @@ section "NEXT STEP"
 if [ "$READ_ONLY" -eq 1 ]; then
   cat <<'EOF'
 This session did not acquire the fleet lock. Stay read-only: do not arm,
-drain, spawn, steer, merge, or repair fleet state from here. The session
-holding the lock owns mutable follow-up.
+drain, spawn, steer, merge, or repair fleet state from here. Mutable follow-up
+requires a session that has acquired the lock.
 
 EOF
 elif [ "$AFK_PRESENT" -eq 1 ]; then

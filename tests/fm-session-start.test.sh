@@ -106,6 +106,48 @@ SH
   printf '%s\n' "$harness" > "$fakebin/.harness-name"
 }
 
+# Cygwin ps 3.x has fixed -l/-f layouts and rejects procps's -o option.
+make_fake_cygwin_ps() {
+  local fakebin=$1
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = --version ]; then
+  printf 'ps (cygwin) 3.6.6\n'
+  exit 0
+fi
+pid=
+prev=
+for arg in "$@"; do
+  [ "$prev" = -p ] && pid=$arg
+  prev=$arg
+done
+case "$*" in
+  *" -o "*) printf 'ps: unknown option -- o\n' >&2; exit 1 ;;
+  *"-l"*)
+    printf '      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND\n'
+    if [ "$pid" = "${FM_FAKE_HOLDER_PID:?}" ]; then
+      printf '%9s %7s %7s %10s  ?         197609 13:02:33 /usr/bin/claude\n' "$pid" 1 "$pid" 27904
+    else
+      printf '%9s %7s %7s %10s  ?         197609 13:02:34 /usr/bin/bash\n' "$pid" "$FM_FAKE_HOLDER_PID" "$pid" 27905
+    fi
+    exit 0
+    ;;
+  *"-f"*)
+    printf '   UID     PID    PPID  TTY        STIME COMMAND\n'
+    if [ "$pid" = "$FM_FAKE_HOLDER_PID" ]; then
+      printf ' kiman %7s %7s ?        13:02:33 /usr/bin/claude --session test\n' "$pid" 1
+    else
+      printf ' kiman %7s %7s ?        13:02:34 /usr/bin/bash -c tool-call\n' "$pid" "$FM_FAKE_HOLDER_PID"
+    fi
+    exit 0
+    ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/ps"
+}
+
 make_fake_ps_pi_holder() {
   local fakebin=$1 holder_pid=$2
   cat > "$fakebin/ps" <<SH
@@ -312,7 +354,7 @@ EOF
   assert_contains "$out" "Skipping every mutating step" "read-only banner did not explain what was skipped"
   assert_contains "$out" "skipped (read-only session)" "wake-queue section did not report itself skipped"
   assert_contains "$out" "WATCHER DOWN - SUPERVISION IS OFF" "read-only guard did not surface watcher-liveness alarm"
-  assert_contains "$out" "queued wakes pending - left untouched for the session holding the fleet lock" "read-only guard did not leave queued wakes to the lock holder"
+  assert_contains "$out" "queued wakes pending - left untouched until a session acquires the fleet lock" "read-only guard did not leave queued wakes for a lock-owning session"
   assert_contains "$out" "TANGLE: primary checkout on feature branch 'fm/read-only-tangle'" "read-only bootstrap did not surface the tangle diagnostic"
   assert_contains "$out" "read-only session must leave restore work" "read-only tangle diagnostic did not explain restore ownership"
   assert_contains "$out" "Stay read-only: do not arm" "read-only next step did not block direct watcher repair"
@@ -339,6 +381,33 @@ EOF
   pass "a lock refusal prints a loud read-only banner, skips every mutating step, and still completes the digest"
 }
 
+test_cygwin_ps_acquires_lock_and_identifies_holder() {
+  local rec root home fakebin out status lock_status holder_pid
+  rec=$(new_world cygwin-ps)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_cygwin_ps "$fakebin"
+  printf '%s\n' claude > "$home/config/crew-harness"
+
+  sleep 300 &
+  holder_pid=$!
+
+  status=0
+  out=$(FM_FAKE_HOLDER_PID="$holder_pid" run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  lock_status=$(FM_FAKE_HOLDER_PID="$holder_pid" FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" "$ROOT/bin/fm-lock.sh" status)
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  expect_code 0 "$status" "fm-session-start.sh must acquire the lock with Cygwin ps"
+  assert_contains "$out" "lock acquired: harness pid $holder_pid" "Cygwin fixed-column ancestry did not locate the harness"
+  assert_not_contains "$out" "READ-ONLY SESSION" "Cygwin ps compatibility failure forced a false read-only session"
+  assert_contains "$lock_status" "lock: held by live harness pid $holder_pid" "holder_alive did not use the Cygwin-compatible process lookup"
+
+  pass "Cygwin ps acquires the fleet lock and recognizes its live holder"
+}
+
 # --- output ordering ----------------------------------------------------------
 
 test_output_ordering_diagnostics_lead() {
@@ -349,8 +418,8 @@ $rec
 EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
-  # Force a MISSING diagnostic line so the bootstrap section is non-trivial.
-  rm -f "$fakebin/node"
+  # tasks-axi is absent from the deliberately bounded test PATH, so bootstrap
+  # emits a deterministic MISSING line regardless of host-installed Node.
 
   printf 'window=fm-sess:w1\nkind=ship\n' > "$home/state/task-a.meta"
 
@@ -373,7 +442,7 @@ EOF
   [ "$context_line" -lt "$fleet_line" ] || fail "CONTEXT did not precede FLEET STATE"
   [ "$fleet_line" -lt "$next_line" ] || fail "FLEET STATE did not precede NEXT STEP"
 
-  missing_line=$(printf '%s\n' "$out" | grep -n 'MISSING: node' | head -1 | cut -d: -f1)
+  missing_line=$(printf '%s\n' "$out" | grep -n 'MISSING: tasks-axi' | head -1 | cut -d: -f1)
   [ -n "$missing_line" ] || fail "MISSING diagnostic did not appear at all"
   [ "$missing_line" -lt "$fleet_line" ] || fail "actionable MISSING diagnostic was buried after the bulk fleet-state digest"
 
@@ -493,7 +562,6 @@ $rec
 EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
-  rm -f "$fakebin/node"
 
   append_wake "$home/state" signal task-z "needs-decision: pick a library"
 
@@ -502,7 +570,7 @@ EOF
   # fm-lock.sh's own exact success text.
   assert_contains "$out" "lock acquired: harness pid" "fm-lock.sh's real output did not appear (composition, not reimplementation)"
   # fm-bootstrap.sh's own exact MISSING-tool line format.
-  assert_contains "$out" "MISSING: node (install:" "fm-bootstrap.sh's real detect line did not appear verbatim"
+  assert_contains "$out" "MISSING: tasks-axi (install:" "fm-bootstrap.sh's real detect line did not appear verbatim"
   # fm-wake-drain.sh's real drained record (raw tab-separated queue line).
   assert_contains "$out" "$(printf 'signal\ttask-z\tneeds-decision: pick a library')" "fm-wake-drain.sh's real drained record did not appear"
 
@@ -702,6 +770,7 @@ EOF
 
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
+test_cygwin_ps_acquires_lock_and_identifies_holder
 test_output_ordering_diagnostics_lead
 test_status_tail_bounding
 test_orphan_status_logs_are_printed
