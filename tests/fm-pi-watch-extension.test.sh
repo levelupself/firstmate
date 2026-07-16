@@ -41,6 +41,7 @@ test_tracked_extension_present_and_self_hashing() {
   assert_contains "$text" 'type LockOwnership = "owned" | "missing" | "other"' "tracked extension does not distinguish missing lock from another owner"
   assert_contains "$text" "readFileSync(\`\${state}/.lock\`" "tracked extension does not read the effective session lock"
   assert_contains "$text" 'return pidAlive(lockPid) ? "other" : "missing"' "tracked extension does not allow a pre-lock load marker"
+  assert_contains "$text" 'spawnSync("ps", ["-l", "-p", pid]' "tracked extension lacks the Cygwin-compatible parent lookup"
   assert_contains "$text" 'if (lockOwnership() === "other") return' "tracked extension overwrites another live session marker"
   assert_contains "$text" "if (!sessionOwnsLock()) return { ok: false" "tracked extension arms without the session lock"
   assert_contains "$text" "writeFileSync(marker, \`\${extensionVersion}\\n\${process.pid}\\n\`)" "tracked extension does not write the content version and process marker"
