@@ -422,13 +422,15 @@ test_watch_restart_rejects_reused_pid() {
 }
 
 test_watch_restart_reports_healthy_peer_without_attaching() {
-  local dir state fakebin out peer identity armpid status
+  local dir state fakebin out ready peer identity armpid status
   dir=$(make_case restart-healthy-peer)
   state="$dir/state"
   fakebin="$dir/fakebin"
   out="$dir/restart.out"
-  node -e 'process.on("SIGTERM", () => {}); setTimeout(() => {}, 300000)' &
+  ready="$dir/peer.ready"
+  node -e 'process.on("SIGTERM", () => {}); require("fs").writeFileSync(process.argv[1], ""); setTimeout(() => {}, 300000)' "$ready" &
   peer=$!
+  while [ ! -e "$ready" ]; do sleep 0.01; done
   identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$peer") || fail "could not identify peer pid"
   mkdir "$state/.watch.lock"
   printf '%s\n' "$peer" > "$state/.watch.lock/pid"
@@ -703,8 +705,63 @@ test_pid_identity_is_locale_invariant() {
   pass "fm_pid_identity is locale-invariant across LC_ALL/LC_TIME"
 }
 
+test_pid_identity_supports_cygwin_ps() {
+  local dir fakebin state live identity matched_status reused_status
+  dir="$TMP_ROOT/cygwin-identity"
+  fakebin="$dir/fakebin"
+  state="$dir/state"
+  mkdir -p "$fakebin" "$state/.watch.lock"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = --version ]; then
+  printf 'ps (cygwin) 3.6.6\n'
+  exit 0
+fi
+pid=
+prev=
+for arg in "$@"; do
+  [ "$prev" = -p ] && pid=$arg
+  prev=$arg
+done
+case "$*" in
+  *"-l"*)
+    printf '      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND\n'
+    printf '%9s %7s %7s %10s  ?         197609 13:02:33 /usr/bin/sleep\n' "$pid" 1 "$pid" "${FM_FAKE_WINPID:?}"
+    ;;
+  *"-f"*)
+    printf '   UID     PID    PPID  TTY        STIME COMMAND\n'
+    printf ' kiman %7s %7s ?        13:02:33 /usr/bin/sleep 300\n' "$pid" 1
+    ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+
+  sleep 300 &
+  live=$!
+  identity=$(PATH="$fakebin:$PATH" FM_FAKE_WINPID=27904 FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live")
+  printf '%s\n' "$live" > "$state/.watch.lock/pid"
+  printf '%s\n' "$ROOT" > "$state/.watch.lock/fm-home"
+  printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
+  printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
+
+  matched_status=0
+  PATH="$fakebin:$PATH" FM_FAKE_WINPID=27904 FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_watcher_lock_matches_pid "$2" "$3" "$4" "$5"' _ "$LIB" "$state" "$WATCH" "$live" "$ROOT" || matched_status=$?
+  reused_status=0
+  PATH="$fakebin:$PATH" FM_FAKE_WINPID=48152 FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_watcher_lock_matches_pid "$2" "$3" "$4" "$5"' _ "$LIB" "$state" "$WATCH" "$live" "$ROOT" || reused_status=$?
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+
+  assert_contains "$identity" "cygwin:$live:27904:13:02:33:/usr/bin/sleep 300" "Cygwin identity omitted stable process fields"
+  expect_code 0 "$matched_status" "Cygwin watcher identity must match the same live process"
+  [ "$reused_status" -ne 0 ] || fail "Cygwin watcher identity accepted a changed WINPID"
+  pass "Cygwin ps produces stable watcher identity and rejects a reused process identity"
+}
+
 test_singleton_start
 test_pid_identity_is_locale_invariant
+test_pid_identity_supports_cygwin_ps
 test_stale_watch_lock_reclaimed
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings

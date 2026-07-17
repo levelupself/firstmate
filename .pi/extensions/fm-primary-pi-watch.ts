@@ -30,8 +30,13 @@ let seq = 0;
 
 function parentPid(pid: string): string {
   const result = spawnSync("ps", ["-o", "ppid=", "-p", pid], { encoding: "utf8" });
-  if (result.status !== 0) return "";
-  return result.stdout.trim();
+  if (result.status === 0) return result.stdout.trim();
+  const fallback = spawnSync("ps", ["-l", "-p", pid], { encoding: "utf8" });
+  if (fallback.status !== 0) return "";
+  const [header = "", row = ""] = fallback.stdout.trim().split(/\r?\n/);
+  const fields = header.trim().split(/\s+/);
+  const values = row.trim().split(/\s+/);
+  return values[fields.indexOf("PPID")] || "";
 }
 
 function pidAlive(pid: string): boolean {

@@ -868,9 +868,13 @@ unit_failed_start_rolls_back_state
 unit_concurrent_start_serialized
 unit_lock_initialization_grace
 unit_signal_exits_with_lock_cleanup
-unit_herdr_partial_create_recovery
-unit_herdr_error_with_exact_ids_closes_exact
-unit_herdr_run_failure_preserves_unconfirmed_record
+if command -v jq >/dev/null 2>&1; then
+  unit_herdr_partial_create_recovery
+  unit_herdr_error_with_exact_ids_closes_exact
+  unit_herdr_run_failure_preserves_unconfirmed_record
+else
+  echo "skip: jq not found (herdr JSON recovery units)"
+fi
 unit_record_failure_closes_terminal
 unit_readiness_failure_rolls_back_terminal
 unit_readiness_failure_preserves_unconfirmed_record
