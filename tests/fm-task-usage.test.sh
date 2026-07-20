@@ -51,6 +51,7 @@ pass "live task usage subtracts pooled-worktree baseline totals"
 
 text=$(FM_HOME="$HOME_DIR" "$USAGE" task-a --snapshot)
 assert_contains "$text" "claude / Sonnet 5" "compact usage should identify harness and actual model"
+# shellcheck disable=SC2016  # single-quoted: literal '$1.5000' string, not a bash expansion
 assert_contains "$text" '$1.5000 | 3 calls' "compact usage should include cost and calls"
 assert_present "$HOME_DIR/data/task-a/usage.json" "teardown-style snapshot was not saved"
 rm -f "$HOME_DIR/state/task-a.meta"

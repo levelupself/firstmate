@@ -44,6 +44,7 @@ if [ ! -f "$META" ]; then
     if [ "$MODE" = --json ]; then
       cat "$SNAPSHOT"
     else
+      # shellcheck disable=SC2016  # single-quoted: ${} here is JS template-literal syntax, not for bash to expand
       node -e 'const u=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(`${u.harness} / ${(u.actual_models||[]).join(", ")||"-"} | in ${u.tokens.input}, out ${u.tokens.output}, cache ${u.tokens.cache_read}, write ${u.tokens.cache_write} | $${u.cost_usd.toFixed(4)} | ${u.calls} calls`)' "$SNAPSHOT"
     fi
     exit 0
@@ -199,5 +200,6 @@ fi
 if [ "$MODE" = --json ]; then
   cat "$SUMMARY"
 else
+  # shellcheck disable=SC2016  # single-quoted: ${} here is JS template-literal syntax, not for bash to expand
   node -e 'const u=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(`${u.harness} / ${(u.actual_models||[]).join(", ")||"-"} | in ${u.tokens.input}, out ${u.tokens.output}, cache ${u.tokens.cache_read}, write ${u.tokens.cache_write} | $${u.cost_usd.toFixed(4)} | ${u.calls} calls`)' "$SUMMARY"
 fi
