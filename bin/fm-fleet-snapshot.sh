@@ -26,6 +26,8 @@
 #     endpoint.exists is the cheap backend endpoint-presence read.
 #     endpoint.agent_alive is populated for secondmates only, where it is useful
 #     return-channel supervision data; other tasks use "not_checked".
+#     usage is the live codeburn delta for crewmate/scout tasks and is null for
+#     persistent secondmates.
 #   scout_reports[]: present data/<id>/report.md pointers.
 #   secondmate_landed: {records[],truncated[],unreadable[]} - a bounded, read-only
 #     roll-up of DONE backlog records from this home's registered secondmate homes,
@@ -274,7 +276,7 @@ task_json_lines() {
   local meta id kind harness mode yolo project worktree home projects backend target status_log report_path
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
-  local open_decisions_tsv open_decisions_json
+  local open_decisions_tsv open_decisions_json usage_json
 
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
@@ -359,6 +361,13 @@ task_json_lines() {
     report_json=$(path_present_json "$report_path")
     if [ -n "$worktree" ]; then worktree_json=$(path_present_json "$worktree"); else worktree_json=$(jq -n '{path:null,present:false}'); fi
     if [ -n "$home" ]; then home_json=$(path_present_json "$home"); else home_json=$(jq -n '{path:null,present:false}'); fi
+    usage_json=null
+    if [ "$kind" != secondmate ]; then
+      usage_json=$(FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+        "$SCRIPT_DIR/fm-task-usage.sh" "$id" --json 2>/dev/null || true)
+      printf '%s' "$usage_json" | jq -e 'type == "object" and .schema == "fm-task-usage.v1"' >/dev/null 2>&1 \
+        || usage_json=$(jq -n --arg harness "$harness" '{status:"unavailable",harness:$harness,actual_models:[],tokens:{input:0,output:0,cache_read:0,cache_write:0},cost_usd:0,calls:0}')
+    fi
 
     jq -n \
       --arg id "$id" \
@@ -387,6 +396,7 @@ task_json_lines() {
       --argjson pending_decision "$(bool_json "$pending_decision")" \
       --argjson blocked_event "$(bool_json "$blocked_event")" \
       --argjson report_present "$(bool_json "$report_present")" \
+      --argjson usage "$usage_json" \
       '{
         id:$id,
         kind:$kind,
@@ -404,6 +414,7 @@ task_json_lines() {
         },
         secondmate_projects:($projects | if . == "" then [] else split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(. != "")) end),
         current_state:$current_state,
+        usage:$usage,
         endpoint:{target:($target | if . == "" then null else . end),exists:$endpoint_exists,agent_alive:$agent_alive},
         pr:{url:($pr | if . == "" then null else . end),source:$pr_source},
         hints:{
@@ -425,6 +436,20 @@ task_json_lines() {
           end)
       }'
   done | jq -s 'sort_by(.id)'
+}
+
+task_usage_records_json() {
+  local usage
+  if [ ! -d "$DATA" ]; then
+    jq -n '[]'
+    return 0
+  fi
+  LC_ALL=C find "$DATA" -mindepth 2 -maxdepth 2 -type f -name usage.json -print \
+    | sort \
+    | while IFS= read -r usage; do
+      jq -c . "$usage" 2>/dev/null || true
+    done \
+    | jq -s 'map(select(type == "object" and .id != null)) | sort_by(.id)'
 }
 
 # Bounded, deterministic roll-up of DONE records from this home's registered
@@ -490,6 +515,7 @@ BACKLOG_JSON=$(backlog_json)
 TASKS_JSON=$(task_json_lines)
 SCOUT_REPORTS_JSON=$(scout_report_lines)
 SECONDMATE_LANDED_JSON=$(secondmate_landed_json)
+TASK_USAGE_JSON=$(task_usage_records_json)
 
 jq -n \
   --arg fm_home "$FM_HOME" \
@@ -502,14 +528,16 @@ jq -n \
   --argjson tasks "$TASKS_JSON" \
   --argjson scout_reports "$SCOUT_REPORTS_JSON" \
   --argjson secondmate_landed "$SECONDMATE_LANDED_JSON" \
+  --argjson task_usage "$TASK_USAGE_JSON" \
   'def backlog_by_id($id): ($backlog.records[]? | select(.structured == true and .id == $id) | .) // null;
+   def usage_by_id($id): ($task_usage[]? | select(.id == $id) | .) // null;
    def task_by_id($id): ($tasks[]? | select(.id == $id) | .) // null;
    def report_kind($id): (task_by_id($id).kind // backlog_by_id($id).kind // "scout");
    {
      schema:"fm-fleet-snapshot.v1",
      fm_home:$fm_home,
      roots:{fm_root:$fm_root,state:$state,data:$data,config:$config,projects:$projects},
-     backlog:$backlog,
+     backlog:($backlog | .records |= map(. + {usage:usage_by_id(.id)})),
      tasks:($tasks | map(. + {backlog:backlog_by_id(.id)})),
      scout_reports:($scout_reports | map(. + {kind:report_kind(.id)})),
      secondmate_landed:$secondmate_landed,

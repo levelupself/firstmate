@@ -19,6 +19,10 @@ make_fakebin() {  # <dir>
 #!/usr/bin/env bash
 exit 0
 SH
+  cat > "$fb/codeburn" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"overview":{"cost":0,"calls":0,"tokens":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}},"models":[]}'
+SH
   cat > "$fb/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -49,7 +53,7 @@ case "${1:-}" in
 esac
 exit 0
 SH
-  chmod +x "$fb/no-mistakes" "$fb/tmux"
+  chmod +x "$fb/no-mistakes" "$fb/codeburn" "$fb/tmux"
   printf '%s\n' "$fb"
 }
 
@@ -77,6 +81,9 @@ handoff note without canonical syntax
 EOF
   mkdir -p "$home/data/scout-task"
   printf '# Scout\n' > "$home/data/scout-task/report.md"
+  mkdir -p "$home/data/done-task"
+  printf '%s\n' '{"schema":"fm-task-usage.v1","id":"done-task","harness":"claude","configured_model":"sonnet","actual_models":["Sonnet 5"],"models":[],"tokens":{"input":4,"output":9,"cache_read":50,"cache_write":7},"cost_usd":1.5,"calls":3}' \
+    > "$home/data/done-task/usage.json"
   fm_write_meta "$home/state/ship-task.meta" \
     "window=firstmate:fm-ship-task" \
     "worktree=$home/projects/alpha-worktree" \
@@ -168,7 +175,10 @@ test_fixture_snapshot_json() {
   ' >/dev/null || fail "queued canonical and unstructured backlog records missing"
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "done-task")
-    | .state == "done" and .pr_url == "https://github.com/kunchenguid/firstmate/pull/7"
+    | .state == "done"
+      and .pr_url == "https://github.com/kunchenguid/firstmate/pull/7"
+      and .usage.actual_models == ["Sonnet 5"]
+      and .usage.cost_usd == 1.5
   ' >/dev/null || fail "done backlog PR row missing"
   pass "fixture snapshot covers task rows, backlog rows, pointers, and stable ordering"
 }
@@ -374,6 +384,8 @@ test_view_renders_snapshot() {
     "view should render queued backlog row"
   assert_contains "$view" "| done-task | Done Task | alpha | ship | - | https://github.com/kunchenguid/firstmate/pull/7 |" \
     "view should render done backlog row"
+  assert_contains "$view" "claude / Sonnet 5 - in 4, out 9, cache 50, write 7 - \$1.5 - 3 calls" \
+    "view should render durable task usage after teardown"
   assert_contains "$view" "bin/fm-send.sh fm-secondmate-task" \
     "view should show secondmate send guidance"
   assert_contains "$view" "| secondmate-task | working / status-log | secondmate | $home/secondmate-home | tmux | present / alive |" \
