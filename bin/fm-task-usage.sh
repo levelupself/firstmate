@@ -6,6 +6,8 @@
 # fm-teardown writes data/<id>/usage.json before removing the task metadata.
 # Old metadata without spawned_at or a baseline still works, but its live total
 # is only date/path scoped and can therefore include an earlier same-day occupant.
+# The codeburn call is bounded by FM_TASK_USAGE_TIMEOUT (default 15s) so a hung
+# report never stalls spawn, teardown, or fleet-snapshot generation.
 #
 # Usage: fm-task-usage.sh <task-id> [--json|--baseline|--snapshot]
 #   --json      print the compact summary as JSON
@@ -77,9 +79,26 @@ command -v node >/dev/null 2>&1 || { echo "fm-task-usage: node not found" >&2; e
 CURRENT=$(mktemp "${TMPDIR:-/tmp}/fm-task-usage.XXXXXX") || exit 1
 trap 'rm -f "$CURRENT"' EXIT
 
+# Bounded codeburn call; a hung process must never stall spawn/teardown/snapshot.
+CODEBURN_TIMEOUT=${FM_TASK_USAGE_TIMEOUT:-15}
+case "$CODEBURN_TIMEOUT" in ''|*[!0-9]*|0) CODEBURN_TIMEOUT=15 ;; esac
+HAVE_TIMEOUT=none
+if command -v timeout >/dev/null 2>&1; then HAVE_TIMEOUT=timeout
+elif command -v gtimeout >/dev/null 2>&1; then HAVE_TIMEOUT=gtimeout
+elif command -v perl >/dev/null 2>&1; then HAVE_TIMEOUT=perl
+fi
+run_bounded() {  # <command...>
+  case "$HAVE_TIMEOUT" in
+    timeout)  timeout "$CODEBURN_TIMEOUT" "$@" ;;
+    gtimeout) gtimeout "$CODEBURN_TIMEOUT" "$@" ;;
+    perl)     perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$CODEBURN_TIMEOUT" "$@" ;;
+    *)        "$@" ;;
+  esac
+}
+
 query_codeburn() {
   if [ -n "${FM_CODEBURN_BIN:-}" ]; then
-    "$FM_CODEBURN_BIN" --timezone UTC report --format json --from "$FROM" --to "$TO" --project "$WORKTREE"
+    run_bounded "$FM_CODEBURN_BIN" --timezone UTC report --format json --from "$FROM" --to "$TO" --project "$WORKTREE"
   elif command -v codeburn >/dev/null 2>&1; then
     # npm globals installed on Windows need Windows Node so codeburn sees the
     # same Windows-side harness logs. Native installs stay on the native path.
@@ -88,12 +107,12 @@ query_codeburn() {
         if command -v cmd.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1; then
           local win_worktree
           win_worktree=$(wslpath -w "$WORKTREE")
-          cmd.exe /d /s /c "codeburn --timezone UTC report --format json --from $FROM --to $TO --project \"$win_worktree\""
+          run_bounded cmd.exe /d /s /c "codeburn --timezone UTC report --format json --from $FROM --to $TO --project \"$win_worktree\""
         else
-          codeburn --timezone UTC report --format json --from "$FROM" --to "$TO" --project "$WORKTREE"
+          run_bounded codeburn --timezone UTC report --format json --from "$FROM" --to "$TO" --project "$WORKTREE"
         fi
         ;;
-      *) codeburn --timezone UTC report --format json --from "$FROM" --to "$TO" --project "$WORKTREE" ;;
+      *) run_bounded codeburn --timezone UTC report --format json --from "$FROM" --to "$TO" --project "$WORKTREE" ;;
     esac
   else
     return 127

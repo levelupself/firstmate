@@ -68,4 +68,27 @@ grep -Eq -- '--from [0-9]{4}-[0-9]{2}-[0-9]{2}' "$TMP_ROOT/args.log" \
   || fail "old metadata should fall back to a date-scoped query"
 pass "old metadata without spawned_at degrades to a date-scoped total"
 
+cat > "$FAKEBIN/codeburn" <<'SH'
+#!/usr/bin/env bash
+sleep 30
+SH
+chmod +x "$FAKEBIN/codeburn"
+unset FM_CODEBURN_FIXTURE
+
+fm_write_meta "$HOME_DIR/state/hung-task.meta" \
+  "worktree=$HOME_DIR/worktree" \
+  "harness=claude" \
+  "kind=ship" \
+  "spawned_at=2026-07-19T12:34:56Z"
+
+start=$(date +%s)
+FM_TASK_USAGE_TIMEOUT=1 FM_HOME="$HOME_DIR" "$USAGE" hung-task --json >/dev/null 2>"$TMP_ROOT/hung.err"
+rc=$?
+elapsed=$(( $(date +%s) - start ))
+[ "$rc" -ne 0 ] || fail "usage query should fail when codeburn hangs past the timeout"
+[ "$elapsed" -lt 20 ] || fail "usage query took ${elapsed}s, timeout did not bound the hung codeburn call"
+assert_contains "$(cat "$TMP_ROOT/hung.err")" "codeburn usage unavailable" \
+  "hung codeburn call should be reported as unavailable, not hang"
+pass "hung codeburn report is bounded by a timeout instead of blocking"
+
 printf '# all fm-task-usage tests passed\n'
