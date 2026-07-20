@@ -1263,6 +1263,29 @@ SH
   pass "herdr teardown removes pane-owned escalation dedupe state"
 }
 
+test_teardown_removes_usage_cache_entry() {
+  local case_dir rc
+  case_dir=$(make_case usage-cache-cleanup)
+  write_meta "$case_dir" local-only ship
+  wt_commit "$case_dir" "merged work"
+  local wt_head
+  wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/project" update-ref refs/heads/main "$wt_head"
+
+  mkdir -p "$case_dir/state/usage-cache"
+  printf '%s\n' '{"schema":"fm-task-usage.v1"}' > "$case_dir/state/usage-cache/task-x1.json"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "usage-cache-cleanup: teardown should succeed when work is merged into local main"
+  [ ! -e "$case_dir/state/usage-cache/task-x1.json" ] \
+    || fail "usage-cache-cleanup: teardown left the volatile usage-cache entry behind"
+  pass "teardown removes the task's volatile state/usage-cache entry"
+}
+
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
@@ -1272,6 +1295,7 @@ test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
 test_herdr_teardown_clears_escalation_marker
+test_teardown_removes_usage_cache_entry
 test_squash_merged_branch_deleted_allows
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows

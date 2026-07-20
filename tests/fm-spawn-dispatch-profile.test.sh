@@ -41,7 +41,11 @@ case "${1:-}" in
 esac
 exit 0
 SH
-  chmod +x "$fakebin/tmux"
+  cat > "$fakebin/codeburn" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"overview":{"cost":0,"calls":0,"tokens":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}},"models":[]}'
+SH
+  chmod +x "$fakebin/tmux" "$fakebin/codeburn"
   fm_fake_exit0 "$fakebin" treehouse
   printf '%s\n' "$fakebin"
 }
@@ -103,6 +107,8 @@ assert_meta_profile() {
   assert_grep "harness=$harness" "$meta" "meta missing harness=$harness"
   assert_grep "model=$model" "$meta" "meta missing model=$model"
   assert_grep "effort=$effort" "$meta" "meta missing effort=$effort"
+  grep -Eq '^spawned_at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' "$meta" \
+    || fail "meta missing UTC spawned_at timestamp"
 }
 
 test_no_profile_keeps_claude_launch_unchanged() {

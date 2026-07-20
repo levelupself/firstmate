@@ -984,6 +984,7 @@ fi
 
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
+SPAWNED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 {
   echo "window=$META_WINDOW"
   echo "worktree=$WT"
@@ -993,6 +994,7 @@ META_WINDOW=$T
   echo "mode=$MODE"
   echo "yolo=$YOLO"
   echo "tasktmp=$TASK_TMP"
+  echo "spawned_at=$SPAWNED_AT"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
   # backend= is written only for a non-default (non-tmux) backend, so the
@@ -1024,6 +1026,10 @@ META_WINDOW=$T
   fi
 } > "$STATE/$ID.meta"
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
+if [ "$KIND" != secondmate ]; then
+  "$FM_ROOT/bin/fm-task-usage.sh" "$ID" --baseline \
+    || echo "fm-spawn: warning: could not capture codeburn baseline for $ID" >&2
+fi
 
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
