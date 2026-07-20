@@ -27,7 +27,11 @@
 #     endpoint.agent_alive is populated for secondmates only, where it is useful
 #     return-channel supervision data; other tasks use "not_checked".
 #     usage is the live codeburn delta for crewmate/scout tasks and is null for
-#     persistent secondmates.
+#     persistent secondmates. Collected in parallel across every live task, each
+#     bounded by FM_FLEET_USAGE_TIMEOUT (default 5s), with a per-task cache under
+#     state/usage-cache/ served (marked stale:true) when a call times out or fails,
+#     so total wait stays bounded by the slowest single call and a transient
+#     hiccup never blanks usage to unavailable.
 #   scout_reports[]: present data/<id>/report.md pointers.
 #   secondmate_landed: {records[],truncated[],unreadable[]} - a bounded, read-only
 #     roll-up of DONE backlog records from this home's registered secondmate homes,
@@ -272,11 +276,66 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
   ' < "$backlog"
 }
 
+FM_FLEET_USAGE_TIMEOUT=${FM_FLEET_USAGE_TIMEOUT:-5}
+case "$FM_FLEET_USAGE_TIMEOUT" in ''|*[!0-9]*|0) FM_FLEET_USAGE_TIMEOUT=5 ;; esac
+
+usage_cache_dir() { printf '%s/usage-cache' "$STATE"; }
+
+# Fires every live non-secondmate task's codeburn query in parallel, each bounded
+# by a short FM_FLEET_USAGE_TIMEOUT, so a fleet-snapshot's total wait stays bounded
+# by the slowest single call instead of the sum across the whole fleet.
+collect_usage_parallel() {  # <output-dir>
+  local dir=$1 meta id kind
+  for meta in "$STATE"/*.meta; do
+    [ -e "$meta" ] || continue
+    id=$(basename "$meta" .meta)
+    kind=$(meta_value "$meta" kind)
+    [ -n "$kind" ] || kind=ship
+    [ "$kind" = secondmate ] && continue
+    (
+      FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+        FM_TASK_USAGE_TIMEOUT="$FM_FLEET_USAGE_TIMEOUT" \
+        "$SCRIPT_DIR/fm-task-usage.sh" "$id" --json > "$dir/$id.json" 2>/dev/null
+    ) &
+  done
+  wait
+}
+
+# Reads a task's usage from the parallel-collected dir; on a timed-out or failed
+# call, falls back to the last successful reading cached under state/usage-cache/
+# (marked stale:true) instead of blanking to unavailable, then updates that cache
+# on a fresh success.
+usage_json_for_id() {  # <id> <harness> <collected-dir>
+  local id=$1 harness=$2 dir=$3 raw cache cached
+  cache="$(usage_cache_dir)/$id.json"
+  raw=""
+  if [ -n "$dir" ] && [ -f "$dir/$id.json" ]; then
+    raw=$(cat "$dir/$id.json" 2>/dev/null || true)
+  fi
+  if printf '%s' "$raw" | jq -e 'type == "object" and .schema == "fm-task-usage.v1"' >/dev/null 2>&1; then
+    mkdir -p "$(usage_cache_dir)" 2>/dev/null && printf '%s' "$raw" > "$cache" 2>/dev/null
+    printf '%s' "$raw"
+    return 0
+  fi
+  if [ -f "$cache" ]; then
+    cached=$(cat "$cache" 2>/dev/null || true)
+    if printf '%s' "$cached" | jq -e 'type == "object" and .schema == "fm-task-usage.v1"' >/dev/null 2>&1; then
+      printf '%s' "$cached" | jq -c '. + {stale:true}'
+      return 0
+    fi
+  fi
+  jq -n --arg harness "$harness" '{status:"unavailable",harness:$harness,actual_models:[],tokens:{input:0,output:0,cache_read:0,cache_write:0},cost_usd:0,calls:0}'
+}
+
 task_json_lines() {
   local meta id kind harness mode yolo project worktree home projects backend target status_log report_path
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
   local open_decisions_tsv open_decisions_json usage_json
+  local usage_tmp
+
+  usage_tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-fleet-usage.XXXXXX" 2>/dev/null || true)
+  [ -n "$usage_tmp" ] && [ -d "$usage_tmp" ] && collect_usage_parallel "$usage_tmp"
 
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
@@ -363,10 +422,7 @@ task_json_lines() {
     if [ -n "$home" ]; then home_json=$(path_present_json "$home"); else home_json=$(jq -n '{path:null,present:false}'); fi
     usage_json=null
     if [ "$kind" != secondmate ]; then
-      usage_json=$(FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-        "$SCRIPT_DIR/fm-task-usage.sh" "$id" --json 2>/dev/null || true)
-      printf '%s' "$usage_json" | jq -e 'type == "object" and .schema == "fm-task-usage.v1"' >/dev/null 2>&1 \
-        || usage_json=$(jq -n --arg harness "$harness" '{status:"unavailable",harness:$harness,actual_models:[],tokens:{input:0,output:0,cache_read:0,cache_write:0},cost_usd:0,calls:0}')
+      usage_json=$(usage_json_for_id "$id" "$harness" "$usage_tmp")
     fi
 
     jq -n \
@@ -436,6 +492,8 @@ task_json_lines() {
           end)
       }'
   done | jq -s 'sort_by(.id)'
+
+  [ -n "$usage_tmp" ] && rm -rf "$usage_tmp"
 }
 
 task_usage_records_json() {

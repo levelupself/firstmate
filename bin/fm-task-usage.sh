@@ -68,7 +68,20 @@ HARNESS=$(meta_value "$META" harness)
 CONFIGURED_MODEL=$(meta_value "$META" model)
 SPAWNED_AT=$(meta_value "$META" spawned_at)
 if [ -z "$SPAWNED_AT" ]; then
-  SPAWNED_AT=$(date -u -r "$META" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+  # Portable mtime: macOS (BSD) `date -r` takes epoch seconds, not a path, so
+  # go through `stat` first. See bin/fm-watch.sh for the same platform split.
+  if [ "$(uname)" = Darwin ]; then
+    META_MTIME=$(stat -f %m "$META" 2>/dev/null || true)
+  else
+    META_MTIME=$(stat -c %Y "$META" 2>/dev/null || true)
+  fi
+  if [ -n "$META_MTIME" ]; then
+    if [ "$(uname)" = Darwin ]; then
+      SPAWNED_AT=$(date -u -r "$META_MTIME" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+    else
+      SPAWNED_AT=$(date -u -d "@$META_MTIME" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+    fi
+  fi
 fi
 FROM=${SPAWNED_AT%%T*}
 [ -n "$FROM" ] || FROM=$(date -u +%Y-%m-%d)
