@@ -758,9 +758,19 @@ test_oversized_backlog_and_status_stream() {
 tree_manifest() {  # <home>
   local home=$1 root
   for root in "$home/data" "$home/state"; do
-    find "$root" -printf '%p|%y|%s|%T@\n'
-    find "$root" -type f -exec sha256sum {} \;
-  done | LC_ALL=C sort | sha256sum | cut -d' ' -f1
+    perl -MFile::Find -MDigest::SHA -e '
+      find({no_chdir => 1, wanted => sub {
+        my @s = lstat($_);
+        my $digest = "-";
+        if (-f _) {
+          open my $fh, "<", $_ or die "$!: $_\n";
+          binmode $fh;
+          $digest = Digest::SHA->new(256)->addfile($fh)->hexdigest;
+        }
+        print join("|", $_, @s[2, 4, 5, 7, 9], $digest), "\n";
+      }}, @ARGV)
+    ' "$root"
+  done | LC_ALL=C sort
 }
 
 test_read_paths_do_not_mutate_fleet_state() {
@@ -783,7 +793,15 @@ test_watch_redraws_and_exits_cleanly() {
   fakebin=$(make_fakebin "$home")
   output="$home/watch.out"
   PATH="$fakebin:$PATH" FM_HOME="$home" COLUMNS=45 \
-    timeout --preserve-status --signal=INT 0.35 "$VIEW" --watch 0.1 > "$output"
+    perl -e '
+      my $pid = fork();
+      defined $pid or die "fork: $!\n";
+      exec @ARGV unless $pid;
+      select undef, undef, undef, 0.35;
+      kill "INT", $pid;
+      waitpid $pid, 0;
+      exit($? >> 8);
+    ' "$VIEW" --watch 0.1 > "$output"
   rc=$?
   expect_code 0 "$rc" "watch mode should exit cleanly on Ctrl-C"
   redraws=$(LC_ALL=C grep -ao $'\033\[H\033\[2J' "$output" | wc -l | tr -d ' ')
