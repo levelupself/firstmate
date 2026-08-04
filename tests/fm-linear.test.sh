@@ -58,10 +58,15 @@ while [ $# -gt 0 ]; do
 done
 op=$(printf '%s' "$data" | jq -r '.query' 2>/dev/null \
   | sed -n 's/^[[:space:]]*\(query\|mutation\)[[:space:]]\{1,\}\([A-Za-z0-9_]*\).*/\2/p' | head -n1)
-printf '%s\t%s\n' "$op" "$(printf '%s' "$data" | jq -c '.variables' 2>/dev/null)" >> "$FAKE_DIR/calls.log"
+vars=$(printf '%s' "$data" | jq -c '.variables' 2>/dev/null)
+printf '%s\t%s\n' "$op" "$vars" >> "$FAKE_DIR/calls.log"
 if [ -n "${FAKE_CURL_FAIL:-}" ]; then exit 7; fi
-if [ -f "$FAKE_DIR/$op.json" ]; then
-  cat "$FAKE_DIR/$op.json" > "$ofile"
+if [ -n "${FAKE_CURL_SLEEP:-}" ]; then sleep "$FAKE_CURL_SLEEP"; fi
+after=$(printf '%s' "$vars" | jq -r '.after // empty' 2>/dev/null)
+fixture=$FAKE_DIR/$op
+[ -z "$after" ] || [ ! -f "$FAKE_DIR/$op-$after.json" ] || fixture=$FAKE_DIR/$op-$after
+if [ -f "$fixture.json" ]; then
+  cat "$fixture.json" > "$ofile"
   if [ -f "$FAKE_DIR/$op.code" ]; then cat "$FAKE_DIR/$op.code"; else echo 200; fi
 else
   : > "$ofile"
@@ -162,6 +167,37 @@ n=$(grep -c '^fmFindAll' "$FAKE_DIR/calls.log" || true)
 [ "$n" = 50 ] || fail "expected the fallback page bound of 50, got $n"
 assert_no_grep "no mirrored issue" <(printf '%s\n' "$out") "an incomplete scan must not claim no issue exists"
 pass "lookup fallback reports unavailable when its page bound is reached"
+
+# A successful server-side filter can itself have more than 50 results. The
+# lookup must follow its pageInfo rather than treating page one as exhaustive.
+new_home filteredpages
+printf 'LINEAR_API_KEY=lin_api_test\n' > "$HOME_DIR/.env"
+jq -cn '{data:{issues:{pageInfo:{hasNextPage:true,endCursor:"next"},nodes:[]}}}' > "$FAKE_DIR/fmFind.json"
+issue_json PSY-70 '`firstmate: 070-beyond-first-page`' > "$FAKE_DIR/fmFind-next.json"
+printf 'body from the pipeline\n' > "$FAKE_DIR/pr-body"
+out=$(FM_HOME="$HOME_DIR" run_link 070-beyond-first-page https://github.com/o/r/pull/1); rc=$?
+expect_code 0 "$rc" "filtered lookup follows later pages"
+assert_contains "$out" "linked PSY-70" "a filtered result beyond page one is found"
+n=$(grep -c '^fmFind' "$FAKE_DIR/calls.log" || true)
+[ "$n" = 2 ] || fail "expected two filtered lookup pages, got $n"
+pass "filtered lookup searches every advertised page before reporting absence"
+
+# The lookup has one total time budget across the rejected filtered request and
+# every fallback page. Expiry is unknown, while a completed scan is absence.
+new_home lookupdeadline
+printf 'LINEAR_API_KEY=lin_api_test\n' > "$HOME_DIR/.env"
+jq -cn '{errors:[{message:"Unknown argument contains"}]}' > "$FAKE_DIR/fmFind.json"
+jq -cn '{data:{issues:{pageInfo:{hasNextPage:true,endCursor:"next"},nodes:[]}}}' > "$FAKE_DIR/fmFindAll.json"
+start=$(date +%s)
+if ( . "$ROOT/bin/fm-linear-lib.sh"; FM_HOME="$HOME_DIR" fml_load_config; FML_TIMEOUT=2; FAKE_CURL_SLEEP=1 fml_find_issue 070-unmirrored ); then rc=0; else rc=$?; fi
+elapsed=$(( $(date +%s) - start ))
+expect_code 2 "$rc" "an expired lookup is unavailable"
+[ "$elapsed" -le 3 ] || fail "total lookup deadline took ${elapsed}s for a 2s budget"
+
+jq -cn '{data:{issues:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[]}}}' > "$FAKE_DIR/fmFind.json"
+if ( . "$ROOT/bin/fm-linear-lib.sh"; FM_HOME="$HOME_DIR" fml_load_config; FML_TIMEOUT=2; fml_find_issue 070-unmirrored ); then rc=0; else rc=$?; fi
+expect_code 1 "$rc" "a completed lookup still reports absence"
+pass "lookup fallback shares one deadline and distinguishes expiry from absence"
 
 # --- 3. a mirrored issue gets a strictly additive reference -----------------
 
