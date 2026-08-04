@@ -1810,6 +1810,43 @@ fm_backend_herdr_cockpit_pane_matches() {  # <session> <pane> <workspace> <tab>
     && [ "$actual_tab" = "$tab" ]
 }
 
+# A cockpit head is live only while Herdr still has a registered supervisor in
+# its exact pane. A restored plain shell and a completed agent are both dead
+# heads: they keep the frame visible for explicit recovery but never authorize
+# child placement or an automatic replacement.
+fm_backend_herdr_cockpit_head_state() {  # <session> <pane>
+  local session=$1 pane=$2 presence out code status
+  presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane")
+  case "$presence" in
+    dead) printf 'dead'; return 0 ;;
+    present) ;;
+    *) printf 'unknown'; return 0 ;;
+  esac
+  out=$(fm_backend_herdr_cli "$session" agent get "$pane" 2>&1)
+  code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
+  if [ -n "$code" ]; then
+    [ "$code" = agent_not_found ] && printf 'dead' || printf 'unknown'
+    return 0
+  fi
+  status=$(printf '%s' "$out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null)
+  case "$status" in
+    working|idle|blocked) printf 'live' ;;
+    done) printf 'dead' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+fm_backend_herdr_cockpit_workspace_matches_home() {  # <session> <workspace> <home>
+  local session=$1 workspace=$2 home=$3 expected list
+  expected=$(FM_HOME="$home" fm_backend_herdr_workspace_label) || return 1
+  list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 1
+  printf '%s' "$list" | jq -e --arg workspace "$workspace" --arg expected "$expected" '
+    (.result.workspaces | type) == "array"
+    and ([.result.workspaces[] | select(.label == $expected)] | length) == 1
+    and ([.result.workspaces[] | select(.workspace_id == $workspace and .label == $expected)] | length) == 1
+  ' >/dev/null 2>&1
+}
+
 fm_backend_herdr_cockpit_binding_live() {  # <state-dir> <home> [<session>]
   local state=$1 home=$2 expected_session=${3:-}
   fm_backend_herdr_cockpit_record_snapshot "$state" "$home" || return 1
@@ -1820,22 +1857,46 @@ fm_backend_herdr_cockpit_binding_live() {  # <state-dir> <home> [<session>]
     "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
     "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" \
     "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" \
-    "$FM_BACKEND_HERDR_COCKPIT_TAB_ID"
+    "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" \
+    || return 1
+  [ "$(fm_backend_herdr_cockpit_head_state \
+    "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
+    "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID")" = live ]
 }
 
 # Adopt the current exact native-Herdr pane as this home's head.
 # Mode adopt initializes only an absent record and otherwise re-adopts the same
 # exact head. Mode new explicitly replaces a different binding only after its
 # old head is positively dead or agent-free. Neither mode creates or splits a
-# pane, which makes repeated session-start adoption idempotent.
-fm_backend_herdr_cockpit_adopt() {  # <state-dir> <home> <session> <workspace> <tab> <pane> [adopt|new]
-  local state=$1 home=$2 session=$3 workspace=$4 tab=$5 pane=$6 mode=${7:-adopt}
-  local record old_state
+# pane, which makes repeated session-start adoption idempotent. The existing
+# launcher-identity resolver owns same-session socket proof and derives the
+# current tab and workspace from the live pane rather than stale injected IDs.
+fm_backend_herdr_cockpit_adopt() {  # <state-dir> <home> <session> [adopt|new]
+  local state=$1 home=$2 session=$3 mode=${4:-adopt}
+  local record old_state current_state launcher_status workspace tab pane expected
   case "$mode" in adopt|new) ;; *) return 2 ;; esac
-  fm_backend_herdr_cockpit_pane_matches "$session" "$pane" "$workspace" "$tab" || {
-    echo "COCKPIT: current Herdr pane identity could not be verified; preserving any recorded frame." >&2
+  fm_backend_herdr_launcher_identity "$session"
+  launcher_status=$?
+  if [ "$launcher_status" -ne 0 ]; then
+    [ "$launcher_status" -ne 2 ] \
+      || echo "COCKPIT: native Herdr pane identity is absent; preserving any recorded frame." >&2
     return 1
-  }
+  fi
+  workspace=$FM_BACKEND_HERDR_LAUNCHER_WORKSPACE_ID
+  tab=$FM_BACKEND_HERDR_LAUNCHER_TAB_ID
+  pane=$FM_BACKEND_HERDR_LAUNCHER_PANE_ID
+  expected=$(FM_HOME="$home" fm_backend_herdr_workspace_label) || return 1
+  if ! fm_backend_herdr_cockpit_workspace_matches_home "$session" "$workspace" "$home"; then
+    printf "COCKPIT: current Herdr workspace is not the one unique '%s' space for this home; preserving any recorded frame.\n" \
+      "$expected" >&2
+    return 1
+  fi
+  current_state=$(fm_backend_herdr_cockpit_head_state "$session" "$pane")
+  if [ "$current_state" != live ]; then
+    printf 'COCKPIT: current Herdr pane has supervisor state %s; preserving any recorded frame.\n' \
+      "$current_state" >&2
+    return 1
+  fi
   record=$(fm_backend_herdr_cockpit_record_path "$state")
   if [ ! -e "$record" ] && [ ! -L "$record" ]; then
     fm_backend_herdr_cockpit_write_record "$state" "$home" "$session" "$workspace" "$tab" "$pane" "" || return 1
@@ -1855,11 +1916,11 @@ fm_backend_herdr_cockpit_adopt() {  # <state-dir> <home> <session> <workspace> <
       "$session" "$workspace" "$tab" "$pane"
     return 0
   fi
-  old_state=$(fm_backend_herdr_pane_agent_state \
+  old_state=$(fm_backend_herdr_cockpit_head_state \
     "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID")
   if [ "$mode" = new ]; then
     case "$old_state" in
-      dead|no-agent)
+      dead)
         fm_backend_herdr_cockpit_write_record "$state" "$home" "$session" "$workspace" "$tab" "$pane" "" || return 1
         printf 'COCKPIT: adopted new clean-context head=%s; prior head=%s remains %s and was not closed or split.\n' \
           "$pane" "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" "$old_state"
@@ -1870,9 +1931,17 @@ fm_backend_herdr_cockpit_adopt() {  # <state-dir> <home> <session> <workspace> <
       "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" "$old_state" >&2
     return 1
   fi
-  printf 'COCKPIT: DEAD PANE %s (%s); frame preserved and never auto-filled or re-split.\n' \
-    "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" "$old_state" >&2
-  printf 'COCKPIT: [r] resume old in the recorded pane; [n] run bin/fm-cockpit.sh new here for clean context.\n' >&2
+  case "$old_state" in
+    dead)
+      printf 'COCKPIT: DEAD PANE %s; frame preserved and never auto-filled or re-split.\n' \
+        "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" >&2
+      printf 'COCKPIT: [r] resume old in the recorded pane; [n] run bin/fm-cockpit.sh new here for clean context.\n' >&2
+      ;;
+    *)
+      printf 'COCKPIT: recorded head %s is %s; refusing to replace or re-split it.\n' \
+        "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" "$old_state" >&2
+      ;;
+  esac
   return 1
 }
 

@@ -9,11 +9,13 @@ set -u
 COCKPIT="$ROOT/bin/fm-cockpit.sh"
 TMP_ROOT=$(fm_test_tmproot fm-cockpit)
 HOME_DIR="$TMP_ROOT/home"
+SECOND_HOME="$TMP_ROOT/second-home"
 FAKE_DIR="$TMP_ROOT/fake"
 FAKEBIN=$(fm_fakebin "$FAKE_DIR")
 HERDR_STATE="$FAKE_DIR/herdr-state"
 HERDR_LOG="$FAKE_DIR/herdr.log"
-mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$HOME_DIR/config" "$HOME_DIR/projects" "$HERDR_STATE"
+mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$HOME_DIR/config" "$HOME_DIR/projects" \
+  "$SECOND_HOME/state" "$HERDR_STATE"
 printf 'w1:p1\tfirstmate-head\tw1:t1\tw1\tlive\n' > "$HERDR_STATE/panes.tsv"
 printf '1\n' > "$HERDR_STATE/counter"
 : > "$HERDR_LOG"
@@ -46,8 +48,14 @@ case "${1:-} ${2:-}" in
   "workspace list")
     printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w2","label":"2ndmate-domain"}]}}'
     ;;
+  "session list")
+    printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fm-cockpit-test.sock"}]}'
+    ;;
   "tab list")
     printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","workspace_id":"w1","label":"cockpit"}]}}'
+    ;;
+  "tab get")
+    printf '%s\n' '{"result":{"tab":{"tab_id":"w1:t1","workspace_id":"w1","label":"cockpit"}}}'
     ;;
   "pane list")
     jq -Rn '
@@ -118,17 +126,20 @@ esac
 SH
 chmod +x "$FAKEBIN/herdr"
 
-run_cockpit() {
+run_cockpit_at() {  # <pane> <socket> <action>
   PATH="$FAKEBIN:$PATH" \
     FM_HOME="$HOME_DIR" \
     FM_FAKE_HERDR_STATE="$HERDR_STATE" \
     FM_FAKE_HERDR_LOG="$HERDR_LOG" \
     HERDR_ENV=1 \
     HERDR_SESSION=fmtest \
-    HERDR_WORKSPACE_ID=w1 \
-    HERDR_TAB_ID=w1:t1 \
-    HERDR_PANE_ID=w1:p1 \
-    "$COCKPIT" "$1"
+    HERDR_SOCKET_PATH="$2" \
+    HERDR_PANE_ID="$1" \
+    "$COCKPIT" "$3"
+}
+
+run_cockpit() {
+  run_cockpit_at w1:p1 /tmp/fm-cockpit-test.sock "$1"
 }
 
 test_frame_re_adoption_is_idempotent() {
@@ -146,6 +157,18 @@ test_frame_re_adoption_is_idempotent() {
   assert_not_contains "$log" "pane split" "re-adoption rebuilt the frame"
   assert_not_contains "$log" "tab create" "re-adoption minted a replacement tab"
   pass "cockpit restart re-adopts the durable frame without rebuilding it"
+}
+
+test_adoption_requires_the_native_session_socket() {
+  local before out rc after
+  before=$(sha256sum "$HOME_DIR/state/.herdr-cockpit" | awk '{print $1}')
+  out=$(run_cockpit_at w1:p1 /tmp/wrong-cockpit.sock adopt 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "cockpit adopted a pane from an unverified session socket"
+  assert_contains "$out" "belongs to the server" "cross-session cockpit refusal was not explicit"
+  after=$(sha256sum "$HOME_DIR/state/.herdr-cockpit" | awk '{print $1}')
+  [ "$before" = "$after" ] || fail "cross-session cockpit refusal changed the durable frame"
+  pass "cockpit adoption reuses the socket-verified native pane identity"
 }
 
 place_task() {
@@ -200,6 +223,24 @@ test_display_and_steer_boundary_remains_explicit() {
   assert_contains "$out" "FM_HOME is not set" "cross-home steer refusal was not explicit"
   [ "$(wc -l < "$HERDR_LOG")" = "$before" ] || fail "refused cross-home steer reached the backend"
 
+  cat > "$SECOND_HOME/state/foreign.meta" <<EOF
+window=fmtest:w2:p9
+backend=herdr
+herdr_session=fmtest
+herdr_workspace_id=w2
+herdr_tab_id=w2:t9
+herdr_pane_id=w2:p9
+kind=ship
+EOF
+  before=$(wc -l < "$HERDR_LOG")
+  out=$(FM_HOME="$HOME_DIR" PATH="$FAKEBIN:$PATH" \
+    "$ROOT/bin/fm-send.sh" fm-foreign test 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "primary home reached into a second home to steer its child"
+  assert_contains "$out" "no metadata for fm-foreign in $HOME_DIR/state" \
+    "cross-home steer refusal did not stay scoped to the explicit home"
+  [ "$(wc -l < "$HERDR_LOG")" = "$before" ] || fail "cross-home child steer reached the backend"
+
   out=$(env -u HERDR_ENV -u TMUX FM_HOME="$HOME_DIR" "$COCKPIT" status) \
     || fail "non-Herdr cockpit fallback should remain usable"
   assert_contains "$out" "unavailable on runtime backend none" "non-Herdr fallback was silent"
@@ -207,7 +248,36 @@ test_display_and_steer_boundary_remains_explicit() {
   pass "whole-session display remains distinct from explicit home-scoped steering"
 }
 
+test_dead_head_is_preserved_until_explicit_new_context() {
+  local out rc log
+  awk -F '\t' -v OFS='\t' '$1 == "w1:p1" {$5="no-agent"} {print}' \
+    "$HERDR_STATE/panes.tsv" > "$HERDR_STATE/panes.next"
+  mv "$HERDR_STATE/panes.next" "$HERDR_STATE/panes.tsv"
+  out=$(run_cockpit status 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "dead cockpit head still reported live"
+  assert_contains "$out" "DEAD PANE w1:p1" "dead cockpit head lost its visible placeholder"
+  assert_contains "$out" "[r] resume old" "dead cockpit head omitted resume-old guidance"
+  assert_contains "$out" "[n] run bin/fm-cockpit.sh new" "dead cockpit head omitted clean-context guidance"
+
+  printf 'w1:p4\tnew-firstmate-head\tw1:t1\tw1\tlive\n' >> "$HERDR_STATE/panes.tsv"
+  : > "$HERDR_LOG"
+  out=$(run_cockpit_at w1:p4 /tmp/fm-cockpit-test.sock new) \
+    || fail "explicit clean-context cockpit adoption failed"
+  assert_contains "$out" "adopted new clean-context head=w1:p4" \
+    "clean-context adoption did not identify the new head"
+  assert_grep 'head_pane_id=w1:p4' "$HOME_DIR/state/.herdr-cockpit" \
+    "clean-context adoption did not advance the durable head"
+  assert_contains "$(cat "$HERDR_STATE/panes.tsv")" $'w1:p1\t' \
+    "clean-context adoption removed the old dead pane"
+  log=$(cat "$HERDR_LOG")
+  assert_not_contains "$log" "pane split" "clean-context adoption re-split the frame"
+  assert_not_contains "$log" "pane close" "clean-context adoption closed the prior head"
+  pass "dead head stays visible until explicit clean-context re-adoption"
+}
+
 test_frame_re_adoption_is_idempotent
+test_adoption_requires_the_native_session_socket
 test_workers_land_in_persistent_viewport
-test_frame_re_adoption_is_idempotent
 test_display_and_steer_boundary_remains_explicit
+test_dead_head_is_preserved_until_explicit_new_context

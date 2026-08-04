@@ -42,6 +42,7 @@ if ! FM_HOME=$(CDPATH='' cd -- "$FM_HOME" 2>/dev/null && pwd -P); then
   echo "COCKPIT: FM_HOME cannot be resolved; preserving any recorded frame." >&2
   exit 1
 fi
+[ -n "${FM_STATE_OVERRIDE:-}" ] || STATE="$FM_HOME/state"
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
@@ -68,18 +69,22 @@ if [ "$ACTION" = status ]; then
       "${FM_BACKEND_HERDR_COCKPIT_VIEWPORT_PANE_ID:-none}"
     exit 0
   fi
+  if fm_backend_herdr_cockpit_record_snapshot "$STATE" "$FM_HOME" \
+     && [ "$FM_BACKEND_HERDR_COCKPIT_SESSION" = "$SESSION" ]; then
+    HEAD_STATE=$(fm_backend_herdr_cockpit_head_state \
+      "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
+      "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID")
+    if [ "$HEAD_STATE" = dead ]; then
+      printf 'COCKPIT: DEAD PANE %s; frame preserved and never auto-filled or re-split.\n' \
+        "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" >&2
+      echo "COCKPIT: [r] resume old in the recorded pane; [n] run bin/fm-cockpit.sh new here for clean context." >&2
+      exit 1
+    fi
+  fi
   echo "COCKPIT: unavailable because this home's recorded Herdr frame is absent, invalid, or dead; use bin/fm-fleet-view.sh --watch." >&2
-  exit 1
-fi
-
-if [ -z "${HERDR_WORKSPACE_ID:-}" ] \
-   || [ -z "${HERDR_TAB_ID:-}" ] \
-   || [ -z "${HERDR_PANE_ID:-}" ]; then
-  echo "COCKPIT: native Herdr identity is incomplete; preserving any recorded frame." >&2
   exit 1
 fi
 
 MODE=adopt
 [ "$ACTION" != new ] || MODE=new
-fm_backend_herdr_cockpit_adopt "$STATE" "$FM_HOME" "$SESSION" \
-  "$HERDR_WORKSPACE_ID" "$HERDR_TAB_ID" "$HERDR_PANE_ID" "$MODE"
+fm_backend_herdr_cockpit_adopt "$STATE" "$FM_HOME" "$SESSION" "$MODE"

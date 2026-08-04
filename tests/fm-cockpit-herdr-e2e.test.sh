@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real-Herdr cockpit placement and restart re-adoption in one guarded lab.
+# Real-Herdr executable-path test for cockpit placement and restart adoption.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -8,19 +8,36 @@ set -u
 
 command -v herdr >/dev/null 2>&1 || { echo "skip: herdr not found"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
+command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found"; exit 0; }
 
 LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
-SESSION=$("$LAB_HELPER" name cockpit-e2e)
+SESSION=${HERDR_LAB_SESSION:-$("$LAB_HELPER" name cockpit-e2e)}
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-cockpit-e2e.XXXXXX")
 HOME_DIR="$TMP_ROOT/home"
 FAKEBIN="$TMP_ROOT/fakebin"
+CLEANED=0
 
 cleanup() {
-  "$LAB_HELPER" teardown "$SESSION"
+  local id status=0
+  [ "$CLEANED" = 0 ] || return 0
+  CLEANED=1
+  for id in cockpit-one cockpit-two; do
+    if [ -f "$HOME_DIR/state/$id.meta" ]; then
+      PATH="$FAKEBIN:$PATH" HERDR_SESSION="$SESSION" FM_HOME="$HOME_DIR" \
+        FM_COCKPIT_LAB_HELPER="$LAB_HELPER" FM_COCKPIT_LAB_SESSION="$SESSION" \
+        FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$HOME_DIR/state" \
+        FM_DATA_OVERRIDE="$HOME_DIR/data" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
+        "$ROOT/bin/fm-teardown.sh" "$id" >/dev/null 2>&1 || true
+    fi
+  done
+  "$LAB_HELPER" teardown "$SESSION" || status=$?
   rm -rf "$TMP_ROOT"
+  return "$status"
 }
 trap cleanup EXIT
 "$LAB_HELPER" provision "$SESSION" || fail "could not provision the guarded Herdr lab"
+
+lab() { "$LAB_HELPER" run "$SESSION" "$@"; }
 
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$HOME_DIR/config" "$HOME_DIR/projects" "$FAKEBIN"
 cat > "$FAKEBIN/herdr" <<'SH'
@@ -42,22 +59,45 @@ done
 SH
 chmod +x "$FAKEBIN/herdr"
 
-WORKSPACE_OUT=$("$LAB_HELPER" run "$SESSION" workspace create \
-  --label firstmate --cwd "$HOME_DIR" --no-focus) || fail "could not create the cockpit workspace"
+make_scratch_project() {
+  local dir=$1
+  mkdir -p "$dir"
+  git -C "$dir" init -q
+  printf '# scratch\n' > "$dir/README.md"
+  git -C "$dir" add README.md
+  git -C "$dir" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -qm initial
+}
+
+PROJECT="$TMP_ROOT/project"
+make_scratch_project "$PROJECT"
+for id in cockpit-one cockpit-two; do
+  mkdir -p "$HOME_DIR/data/$id"
+  printf 'Run the supplied verification command and stop.\n' > "$HOME_DIR/data/$id/brief.md"
+done
+
+WORKSPACE_OUT=$(lab workspace create --label firstmate --cwd "$HOME_DIR" --no-focus) \
+  || fail "could not create the cockpit workspace"
 WORKSPACE=$(printf '%s' "$WORKSPACE_OUT" | jq -r '.result.workspace.workspace_id // empty')
 TAB=$(printf '%s' "$WORKSPACE_OUT" | jq -r '.result.tab.tab_id // empty')
 HEAD=$(printf '%s' "$WORKSPACE_OUT" | jq -r '.result.root_pane.pane_id // empty')
-[ -n "$WORKSPACE" ] && [ -n "$TAB" ] && [ -n "$HEAD" ] || fail "workspace creation returned incomplete ids"
+[ -n "$WORKSPACE" ] && [ -n "$TAB" ] && [ -n "$HEAD" ] \
+  || fail "workspace creation returned incomplete ids"
+lab pane report-agent "$HEAD" --source fm-cockpit-e2e --agent firstmate --state idle >/dev/null \
+  || fail "could not register the cockpit head"
+LAB_SOCKET=$(lab session list --json \
+  | jq -r --arg session "$SESSION" '.sessions[]? | select(.name == $session) | .socket_path')
+[ -n "$LAB_SOCKET" ] || fail "could not resolve the guarded lab socket"
 
 cockpit_env() {
   PATH="$FAKEBIN:$PATH" \
     FM_HOME="$HOME_DIR" \
+    FM_ROOT_OVERRIDE="$ROOT" \
     FM_COCKPIT_LAB_HELPER="$LAB_HELPER" \
     FM_COCKPIT_LAB_SESSION="$SESSION" \
     HERDR_ENV=1 \
     HERDR_SESSION="$SESSION" \
-    HERDR_WORKSPACE_ID="$WORKSPACE" \
-    HERDR_TAB_ID="$TAB" \
+    HERDR_SOCKET_PATH="$LAB_SOCKET" \
     HERDR_PANE_ID="$HEAD" \
     "$@"
 }
@@ -65,47 +105,62 @@ cockpit_env() {
 cockpit_env "$ROOT/bin/fm-cockpit.sh" adopt >/dev/null \
   || fail "could not adopt the real Herdr frame"
 
-place_real() {
-  PATH="$FAKEBIN:$PATH" \
-    FM_HOME="$HOME_DIR" \
-    FM_COCKPIT_LAB_HELPER="$LAB_HELPER" \
-    FM_COCKPIT_LAB_SESSION="$SESSION" \
-    HERDR_SESSION="$SESSION" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_cockpit_create_task "$1/state" "$1" "$2" "$1"' \
-      "$ROOT" "$HOME_DIR" "$1"
+spawn_real() {  # <task-id> <sentinel>
+  local id=$1 sentinel=$2
+  cockpit_env env FM_SPAWN_NO_GUARD=1 \
+    "$ROOT/bin/fm-spawn.sh" "$id" "$PROJECT" "sh -c 'echo $sentinel'" --backend herdr
 }
 
-FIRST=$(place_real fm-real-one) || fail "first real cockpit placement failed"
-SECOND=$(place_real fm-real-two) || fail "second real cockpit placement failed"
-read -r FIRST_TAB FIRST_PANE <<EOF
-$FIRST
-EOF
-read -r SECOND_TAB SECOND_PANE <<EOF
-$SECOND
-EOF
-[ "$FIRST_TAB" = "$TAB" ] && [ "$SECOND_TAB" = "$TAB" ] \
-  || fail "real cockpit workers did not land in the pinned head tab"
-[ "$FIRST_PANE" != "$HEAD" ] && [ "$SECOND_PANE" != "$HEAD" ] && [ "$FIRST_PANE" != "$SECOND_PANE" ] \
-  || fail "real cockpit placement returned duplicate pane identities"
+spawn_real cockpit-one cockpit-one-ok >/dev/null \
+  || fail "first executable-path cockpit spawn failed"
+spawn_real cockpit-two cockpit-two-ok >/dev/null \
+  || fail "second executable-path cockpit spawn failed"
 
-PANES_BEFORE=$("$LAB_HELPER" run "$SESSION" pane list --workspace "$WORKSPACE") \
-  || fail "could not inspect the real cockpit panes"
-printf '%s' "$PANES_BEFORE" | jq -e --arg tab "$TAB" --arg head "$HEAD" --arg one "$FIRST_PANE" --arg two "$SECOND_PANE" '
-  [.result.panes[] | select(.tab_id == $tab) | .pane_id] as $ids
-  | ($ids | index($head)) != null
-    and ($ids | index($one)) != null
-    and ($ids | index($two)) != null
-' >/dev/null || fail "real cockpit frame did not contain the head and both worker panes"
+FIRST_META="$HOME_DIR/state/cockpit-one.meta"
+SECOND_META="$HOME_DIR/state/cockpit-two.meta"
+[ -f "$FIRST_META" ] && [ -f "$SECOND_META" ] || fail "cockpit spawns did not publish metadata"
+FIRST_TAB=$(grep '^herdr_tab_id=' "$FIRST_META" | cut -d= -f2-)
+SECOND_TAB=$(grep '^herdr_tab_id=' "$SECOND_META" | cut -d= -f2-)
+FIRST_PANE=$(grep '^herdr_pane_id=' "$FIRST_META" | cut -d= -f2-)
+SECOND_PANE=$(grep '^herdr_pane_id=' "$SECOND_META" | cut -d= -f2-)
+[ "$FIRST_TAB" = "$TAB" ] && [ "$SECOND_TAB" = "$TAB" ] \
+  || fail "new crewmates received peer tabs instead of the persistent viewport"
+[ "$FIRST_PANE" != "$HEAD" ] && [ "$SECOND_PANE" != "$HEAD" ] \
+  && [ "$FIRST_PANE" != "$SECOND_PANE" ] || fail "cockpit spawns returned duplicate panes"
+
+PANES_BEFORE=$(lab pane list --workspace "$WORKSPACE") || fail "could not inspect cockpit panes"
+printf '%s' "$PANES_BEFORE" | jq -e \
+  --arg tab "$TAB" --arg head "$HEAD" --arg one "$FIRST_PANE" --arg two "$SECOND_PANE" '
+    [.result.panes[] | select(.tab_id == $tab) | .pane_id] as $ids
+    | ($ids | index($head)) != null
+      and ($ids | index($one)) != null
+      and ($ids | index($two)) != null
+  ' >/dev/null || fail "head and workers did not share the persistent cockpit tab"
+TAB_COUNT=$(lab tab list --workspace "$WORKSPACE" | jq '.result.tabs | length')
+[ "$TAB_COUNT" = 1 ] || fail "cockpit spawn minted peer tabs"
+pass "real Herdr fm-spawn places new crewmates inside the persistent viewport"
 
 COUNT_BEFORE=$(printf '%s' "$PANES_BEFORE" | jq '.result.panes | length')
 RECORD_BEFORE=$(sha256sum "$HOME_DIR/state/.herdr-cockpit" | awk '{print $1}')
 RESTART_OUT=$(cockpit_env "$ROOT/bin/fm-cockpit.sh" adopt) \
   || fail "real cockpit restart re-adoption failed"
-PANES_AFTER=$("$LAB_HELPER" run "$SESSION" pane list --workspace "$WORKSPACE") \
-  || fail "could not inspect the re-adopted real cockpit"
+PANES_AFTER=$(lab pane list --workspace "$WORKSPACE") || fail "could not inspect the re-adopted frame"
 COUNT_AFTER=$(printf '%s' "$PANES_AFTER" | jq '.result.panes | length')
 RECORD_AFTER=$(sha256sum "$HOME_DIR/state/.herdr-cockpit" | awk '{print $1}')
-[ "$COUNT_BEFORE" = "$COUNT_AFTER" ] || fail "real re-adoption changed the frame pane count"
-[ "$RECORD_BEFORE" = "$RECORD_AFTER" ] || fail "real re-adoption rewrote the frame record"
-assert_contains "$RESTART_OUT" "re-adopted Herdr frame" "real restart did not report re-adoption"
-pass "real Herdr cockpit keeps one pinned head tab, places workers inside it, and re-adopts without rebuild"
+[ "$COUNT_BEFORE" = "$COUNT_AFTER" ] || fail "restart re-adoption changed the pane count"
+[ "$RECORD_BEFORE" = "$RECORD_AFTER" ] || fail "restart re-adoption rewrote the frame record"
+assert_contains "$RESTART_OUT" "re-adopted Herdr frame" "restart did not report re-adoption"
+pass "real Herdr restart re-adopts the recorded frame without rebuilding it"
+
+for id in cockpit-one cockpit-two; do
+  cockpit_env env FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
+    FM_CONFIG_OVERRIDE="$HOME_DIR/config" "$ROOT/bin/fm-teardown.sh" "$id" >/dev/null \
+    || fail "could not tear down $id"
+done
+
+if ! cleanup; then
+  trap - EXIT
+  fail "guarded Herdr lab teardown failed or changed the default fleet"
+fi
+trap - EXIT
+pass "real Herdr cockpit lab leaves the default fleet byte-identical"
