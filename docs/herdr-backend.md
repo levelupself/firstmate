@@ -281,6 +281,7 @@ Its before/after tripwire requires the live default-session snapshot to remain b
 
 The helper's header and `--help` own exact commands.
 Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never duplicate the destructive policy.
+Direct execution of that file runs the bounded executable-resolution and recursive-entry regressions.
 
 ## Active limits
 
@@ -297,6 +298,7 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 ## Regression entry points
 
 ```sh
+tests/herdr-test-safety.sh
 tests/fm-backend-herdr.test.sh
 tests/fm-backend-herdr-smoke.test.sh
 tests/fm-backend-herdr-prune-safety-e2e.test.sh

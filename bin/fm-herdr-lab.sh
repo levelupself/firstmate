@@ -14,6 +14,9 @@
 # The name command sanitizes the label, caps it at 16 characters, and appends
 # process/random suffixes to keep generated socket paths short.
 # Every Herdr call made here carries a trailing --session <session>.
+# FM_HERDR_BIN overrides the executable; otherwise only fixed absolute paths
+# are searched so a PATH shim cannot re-enter this helper.
+# Executable entry increments FM_HERDR_LAB_DEPTH and refuses past depth 2.
 # The run command rejects caller-supplied --session flags, any leading option
 # before the subcommand, all session lifecycle operations, and every server
 # operation.
@@ -27,6 +30,54 @@ set -u
 
 fm_herdr_lab_error() {
   echo "fm-herdr-lab: $*" >&2
+}
+
+fm_herdr_lab_bin() {
+  local candidate quoted
+  if [ "${FM_HERDR_BIN+x}" = x ]; then
+    if [[ "$FM_HERDR_BIN" != /* ]]; then
+      printf -v quoted '%q' "$FM_HERDR_BIN"
+      fm_herdr_lab_error "FM_HERDR_BIN must be an absolute path: $quoted"
+      return 1
+    fi
+    [ -x "$FM_HERDR_BIN" ] || {
+      fm_herdr_lab_error "FM_HERDR_BIN is not executable: ${FM_HERDR_BIN:-<empty>}"
+      return 1
+    }
+    printf '%s\n' "$FM_HERDR_BIN"
+    return 0
+  fi
+  if [[ "${HOME:-}" = /* ]]; then
+    candidate="$HOME/.local/bin/herdr"
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
+  for candidate in /usr/local/bin/herdr /usr/bin/herdr; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  fm_herdr_lab_error "real Herdr executable not found; set FM_HERDR_BIN or install herdr at a supported absolute path"
+  return 1
+}
+
+fm_herdr_lab_guard_depth() {
+  local depth=${FM_HERDR_LAB_DEPTH:-0}
+  case "$depth" in
+    ''|*[!0-9]*)
+      fm_herdr_lab_error "invalid FM_HERDR_LAB_DEPTH: ${depth:-<empty>}"
+      return 1
+      ;;
+  esac
+  FM_HERDR_LAB_DEPTH=$((depth + 1))
+  export FM_HERDR_LAB_DEPTH
+  if [ "$FM_HERDR_LAB_DEPTH" -gt 2 ]; then
+    fm_herdr_lab_error "refusing recursive entry at depth $FM_HERDR_LAB_DEPTH; a herdr shim on PATH is the likely cause"
+    return 1
+  fi
 }
 
 fm_herdr_lab_validate_name() { # <session>
@@ -49,9 +100,10 @@ fm_herdr_lab_tripwire_path() { # <session>
 }
 
 fm_herdr_lab_raw() { # <session> <herdr arguments...>
-  local name=$1
+  local name=$1 herdr_bin
   shift
-  HERDR_SESSION="$name" herdr "$@" --session "$name"
+  herdr_bin=$(fm_herdr_lab_bin) || return 1
+  HERDR_SESSION="$name" "$herdr_bin" "$@" --session "$name"
 }
 
 fm_herdr_lab_session_list() { # <session>
@@ -81,7 +133,7 @@ fm_herdr_lab_fleet_state() { # <session>
 fm_herdr_lab_prepare() { # <session>
   local name=$1 sessions state_dir tripwire
   fm_herdr_lab_validate_name "$name" || return 1
-  command -v herdr >/dev/null 2>&1 || { fm_herdr_lab_error "herdr is required"; return 1; }
+  fm_herdr_lab_bin >/dev/null || return 1
   command -v jq >/dev/null 2>&1 || { fm_herdr_lab_error "jq is required"; return 1; }
 
   sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
@@ -171,7 +223,7 @@ fm_herdr_lab_cancel_provision() { # <pid>
 fm_herdr_lab_provision() { # <session>
   local name=$1 sessions tripwire running attempt server_pid max_attempts timeout_seconds
   fm_herdr_lab_validate_name "$name" || return 1
-  command -v herdr >/dev/null 2>&1 || { fm_herdr_lab_error "herdr is required"; return 1; }
+  fm_herdr_lab_bin >/dev/null || return 1
   command -v jq >/dev/null 2>&1 || { fm_herdr_lab_error "jq is required"; return 1; }
 
   sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
@@ -342,5 +394,6 @@ fm_herdr_lab_main() {
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -e
+  fm_herdr_lab_guard_depth
   fm_herdr_lab_main "$@"
 fi

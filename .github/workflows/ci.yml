@@ -191,6 +191,7 @@ jobs:
           set -eu
           bin/fm-install-herdr.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          echo "FM_HERDR_BIN=$RUNNER_TEMP/bin/herdr" >> "$GITHUB_ENV"
       - name: Install pinned Treehouse
         run: |
           set -eu
