@@ -60,7 +60,11 @@ case "${1:-} ${2:-}" in
   "pane list")
     jq -Rn '
       [inputs | split("\t")
-       | {pane_id:.[0],label:.[1],tab_id:.[2],workspace_id:.[3],agent_status:(if .[4] == "live" then "idle" else "unknown" end)}]
+       | .[4] as $status
+       | {pane_id:.[0],label:.[1],tab_id:.[2],workspace_id:.[3],
+          agent_status:(if $status == "live" then "idle"
+                        elif (["working","idle","blocked"] | index($status)) != null then $status
+                        else "unknown" end)}]
       | {result:{panes:.}}
     ' < "$state/panes.tsv"
     ;;
@@ -249,7 +253,14 @@ EOF
 }
 
 test_panel_renders_the_live_frame_and_fleet_view() {
-  local out
+  local out log
+  awk -F '\t' -v OFS='\t' '
+    $1 == "w1:p2" {$2="fm-claude-pane"; $5="working"}
+    $1 == "w1:p3" {$2="fm-codex-pane"; $5="blocked"}
+    {print}
+  ' "$HERDR_STATE/panes.tsv" > "$HERDR_STATE/panes.next"
+  mv "$HERDR_STATE/panes.next" "$HERDR_STATE/panes.tsv"
+  : > "$HERDR_LOG"
   out=$(run_cockpit panel) || fail "cockpit panel could not render the live frame"
   assert_contains "$out" "ORCHESTRATION COCKPIT" "cockpit panel omitted its heading"
   assert_contains "$out" "NAVIGATOR Herdr sidebar (all spaces and agents)" \
@@ -258,15 +269,18 @@ test_panel_renders_the_live_frame_and_fleet_view() {
     "cockpit panel did not identify the pinned controller"
   assert_contains "$out" "VIEWPORT tab=w1:t1" \
     "cockpit panel did not identify the persistent viewport"
-  assert_contains "$out" "fm-one [unknown]" \
-    "cockpit panel omitted the first viewport worker"
-  assert_contains "$out" "fm-two [unknown]" \
-    "cockpit panel omitted the second viewport worker"
+  assert_contains "$out" "fm-claude-pane [working]" \
+    "cockpit panel omitted the Herdr status for the Claude viewport worker"
+  assert_contains "$out" "fm-codex-pane [blocked]" \
+    "cockpit panel omitted the Herdr status for the Codex viewport worker"
+  log=$(cat "$HERDR_LOG")
+  assert_not_contains "$log" "pane read" \
+    "cockpit panel derived status from harness-rendered pane chrome"
   assert_contains "$out" "BOUNDARY display=all-homes steer=current-home backend=herdr" \
     "cockpit panel did not expose its display and steer boundary"
   assert_contains "$out" "FLEET STATUS" \
     "cockpit panel did not render the existing read-only fleet view"
-  pass "cockpit panel shows the navigator, pinned controller, viewport, and whole fleet"
+  pass "cockpit panel uses Herdr agent status, not harness-rendered pane chrome"
 }
 
 test_panel_degrades_visibly_outside_herdr() {

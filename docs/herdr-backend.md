@@ -41,6 +41,10 @@ An absent record may be initialized from one exact live Herdr-injected head iden
 
 Herdr's own persistent sidebar is the cockpit navigator.
 Its workspace list provides the spaces, and its all-agent panel provides the space-grouped agent tree, so Firstmate does not draw or persist a second navigator model.
+Cockpit state never comes from pane-rendered chrome or a harness status line.
+Claude's `statusLine` is Claude-specific, while Codex has no corresponding status-line surface, so that visual asymmetry is expected and does not change the cockpit model.
+Herdr's harness-agnostic `agent_status` supplies live pane state, and Firstmate's task records plus `bin/fm-crew-state.sh` supply the durable orchestration state.
+Operators may customize Herdr space-row content in `~/.config/herdr/config.toml` with the built-ins `state_icon`, `state_text`, `workspace`, `branch`, and `git_status`; colors are not configurable, and Firstmate does not rewrite the operator's Herdr configuration.
 The sidebar can display agents from every home in the named Herdr session, while each home keeps its own frame record and `fm-send.sh` continues to require an explicit `FM_HOME` before it will steer anything.
 `bin/fm-cockpit.sh panel` renders the same operator boundary as text together with the existing whole-fleet status panel: the native navigator role, exact pinned head, current viewport panes, and `display=all-homes steer=current-home` boundary.
 Add `--watch` with an optional positive interval to keep that textual view live.
