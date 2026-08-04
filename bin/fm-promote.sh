@@ -13,16 +13,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+# shellcheck source=bin/fm-task-meta-lock-lib.sh
+. "$SCRIPT_DIR/fm-task-meta-lock-lib.sh"
 "$FM_ROOT/bin/fm-guard.sh" || true
 ID=$1
 META="$STATE/$ID.meta"
+TMP=
+cleanup() {
+  fm_task_meta_lock_release || true
+  [ -z "$TMP" ] || rm -f -- "$TMP"
+}
+trap cleanup EXIT
+fm_task_meta_lock_acquire "$META" || { echo "error: task metadata mutation lock is unavailable" >&2; exit 1; }
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
 
-TMP="$META.tmp"
+TMP=$(mktemp "${META}.promote.XXXXXX")
 grep -v '^kind=' "$META" > "$TMP"
 echo "kind=ship" >> "$TMP"
 mv "$TMP" "$META"
+TMP=
+fm_task_meta_lock_release
 
 HOME_Q=$(printf '%q' "$FM_HOME")
 echo "promoted $ID to ship (teardown protection restored)"

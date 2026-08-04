@@ -203,6 +203,64 @@ test_concurrent_migrations_publish_one_consistent_result() {
   pass "endpoint binding migration: concurrent public invocations publish one consistent binding and audit"
 }
 
+test_concurrent_stale_reclaim_keeps_one_owner() {
+  local dir inventory first_rc second_rc successes
+  dir=$(make_case stale-reclaim)
+  inventory=$(inventory_for "$dir/worktree")
+  mkdir "$dir/home/state/$TASK_ID.meta.mutation-lock"
+  printf '999999999\n' > "$dir/home/state/$TASK_ID.meta.mutation-lock/pid"
+  (
+    run_migrate "$dir" "$inventory" > "$dir/first.stdout" 2> "$dir/first.stderr"
+    printf '%s\n' "$?" > "$dir/first.rc"
+  ) &
+  (
+    run_migrate "$dir" "$inventory" > "$dir/second.stdout" 2> "$dir/second.stderr"
+    printf '%s\n' "$?" > "$dir/second.rc"
+  ) &
+  wait
+  first_rc=$(cat "$dir/first.rc")
+  second_rc=$(cat "$dir/second.rc")
+  successes=$(( (1 - first_rc) + (1 - second_rc) ))
+  [ "$successes" -eq 1 ] || fail "concurrent stale reclaim admitted more than one migration owner"
+  assert_absent "$dir/home/state/$TASK_ID.meta.mutation-lock" \
+    "concurrent stale reclaim left the metadata lock behind"
+  pass "endpoint binding migration: concurrent stale reclaim preserves one metadata owner"
+}
+
+test_promotion_waits_for_migration_publication() {
+  local dir inventory migration_pid promote_pid
+  dir=$(make_case promote-race)
+  sed -i 's/kind=ship/kind=scout/' "$dir/home/state/$TASK_ID.meta"
+  inventory=$(inventory_for "$dir/worktree")
+  cat > "$dir/fakebin/date" <<'SH'
+#!/usr/bin/env bash
+touch "$FM_FAKE_DATE_ENTERED"
+while [ ! -f "$FM_FAKE_DATE_RELEASE" ]; do sleep 0.01; done
+exec /bin/date "$@"
+SH
+  chmod +x "$dir/fakebin/date"
+  FM_FAKE_DATE_ENTERED="$dir/date-entered" FM_FAKE_DATE_RELEASE="$dir/date-release" \
+    run_migrate "$dir" "$inventory" > "$dir/migrate.stdout" 2> "$dir/migrate.stderr" &
+  migration_pid=$!
+  while [ ! -f "$dir/date-entered" ]; do sleep 0.01; done
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$PATH" \
+    "$ROOT/bin/fm-promote.sh" "$TASK_ID" > "$dir/promote.stdout" 2> "$dir/promote.stderr" &
+  promote_pid=$!
+  sleep 0.1
+  kill -0 "$promote_pid" 2>/dev/null \
+    || fail "promotion bypassed the migration metadata lock"
+  touch "$dir/date-release"
+  wait "$migration_pid" || fail "migration failed during promotion serialization"
+  wait "$promote_pid" || fail "promotion failed after migration publication"
+  grep -qx 'kind=ship' "$dir/home/state/$TASK_ID.meta" \
+    || fail "promotion did not publish kind=ship"
+  grep -qx "endpoint_task_id=$TASK_ID" "$dir/home/state/$TASK_ID.meta" \
+    || fail "promotion overwrote the migrated endpoint binding"
+  assert_present "$dir/home/data/$TASK_ID/endpoint-binding-migration.json" \
+    "promotion race lost the migration audit"
+  pass "endpoint binding migration: promotion waits and preserves binding publication"
+}
+
 test_unique_live_worktree_match_migrates_with_audit
 test_zero_live_worktree_matches_refuses
 test_ambiguous_live_worktree_matches_refuses
@@ -210,3 +268,5 @@ test_unreadable_live_inventory_refuses
 test_unique_worktree_match_with_other_endpoint_refuses
 test_normally_bound_task_is_unchanged
 test_concurrent_migrations_publish_one_consistent_result
+test_concurrent_stale_reclaim_keeps_one_owner
+test_promotion_waits_for_migration_publication

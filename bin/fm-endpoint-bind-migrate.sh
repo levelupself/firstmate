@@ -154,6 +154,11 @@ if [ "$live_pane" != "$pane" ] || [ "$live_workspace" != "$workspace" ] \
   exit 1
 fi
 
+if ! fm_task_meta_lock_acquire "$META"; then
+  echo "REFUSED: task metadata mutation lock for task $ID is unavailable; metadata unchanged." >&2
+  exit 1
+fi
+
 verified_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || {
   echo "REFUSED: could not timestamp endpoint-binding evidence for task $ID; metadata unchanged." >&2
   exit 1
@@ -163,11 +168,6 @@ printf '%s\n' \
   "endpoint_binding_verified_at=$verified_at" \
   "endpoint_binding_audit=data/$ID/endpoint-binding-migration.json" \
   >> "$META_TMP"
-
-if ! fm_task_meta_lock_acquire "$META"; then
-  echo "REFUSED: task metadata mutation lock for task $ID is unavailable; metadata unchanged." >&2
-  exit 1
-fi
 
 if [ ! -f "$META" ] || [ -L "$META" ] || ! cmp -s -- "$META" <(sed '/^endpoint_task_id=/d; /^endpoint_binding_migration=/d; /^endpoint_binding_verified_at=/d; /^endpoint_binding_audit=/d' "$META_TMP"); then
   echo "REFUSED: endpoint metadata for task $ID changed during live verification; metadata unchanged by this migration." >&2
