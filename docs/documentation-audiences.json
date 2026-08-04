@@ -256,6 +256,14 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/linear-verification.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/linear.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/herdr-backend.md",
       "audience": "operator-current"
     },
