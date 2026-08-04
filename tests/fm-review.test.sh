@@ -79,17 +79,21 @@ cat > "$READY_ROOT/bin/fm-fleet-snapshot.sh" <<'SH'
 cat <<'JSON'
 {"tasks":[
  {"id":"blocked-green","pr":{"url":"https://github.com/example/project/pull/20"},"current_state":{"state":"done","detail":"checks green"},"hints":{"open_decisions":[{"key":"captain-call"}]},"backlog":{"order":1}},
- {"id":"low-impact","pr":{"url":"https://github.com/example/project/pull/21"},"current_state":{"state":"done","detail":"checks green"},"hints":{"open_decisions":[]},"backlog":{"order":2}},
- {"id":"high-impact","pr":{"url":"https://github.com/example/project/pull/22"},"current_state":{"state":"done","detail":"checks green"},"hints":{"open_decisions":[]},"backlog":{"order":3}}],
- "backlog":{"records":[{"unresolved_blocker_ids":["high-impact"]},{"unresolved_blocker_ids":["high-impact"]},{"unresolved_blocker_ids":["low-impact"]}]}}
+ {"id":"stale-impact","pr":{"url":"https://github.com/example/project/pull/21"},"current_state":{"state":"done","detail":"checks green"},"hints":{"open_decisions":[]},"backlog":{"order":2}},
+ {"id":"real-impact","pr":{"url":"https://github.com/example/project/pull/22"},"current_state":{"state":"done","detail":"checks green"},"hints":{"open_decisions":[]},"backlog":{"order":3}}],
+ "backlog":{"records":[
+  {"id":"finished","state":"done","unresolved_blocker_ids":["stale-impact"]},
+  {"id":"duplicate-live","state":"queued","unresolved_blocker_ids":["stale-impact","stale-impact"]},
+  {"id":"live-one","state":"queued","unresolved_blocker_ids":["real-impact"]},
+  {"id":"live-two","state":"in_flight","unresolved_blocker_ids":["real-impact"]}]}}
 JSON
 SH
 chmod +x "$READY_ROOT/bin/fm-fleet-snapshot.sh"
-fm_write_meta "$STATE/high-impact.meta" "pr=https://github.com/example/project/pull/22"
+fm_write_meta "$STATE/real-impact.meta" "pr=https://github.com/example/project/pull/22"
 PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$READY_ROOT" FM_HOME="$TMP_ROOT" \
   FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_TEST_CURL_ARGS="$TMP_ROOT/ready-curl.args" \
   FM_TEST_HUNK_ARGS="$TMP_ROOT/ready-hunk.args" FM_TEST_PATCH="$TMP_ROOT/ready-patch" \
   "$READY_ROOT/bin/fm-review.sh" >/dev/null
 assert_contains "$(cat "$TMP_ROOT/ready-curl.args")" "/pull/22.diff" \
-  "bare review should skip decision-held green work and select the task that unblocks most work"
+  "bare review should ignore done and duplicate blocker references when selecting the task that unblocks most work"
 pass "fm-review handles readiness, metadata, optional sidecars, fresh-shell invocation, and curated notes"

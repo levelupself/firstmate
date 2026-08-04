@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "summary": "Three deliberately curated uncertainty stops for the standalone Hunk review flow.",
+  "files": [
+    {
+      "path": "bin/fm-review-notes.sh",
+      "annotations": [
+        {
+          "newRange": [
+            40,
+            54
+          ],
+          "summary": "Check that the compact TSV-to-JSON transform stays understandable and rejects malformed ranges.",
+          "confidence": "low",
+          "rationale": "The interface intentionally makes curation manual, but jq grouping and validation are dense enough that a maintainer may prefer a clearer representation after the trial."
+        }
+      ]
+    },
+    {
+      "path": "bin/fm-review.sh",
+      "annotations": [
+        {
+          "newRange": [
+            32,
+            39
+          ],
+          "summary": "Check the bare-review readiness ordering against real fleet snapshots.",
+          "confidence": "low",
+          "rationale": "This depends on checks-green remaining explicit in reconciled detail and counts direct unresolved blocker edges; a later snapshot vocabulary change could make a genuinely ready PR disappear or change priority."
+        },
+        {
+          "newRange": [
+            51,
+            61
+          ],
+          "summary": "Check the direct GitHub .diff transport for every repository visibility we support.",
+          "confidence": "low",
+          "rationale": "The measured public merged-PR path is solid, but private-repository authentication is not exercised by this changeset and curl does not inherit gh authentication."
+        }
+      ]
+    }
+  ]
+}

@@ -35,7 +35,10 @@ if [ -z "$ID" ]; then
       | select((.current_state.detail // "") | test("checks green"; "i"))
       | select((.hints.open_decisions // []) | length == 0)
       | . as $task
-      | . + {unblocks: ([$s.backlog.records[]?.unresolved_blocker_ids[]? | select(. == $task.id)] | length)}]
+      | . + {unblocks: ([$s.backlog.records[]?
+          | select(.state != "done")
+          | select((.unresolved_blocker_ids // []) | index($task.id))
+          | .id] | unique | length)}]
     | sort_by(-.unblocks, .backlog.order, .id) | first | .id // empty')
   [ -n "$ID" ] || {
     echo "fm-review: no pull request is ready; green alone is not ready when a captain decision is open" >&2
