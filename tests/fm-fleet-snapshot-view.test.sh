@@ -788,9 +788,17 @@ test_read_paths_do_not_mutate_fleet_state() {
 }
 
 test_watch_redraws_and_exits_cleanly() {
-  local home fakebin output rc redraws
+  local home fakebin watch_bin output rc redraws
   home=$(make_home watch)
   fakebin=$(make_fakebin "$home")
+  watch_bin="$home/bin"
+  mkdir -p "$watch_bin"
+  ln -s "$VIEW" "$watch_bin/fm-fleet-view.sh"
+  cat > "$watch_bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"tasks":[],"backlog":{"records":[]},"secondmates":[]}'
+SH
+  chmod +x "$watch_bin/fm-fleet-snapshot.sh"
   output="$home/watch.out"
   PATH="$fakebin:$PATH" FM_HOME="$home" COLUMNS=45 \
     perl -e '
@@ -801,7 +809,7 @@ test_watch_redraws_and_exits_cleanly() {
       kill "INT", $pid;
       waitpid $pid, 0;
       exit($? >> 8);
-    ' "$VIEW" --watch 0.1 > "$output"
+    ' "$watch_bin/fm-fleet-view.sh" --watch 0.1 > "$output"
   rc=$?
   expect_code 0 "$rc" "watch mode should exit cleanly on Ctrl-C"
   redraws=$(LC_ALL=C grep -ao $'\033\[H\033\[2J' "$output" | wc -l | tr -d ' ')
