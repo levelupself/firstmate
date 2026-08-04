@@ -33,7 +33,26 @@ Real harness credential tests remain opt-in rather than part of default CI.
 
 ## Watching and task containers
 
-The ordinary topology puts one task tab per endpoint in the exact workspace of the Firstmate or secondmate that launches it.
+When a Firstmate or secondmate supervisor runs natively in Herdr, locked session start adopts its current pane as that home's orchestration cockpit head.
+The exact frame identity is recorded in that home's `state/.herdr-cockpit`, which binds the physical home, named session, workspace, tab, head pane, and latest viewport pane.
+The record is runtime state rather than task metadata because it identifies one persistent per-home supervisor frame, not a child endpoint.
+A restart in the same head pane validates and re-adopts that binding without creating, splitting, or replacing any pane.
+An absent record may be initialized from one exact live Herdr-injected head identity, while a conflicting or dead recorded head is preserved for explicit resume or new-clean-context handling and is never auto-filled or re-split.
+
+Herdr's own persistent sidebar is the cockpit navigator.
+Its workspace list provides the spaces, and its all-agent panel provides the space-grouped agent tree, so Firstmate does not draw or persist a second navigator model.
+The sidebar can display agents from every home in the named Herdr session, while each home keeps its own frame record and `fm-send.sh` continues to require an explicit `FM_HOME` before it will steer anything.
+
+Within an adopted frame, ordinary new crewmates and scouts are split into the frame's right-hand viewport region instead of receiving peer tabs.
+The first child splits right from the pinned head, and later children split down within the existing viewport so the head stays in place.
+Task metadata still records each exact pane endpoint, and teardown still closes only that recorded pane.
+A `config/herdr-presentation-spaces` request is ignored with a visible notice while an adopted cockpit frame owns placement because disposable per-task workspaces conflict with one persistent per-home viewport.
+
+This enhanced layout is intentionally Herdr-only.
+tmux remains the reference backend, and tmux, Zellij, Orca, cmux, a Herdr spawn selected from outside a native Herdr supervisor pane, or an invalid cockpit binding keeps the existing peer-endpoint topology and prints an explicit cockpit fallback pointing to `bin/fm-fleet-view.sh --watch`.
+Firstmate does not emulate Herdr pane primitives on those backends.
+
+Without an adopted cockpit frame, the ordinary Herdr topology puts one task tab per endpoint in the exact workspace of the Firstmate or secondmate that launches it.
 When the launcher has no Herdr workspace to inherit, the adapter maintains one durable home-labeled workspace instead.
 The primary home label is `firstmate`.
 A secondmate home label is `2ndmate-<secondmate-id>`, derived from its validated `.fm-secondmate-home` marker.
