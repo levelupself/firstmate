@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Adopt or inspect the current home's orchestration cockpit frame.
 #
-# Usage: fm-cockpit.sh adopt|new|status
+# Usage: fm-cockpit.sh adopt|new|status|panel [--watch [interval]]
 #
 # The enhanced cockpit exists only when the supervisor itself runs natively in
 # Herdr. Herdr's own sidebar is the cross-home display surface, while this
@@ -18,8 +18,9 @@
 # dead or agent-free, and it leaves that old pane untouched.
 #
 # status is read-only and reports whether the current home's recorded head is
-# live. bin/backends/herdr.sh owns the exact seven-line record format and atomic
-# publication mechanics.
+# live. panel renders that frame together with the read-only whole-fleet view;
+# --watch refreshes it every five seconds by default. bin/backends/herdr.sh owns
+# the exact seven-line record format and atomic publication mechanics.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,10 +34,43 @@ usage() {
 
 case "${1:-}" in
   adopt|new|status) ACTION=$1 ;;
+  panel) ACTION=$1 ;;
   -h|--help) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;
 esac
-[ "$#" -eq 1 ] || { usage >&2; exit 2; }
+
+PANEL_WATCH=0
+PANEL_INTERVAL=5
+if [ "$ACTION" = panel ]; then
+  shift
+  case "${1:-}" in
+    '') ;;
+    --watch)
+      PANEL_WATCH=1
+      shift
+      if [ "$#" -gt 0 ]; then
+        PANEL_INTERVAL=$1
+        shift
+      fi
+      ;;
+    --watch=*)
+      PANEL_WATCH=1
+      PANEL_INTERVAL=${1#--watch=}
+      shift
+      ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  if [ "$PANEL_WATCH" = 1 ]; then
+    if ! [[ $PANEL_INTERVAL =~ ^[0-9]+([.][0-9]+)?$ ]] \
+       || [[ $PANEL_INTERVAL =~ ^0+([.]0+)?$ ]]; then
+      echo "fm-cockpit: watch interval must be a positive number" >&2
+      exit 2
+    fi
+  fi
+else
+  [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+fi
 
 if ! FM_HOME=$(CDPATH='' cd -- "$FM_HOME" 2>/dev/null && pwd -P); then
   echo "COCKPIT: FM_HOME cannot be resolved; preserving any recorded frame." >&2
@@ -52,12 +86,82 @@ if fm_backend_detect >/dev/null; then
   RUNTIME=$FM_BACKEND_DETECTED
 fi
 if [ "$RUNTIME" != herdr ]; then
-  printf 'COCKPIT: unavailable on runtime backend %s; use bin/fm-fleet-view.sh --watch with unchanged peer endpoints.\n' "$RUNTIME"
-  exit 0
+  if [ "$ACTION" != panel ]; then
+    printf 'COCKPIT: unavailable on runtime backend %s; use bin/fm-fleet-view.sh --watch with unchanged peer endpoints.\n' "$RUNTIME"
+    exit 0
+  fi
+else
+  fm_backend_source herdr || exit 1
 fi
 
-fm_backend_source herdr || exit 1
 SESSION=${HERDR_SESSION:-default}
+
+render_frame() {
+  local label panes rows
+  printf '%s\n' 'ORCHESTRATION COCKPIT'
+  if [ "$RUNTIME" != herdr ]; then
+    printf 'NAVIGATOR plain fleet panel (Herdr sidebar unavailable on %s)\n' "$RUNTIME"
+    printf 'PINNED unavailable; %s keeps its existing peer-endpoint layout\n' "$RUNTIME"
+    printf '%s\n' 'VIEWPORT unavailable'
+    printf 'BOUNDARY display=all-homes steer=current-home backend=%s\n' "$RUNTIME"
+    return 0
+  fi
+
+  if ! fm_backend_herdr_cockpit_binding_live "$STATE" "$FM_HOME" "$SESSION"; then
+    printf '%s\n' 'NAVIGATOR Herdr sidebar (all spaces and agents)'
+    if fm_backend_herdr_cockpit_record_snapshot "$STATE" "$FM_HOME" \
+       && [ "$FM_BACKEND_HERDR_COCKPIT_SESSION" = "$SESSION" ] \
+       && [ "$(fm_backend_herdr_cockpit_head_state \
+         "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
+         "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID")" = dead ]; then
+      printf 'PINNED DEAD PANE %s; [r] resume old; [n] new clean context\n' \
+        "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID"
+      printf '%s\n' 'VIEWPORT preserved; never auto-filled or re-split'
+    else
+      printf '%s\n' 'PINNED unavailable; frame absent, invalid, or unreadable'
+      printf '%s\n' 'VIEWPORT ordinary peer-endpoint layout remains active'
+    fi
+    printf '%s\n' 'BOUNDARY display=all-homes steer=current-home backend=herdr'
+    return 0
+  fi
+
+  label=$(FM_HOME="$FM_HOME" fm_backend_herdr_workspace_label 2>/dev/null || printf unknown)
+  panes=$(fm_backend_herdr_cli "$SESSION" pane list \
+    --workspace "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" 2>/dev/null || printf '{}')
+  rows=$(printf '%s' "$panes" | jq -r \
+    --arg tab "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" \
+    --arg head "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" '
+      [.result.panes[]?
+       | select(.tab_id == $tab and .pane_id != $head)
+       | "  " + ((.label // "") | if . == "" then .pane_id else . end)
+         + " [" + (.agent_status // "unknown") + "]"]
+      | if length == 0 then "  empty; next worker splits right from the pinned head"
+        else join("\n") end
+    ' 2>/dev/null || printf '  unreadable')
+  printf '%s\n' 'NAVIGATOR Herdr sidebar (all spaces and agents)'
+  printf 'PINNED %s head=%s [live]\n' "$label" "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID"
+  printf 'VIEWPORT tab=%s\n%s\n' "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" "$rows"
+  printf '%s\n' 'BOUNDARY display=all-homes steer=current-home backend=herdr'
+}
+
+render_panel() {
+  render_frame
+  printf '\n'
+  FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-fleet-view.sh"
+}
+
+if [ "$ACTION" = panel ]; then
+  if [ "$PANEL_WATCH" = 1 ]; then
+    trap 'printf "\033[0m\n"; exit 0' INT TERM HUP
+    while :; do
+      printf '\033[H\033[2J'
+      render_panel || true
+      sleep "$PANEL_INTERVAL"
+    done
+  fi
+  render_panel
+  exit 0
+fi
 
 if [ "$ACTION" = status ]; then
   if fm_backend_herdr_cockpit_binding_live "$STATE" "$FM_HOME" "$SESSION"; then

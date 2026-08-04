@@ -248,6 +248,42 @@ EOF
   pass "whole-session display remains distinct from explicit home-scoped steering"
 }
 
+test_panel_renders_the_live_frame_and_fleet_view() {
+  local out
+  out=$(run_cockpit panel) || fail "cockpit panel could not render the live frame"
+  assert_contains "$out" "ORCHESTRATION COCKPIT" "cockpit panel omitted its heading"
+  assert_contains "$out" "NAVIGATOR Herdr sidebar (all spaces and agents)" \
+    "cockpit panel did not identify its live navigator"
+  assert_contains "$out" "PINNED firstmate head=w1:p1 [live]" \
+    "cockpit panel did not identify the pinned controller"
+  assert_contains "$out" "VIEWPORT tab=w1:t1" \
+    "cockpit panel did not identify the persistent viewport"
+  assert_contains "$out" "fm-one [unknown]" \
+    "cockpit panel omitted the first viewport worker"
+  assert_contains "$out" "fm-two [unknown]" \
+    "cockpit panel omitted the second viewport worker"
+  assert_contains "$out" "BOUNDARY display=all-homes steer=current-home backend=herdr" \
+    "cockpit panel did not expose its display and steer boundary"
+  assert_contains "$out" "FLEET STATUS" \
+    "cockpit panel did not render the existing read-only fleet view"
+  pass "cockpit panel shows the navigator, pinned controller, viewport, and whole fleet"
+}
+
+test_panel_degrades_visibly_outside_herdr() {
+  local out
+  out=$(env -u HERDR_ENV -u TMUX FM_HOME="$HOME_DIR" "$COCKPIT" panel) \
+    || fail "plain cockpit panel fallback should remain usable"
+  assert_contains "$out" "NAVIGATOR plain fleet panel (Herdr sidebar unavailable on none)" \
+    "plain cockpit panel did not explain its navigator fallback"
+  assert_contains "$out" "PINNED unavailable; none keeps its existing peer-endpoint layout" \
+    "plain cockpit panel silently implied pinned placement"
+  assert_contains "$out" "BOUNDARY display=all-homes steer=current-home backend=none" \
+    "plain cockpit panel lost the cross-home display boundary"
+  assert_contains "$out" "FLEET STATUS" \
+    "plain cockpit panel omitted the usable fleet view"
+  pass "non-Herdr cockpit renders an explicit plain-panel fallback"
+}
+
 test_dead_head_is_preserved_until_explicit_new_context() {
   local out rc log
   awk -F '\t' -v OFS='\t' '$1 == "w1:p1" {$5="no-agent"} {print}' \
@@ -280,4 +316,6 @@ test_frame_re_adoption_is_idempotent
 test_adoption_requires_the_native_session_socket
 test_workers_land_in_persistent_viewport
 test_display_and_steer_boundary_remains_explicit
+test_panel_renders_the_live_frame_and_fleet_view
+test_panel_degrades_visibly_outside_herdr
 test_dead_head_is_preserved_until_explicit_new_context
