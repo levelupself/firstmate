@@ -6,8 +6,10 @@ set -u
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# shellcheck disable=SC2153  # ROOT is assigned by tests/lib.sh.
 SNAPSHOT="$ROOT/bin/fm-fleet-snapshot.sh"
 VIEW="$ROOT/bin/fm-fleet-view.sh"
+BEARINGS="$ROOT/bin/fm-bearings-snapshot.sh"
 TMP_ROOT=$(fm_test_tmproot fm-fleet-snapshot)
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
@@ -18,10 +20,6 @@ make_fakebin() {  # <dir>
   cat > "$fb/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 exit 0
-SH
-  cat > "$fb/codeburn" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' '{"overview":{"cost":0,"calls":0,"tokens":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}},"models":[]}'
 SH
   cat > "$fb/tmux" <<'SH'
 #!/usr/bin/env bash
@@ -56,7 +54,7 @@ case "${1:-}" in
 esac
 exit 0
 SH
-  chmod +x "$fb/no-mistakes" "$fb/codeburn" "$fb/tmux"
+  chmod +x "$fb/no-mistakes" "$fb/tmux"
   printf '%s\n' "$fb"
 }
 
@@ -84,6 +82,9 @@ write_fixture() {  # <home>
 
 ## Queued
 - [ ] queued-task - Queued Task blocked-by: ship-task (repo: alpha) (kind: ship) (since 2026-07-08)
+- [ ] decision-one - First decision request (repo: alpha) (kind: captain) (hold: choose API A or B) (hold-kind: captain)
+- [ ] decision-two - Second decision request (repo: alpha) (kind: captain) (hold: approve the narrow rollout) (hold-kind: captain)
+- [ ] decision-three - Third decision request (repo: alpha) (kind: captain) (hold: choose the storage boundary) (hold-kind: captain)
 handoff note without canonical syntax
 
 ## Done
@@ -91,9 +92,6 @@ handoff note without canonical syntax
 EOF
   mkdir -p "$home/data/scout-task"
   printf '# Scout\n' > "$home/data/scout-task/report.md"
-  mkdir -p "$home/data/done-task"
-  printf '%s\n' '{"schema":"fm-task-usage.v1","id":"done-task","harness":"claude","configured_model":"sonnet","actual_models":["Sonnet 5"],"models":[],"tokens":{"input":4,"output":9,"cache_read":50,"cache_write":7},"cost_usd":1.5,"calls":3}' \
-    > "$home/data/done-task/usage.json"
   fm_write_meta "$home/state/ship-task.meta" \
     "window=firstmate:fm-ship-task" \
     "worktree=$home/projects/alpha-worktree" \
@@ -128,7 +126,7 @@ EOF
     "mode=secondmate" \
     "home=$home/secondmate-home" \
     "projects=alpha, beta, gamma, "
-  printf 'working: watching delegated scope\n' > "$home/state/secondmate-task.status"
+  printf 'needs-decision [key=api]: choose the public API shape\n' > "$home/state/secondmate-task.status"
   fm_write_meta "$home/state/cmux-task.meta" \
     "backend=cmux" \
     "window=workspace:surface" \
@@ -154,7 +152,7 @@ test_empty_fleet_json() {
   ' >/dev/null \
     || fail "empty snapshot schema or absence markers wrong: $out"
   view=$(FM_HOME="$home" "$VIEW")
-  assert_contains "$view" "No live task metadata found." "empty fleet view should say no live metadata"
+  assert_contains "$view" "No active tasks." "empty fleet view should report no active tasks"
   pass "empty fleet snapshot and view use explicit absence markers"
 }
 
@@ -195,14 +193,18 @@ test_fixture_snapshot_json() {
       and .current_state.state == "unknown"
   ' >/dev/null || fail "cmux missing-file row missing"
   printf '%s' "$out" | jq -e '
-    [.backlog.records[] | select(.state == "queued")] | length == 2
+    [.backlog.records[] | select(.state == "queued")] | length == 5
   ' >/dev/null || fail "queued canonical and unstructured backlog records missing"
   printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "decision-one")
+    | .title == "First decision request"
+      and .kind == "captain"
+      and .hold == "choose API A or B"
+      and .hold_kind == "captain"
+  ' >/dev/null || fail "hold metadata did not parse into a clean decision row"
+  printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "done-task")
-    | .state == "done"
-      and .pr_url == "https://github.com/kunchenguid/firstmate/pull/7"
-      and .usage.actual_models == ["Sonnet 5"]
-      and .usage.cost_usd == 1.5
+    | .state == "done" and .pr_url == "https://github.com/kunchenguid/firstmate/pull/7"
   ' >/dev/null || fail "done backlog PR row missing"
   pass "fixture snapshot covers task rows, backlog rows, pointers, and stable ordering"
 }
@@ -465,6 +467,7 @@ test_backlog_tasks_axi_forms_and_overrides() {
 - [ ] queued-comma - Queued Comma Task (repo: beta, since 2026-07-08) (kind: ship)
 - [ ] parenthetical-title - Refresh sidebar (mobile) (repo: beta) (kind: ship)
 - [ ] blocked-reason - Blocked Reason (repo: beta) (kind: ship) blocked-by: queued-comma - waits on queued-comma
+- [ ] mixed-blockers - Mixed Blockers blocked-by: missing blocked-by: done-comma (repo: beta) (kind: ship)
 - [ ] sample-decision-route - Choose sample route (repo: sample) (kind: captain) (since 2026-07-14) (hold: captain route choice pending) (hold-kind: captain)
 
 ## Done
@@ -561,38 +564,118 @@ EOF
       and .paths.report.present == true
   ' >/dev/null || fail "bold task did not join to override-backed backlog and report"
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" "$VIEW")
-  assert_contains "$view" "| bold-task | done / status-log | scout | alpha | tmux | present | $data/bold-task/report.md" \
-    "view should render bold in-flight row from snapshot"
-  assert_contains "$view" "| blocked-reason | Blocked Reason | beta | ship | queued-comma - waits on queued-comma | - |" \
-    "view should render blocked reason without title metadata"
-  assert_contains "$view" "| done-bracket-pr | Done Bracket PR | gamma | ship | - | https://github.com/kunchenguid/firstmate/pull/43 |" \
-    "view should render bracketed PR artifact outside the title"
-  assert_contains "$view" "| done-note | Done Note | delta | ship | - | local main |" \
-    "view should render local-only done artifact outside the title"
+  assert_contains "$view" "• bold-task · Bold Task" \
+    "view should render the in-flight task from the snapshot"
+  assert_contains "$view" "QUEUED 4 · READY 2 · BLOCKED 2" \
+    "view should classify queued tasks by cleared blockers"
+  assert_contains "$view" "• blocked-reason ← queued-comma · waits on queued-comma" \
+    "view should render a blocked reason without title metadata"
+  assert_contains "$view" "• mixed-blockers ← missing" \
+    "view should classify and render only unresolved plural blockers"
+  assert_contains "$view" "https://github.com/kunchenguid/firstmate/pull/43" \
+    "view should render a landed PR artifact"
   pass "snapshot parses tasks-axi rows and respects operational overrides"
 }
 
 test_view_renders_snapshot() {
-  local home fakebin view
+  local home fakebin view working_line waiting_line finished_line queued_line working_section
   home=$(make_home view)
   write_fixture "$home"
   fakebin=$(make_fakebin "$home")
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
-  assert_contains "$view" "| ship-task | working / pane | ship | alpha | tmux | present | https://github.com/kunchenguid/firstmate/pull/9" \
-    "view should render ship row from snapshot"
-  assert_contains "$view" "| queued-task | Queued Task | alpha | ship | ship-task | -" \
-    "view should render queued backlog row"
-  assert_contains "$view" "| done-task | Done Task | alpha | ship | - | https://github.com/kunchenguid/firstmate/pull/7 |" \
-    "view should render done backlog row"
-  assert_contains "$view" "claude / Sonnet 5 - in 4, out 9, cache 50, write 7 - \$1.5 - 3 calls" \
-    "view should render durable task usage after teardown"
-  assert_contains "$view" "bin/fm-send.sh fm-secondmate-task" \
-    "view should show secondmate send guidance"
-  assert_contains "$view" "| secondmate-task | working / status-log | secondmate | $home/secondmate-home | tmux | present / alive |" \
-    "view should show secondmate endpoint agent liveness"
+  working_line=$(printf '%s\n' "$view" | grep -n '^WORKING NOW' | cut -d: -f1)
+  waiting_line=$(printf '%s\n' "$view" | grep -n '^WAITING ON DECISION' | cut -d: -f1)
+  finished_line=$(printf '%s\n' "$view" | grep -n '^FINISHED' | cut -d: -f1)
+  queued_line=$(printf '%s\n' "$view" | grep -n '^QUEUED' | cut -d: -f1)
+  [ "$working_line" -lt "$waiting_line" ] && [ "$waiting_line" -lt "$finished_line" ] && [ "$finished_line" -lt "$queued_line" ] \
+    || fail "fleet view priority order is wrong: $view"
+  assert_contains "$view" "WORKING NOW (1)" \
+    "only a reconciled working state should count as working"
+  assert_contains "$view" "• ship-task · Ship Task" \
+    "view should render the active task"
+  working_section=$(printf '%s\n' "$view" | sed -n '/^WORKING NOW/,/^WAITING ON DECISION/p')
+  assert_not_contains "$working_section" "scout-task" \
+    "a done task must never appear under WORKING NOW"
+  assert_not_contains "$working_section" "secondmate-task" \
+    "a parked task must never appear under WORKING NOW"
+  assert_contains "$view" "WAITING ON DECISION (4)" \
+    "decisions should have a prominent dedicated section"
+  assert_contains "$view" "! secondmate-task" \
+    "live decisions should appear in the decision section"
+  assert_contains "$view" "  choose the public API shape" \
+    "live decisions should show their one-line reason"
+  assert_contains "$view" "! decision-one" \
+    "queued decision holds should move out of the queue"
+  assert_contains "$view" "  choose API A or B" \
+    "queued decision holds should show their one-line reason"
+  assert_contains "$view" "https://github.com/kunchenguid/firstmate/pull/7" \
+    "finished work should include its PR link"
+  assert_contains "$view" "UNKNOWN (2)" \
+    "a task without a reconciled state should have its own honest bucket"
+  assert_contains "$view" "QUEUED 1 · READY 0 · BLOCKED 1" \
+    "queue summary should distinguish dispatchable from blocked"
   assert_not_contains "$view" "fm-peek.sh fm-secondmate-task" \
     "view must not tell firstmate to routinely peek secondmates"
-  pass "fleet view renders the snapshot without secondmate peek guidance"
+  pass "fleet view renders the prioritized side-panel sections"
+}
+
+test_view_buckets_reconciled_states() {
+  local home fakebin view id fixture_gen working_section waiting_section finished_section failed_section unknown_section
+  home=$(make_home state-buckets)
+  mkdir -p "$home/projects/working-ship-task" "$home/projects/parked-task" \
+    "$home/projects/done-task" "$home/projects/failed-task" "$home/projects/merge-ready"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] working-ship-task - Working Task (repo: alpha) (kind: ship)
+- [ ] parked-task - Parked Task (repo: alpha) (kind: ship)
+- [ ] done-task - Done Task (repo: alpha) (kind: ship)
+- [ ] failed-task - Failed Task (repo: alpha) (kind: ship)
+- [ ] merge-ready - Merge Ready Task https://github.com/acme/alpha/pull/42 (repo: alpha) (kind: ship)
+- [ ] unknown-task - Unknown Task (repo: alpha) (kind: ship)
+EOF
+  for id in working-ship-task parked-task done-task failed-task merge-ready unknown-task; do
+    fm_write_meta "$home/state/$id.meta" \
+      "window=firstmate:fm-$id" \
+      "worktree=$home/projects/$id" \
+      "project=alpha" \
+      "harness=claude" \
+      "kind=ship" \
+      "mode=ship"
+    record_claude_idle "$home/state" "$id"
+  done
+  fixture_gen=$("$ROOT/bin/fm-busy-event.sh" arm "$home/state" working-ship-task)
+  "$ROOT/bin/fm-busy-event.sh" apply "$home/state" working-ship-task busy --gen "$fixture_gen" \
+    --source claude-hook --event start
+  printf 'needs-decision [key=gate]: choose the gate resolution\n' > "$home/state/parked-task.status"
+  printf 'done: implementation complete\n' > "$home/state/done-task.status"
+  printf 'failed: validation failed\n' > "$home/state/failed-task.status"
+  printf 'done: implementation complete\n' > "$home/state/merge-ready.status"
+  fakebin=$(make_fakebin "$home")
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
+
+  assert_contains "$view" "WORKING NOW (1)" "only genuinely running work belongs in WORKING NOW"
+  assert_contains "$view" "WAITING ON DECISION (2)" "parked decisions and merge-ready work belong in WAITING ON DECISION"
+  assert_contains "$view" "FINISHED (showing 1 of 1)" "successful terminal work belongs in FINISHED"
+  assert_contains "$view" "FAILED (1)" "unsuccessful terminal work belongs in FAILED"
+  assert_contains "$view" "UNKNOWN (1)" "indeterminate work belongs in UNKNOWN"
+  working_section=$(printf '%s\n' "$view" | sed -n '/^WORKING NOW/,/^WAITING ON DECISION/p')
+  waiting_section=$(printf '%s\n' "$view" | sed -n '/^WAITING ON DECISION/,/^FINISHED/p')
+  finished_section=$(printf '%s\n' "$view" | sed -n '/^FINISHED/,/^FAILED/p')
+  failed_section=$(printf '%s\n' "$view" | sed -n '/^FAILED/,/^UNKNOWN/p')
+  unknown_section=$(printf '%s\n' "$view" | sed -n '/^UNKNOWN/,/^QUEUED/p')
+  assert_contains "$working_section" "working-ship-task" "working task missing from WORKING NOW"
+  assert_not_contains "$working_section" "parked-task" "parked task leaked into WORKING NOW"
+  assert_not_contains "$working_section" "done-task" "done task leaked into WORKING NOW"
+  assert_not_contains "$working_section" "failed-task" "failed task leaked into WORKING NOW"
+  assert_not_contains "$working_section" "unknown-task" "unknown task leaked into WORKING NOW"
+  assert_contains "$waiting_section" "parked-task" "parked task missing from WAITING ON DECISION"
+  assert_contains "$waiting_section" "choose the gate resolution" "parked task reason missing"
+  assert_contains "$waiting_section" "merge-ready" "merge-ready task missing from WAITING ON DECISION"
+  assert_contains "$waiting_section" "https://github.com/acme/alpha/pull/42" "merge-ready PR link missing"
+  assert_contains "$finished_section" "done-task" "done task missing from FINISHED"
+  assert_contains "$failed_section" "failed-task" "failed task missing from FAILED"
+  assert_contains "$unknown_section" "unknown-task" "unknown task missing from UNKNOWN"
+  pass "fleet view buckets every task by reconciled state"
 }
 
 test_view_renders_dead_secondmate_agent_status() {
@@ -609,11 +692,123 @@ test_view_renders_dead_secondmate_agent_status() {
   printf 'working: watching delegated scope\n' > "$home/state/dead-secondmate.status"
   fakebin=$(make_fakebin "$home")
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
-  assert_contains "$view" "| dead-secondmate | unknown / none | secondmate | $home/secondmate-home | tmux | present / dead |" \
-    "view should distinguish a present secondmate endpoint from a dead agent"
-  assert_contains "$view" "| dead-secondmate | unknown / none | secondmate | $home/secondmate-home | tmux | present / dead | - | $home/secondmate-home (absent) |" \
-    "view should show a recorded missing secondmate home path"
-  pass "fleet view renders secondmate agent liveness"
+  assert_contains "$view" "• dead-secondmate ·" \
+    "view should retain a degraded task row when current state is unknown"
+  assert_contains "$view" "UNKNOWN (1)" \
+    "view should label unavailable task state instead of crashing"
+  pass "fleet view degrades an unreadable task row to unknown"
+}
+
+test_oversized_backlog_and_status_stream() {
+  local home fakebin json view bearings i bytes
+  home=$(make_home oversized)
+  printf '## Queued\n' > "$home/data/backlog.md"
+  i=1
+  while [ "$i" -le 2200 ]; do
+    printf -- '- [ ] big-%04d - Synthetic task %04d xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (repo: firstmate) (kind: ship)\n' \
+      "$i" "$i" >> "$home/data/backlog.md"
+    i=$((i + 1))
+  done
+  mkdir -p "$home/secondmate-home"
+  fm_write_meta "$home/state/large-status.meta" \
+    "window=firstmate:fm-large-status" \
+    "project=$home/secondmate-home" \
+    "harness=codex" \
+    "kind=secondmate" \
+    "mode=secondmate" \
+    "home=$home/secondmate-home"
+  printf 'project=' >> "$home/state/large-status.meta"
+  i=1
+  while [ "$i" -le 2200 ]; do
+    printf 'yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy' >> "$home/state/large-status.meta"
+    i=$((i + 1))
+  done
+  printf '\n' >> "$home/state/large-status.meta"
+  printf 'window=' >> "$home/state/large-status.meta"
+  i=1
+  while [ "$i" -le 2200 ]; do
+    printf 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz' >> "$home/state/large-status.meta"
+    i=$((i + 1))
+  done
+  printf '\n' >> "$home/state/large-status.meta"
+  printf 'needs-decision [key=large]: ' > "$home/state/large-status.status"
+  i=1
+  while [ "$i" -le 2200 ]; do
+    printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' >> "$home/state/large-status.status"
+    i=$((i + 1))
+  done
+  printf '\n' >> "$home/state/large-status.status"
+  fakebin=$(make_fakebin "$home")
+
+  json=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json 2> "$home/oversized.err")
+  assert_contains "$(cat "$home/oversized.err")" "endpoint target metadata exceeds 4096 bytes" \
+    "oversized endpoint metadata should emit an explicit diagnostic"
+  bytes=$(printf '%s' "$json" | wc -c | tr -d ' ')
+  [ "$bytes" -gt 131072 ] || fail "synthetic snapshot did not cross the single-argument ceiling: $bytes bytes"
+  printf '%s' "$json" | jq -e '(.backlog.records | length) == 2200 and (.tasks | length) == 1 and (.tasks[0].project | length) > 131072' >/dev/null \
+    || fail "oversized snapshot lost backlog or task data"
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" COLUMNS=60 "$VIEW")
+  bearings=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$BEARINGS" --json)
+  assert_contains "$view" "WAITING ON DECISION (1)" "oversized fleet view should still render"
+  printf '%s' "$bearings" | jq -e '.schema == "fm-bearings.v1" and (.gates | length) == 20' >/dev/null \
+    || fail "oversized bearings snapshot did not render its bounded projection"
+  pass "oversized backlog and status payloads stream through snapshot, fleet view, and bearings"
+}
+
+tree_manifest() {  # <home>
+  local home=$1 root
+  for root in "$home/data" "$home/state"; do
+    perl -MFile::Find -MDigest::SHA -e '
+      find({no_chdir => 1, wanted => sub {
+        my @s = lstat($_);
+        my $digest = "-";
+        if (-f _) {
+          open my $fh, "<", $_ or die "$!: $_\n";
+          binmode $fh;
+          $digest = Digest::SHA->new(256)->addfile($fh)->hexdigest;
+        }
+        print join("|", $_, @s[2, 4, 5, 7, 9], $digest), "\n";
+      }}, @ARGV)
+    ' "$root"
+  done | LC_ALL=C sort
+}
+
+test_read_paths_do_not_mutate_fleet_state() {
+  local home fakebin before after
+  home=$(make_home read-only)
+  write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  before=$(tree_manifest "$home")
+  PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json >/dev/null
+  PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW" >/dev/null
+  PATH="$fakebin:$PATH" FM_HOME="$home" "$BEARINGS" >/dev/null
+  after=$(tree_manifest "$home")
+  [ "$before" = "$after" ] || fail "snapshot, fleet view, or bearings modified data/ or state/"
+  pass "snapshot, fleet view, and bearings leave data/ and state/ byte-for-byte and metadata-identical"
+}
+
+test_watch_redraws_and_exits_cleanly() {
+  local home fakebin output rc redraws
+  home=$(make_home watch)
+  fakebin=$(make_fakebin "$home")
+  output="$home/watch.out"
+  PATH="$fakebin:$PATH" FM_HOME="$home" COLUMNS=45 \
+    perl -e '
+      my $pid = fork();
+      defined $pid or die "fork: $!\n";
+      exec @ARGV unless $pid;
+      select undef, undef, undef, 0.35;
+      kill "INT", $pid;
+      waitpid $pid, 0;
+      exit($? >> 8);
+    ' "$VIEW" --watch 0.1 > "$output"
+  rc=$?
+  expect_code 0 "$rc" "watch mode should exit cleanly on Ctrl-C"
+  redraws=$(LC_ALL=C grep -ao $'\033\[H\033\[2J' "$output" | wc -l | tr -d ' ')
+  [ "$redraws" -ge 2 ] || fail "watch mode did not redraw: $redraws renders"
+  LC_ALL=C grep -aF $'\033[0m' "$output" >/dev/null \
+    || fail "watch mode did not restore terminal attributes on exit"
+  pass "watch mode redraws in a narrow pane and exits cleanly on Ctrl-C"
 }
 
 # A still-open decision must survive a LATER, UNRELATED terminal event on the same
@@ -805,4 +1000,8 @@ test_parked_scout_decision_stays_pending
 test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
 test_view_renders_snapshot
+test_view_buckets_reconciled_states
 test_view_renders_dead_secondmate_agent_status
+test_oversized_backlog_and_status_stream
+test_read_paths_do_not_mutate_fleet_state
+test_watch_redraws_and_exits_cleanly

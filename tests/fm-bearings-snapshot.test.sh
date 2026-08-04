@@ -44,6 +44,19 @@ SH
 echo "gh $*" >> "$NET_LOG"
 if [ "${FAKE_GH_FAIL:-0}" = 1 ]; then exit 1; fi
 if [ "${FAKE_GH_SLEEP:-0}" = 1 ]; then sleep 30; fi
+if [ "${FAKE_GH_OVERSIZED:-0}" = 1 ]; then
+  padding=$(printf '%01500d' 0 | tr 0 x)
+  printf '['
+  i=1
+  while [ "$i" -le 100 ]; do
+    [ "$i" -eq 1 ] || printf ','
+    printf '{"number":%s,"title":"Synthetic %s","url":"https://example.invalid/%s/%s","headRefName":"fm/synthetic-%s","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]}' \
+      "$i" "$i" "$padding" "$i" "$i"
+    i=$((i + 1))
+  done
+  printf ']\n'
+  exit 0
+fi
 if [ "${FAKE_GH_MANY:-0}" = 1 ]; then
   cat <<'JSON'
 [{"number":1,"title":"One","url":"https://github.com/acme/repo/pull/1","headRefName":"fm/one","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":2,"title":"Two","url":"https://github.com/acme/repo/pull/2","headRefName":"fm/two","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":3,"title":"Three","url":"https://github.com/acme/repo/pull/3","headRefName":"fm/three","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]}]
@@ -1084,6 +1097,53 @@ test_pr_repository_cap_and_expansion() {
   pass "live PR enrichment caps repositories with counted expansion"
 }
 
+test_oversized_pr_aggregates_stream_through_model() {
+  local home fakebin json bytes
+  home=$(make_home oversized-pr-aggregate)
+  write_large_fixture "$home" 2
+  fakebin=$(make_fakebin "$home")
+  : > "$home/net.log"
+  json=$(FM_BEARINGS_PR_LIMIT=100 FAKE_GH_OVERSIZED=1 \
+    run "$home" "$fakebin" --include-prs --all-pr-repos --json)
+  [ "$(grep -c '^gh pr list ' "$home/net.log")" = 2 ] \
+    || fail "expanded repository set was not queried"
+  bytes=$(printf '%s' "$json" | LC_ALL=C wc -c | tr -d ' ')
+  [ "$bytes" -gt 131072 ] \
+    || fail "synthetic PR aggregate did not cross the single-argument ceiling: $bytes bytes"
+  printf '%s' "$json" | jq -e '.candidate_prs | length == 200' >/dev/null \
+    || fail "oversized PR aggregate lost rows during projection"
+  pass "oversized PR aggregates stream through enrichment and projection"
+}
+
+test_oversized_repository_target_refuses_before_enrichment() {
+  local home fakebin padding json err bytes
+  home=$(make_home oversized-repository-target)
+  padding=$(printf '%0140000d' 0 | tr 0 x)
+  mkdir -p "$home/projects/oversized-target"
+  printf '%s\n' '## In flight' \
+    '- [ ] oversized-target - Synthetic target (repo: sample) (kind: ship)' \
+    > "$home/data/backlog.md"
+  fm_write_meta "$home/state/oversized-target.meta" \
+    "window=firstmate:fm-oversized-target" \
+    "worktree=$home/projects/oversized-target" \
+    "project=sample" "harness=codex" "kind=ship" "mode=ship" \
+    "pr=https://github.com/acme/$padding/pull/1"
+  fakebin=$(make_fakebin "$home")
+  : > "$home/net.log"
+  err="$home/oversized-repository.err"
+  json=$(run "$home" "$fakebin" --include-prs --all-pr-repos --json 2> "$err")
+  bytes=$(printf '%s' "$json" | LC_ALL=C wc -c | tr -d ' ')
+  [ "$bytes" -gt 131072 ] \
+    || fail "synthetic repository metadata did not cross the single-argument ceiling: $bytes bytes"
+  assert_contains "$(cat "$err")" "repository target exceeds 4096 bytes; skipping enrichment" \
+    "oversized repository target should emit an explicit diagnostic"
+  [ ! -s "$home/net.log" ] \
+    || fail "oversized repository target reached an external command"
+  printf '%s' "$json" | jq -e '.candidate_prs | length == 0' >/dev/null \
+    || fail "oversized repository target should not create enrichment rows"
+  pass "oversized repository metadata refuses before enrichment"
+}
+
 test_per_repository_pr_cap_is_disclosed() {
   local home fakebin json toon
   home=$(make_home pr-row-cap); write_fixture "$home"
@@ -1928,5 +1988,7 @@ test_partial_github_failure_degrades
 test_perl_fallback_bounds_github_call
 test_section_caps_and_expansion_flags
 test_pr_repository_cap_and_expansion
+test_oversized_pr_aggregates_stream_through_model
+test_oversized_repository_target_refuses_before_enrichment
 test_per_repository_pr_cap_is_disclosed
 test_projection_and_toon_fail_closed
