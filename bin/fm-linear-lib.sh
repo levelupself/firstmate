@@ -58,9 +58,9 @@ fml_env_get() {
 # LINEAR_TEAM_KEY   optional team key (e.g. PSY) scoping refresh; lookup ignores it
 # LINEAR_MAGIC_WORD defaults to "Part of" - see fml_reference_line for why a
 #                   NON-CLOSING magic word is the default
-# LINEAR_TIMEOUT    per-request curl timeout in seconds, floor 1, default 10; the
-#                   PR path lowers it further so a slow Linear can never delay a
-#                   PR from being checked.
+# LINEAR_TIMEOUT    timeout in seconds, floor 1, default 10; it is the total
+#                   lookup budget and the per-request bound elsewhere. The PR
+#                   path lowers it further so slow Linear cannot delay a check.
 fml_load_config() {
   local env_file="${FM_LINEAR_ENV_FILE:-${FM_HOME:-}/.env}" raw
   if [ -n "${LINEAR_API_KEY+x}" ]; then
@@ -225,36 +225,41 @@ FML_ROWS_FILTER='
 # leading task id) for the mirrored issue joined to <task-id>.
 # Exit 0 with output = found; exit 1 = Linear answered and has no such issue;
 # exit 2 = Linear could not be asked (callers must treat this as "unknown", never
-# as "no issue"). The server-side filter narrows the fetch; the exact first-line
+# as "no issue"). FML_TIMEOUT is one budget for the complete lookup, not a fresh
+# timeout per page. The server-side filter narrows the fetch; the exact first-line
 # match happens here, so "004" never matches "004-something-else".
 fml_find_issue() {
-  local id=$1 body vars rc rows cursor page
+  local id=$1 body vars rc rows cursor page deadline remaining filtered=true
   fml_available || return 2
   body=$(mktemp "${TMPDIR:-/tmp}/fm-linear-find.XXXXXX") || return 2
-  vars=$(jq -cn --arg needle "firstmate: $id" '{needle:$needle}') || { rm -f "$body"; return 2; }
-  # shellcheck disable=SC2016 # GraphQL variables, not shell expansions.
-  fml_graphql 'query fmFind($needle: String!) {
-    issues(filter: { description: { contains: $needle } }, first: 50) {
-      nodes { id identifier url description state { name type } }
-    }
-  }' "$vars" "$body" "${FML_TIMEOUT:-10}"
-  rc=$?
-  # The server-side description filter is only an optimisation. If Linear ever
-  # rejects it, fall back to scanning issues page by page and matching here, so a
-  # schema change degrades to "slower" rather than "silently never links".
-  if [ "$rc" = 6 ]; then
+  deadline=$(( $(date +%s) + ${FML_TIMEOUT:-10} ))
+  while :; do
     cursor=null
     page=0
     while :; do
       page=$((page + 1))
-      vars=$(jq -cn --argjson after "$cursor" '{after:$after}') || { rm -f "$body"; return 2; }
-      # shellcheck disable=SC2016
-      fml_graphql 'query fmFindAll($after: String) {
-        issues(first: 100, after: $after, orderBy: updatedAt) {
-          pageInfo { hasNextPage endCursor }
-          nodes { id identifier url description state { name type } }
-        }
-      }' "$vars" "$body" "${FML_TIMEOUT:-10}"
+      remaining=$((deadline - $(date +%s)))
+      [ "$remaining" -gt 0 ] || { rm -f "$body"; return 2; }
+      if [ "$filtered" = true ]; then
+        vars=$(jq -cn --arg needle "firstmate: $id" --argjson after "$cursor" \
+          '{needle:$needle,after:$after}') || { rm -f "$body"; return 2; }
+        # shellcheck disable=SC2016 # GraphQL variables, not shell expansions.
+        fml_graphql 'query fmFind($needle: String!, $after: String) {
+          issues(filter: { description: { contains: $needle } }, first: 50, after: $after) {
+            pageInfo { hasNextPage endCursor }
+            nodes { id identifier url description state { name type } }
+          }
+        }' "$vars" "$body" "$remaining"
+      else
+        vars=$(jq -cn --argjson after "$cursor" '{after:$after}') || { rm -f "$body"; return 2; }
+        # shellcheck disable=SC2016
+        fml_graphql 'query fmFindAll($after: String) {
+          issues(first: 100, after: $after, orderBy: updatedAt) {
+            pageInfo { hasNextPage endCursor }
+            nodes { id identifier url description state { name type } }
+          }
+        }' "$vars" "$body" "$remaining"
+      fi
       rc=$?
       [ "$rc" = 0 ] || break
       rows=$(jq -r "$FML_ROWS_FILTER" "$body" 2>/dev/null | awk -F'\t' -v id="$id" '$1 == id {print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6; exit}')
@@ -267,12 +272,12 @@ fml_find_issue() {
       [ "$page" -lt 50 ] || { rm -f "$body"; return 2; }
       cursor=$(jq -c '.data.issues.pageInfo.endCursor' "$body")
     done
-  fi
-  if [ "$rc" != 0 ]; then rm -f "$body"; return 2; fi
-  rows=$(jq -r "$FML_ROWS_FILTER" "$body" 2>/dev/null | awk -F'\t' -v id="$id" '$1 == id {print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6}')
-  rm -f "$body"
-  [ -n "$rows" ] || return 1
-  printf '%s\n' "$rows" | head -n1
+    # The server-side description filter is only an optimisation. If Linear ever
+    # rejects it, fall back to scanning issues page by page and matching here, so a
+    # schema change degrades to "slower" rather than "silently never links".
+    [ "$filtered" = true ] && [ "$rc" = 6 ] || { rm -f "$body"; return 2; }
+    filtered=false
+  done
 }
 
 # fml_body_links <body-file> <identifier>: 0 when the PR body already carries a

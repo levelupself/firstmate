@@ -51,8 +51,8 @@ esac
 . "$FM_ROOT/bin/fm-linear-lib.sh"
 fml_load_config
 
-# The PR path uses a tighter deadline than the default: a slow or hanging Linear
-# must never hold up reporting a PR. Two requests at this bound is the worst case.
+# The PR path uses a tighter total lookup deadline than the default: a slow or
+# hanging Linear must never hold up reporting a PR.
 case "${FM_LINEAR_PR_TIMEOUT:-}" in
   ''|*[!0-9]*) pr_timeout=8 ;;
   *) pr_timeout=${FM_LINEAR_PR_TIMEOUT} ;;

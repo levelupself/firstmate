@@ -92,6 +92,12 @@ Part of PSY-42
 - **A missing issue is non-fatal.** It can occur before the first refresh or for
   work added since the latest refresh. That is reported, not treated as an
   error.
+- **Lookup is bounded and complete-or-unknown.** The filtered lookup follows
+  every advertised page, with a 50-page safety bound and one total deadline
+  shared by all filtered and fallback requests. Only an exhaustive response can
+  report a missing issue; timeout, request failure, GraphQL failure, or the page
+  bound reports the lookup as unavailable so firstmate never infers absence or
+  creates a duplicate from an incomplete search.
 
 After valid arguments are supplied, every operational outcome prints one `linear: ...` line and exits 0.
 
