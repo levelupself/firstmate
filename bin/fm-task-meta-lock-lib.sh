@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 
-# shellcheck source=bin/fm-wake-lib.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-wake-lib.sh"
+FM_TASK_META_LOCK_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 fm_task_meta_lock_acquire() {  # <meta-file>
   local meta=$1 attempt=0
+  if ! command -v fm_lock_try_acquire >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-wake-lib.sh
+    . "$FM_TASK_META_LOCK_LIB_DIR/fm-wake-lib.sh"
+  fi
   FM_TASK_META_LOCK_DIR="${meta}.mutation-lock"
   while [ "$attempt" -lt 200 ]; do
     fm_lock_try_acquire "$FM_TASK_META_LOCK_DIR" && return 0
