@@ -81,6 +81,12 @@ These five sentences are the single owner of the task-selector vocabulary; backe
 `fm-teardown.sh <id>` takes a task id directly and validates the complete metadata-only endpoint identity before any runtime dispatch or cleanup mutation.
 Missing, empty, duplicate, malformed, backend-inconsistent, or task-mismatched endpoint records are preserved and refused.
 Legacy tmux metadata remains cleanup-compatible when its exact window name is `fm-<id>`; opaque non-tmux endpoints require their recorded `endpoint_task_id=` binding.
+For a legacy Herdr task created before that field existed, run `bin/fm-endpoint-bind-migrate.sh <id>` explicitly before teardown instead of editing its metadata.
+The migration reads the recorded Herdr session's live agent inventory and requires exactly one entry whose `foreground_cwd` equals the recorded worktree byte-for-byte.
+That live entry must also match the recorded pane, workspace, tab, and window identity before the command atomically adds the binding.
+Zero matches, multiple matches, unreadable or malformed inventory, a contradictory endpoint, an existing binding, and every backend without an equivalent verified live-worktree proof are refused without changing the task metadata.
+Success records the verification method and timestamp in the metadata and preserves the exact matching inventory entry at `data/<id>/endpoint-binding-migration.json`, which survives teardown for audit.
+After a successful migration, ordinary `bin/fm-teardown.sh <id>` remains the only cleanup path and applies every existing landed-work and endpoint-removal guard unchanged.
 `FM_HOME` determines Herdr's home label: the primary home uses `firstmate`, and a secondmate home marked by `.fm-secondmate-home` uses `2ndmate-<secondmate-id>`.
 [`herdr-backend.md`](herdr-backend.md#watching-and-task-containers) owns launcher-bound workspace placement, the label-only fallback, collision handling, and recovery behavior.
 The optional local `config/herdr-presentation-spaces` presence flag instead enables Herdr's default-off disposable single-task visual projection; [Optional presentation spaces](herdr-backend.md#optional-presentation-spaces) owns its behavior, safety limits, recovery contract, and narrow locked session-start cleanup of exact restored idle-shell children.
