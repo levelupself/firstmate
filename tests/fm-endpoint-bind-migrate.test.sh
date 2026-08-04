@@ -152,8 +152,31 @@ test_unique_worktree_match_with_other_endpoint_refuses() {
   pass "endpoint binding migration: a unique worktree hit cannot authorize a different recorded endpoint"
 }
 
+test_normally_bound_task_is_unchanged() {
+  local dir audit rc=0
+  dir=$(make_case normally-bound)
+  printf 'endpoint_task_id=%s\n' "$TASK_ID" >> "$dir/home/state/$TASK_ID.meta"
+  cp "$dir/home/state/$TASK_ID.meta" "$dir/meta.before"
+  run_migrate "$dir" "$(inventory_for "$dir/worktree")" \
+    > "$dir/stdout" 2> "$dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "normally-bound task unexpectedly entered legacy migration"
+  cmp -s "$dir/meta.before" "$dir/home/state/$TASK_ID.meta" \
+    || fail "normally-bound task metadata changed"
+  audit="$dir/home/data/$TASK_ID/endpoint-binding-migration.json"
+  assert_absent "$audit" \
+    "normally-bound task should not gain migration evidence"
+  assert_contains "$(cat "$dir/stderr")" "does not have legacy unbound endpoint metadata" \
+    "normally-bound refusal did not explain that migration is inapplicable"
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" bash -c '
+    . "$1/bin/fm-backend.sh"
+    fm_backend_validate_task_endpoint "$2/home/state/061-linear-refresh-path.meta" 061-linear-refresh-path
+  ' _ "$ROOT" "$dir" || fail "normally-bound task lost ordinary cleanup authorization"
+  pass "endpoint binding migration: normally spawned task metadata and cleanup authorization stay unchanged"
+}
+
 test_unique_live_worktree_match_migrates_with_audit
 test_zero_live_worktree_matches_refuses
 test_ambiguous_live_worktree_matches_refuses
 test_unreadable_live_inventory_refuses
 test_unique_worktree_match_with_other_endpoint_refuses
+test_normally_bound_task_is_unchanged
