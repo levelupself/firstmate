@@ -228,9 +228,11 @@ test_concurrent_stale_reclaim_keeps_one_owner() {
 }
 
 test_promotion_waits_for_migration_publication() {
-  local dir inventory migration_pid promote_pid
+  local dir inventory migration_pid promote_pid meta_tmp
   dir=$(make_case promote-race)
-  sed -i 's/kind=ship/kind=scout/' "$dir/home/state/$TASK_ID.meta"
+  meta_tmp=$(mktemp "$dir/home/state/.promote-race-meta.XXXXXX")
+  sed 's/kind=ship/kind=scout/' "$dir/home/state/$TASK_ID.meta" > "$meta_tmp"
+  mv "$meta_tmp" "$dir/home/state/$TASK_ID.meta"
   inventory=$(inventory_for "$dir/worktree")
   cat > "$dir/fakebin/date" <<'SH'
 #!/usr/bin/env bash
