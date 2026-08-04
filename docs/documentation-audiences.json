@@ -196,6 +196,10 @@
       "audience": "public-product"
     },
     {
+      "path": "data/083-hunk-review-flow/example.md",
+      "audience": "operator-example"
+    },
+    {
       "path": "docs/architecture.md",
       "audience": "maintainer-architecture"
     },
