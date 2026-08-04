@@ -380,6 +380,18 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
         if (.body_lines | length) > 0 then
           .body_excerpt = ((.body_lines | join(" "))[:240])
         else . end)
+    | .records |= map(
+        if .structured and .kind == "captain" and .hold_kind == "captain"
+           and (.body_lines | length) >= 2
+           and (.body_lines[0] | startswith("Origin: "))
+           and (.body_lines[1] | startswith("Decision key: "))
+           and ((.body_lines[0] | sub("^Origin: "; "")) | test("^[A-Za-z0-9._-]+$"))
+           and ((.body_lines[1] | sub("^Decision key: "; "")) | test("^[A-Za-z0-9._-]+$")) then
+          .captain_decision = {
+            origin:(.body_lines[0] | sub("^Origin: "; "")),
+            key:(.body_lines[1] | sub("^Decision key: "; ""))
+          }
+        else .captain_decision = null end)
     | .records as $records
     | (reduce ($records[] | select(.structured)) as $record ({};
          .[$record.id] = ((.[$record.id] // true) and ($record.state == "done")))) as $resolved_ids

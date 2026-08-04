@@ -37,7 +37,7 @@ if [ -z "$ID" ]; then
       | select(any($s.backlog.records[]?;
           .state != "done" and .structured == true and .kind == "captain"
           and .hold_kind == "captain" and .hold_reason != null
-          and ((.blocked_by_ids // []) | index($task.id))) | not)
+          and .captain_decision.origin == $task.id) | not)
       | . + {unblocks: ([$s.backlog.records[]?
           | select(.state != "done")
           | select((.unresolved_blocker_ids // []) | index($task.id))

@@ -90,6 +90,21 @@ assert_contains "$out" "at most 12 curated uncertainty notes" \
   "generator should clearly reject thirteen annotations"
 [ ! -e "$THIRTEEN" ] || fail "rejected annotations left an output sidecar"
 
+SNAPSHOT_HOME="$TMP_ROOT/snapshot-home"
+mkdir -p "$SNAPSHOT_HOME/data" "$SNAPSHOT_HOME/state"
+cat > "$SNAPSHOT_HOME/data/backlog.md" <<'MD'
+## Queued
+- [ ] blocked-green-decision-rollout - Choose rollout (repo: example) (kind: captain) (hold: choose rollout) (hold-kind: captain)
+  Origin: blocked-green
+  Decision key: rollout
+  State: awaiting captain decision.
+MD
+snapshot=$(FM_HOME="$SNAPSHOT_HOME" FM_STATE_OVERRIDE="$SNAPSHOT_HOME/state" \
+  FM_DATA_OVERRIDE="$SNAPSHOT_HOME/data" "$ROOT/bin/fm-fleet-snapshot.sh" --json)
+printf '%s\n' "$snapshot" | jq -e '
+  .backlog.records[0].captain_decision == {origin:"blocked-green", key:"rollout"}
+' >/dev/null || fail "fleet snapshot did not expose the real captain hold origin"
+
 READY_ROOT="$TMP_ROOT/ready-root"
 mkdir -p "$READY_ROOT/bin"
 cp "$ROOT/bin/fm-review.sh" "$READY_ROOT/bin/fm-review.sh"
@@ -101,7 +116,7 @@ cat <<'JSON'
  {"id":"stale-impact","pr":{"url":"https://github.com/example/project/pull/21"},"current_state":{"state":"done","detail":"checks green"},"hints":{"open_decisions":[]},"backlog":{"order":2}},
  {"id":"real-impact","pr":{"url":"https://github.com/example/project/pull/22"},"current_state":{"state":"done","detail":"checks green"},"hints":{"open_decisions":[]},"backlog":{"order":3}}],
  "backlog":{"records":[
-  {"id":"captain-call","state":"queued","structured":true,"kind":"captain","hold_kind":"captain","hold_reason":"choose rollout","blocked_by_ids":["blocked-green"],"unresolved_blocker_ids":[]},
+  {"id":"blocked-green-decision-rollout","state":"queued","structured":true,"kind":"captain","hold_kind":"captain","hold_reason":"choose rollout","blocked_by":null,"blocked_by_ids":[],"unresolved_blocker_ids":[],"body_lines":["Origin: blocked-green","Decision key: rollout","State: awaiting captain decision."],"captain_decision":{"origin":"blocked-green","key":"rollout"}},
   {"id":"finished","state":"done","unresolved_blocker_ids":["stale-impact"]},
   {"id":"duplicate-live","state":"queued","unresolved_blocker_ids":["stale-impact","stale-impact"]},
   {"id":"live-one","state":"queued","unresolved_blocker_ids":["real-impact"]},
