@@ -2,7 +2,7 @@
 # Behavior tests for the no-mistakes GATE-agent fleet-lifecycle refusal.
 #
 # A confused no-mistakes gate agent runs inside a firstmate checkout, adopts the
-# captain identity from AGENTS.md, and reaches for fm-spawn/fm-send/fm-teardown.
+# captain identity from AGENTS.md, and reaches for fleet-mutating entrypoints.
 # bin/fm-gate-refuse-lib.sh is the firstmate capability-removal half: sourced at
 # the top of those three entrypoints and called before any fleet mutation, it
 # fails closed on either of two independent signals:
@@ -13,7 +13,7 @@
 # A normal firstmate session (real primary, real crew worktree) has NEITHER
 # signal and is completely unaffected.
 #
-# Each entrypoint is exercised in three scenarios, isolating exactly ONE signal:
+# Each covered entrypoint is exercised in three scenarios, isolating exactly ONE signal:
 #   - env-marker refuse : neutral cwd + NO_MISTAKES_GATE set      -> exit 3, no mutation
 #   - path-backstop refuse: gate-worktree cwd + marker UNSET      -> exit 3, no mutation
 #   - no-regression      : neutral cwd + marker UNSET             -> succeeds, no gate error
@@ -34,6 +34,7 @@ GATE_LIB="$ROOT/bin/fm-gate-refuse-lib.sh"
 SPAWN="$ROOT/bin/fm-spawn.sh"
 SEND="$ROOT/bin/fm-send.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
+ENDPOINT_BIND_MIGRATE="$ROOT/bin/fm-endpoint-bind-migrate.sh"
 
 TMP=$(fm_test_tmproot fm-gate-refuse)
 fm_git_identity fmtest fmtest@example.invalid
@@ -361,6 +362,73 @@ test_teardown_refuses_and_admits() {
   pass "fm-teardown: refuses on marker and gate-worktree backstop; a normal teardown is unaffected"
 }
 
+# --- fm-endpoint-bind-migrate ----------------------------------------------
+
+make_endpoint_bind_case() {  # <name>
+  local case_dir="$TMP/$1"
+  mkdir -p "$case_dir/home/state" "$case_dir/home/data/task-x1" \
+    "$case_dir/fakebin" "$case_dir/worktree" "$case_dir/project"
+  fm_write_meta "$case_dir/home/state/task-x1.meta" \
+    "window=default:w1:p2" "worktree=$case_dir/worktree" \
+    "project=$case_dir/project" "backend=herdr" \
+    "herdr_session=default" "herdr_workspace_id=w1" \
+    "herdr_tab_id=w1:t2" "herdr_pane_id=w1:p2" "kind=ship"
+  cat > "$case_dir/fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "agent list")
+    jq -cn --arg worktree "${FM_FAKE_MIGRATE_WORKTREE:?}" '
+      {result:{agents:[{
+        foreground_cwd:$worktree,
+        pane_id:"w1:p2",
+        workspace_id:"w1",
+        tab_id:"w1:t2"
+      }]}}
+    '
+    ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/herdr"
+  printf '%s\n' "$case_dir"
+}
+
+run_endpoint_bind_migrate() {  # <cwd> <case-dir> [ASSIGN...]
+  local cwd=$1 case_dir=$2; shift 2
+  ( cd "$cwd" && env -u NO_MISTAKES_GATE -u FM_GATE_REFUSE_BYPASS \
+      "FM_ROOT_OVERRIDE=$ROOT" "FM_HOME=$case_dir/home" \
+      "FM_FAKE_MIGRATE_WORKTREE=$case_dir/worktree" \
+      "PATH=$case_dir/fakebin:$PATH" "$@" \
+      "$ENDPOINT_BIND_MIGRATE" task-x1 ) 2>&1
+}
+
+test_endpoint_bind_migration_refuses_and_admits() {
+  local case_dir out rc
+
+  case_dir=$(make_endpoint_bind_case endpoint-bind-envmark)
+  out=$(run_endpoint_bind_migrate "$NORMAL_CWD" "$case_dir" NO_MISTAKES_GATE=1); rc=$?
+  expect_code 3 "$rc" "endpoint binding: NO_MISTAKES_GATE must refuse"
+  assert_contains "$out" "$ENV_MSG" "endpoint binding: env-marker refusal message"
+  assert_not_contains "$(cat "$case_dir/home/state/task-x1.meta")" "endpoint_task_id=" \
+    "endpoint binding: refused env-marker migration must leave metadata unbound"
+
+  case_dir=$(make_endpoint_bind_case endpoint-bind-backstop)
+  out=$(run_endpoint_bind_migrate "$GATE_WT" "$case_dir"); rc=$?
+  expect_code 3 "$rc" "endpoint binding: gate-worktree cwd must refuse with the marker unset"
+  assert_contains "$out" "$PATH_MSG" "endpoint binding: path-backstop refusal message"
+  assert_not_contains "$(cat "$case_dir/home/state/task-x1.meta")" "endpoint_task_id=" \
+    "endpoint binding: refused backstop migration must leave metadata unbound"
+
+  case_dir=$(make_endpoint_bind_case endpoint-bind-ok)
+  out=$(run_endpoint_bind_migrate "$NORMAL_CWD" "$case_dir"); rc=$?
+  expect_code 0 "$rc" "endpoint binding: a normal session must still migrate proven metadata"
+  assert_not_contains "$out" "$ENV_MSG" "endpoint binding: normal migration must not print the gate refusal"
+  assert_not_contains "$out" "$PATH_MSG" "endpoint binding: normal migration must not print the backstop refusal"
+  assert_contains "$(cat "$case_dir/home/state/task-x1.meta")" "endpoint_task_id=task-x1" \
+    "endpoint binding: normal migration should publish the proven binding"
+  pass "fm-endpoint-bind-migrate: refuses gate agents while normal evidence-based migration remains available"
+}
+
 test_helper_env_marker_refuses
 test_helper_empty_env_marker_refuses
 test_helper_path_backstop_refuses
@@ -368,3 +436,4 @@ test_helper_normal_is_noop
 test_spawn_refuses_and_admits
 test_send_refuses_and_admits
 test_teardown_refuses_and_admits
+test_endpoint_bind_migration_refuses_and_admits

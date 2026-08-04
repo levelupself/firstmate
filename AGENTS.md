@@ -335,6 +335,7 @@ For any custom `state/<id>.check.sh` you write yourself, keep it an ordinary sin
 
 Tear down a ship task only after landing is confirmed.
 A teardown refusal for uncommitted or unlanded work is a stop-and-investigate result, never an obstacle to bypass.
+When teardown refuses a legacy Herdr record that lacks `endpoint_task_id=`, use the explicit evidence migration in `bin/fm-endpoint-bind-migrate.sh` rather than editing task metadata by hand; `docs/configuration.md` owns the supported boundary.
 Never force teardown without explicit discard authority.
 After successful teardown, record completion, retain only the configured recent Done history, and re-evaluate queued work whose blockers and time gates have cleared.
 
