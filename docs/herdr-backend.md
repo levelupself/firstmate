@@ -47,6 +47,8 @@ Herdr's harness-agnostic `agent_status` supplies live pane state, and Firstmate'
 Operators may customize Herdr space-row content in `~/.config/herdr/config.toml` with the built-ins `state_icon`, `state_text`, `workspace`, `branch`, and `git_status`; colors are not configurable, and Firstmate does not rewrite the operator's Herdr configuration.
 The sidebar can display agents from every home in the named Herdr session, while each home keeps its own frame record and `fm-send.sh` continues to require an explicit `FM_HOME` before it will steer anything.
 The existing whole-fleet status view runs continuously in a normal split pane recorded as part of the frame, so it survives client detach.
+Frame validation proves that pane still runs the exact fleet watch command; a dead or unreadable command is displayed without rebuilding or rewriting the frame.
+One validated version 1 frame is upgraded in place by adding its fleet pane and atomically publishing version 2, while an ambiguous legacy record remains untouched.
 `bin/fm-cockpit.sh switch <FM_HOME>` validates another complete per-home frame and focuses its exact workspace in one operation; ancestor or descendant homes are rejected because cockpit frames cannot nest.
 `bin/fm-cockpit.sh panel` renders the same operator boundary as text: the native navigator role, exact pinned head, current viewport panes, live fleet-pane identity, and `display=all-homes steer=current-home` boundary.
 Add `--watch` with an optional positive interval to keep that textual view live.

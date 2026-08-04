@@ -125,7 +125,7 @@ if [ "$ACTION" = switch ]; then
 fi
 
 render_frame() {
-  local label panes rows
+  local label panes rows head_state fleet_state
   printf '%s\n' 'ORCHESTRATION COCKPIT'
   if [ "$RUNTIME" != herdr ]; then
     printf 'NAVIGATOR plain fleet panel (Herdr sidebar unavailable on %s)\n' "$RUNTIME"
@@ -138,13 +138,26 @@ render_frame() {
   if ! fm_backend_herdr_cockpit_binding_live "$STATE" "$FM_HOME" "$SESSION"; then
     printf '%s\n' 'NAVIGATOR Herdr sidebar (all spaces and agents)'
     if fm_backend_herdr_cockpit_record_snapshot "$STATE" "$FM_HOME" \
-       && [ "$FM_BACKEND_HERDR_COCKPIT_SESSION" = "$SESSION" ] \
-       && [ "$(fm_backend_herdr_cockpit_head_state \
-         "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
-         "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID")" = dead ]; then
-      printf 'PINNED DEAD PANE %s; [r] resume old; [n] new clean context\n' \
-        "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID"
-      printf '%s\n' 'VIEWPORT preserved; never auto-filled or re-split'
+       && [ "$FM_BACKEND_HERDR_COCKPIT_SESSION" = "$SESSION" ]; then
+      head_state=$(fm_backend_herdr_cockpit_head_state \
+        "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
+        "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID")
+      if [ "$head_state" = dead ]; then
+        printf 'PINNED DEAD PANE %s; [r] resume old; [n] new clean context\n' \
+          "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID"
+        printf '%s\n' 'VIEWPORT preserved; never auto-filled or re-split'
+      elif [ "$head_state" = live ] && [ "$FM_BACKEND_HERDR_COCKPIT_VERSION" = 2 ]; then
+        fleet_state=$(fm_backend_herdr_cockpit_fleet_state \
+          "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
+          "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID")
+        printf 'PINNED head=%s [live]\n' "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID"
+        printf 'VIEWPORT tab=%s [preserved]\n' "$FM_BACKEND_HERDR_COCKPIT_TAB_ID"
+        printf 'FLEET column=%s [%s]; frame preserved without rebuild\n' \
+          "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" "$fleet_state"
+      else
+        printf '%s\n' 'PINNED unavailable; frame absent, invalid, or unreadable'
+        printf '%s\n' 'VIEWPORT ordinary peer-endpoint layout remains active'
+      fi
     else
       printf '%s\n' 'PINNED unavailable; frame absent, invalid, or unreadable'
       printf '%s\n' 'VIEWPORT ordinary peer-endpoint layout remains active'

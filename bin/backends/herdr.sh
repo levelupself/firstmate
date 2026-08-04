@@ -1739,7 +1739,8 @@ fm_backend_herdr_cockpit_home_identity() {  # <home>
 }
 
 fm_backend_herdr_cockpit_record_snapshot() {  # <state-dir> <home>
-  local state=$1 home=$2 record lines exact_home exact
+  local state=$1 home=$2 record lines version exact_home exact
+  FM_BACKEND_HERDR_COCKPIT_VERSION=""
   FM_BACKEND_HERDR_COCKPIT_HOME=""
   FM_BACKEND_HERDR_COCKPIT_SESSION=""
   FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID=""
@@ -1750,15 +1751,18 @@ fm_backend_herdr_cockpit_record_snapshot() {  # <state-dir> <home>
   record=$(fm_backend_herdr_cockpit_record_path "$state")
   [ -f "$record" ] && [ ! -L "$record" ] || return 1
   lines=$(wc -l < "$record" 2>/dev/null | tr -d '[:space:]')
-  [ "$lines" = 8 ] || return 1
-  [ "$(fm_backend_herdr_cockpit_record_field "$record" version)" = 2 ] || return 1
+  version=$(fm_backend_herdr_cockpit_record_field "$record" version) || return 1
+  case "$version:$lines" in 1:7|2:8) ;; *) return 1 ;; esac
+  FM_BACKEND_HERDR_COCKPIT_VERSION=$version
   FM_BACKEND_HERDR_COCKPIT_HOME=$(fm_backend_herdr_cockpit_record_field "$record" home) || return 1
   FM_BACKEND_HERDR_COCKPIT_SESSION=$(fm_backend_herdr_cockpit_record_field "$record" session) || return 1
   FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID=$(fm_backend_herdr_cockpit_record_field "$record" workspace_id) || return 1
   FM_BACKEND_HERDR_COCKPIT_TAB_ID=$(fm_backend_herdr_cockpit_record_field "$record" tab_id) || return 1
   FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID=$(fm_backend_herdr_cockpit_record_field "$record" head_pane_id) || return 1
   FM_BACKEND_HERDR_COCKPIT_VIEWPORT_PANE_ID=$(fm_backend_herdr_cockpit_record_field "$record" viewport_pane_id) || return 1
-  FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID=$(fm_backend_herdr_cockpit_record_field "$record" fleet_pane_id) || return 1
+  if [ "$version" = 2 ]; then
+    FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID=$(fm_backend_herdr_cockpit_record_field "$record" fleet_pane_id) || return 1
+  fi
   exact_home=$(fm_backend_herdr_cockpit_home_identity "$home") || return 1
   [ "$FM_BACKEND_HERDR_COCKPIT_HOME" = "$exact_home" ] || return 1
   for exact in \
@@ -1771,7 +1775,7 @@ fm_backend_herdr_cockpit_record_snapshot() {  # <state-dir> <home>
   for exact in "$FM_BACKEND_HERDR_COCKPIT_VIEWPORT_PANE_ID" "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID"; do
     case "$exact" in *[!A-Za-z0-9._:@%+-]*) return 1 ;; esac
   done
-  [ -n "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" ] || return 1
+  [ "$version" = 1 ] || [ -n "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" ] || return 1
   return 0
 }
 
@@ -1857,6 +1861,7 @@ fm_backend_herdr_cockpit_workspace_matches_home() {  # <session> <workspace> <ho
 fm_backend_herdr_cockpit_binding_live() {  # <state-dir> <home> [<session>]
   local state=$1 home=$2 expected_session=${3:-}
   fm_backend_herdr_cockpit_record_snapshot "$state" "$home" || return 1
+  [ "$FM_BACKEND_HERDR_COCKPIT_VERSION" = 2 ] || return 1
   [ -z "$expected_session" ] \
     || [ "$FM_BACKEND_HERDR_COCKPIT_SESSION" = "$expected_session" ] \
     || return 1
@@ -1866,6 +1871,9 @@ fm_backend_herdr_cockpit_binding_live() {  # <state-dir> <home> [<session>]
     "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" \
     "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" \
     || return 1
+  [ "$(fm_backend_herdr_cockpit_fleet_state \
+    "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
+    "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID")" = live ] || return 1
   fm_backend_herdr_cockpit_pane_matches \
     "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
     "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" \
@@ -1877,8 +1885,40 @@ fm_backend_herdr_cockpit_binding_live() {  # <state-dir> <home> [<session>]
     "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID")" = live ]
 }
 
+fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane>
+  local session=$1 pane=$2 info
+  info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || {
+    printf 'unknown'
+    return 0
+  }
+  if ! printf '%s' "$info" | jq -e --arg pane "$pane" '
+    .result.type == "pane_process_info"
+    and .result.process_info.pane_id == $pane
+    and (.result.process_info.foreground_processes | type) == "array"
+  ' >/dev/null 2>&1; then
+    printf 'unknown'
+    return 0
+  fi
+  if printf '%s' "$info" | jq -e --arg script "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" '
+    any(.result.process_info.foreground_processes[]?;
+      ((.argv // [(.argv0 // "")]) | index($script)) != null
+      and ((.argv // []) | index("--watch")) != null)
+  ' >/dev/null 2>&1; then
+    printf 'live'
+  else
+    printf 'dead'
+  fi
+}
+
+fm_backend_herdr_cockpit_discard_fleet_pane() {  # <session> <workspace> <tab> <pane>
+  local session=$1 workspace=$2 tab=$3 pane=$4
+  [ -n "$pane" ] || return 0
+  fm_backend_herdr_cockpit_pane_matches "$session" "$pane" "$workspace" "$tab" || return 1
+  fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane"
+}
+
 fm_backend_herdr_cockpit_create_fleet_pane() {  # <session> <workspace> <tab> <head> <home>
-  local session=$1 workspace=$2 tab=$3 head=$4 home=$5 out pane actual_workspace actual_tab
+  local session=$1 workspace=$2 tab=$3 head=$4 home=$5 out pane actual_workspace actual_tab attempt
   out=$(fm_backend_herdr_cli "$session" pane split "$head" \
     --direction right --ratio 0.25 --cwd "$home" --no-focus 2>/dev/null) || return 1
   pane=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
@@ -1887,9 +1927,21 @@ fm_backend_herdr_cockpit_create_fleet_pane() {  # <session> <workspace> <tab> <h
   if [ -z "$pane" ] || [ "$actual_workspace" != "$workspace" ] || [ "$actual_tab" != "$tab" ]; then
     return 1
   fi
-  fm_backend_herdr_cli "$session" pane rename "$pane" firstmate-fleet >/dev/null 2>&1 || return 1
-  fm_backend_herdr_cli "$session" pane run "$pane" \
-    env "FM_HOME=$home" "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" --watch >/dev/null 2>&1 || return 1
+  if ! fm_backend_herdr_cli "$session" pane rename "$pane" firstmate-fleet >/dev/null 2>&1 \
+     || ! fm_backend_herdr_cli "$session" pane run "$pane" \
+       env "FM_HOME=$home" "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" --watch >/dev/null 2>&1; then
+    fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$pane" || true
+    return 1
+  fi
+  attempt=0
+  while [ "$(fm_backend_herdr_cockpit_fleet_state "$session" "$pane")" != live ]; do
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge "${FM_BACKEND_HERDR_COCKPIT_START_POLLS:-10}" ]; then
+      fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$pane" || true
+      return 1
+    fi
+    sleep 0.1
+  done
   printf '%s' "$pane"
 }
 
@@ -1932,7 +1984,10 @@ fm_backend_herdr_cockpit_adopt() {  # <state-dir> <home> <session> [adopt|new]
       echo "COCKPIT: could not create the persistent live fleet column; frame was not adopted." >&2
       return 1
     }
-    fm_backend_herdr_cockpit_write_record "$state" "$home" "$session" "$workspace" "$tab" "$pane" "" "$fleet" || return 1
+    fm_backend_herdr_cockpit_write_record "$state" "$home" "$session" "$workspace" "$tab" "$pane" "" "$fleet" || {
+      fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$fleet" || true
+      return 1
+    }
     printf 'COCKPIT: adopted Herdr frame session=%s workspace=%s tab=%s head=%s\n' \
       "$session" "$workspace" "$tab" "$pane"
     return 0
@@ -1945,6 +2000,25 @@ fm_backend_herdr_cockpit_adopt() {  # <state-dir> <home> <session> [adopt|new]
      && [ "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" = "$workspace" ] \
      && [ "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" = "$tab" ] \
      && [ "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" = "$pane" ]; then
+    if [ "$FM_BACKEND_HERDR_COCKPIT_VERSION" = 1 ]; then
+      fleet=$(fm_backend_herdr_cockpit_create_fleet_pane "$session" "$workspace" "$tab" "$pane" "$home") || {
+        echo "COCKPIT: validated version-1 frame could not add its fleet column; record preserved." >&2
+        return 1
+      }
+      fm_backend_herdr_cockpit_write_record "$state" "$home" "$session" "$workspace" "$tab" "$pane" \
+        "$FM_BACKEND_HERDR_COCKPIT_VIEWPORT_PANE_ID" "$fleet" || {
+        fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$fleet" || true
+        return 1
+      }
+      printf 'COCKPIT: migrated and re-adopted Herdr frame session=%s workspace=%s tab=%s head=%s\n' \
+        "$session" "$workspace" "$tab" "$pane"
+      return 0
+    fi
+    if [ "$(fm_backend_herdr_cockpit_fleet_state "$session" \
+      "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID")" != live ]; then
+      echo "COCKPIT: recorded fleet column is dead or unreadable; preserving the frame without rebuild." >&2
+      return 1
+    fi
     printf 'COCKPIT: re-adopted Herdr frame session=%s workspace=%s tab=%s head=%s\n' \
       "$session" "$workspace" "$tab" "$pane"
     return 0
@@ -1955,7 +2029,10 @@ fm_backend_herdr_cockpit_adopt() {  # <state-dir> <home> <session> [adopt|new]
     case "$old_state" in
       dead)
         fleet=$(fm_backend_herdr_cockpit_create_fleet_pane "$session" "$workspace" "$tab" "$pane" "$home") || return 1
-        fm_backend_herdr_cockpit_write_record "$state" "$home" "$session" "$workspace" "$tab" "$pane" "" "$fleet" || return 1
+        fm_backend_herdr_cockpit_write_record "$state" "$home" "$session" "$workspace" "$tab" "$pane" "" "$fleet" || {
+          fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$fleet" || true
+          return 1
+        }
         printf 'COCKPIT: adopted new clean-context head=%s; prior head=%s remains %s and was not closed or split.\n' \
           "$pane" "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" "$old_state"
         return 0

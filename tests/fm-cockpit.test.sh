@@ -55,7 +55,10 @@ case "${1:-} ${2:-}" in
     printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","workspace_id":"w1","label":"cockpit"}]}}'
     ;;
   "tab get")
-    printf '%s\n' '{"result":{"tab":{"tab_id":"w1:t1","workspace_id":"w1","label":"cockpit"}}}'
+    tab=$3
+    workspace=${tab%%:*}
+    jq -n --arg tab "$tab" --arg workspace "$workspace" \
+      '{result:{tab:{tab_id:$tab,workspace_id:$workspace,label:"cockpit"}}}'
     ;;
   "pane list")
     jq -Rn '
@@ -104,7 +107,28 @@ EOF
       '{result:{pane:{pane_id:$id,tab_id:$tab,workspace_id:$workspace}}}'
     ;;
   "pane run")
+    id=$3
+    [ ! -e "$state/fail-run" ] || exit 1
+    awk -F '\t' -v OFS='\t' -v id="$id" '$1 == id {$5="fleet-live"} {print}' \
+      "$state/panes.tsv" > "$state/panes.next"
+    mv "$state/panes.next" "$state/panes.tsv"
     printf '%s\n' '{"result":{"type":"command_started"}}'
+    ;;
+  "pane process-info")
+    row=$(pane_row "$4")
+    [ -n "$row" ] || exit 1
+    status=$(printf '%s' "$row" | awk -F '\t' '{print $5}')
+    if [ "$status" = fleet-live ]; then
+      jq -n --arg pane "$4" --arg script "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
+        '{result:{type:"pane_process_info",process_info:{pane_id:$pane,shell_pid:100,
+          foreground_process_group_id:101,foreground_processes:[
+            {pid:101,name:"bash",argv:["bash",$script,"--watch"]}]}}}'
+    else
+      jq -n --arg pane "$4" \
+        '{result:{type:"pane_process_info",process_info:{pane_id:$pane,shell_pid:100,
+          foreground_process_group_id:100,foreground_processes:[
+            {pid:100,name:"bash",argv:["bash"]}]}}}'
+    fi
     ;;
   "pane rename")
     id=$3
@@ -141,6 +165,7 @@ run_cockpit_at() {  # <pane> <socket> <action>
     FM_HOME="$HOME_DIR" \
     FM_FAKE_HERDR_STATE="$HERDR_STATE" \
     FM_FAKE_HERDR_LOG="$HERDR_LOG" \
+    FM_COCKPIT_ROOT="$ROOT" \
     HERDR_ENV=1 \
     HERDR_SESSION=fmtest \
     HERDR_SOCKET_PATH="$2" \
@@ -174,7 +199,7 @@ test_frame_re_adoption_is_idempotent() {
 test_space_switch_focuses_one_complete_frame_and_rejects_nesting() {
   local out rc
   printf 'w2:p1\tsecondmate-head\tw2:t1\tw2\tlive\n' >> "$HERDR_STATE/panes.tsv"
-  printf 'w2:p2\tfirstmate-fleet\tw2:t1\tw2\tno-agent\n' >> "$HERDR_STATE/panes.tsv"
+  printf 'w2:p2\tfirstmate-fleet\tw2:t1\tw2\tfleet-live\n' >> "$HERDR_STATE/panes.tsv"
   cat > "$SECOND_HOME/state/.herdr-cockpit" <<EOF
 version=2
 home=$SECOND_HOME
@@ -188,6 +213,7 @@ EOF
   : > "$HERDR_LOG"
   out=$(PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" \
     FM_FAKE_HERDR_STATE="$HERDR_STATE" FM_FAKE_HERDR_LOG="$HERDR_LOG" \
+    FM_COCKPIT_ROOT="$ROOT" \
     HERDR_ENV=1 HERDR_SESSION=fmtest HERDR_SOCKET_PATH=/tmp/fm-cockpit-test.sock \
     HERDR_PANE_ID=w1:p1 "$COCKPIT" switch "$SECOND_HOME") \
     || fail "cockpit could not switch to a complete sibling-home frame"
@@ -207,6 +233,70 @@ EOF
   pass "space switching focuses one complete frame and rejects nesting"
 }
 
+test_version_one_frame_migrates_and_failed_creation_cleans_up() {
+  local out before after rc fleet record_hash
+  printf 'domain\n' > "$SECOND_HOME/.fm-secondmate-home"
+  awk -F '\t' '$1 != "w2:p2" {print}' "$HERDR_STATE/panes.tsv" > "$HERDR_STATE/panes.next"
+  mv "$HERDR_STATE/panes.next" "$HERDR_STATE/panes.tsv"
+  cat > "$SECOND_HOME/state/.herdr-cockpit" <<EOF
+version=1
+home=$SECOND_HOME
+session=fmtest
+workspace_id=w2
+tab_id=w2:t1
+head_pane_id=w2:p1
+viewport_pane_id=
+EOF
+  out=$(PATH="$FAKEBIN:$PATH" FM_HOME="$SECOND_HOME" \
+    FM_FAKE_HERDR_STATE="$HERDR_STATE" FM_FAKE_HERDR_LOG="$HERDR_LOG" \
+    FM_COCKPIT_ROOT="$ROOT" HERDR_ENV=1 HERDR_SESSION=fmtest \
+    HERDR_SOCKET_PATH=/tmp/fm-cockpit-test.sock HERDR_PANE_ID=w2:p1 \
+    "$COCKPIT" adopt) || fail "validated version-1 cockpit frame did not migrate"
+  assert_contains "$out" "migrated and re-adopted Herdr frame" \
+    "version-1 migration was not explicit"
+  assert_grep 'version=2' "$SECOND_HOME/state/.herdr-cockpit" \
+    "version-1 cockpit record did not advance atomically"
+
+  fleet=$(grep '^fleet_pane_id=' "$SECOND_HOME/state/.herdr-cockpit" | cut -d= -f2-)
+  awk -F '\t' -v OFS='\t' -v pane="$fleet" '$1 == pane {$5="no-agent"} {print}' \
+    "$HERDR_STATE/panes.tsv" > "$HERDR_STATE/panes.next"
+  mv "$HERDR_STATE/panes.next" "$HERDR_STATE/panes.tsv"
+  record_hash=$(sha256sum "$SECOND_HOME/state/.herdr-cockpit" | awk '{print $1}')
+  : > "$HERDR_LOG"
+  out=$(PATH="$FAKEBIN:$PATH" FM_HOME="$SECOND_HOME" \
+    FM_FAKE_HERDR_STATE="$HERDR_STATE" FM_FAKE_HERDR_LOG="$HERDR_LOG" \
+    FM_COCKPIT_ROOT="$ROOT" HERDR_ENV=1 HERDR_SESSION=fmtest \
+    HERDR_SOCKET_PATH=/tmp/fm-cockpit-test.sock HERDR_PANE_ID=w2:p1 \
+    "$COCKPIT" panel) || fail "dead fleet column could not be rendered read-only"
+  assert_contains "$out" "FLEET column=$fleet [dead]; frame preserved without rebuild" \
+    "dead fleet command was still reported live"
+  assert_not_contains "$(cat "$HERDR_LOG")" "pane split" \
+    "dead fleet command was silently rebuilt"
+  [ "$record_hash" = "$(sha256sum "$SECOND_HOME/state/.herdr-cockpit" | awk '{print $1}')" ] \
+    || fail "dead fleet rendering rewrote the frame record"
+
+  rm "$SECOND_HOME/state/.herdr-cockpit"
+  awk -F '\t' -v pane="$fleet" '$1 != pane {print}' \
+    "$HERDR_STATE/panes.tsv" > "$HERDR_STATE/panes.next"
+  mv "$HERDR_STATE/panes.next" "$HERDR_STATE/panes.tsv"
+  touch "$HERDR_STATE/fail-run"
+  before=$(wc -l < "$HERDR_STATE/panes.tsv")
+  out=$(PATH="$FAKEBIN:$PATH" FM_HOME="$SECOND_HOME" \
+    FM_FAKE_HERDR_STATE="$HERDR_STATE" FM_FAKE_HERDR_LOG="$HERDR_LOG" \
+    FM_COCKPIT_ROOT="$ROOT" HERDR_ENV=1 HERDR_SESSION=fmtest \
+    HERDR_SOCKET_PATH=/tmp/fm-cockpit-test.sock HERDR_PANE_ID=w2:p1 \
+    "$COCKPIT" adopt 2>&1)
+  rc=$?
+  rm "$HERDR_STATE/fail-run"
+  after=$(wc -l < "$HERDR_STATE/panes.tsv")
+  [ "$rc" -ne 0 ] || fail "cockpit adoption accepted a failed fleet command"
+  [ "$before" = "$after" ] || fail "failed fleet command leaked its response-derived pane"
+  [ ! -e "$SECOND_HOME/state/.herdr-cockpit" ] \
+    || fail "failed fleet command published a cockpit record"
+  printf '2\n' > "$HERDR_STATE/counter"
+  pass "version-1 migration and failed fleet creation preserve frame ownership"
+}
+
 test_adoption_requires_the_native_session_socket() {
   local before out rc after
   before=$(sha256sum "$HOME_DIR/state/.herdr-cockpit" | awk '{print $1}')
@@ -224,6 +314,7 @@ place_task() {
     FM_HOME="$HOME_DIR" \
     FM_FAKE_HERDR_STATE="$HERDR_STATE" \
     FM_FAKE_HERDR_LOG="$HERDR_LOG" \
+    FM_COCKPIT_ROOT="$ROOT" \
     HERDR_SESSION=fmtest \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_cockpit_create_task "$1/state" "$1" "$2" /tmp' \
       "$ROOT" "$HOME_DIR" "$1"
@@ -375,6 +466,7 @@ test_dead_head_is_preserved_until_explicit_new_context() {
 
 test_frame_re_adoption_is_idempotent
 test_space_switch_focuses_one_complete_frame_and_rejects_nesting
+test_version_one_frame_migrates_and_failed_creation_cleans_up
 test_adoption_requires_the_native_session_socket
 test_workers_land_in_persistent_viewport
 test_display_and_steer_boundary_remains_explicit
