@@ -2,6 +2,7 @@
 # Adopt or inspect the current home's orchestration cockpit frame.
 #
 # Usage: fm-cockpit.sh adopt|new|status|panel [--watch [interval]]
+#        fm-cockpit.sh switch <FM_HOME>
 #
 # The enhanced cockpit exists only when the supervisor itself runs natively in
 # Herdr. Herdr's own sidebar is the cross-home display surface, while this
@@ -35,6 +36,7 @@ usage() {
 case "${1:-}" in
   adopt|new|status) ACTION=$1 ;;
   panel) ACTION=$1 ;;
+  switch) ACTION=$1 ;;
   -h|--help) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;
 esac
@@ -68,6 +70,9 @@ if [ "$ACTION" = panel ]; then
       exit 2
     fi
   fi
+elif [ "$ACTION" = switch ]; then
+  [ "$#" -eq 2 ] || { usage >&2; exit 2; }
+  SWITCH_HOME=$2
 else
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
 fi
@@ -95,6 +100,29 @@ else
 fi
 
 SESSION=${HERDR_SESSION:-default}
+
+if [ "$ACTION" = switch ]; then
+  if ! SWITCH_HOME=$(CDPATH='' cd -- "$SWITCH_HOME" 2>/dev/null && pwd -P); then
+    echo "COCKPIT: target FM_HOME cannot be resolved." >&2
+    exit 1
+  fi
+  case "$SWITCH_HOME/" in
+    "$FM_HOME/"*) echo "COCKPIT: nested cockpit homes are not supported." >&2; exit 1 ;;
+  esac
+  case "$FM_HOME/" in
+    "$SWITCH_HOME/"*) echo "COCKPIT: nested cockpit homes are not supported." >&2; exit 1 ;;
+  esac
+  SWITCH_STATE="$SWITCH_HOME/state"
+  if ! fm_backend_herdr_cockpit_binding_live "$SWITCH_STATE" "$SWITCH_HOME" "$SESSION"; then
+    echo "COCKPIT: target home has no live complete frame; space switch refused." >&2
+    exit 1
+  fi
+  fm_backend_herdr_cli "$SESSION" workspace focus \
+    "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" >/dev/null || exit 1
+  printf 'COCKPIT: switched complete frame home=%s workspace=%s\n' \
+    "$SWITCH_HOME" "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID"
+  exit 0
+fi
 
 render_frame() {
   local label panes rows
@@ -132,7 +160,7 @@ render_frame() {
     --arg tab "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" \
     --arg head "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" '
       [.result.panes[]?
-       | select(.tab_id == $tab and .pane_id != $head)
+       | select(.tab_id == $tab and .pane_id != $head and (.label // "") != "firstmate-fleet")
        | "  " + ((.label // "") | if . == "" then .pane_id else . end)
          + " [" + (.agent_status // "unknown") + "]"]
       | if length == 0 then "  empty; next worker splits right from the pinned head"
@@ -141,6 +169,7 @@ render_frame() {
   printf '%s\n' 'NAVIGATOR Herdr sidebar (all spaces and agents)'
   printf 'PINNED %s head=%s [live]\n' "$label" "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID"
   printf 'VIEWPORT tab=%s\n%s\n' "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" "$rows"
+  printf 'FLEET column=%s [live]\n' "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID"
   printf '%s\n' 'BOUNDARY display=all-homes steer=current-home backend=herdr'
 }
 

@@ -103,6 +103,9 @@ EOF
     jq -n --arg id "$id" --arg tab "$tab" --arg workspace "$workspace" \
       '{result:{pane:{pane_id:$id,tab_id:$tab,workspace_id:$workspace}}}'
     ;;
+  "pane run")
+    printf '%s\n' '{"result":{"type":"command_started"}}'
+    ;;
   "pane rename")
     id=$3
     label=$4
@@ -121,6 +124,9 @@ EOF
     awk -F '\t' -v id="$id" '$1 != id {print}' "$state/panes.tsv" > "$state/panes.next"
     mv "$state/panes.next" "$state/panes.tsv"
     printf '%s\n' '{"result":{"type":"pane_closed"}}'
+    ;;
+  "workspace focus")
+    printf '%s\n' '{"result":{"type":"workspace_focused"}}'
     ;;
   *)
     printf 'unexpected fake herdr call: %s\n' "$*" >&2
@@ -150,6 +156,8 @@ test_frame_re_adoption_is_idempotent() {
   local first second before after log
   first=$(run_cockpit adopt) || fail "first cockpit adoption failed"
   assert_contains "$first" "adopted Herdr frame" "first adoption did not report its frame"
+  assert_grep 'fleet_pane_id=w1:p2' "$HOME_DIR/state/.herdr-cockpit" \
+    "first adoption did not bind the persistent fleet pane"
   before=$(sha256sum "$HOME_DIR/state/.herdr-cockpit" | awk '{print $1}')
   : > "$HERDR_LOG"
   second=$(run_cockpit adopt) || fail "cockpit restart re-adoption failed"
@@ -161,6 +169,42 @@ test_frame_re_adoption_is_idempotent() {
   assert_not_contains "$log" "pane split" "re-adoption rebuilt the frame"
   assert_not_contains "$log" "tab create" "re-adoption minted a replacement tab"
   pass "cockpit restart re-adopts the durable frame without rebuilding it"
+}
+
+test_space_switch_focuses_one_complete_frame_and_rejects_nesting() {
+  local out rc
+  printf 'w2:p1\tsecondmate-head\tw2:t1\tw2\tlive\n' >> "$HERDR_STATE/panes.tsv"
+  printf 'w2:p2\tfirstmate-fleet\tw2:t1\tw2\tno-agent\n' >> "$HERDR_STATE/panes.tsv"
+  cat > "$SECOND_HOME/state/.herdr-cockpit" <<EOF
+version=2
+home=$SECOND_HOME
+session=fmtest
+workspace_id=w2
+tab_id=w2:t1
+head_pane_id=w2:p1
+viewport_pane_id=
+fleet_pane_id=w2:p2
+EOF
+  : > "$HERDR_LOG"
+  out=$(PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" \
+    FM_FAKE_HERDR_STATE="$HERDR_STATE" FM_FAKE_HERDR_LOG="$HERDR_LOG" \
+    HERDR_ENV=1 HERDR_SESSION=fmtest HERDR_SOCKET_PATH=/tmp/fm-cockpit-test.sock \
+    HERDR_PANE_ID=w1:p1 "$COCKPIT" switch "$SECOND_HOME") \
+    || fail "cockpit could not switch to a complete sibling-home frame"
+  assert_contains "$out" "switched complete frame home=$SECOND_HOME workspace=w2" \
+    "cockpit switch did not report the exact target frame"
+  assert_contains "$(cat "$HERDR_LOG")" "workspace focus w2" \
+    "cockpit switch did not focus the frame as one workspace operation"
+
+  mkdir -p "$HOME_DIR/nested"
+  out=$(PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" \
+    FM_FAKE_HERDR_STATE="$HERDR_STATE" FM_FAKE_HERDR_LOG="$HERDR_LOG" \
+    HERDR_ENV=1 HERDR_SESSION=fmtest "$COCKPIT" switch "$HOME_DIR/nested" 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "cockpit accepted a nested home frame"
+  assert_contains "$out" "nested cockpit homes are not supported" \
+    "nested cockpit refusal was not explicit"
+  pass "space switching focuses one complete frame and rejects nesting"
 }
 
 test_adoption_requires_the_native_session_socket() {
@@ -189,29 +233,29 @@ test_workers_land_in_persistent_viewport() {
   local first second log live
   : > "$HERDR_LOG"
   first=$(place_task fm-one) || fail "first cockpit task placement failed"
-  [ "$first" = "w1:t1 w1:p2" ] || fail "first cockpit task returned unexpected ids: $first"
+  [ "$first" = "w1:t1 w1:p3" ] || fail "first cockpit task returned unexpected ids: $first"
   log=$(cat "$HERDR_LOG")
   assert_contains "$log" "pane split w1:p1 --direction right --ratio 0.67" \
     "first child did not split right from the pinned head"
   assert_not_contains "$log" "tab create" "first child minted a peer tab"
-  assert_grep 'viewport_pane_id=w1:p2' "$HOME_DIR/state/.herdr-cockpit" \
+  assert_grep 'viewport_pane_id=w1:p3' "$HOME_DIR/state/.herdr-cockpit" \
     "first child did not become the durable viewport anchor"
 
   : > "$HERDR_LOG"
   second=$(place_task fm-two) || fail "second cockpit task placement failed"
-  [ "$second" = "w1:t1 w1:p3" ] || fail "second cockpit task returned unexpected ids: $second"
+  [ "$second" = "w1:t1 w1:p4" ] || fail "second cockpit task returned unexpected ids: $second"
   log=$(cat "$HERDR_LOG")
-  assert_contains "$log" "pane split w1:p2 --direction down --ratio 0.5" \
+  assert_contains "$log" "pane split w1:p3 --direction down --ratio 0.5" \
     "later child did not stay within the persistent viewport"
   assert_not_contains "$log" "tab create" "later child minted a peer tab"
-  assert_grep 'viewport_pane_id=w1:p3' "$HOME_DIR/state/.herdr-cockpit" \
+  assert_grep 'viewport_pane_id=w1:p4' "$HOME_DIR/state/.herdr-cockpit" \
     "latest child did not advance the viewport anchor"
 
   live=$(PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" \
     FM_FAKE_HERDR_STATE="$HERDR_STATE" FM_FAKE_HERDR_LOG="$HERDR_LOG" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_list_live fmtest' "$ROOT")
-  assert_contains "$live" $'fmtest:w1:p2\tfm-one' "recovery inventory missed the first split-pane task"
-  assert_contains "$live" $'fmtest:w1:p3\tfm-two' "recovery inventory missed the second split-pane task"
+  assert_contains "$live" $'fmtest:w1:p3\tfm-one' "recovery inventory missed the first split-pane task"
+  assert_contains "$live" $'fmtest:w1:p4\tfm-two' "recovery inventory missed the second split-pane task"
   pass "new Herdr workers land in the persistent viewport and remain recoverable"
 }
 
@@ -255,8 +299,8 @@ EOF
 test_panel_renders_the_live_frame_and_fleet_view() {
   local out log
   awk -F '\t' -v OFS='\t' '
-    $1 == "w1:p2" {$2="fm-claude-pane"; $5="working"}
-    $1 == "w1:p3" {$2="fm-codex-pane"; $5="blocked"}
+    $1 == "w1:p3" {$2="fm-claude-pane"; $5="working"}
+    $1 == "w1:p4" {$2="fm-codex-pane"; $5="blocked"}
     {print}
   ' "$HERDR_STATE/panes.tsv" > "$HERDR_STATE/panes.next"
   mv "$HERDR_STATE/panes.next" "$HERDR_STATE/panes.tsv"
@@ -273,6 +317,8 @@ test_panel_renders_the_live_frame_and_fleet_view() {
     "cockpit panel omitted the Herdr status for the Claude viewport worker"
   assert_contains "$out" "fm-codex-pane [blocked]" \
     "cockpit panel omitted the Herdr status for the Codex viewport worker"
+  assert_contains "$out" "FLEET column=w1:p2 [live]" \
+    "cockpit panel omitted the persistent live fleet column"
   log=$(cat "$HERDR_LOG")
   assert_not_contains "$log" "pane read" \
     "cockpit panel derived status from harness-rendered pane chrome"
@@ -310,23 +356,25 @@ test_dead_head_is_preserved_until_explicit_new_context() {
   assert_contains "$out" "[r] resume old" "dead cockpit head omitted resume-old guidance"
   assert_contains "$out" "[n] run bin/fm-cockpit.sh new" "dead cockpit head omitted clean-context guidance"
 
-  printf 'w1:p4\tnew-firstmate-head\tw1:t1\tw1\tlive\n' >> "$HERDR_STATE/panes.tsv"
+  printf 'w1:p9\tnew-firstmate-head\tw1:t1\tw1\tlive\n' >> "$HERDR_STATE/panes.tsv"
   : > "$HERDR_LOG"
-  out=$(run_cockpit_at w1:p4 /tmp/fm-cockpit-test.sock new) \
+  out=$(run_cockpit_at w1:p9 /tmp/fm-cockpit-test.sock new) \
     || fail "explicit clean-context cockpit adoption failed"
-  assert_contains "$out" "adopted new clean-context head=w1:p4" \
+  assert_contains "$out" "adopted new clean-context head=w1:p9" \
     "clean-context adoption did not identify the new head"
-  assert_grep 'head_pane_id=w1:p4' "$HOME_DIR/state/.herdr-cockpit" \
+  assert_grep 'head_pane_id=w1:p9' "$HOME_DIR/state/.herdr-cockpit" \
     "clean-context adoption did not advance the durable head"
   assert_contains "$(cat "$HERDR_STATE/panes.tsv")" $'w1:p1\t' \
     "clean-context adoption removed the old dead pane"
   log=$(cat "$HERDR_LOG")
-  assert_not_contains "$log" "pane split" "clean-context adoption re-split the frame"
+  assert_contains "$log" "pane split w1:p9 --direction right --ratio 0.25" \
+    "explicit clean-context adoption did not establish its fleet column"
   assert_not_contains "$log" "pane close" "clean-context adoption closed the prior head"
   pass "dead head stays visible until explicit clean-context re-adoption"
 }
 
 test_frame_re_adoption_is_idempotent
+test_space_switch_focuses_one_complete_frame_and_rejects_nesting
 test_adoption_requires_the_native_session_socket
 test_workers_land_in_persistent_viewport
 test_display_and_steer_boundary_remains_explicit

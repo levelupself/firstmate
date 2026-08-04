@@ -34,7 +34,7 @@ Real harness credential tests remain opt-in rather than part of default CI.
 ## Watching and task containers
 
 When a Firstmate or secondmate supervisor runs natively in Herdr, locked session start adopts its current pane as that home's orchestration cockpit head.
-The exact frame identity is recorded in that home's `state/.herdr-cockpit`, which binds the physical home, named session, workspace, tab, head pane, and latest viewport pane.
+The exact frame identity is recorded in that home's `state/.herdr-cockpit`, which binds the physical home, named session, workspace, tab, head pane, latest viewport pane, and persistent live fleet pane.
 The record is runtime state rather than task metadata because it identifies one persistent per-home supervisor frame, not a child endpoint.
 A restart in the same head pane validates and re-adopts that binding without creating, splitting, or replacing any pane.
 An absent record may be initialized from one exact live Herdr-injected head identity, while a conflicting or dead recorded head is preserved for explicit resume or new-clean-context handling and is never auto-filled or re-split.
@@ -46,7 +46,9 @@ Claude's `statusLine` is Claude-specific, while Codex has no corresponding statu
 Herdr's harness-agnostic `agent_status` supplies live pane state, and Firstmate's task records plus `bin/fm-crew-state.sh` supply the durable orchestration state.
 Operators may customize Herdr space-row content in `~/.config/herdr/config.toml` with the built-ins `state_icon`, `state_text`, `workspace`, `branch`, and `git_status`; colors are not configurable, and Firstmate does not rewrite the operator's Herdr configuration.
 The sidebar can display agents from every home in the named Herdr session, while each home keeps its own frame record and `fm-send.sh` continues to require an explicit `FM_HOME` before it will steer anything.
-`bin/fm-cockpit.sh panel` renders the same operator boundary as text together with the existing whole-fleet status panel: the native navigator role, exact pinned head, current viewport panes, and `display=all-homes steer=current-home` boundary.
+The existing whole-fleet status view runs continuously in a normal split pane recorded as part of the frame, so it survives client detach.
+`bin/fm-cockpit.sh switch <FM_HOME>` validates another complete per-home frame and focuses its exact workspace in one operation; ancestor or descendant homes are rejected because cockpit frames cannot nest.
+`bin/fm-cockpit.sh panel` renders the same operator boundary as text: the native navigator role, exact pinned head, current viewport panes, live fleet-pane identity, and `display=all-homes steer=current-home` boundary.
 Add `--watch` with an optional positive interval to keep that textual view live.
 
 Within an adopted frame, ordinary new crewmates and scouts are split into the frame's right-hand viewport region instead of receiving peer tabs.
