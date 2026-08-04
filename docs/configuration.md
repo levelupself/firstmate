@@ -472,7 +472,7 @@ LINEAR_API_KEY=           # required opt-in
 LINEAR_TEAM_KEY=          # optional team key used to scope refresh and create issues
 LINEAR_API_URL=https://api.linear.app/graphql # optional endpoint override
 LINEAR_MAGIC_WORD="Part of" # non-closing by default
-LINEAR_TIMEOUT=10         # per-request timeout
+LINEAR_TIMEOUT=10         # total issue-lookup budget; per-request timeout elsewhere
 ```
 
 Those settings may be supplied through `.env` or the process environment.
@@ -481,7 +481,7 @@ The following runtime-only controls must be set in the process environment:
 ```sh
 LINEAR_BODY_STYLE=preserve # preserve backlog note formatting
 FM_LINEAR_DISABLE=         # truthy disables only the PR-link step
-FM_LINEAR_PR_TIMEOUT=8     # tighter per-request bound on the PR path
+FM_LINEAR_PR_TIMEOUT=8     # tighter total lookup deadline on the PR path
 ```
 
 `docs/linear.md` owns the join, verified PR-linking mechanism, strictly additive and idempotent body-edit contract, and refresh semantics.

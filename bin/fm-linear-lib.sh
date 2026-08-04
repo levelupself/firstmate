@@ -58,9 +58,9 @@ fml_env_get() {
 # LINEAR_TEAM_KEY   optional team key (e.g. PSY) scoping refresh; lookup ignores it
 # LINEAR_MAGIC_WORD defaults to "Part of" - see fml_reference_line for why a
 #                   NON-CLOSING magic word is the default
-# LINEAR_TIMEOUT    per-request curl timeout in seconds, floor 1, default 10; the
-#                   PR path lowers it further so a slow Linear can never delay a
-#                   PR from being checked.
+# LINEAR_TIMEOUT    timeout in seconds, floor 1, default 10; it is the total
+#                   lookup budget and the per-request bound elsewhere. The PR
+#                   path lowers it further so slow Linear cannot delay a check.
 fml_load_config() {
   local env_file="${FM_LINEAR_ENV_FILE:-${FM_HOME:-}/.env}" raw
   if [ -n "${LINEAR_API_KEY+x}" ]; then
