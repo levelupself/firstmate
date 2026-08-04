@@ -196,7 +196,11 @@
       "audience": "public-product"
     },
     {
-      "path": "data/083-hunk-review-flow/example.md",
+      "path": "docs/examples/083-hunk-review-flow/example.md",
+      "audience": "operator-example"
+    },
+    {
+      "path": "docs/examples/083-hunk-review-flow/review-notes.json",
       "audience": "operator-example"
     },
     {
