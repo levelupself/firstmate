@@ -42,6 +42,8 @@ An absent record may be initialized from one exact live Herdr-injected head iden
 Herdr's own persistent sidebar is the cockpit navigator.
 Its workspace list provides the spaces, and its all-agent panel provides the space-grouped agent tree, so Firstmate does not draw or persist a second navigator model.
 The sidebar can display agents from every home in the named Herdr session, while each home keeps its own frame record and `fm-send.sh` continues to require an explicit `FM_HOME` before it will steer anything.
+`bin/fm-cockpit.sh panel` renders the same operator boundary as text together with the existing whole-fleet status panel: the native navigator role, exact pinned head, current viewport panes, and `display=all-homes steer=current-home` boundary.
+Add `--watch` with an optional positive interval to keep that textual view live.
 
 Within an adopted frame, ordinary new crewmates and scouts are split into the frame's right-hand viewport region instead of receiving peer tabs.
 The first child splits right from the pinned head, and later children split down within the existing viewport so the head stays in place.
@@ -51,6 +53,7 @@ A `config/herdr-presentation-spaces` request is ignored with a visible notice wh
 This enhanced layout is intentionally Herdr-only.
 tmux remains the reference backend, and tmux, Zellij, Orca, cmux, a Herdr spawn selected from outside a native Herdr supervisor pane, or an invalid cockpit binding keeps the existing peer-endpoint topology and prints an explicit cockpit fallback pointing to `bin/fm-fleet-view.sh --watch`.
 Firstmate does not emulate Herdr pane primitives on those backends.
+The `panel` action remains usable there and visibly reports that pinning and the viewport are unavailable before rendering the plain whole-fleet panel.
 
 Without an adopted cockpit frame, the ordinary Herdr topology puts one task tab per endpoint in the exact workspace of the Firstmate or secondmate that launches it.
 When the launcher has no Herdr workspace to inherit, the adapter maintains one durable home-labeled workspace instead.

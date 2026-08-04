@@ -140,6 +140,22 @@ TAB_COUNT=$(lab tab list --workspace "$WORKSPACE" | jq '.result.tabs | length')
 [ "$TAB_COUNT" = 1 ] || fail "cockpit spawn minted peer tabs"
 pass "real Herdr fm-spawn places new crewmates inside the persistent viewport"
 
+PANEL_OUT=$(cockpit_env "$ROOT/bin/fm-cockpit.sh" panel) \
+  || fail "real Herdr cockpit panel did not render"
+assert_contains "$PANEL_OUT" "NAVIGATOR Herdr sidebar (all spaces and agents)" \
+  "real cockpit panel omitted the all-space navigator"
+assert_contains "$PANEL_OUT" "PINNED firstmate head=$HEAD [live]" \
+  "real cockpit panel omitted the pinned controller"
+assert_contains "$PANEL_OUT" "cockpit-one" \
+  "real cockpit panel omitted the first viewport worker"
+assert_contains "$PANEL_OUT" "cockpit-two" \
+  "real cockpit panel omitted the second viewport worker"
+assert_contains "$PANEL_OUT" "BOUNDARY display=all-homes steer=current-home backend=herdr" \
+  "real cockpit panel lost the display and steer boundary"
+assert_contains "$PANEL_OUT" "FLEET STATUS" \
+  "real cockpit panel omitted the read-only fleet view"
+pass "real Herdr cockpit panel renders the navigator, pinned head, and viewport"
+
 COUNT_BEFORE=$(printf '%s' "$PANES_BEFORE" | jq '.result.panes | length')
 RECORD_BEFORE=$(sha256sum "$HOME_DIR/state/.herdr-cockpit" | awk '{print $1}')
 RESTART_OUT=$(cockpit_env "$ROOT/bin/fm-cockpit.sh" adopt) \
