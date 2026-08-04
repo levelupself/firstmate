@@ -174,9 +174,39 @@ test_normally_bound_task_is_unchanged() {
   pass "endpoint binding migration: normally spawned task metadata and cleanup authorization stay unchanged"
 }
 
+test_concurrent_migrations_publish_one_consistent_result() {
+  local dir inventory first_rc second_rc successes audit_marker meta_verified audit_verified
+  dir=$(make_case concurrent)
+  inventory=$(inventory_for "$dir/worktree")
+  first_rc="$dir/first.rc"
+  second_rc="$dir/second.rc"
+  (
+    run_migrate "$dir" "$(printf '%s\n' "$inventory" | jq '.result.agents[0].evidence_marker = "first"')" \
+      > "$dir/first.stdout" 2> "$dir/first.stderr"
+    printf '%s\n' "$?" > "$first_rc"
+  ) &
+  (
+    run_migrate "$dir" "$(printf '%s\n' "$inventory" | jq '.result.agents[0].evidence_marker = "second"')" \
+      > "$dir/second.stdout" 2> "$dir/second.stderr"
+    printf '%s\n' "$?" > "$second_rc"
+  ) &
+  wait
+  successes=$(( (1 - $(cat "$first_rc")) + (1 - $(cat "$second_rc")) ))
+  [ "$successes" -eq 1 ] || fail "concurrent migrations did not serialize to exactly one successful publication"
+  audit_marker=$(jq -r '.live_match.evidence_marker' "$dir/home/data/$TASK_ID/endpoint-binding-migration.json")
+  meta_verified=$(sed -n 's/^endpoint_binding_verified_at=//p' "$dir/home/state/$TASK_ID.meta")
+  audit_verified=$(jq -r '.verified_at' "$dir/home/data/$TASK_ID/endpoint-binding-migration.json")
+  [ "$audit_marker" = first ] || [ "$audit_marker" = second ] \
+    || fail "concurrent migration audit lost the winning live evidence"
+  [ "$meta_verified" = "$audit_verified" ] \
+    || fail "concurrent migration metadata and audit have different verification timestamps"
+  pass "endpoint binding migration: concurrent public invocations publish one consistent binding and audit"
+}
+
 test_unique_live_worktree_match_migrates_with_audit
 test_zero_live_worktree_matches_refuses
 test_ambiguous_live_worktree_matches_refuses
 test_unreadable_live_inventory_refuses
 test_unique_worktree_match_with_other_endpoint_refuses
 test_normally_bound_task_is_unchanged
+test_concurrent_migrations_publish_one_consistent_result

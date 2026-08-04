@@ -28,6 +28,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
+# shellcheck source=bin/fm-task-meta-lock-lib.sh
+. "$SCRIPT_DIR/fm-task-meta-lock-lib.sh"
 
 usage() {
   echo "usage: fm-endpoint-bind-migrate.sh <task-id>" >&2
@@ -70,6 +72,7 @@ fi
 META_TMP=
 AUDIT_TMP=
 cleanup() {
+  fm_task_meta_lock_release || true
   [ -z "$META_TMP" ] || rm -f -- "$META_TMP"
   [ -z "$AUDIT_TMP" ] || rm -f -- "$AUDIT_TMP"
 }
@@ -161,6 +164,11 @@ printf '%s\n' \
   "endpoint_binding_audit=data/$ID/endpoint-binding-migration.json" \
   >> "$META_TMP"
 
+if ! fm_task_meta_lock_acquire "$META"; then
+  echo "REFUSED: task metadata mutation lock for task $ID is unavailable; metadata unchanged." >&2
+  exit 1
+fi
+
 if [ ! -f "$META" ] || [ -L "$META" ] || ! cmp -s -- "$META" <(sed '/^endpoint_task_id=/d; /^endpoint_binding_migration=/d; /^endpoint_binding_verified_at=/d; /^endpoint_binding_audit=/d' "$META_TMP"); then
   echo "REFUSED: endpoint metadata for task $ID changed during live verification; metadata unchanged by this migration." >&2
   exit 1
@@ -234,5 +242,9 @@ mv -f -- "$META_TMP" "$META" || {
   exit 1
 }
 META_TMP=
+fm_task_meta_lock_release || {
+  echo "REFUSED: endpoint binding was published for task $ID but its metadata mutation lock could not be released." >&2
+  exit 1
+}
 
 echo "migrated endpoint binding for task $ID from one exact Herdr foreground_cwd match; audit: $AUDIT"
