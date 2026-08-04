@@ -209,6 +209,11 @@ test_ship_modes_generate_clean_briefs() {
     assert_grep "{TASK}" "$brief" "$id: brief missing the {TASK} placeholder"
     assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
       "$id: brief missing nonterminal working:/setup-complete gate protection"
+    assert_grep 'States: working, needs-decision, captain-held, blocked, paused, done, failed.' "$brief" \
+      "$id: brief missing captain-held from the ship status vocabulary"
+    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+    assert_grep 'then append `captain-held: {why the task is parked}` before going idle and stopping' "$brief" \
+      "$id: brief did not tell a decision-blocked worker to declare captain-held before idling"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
@@ -564,7 +569,7 @@ test_herdr_lab_contract_applies_to_scouts_but_not_secondmates() {
 }
 
 test_pause_verb_override_renders_all_brief_scaffolds() {
-  local home kind id brief
+  local home kind id brief expected_states
   home="$TMP_ROOT/pause-verb-home"
   mkdir -p "$home/data"
 
@@ -574,18 +579,21 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
       ship)
         FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
           "$ROOT/bin/fm-brief.sh" "$id" firstmate >/dev/null 2>&1
+        expected_states='States: working, needs-decision, captain-held, blocked, awaiting, done, failed.'
         ;;
       scout)
         FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
           "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
+        expected_states='States: working, needs-decision, blocked, awaiting, done, failed.'
         ;;
       secondmate)
         FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
           "$ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects >/dev/null 2>&1
+        expected_states='States: working, needs-decision, blocked, awaiting, done, failed.'
         ;;
     esac
     brief="$home/data/$id/brief.md"
-    assert_grep "States: working, needs-decision, blocked, awaiting, done, failed." "$brief" \
+    assert_grep "$expected_states" "$brief" \
       "$kind brief did not render the configured pause verb in its states list"
     # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
     assert_grep 'Use `awaiting: {why}`' "$brief" \

@@ -367,7 +367,7 @@ Use `bin/fm-task-usage.sh <id>` for live or snapshotted codeburn usage for one c
 At the start of every wake-handling turn, drain the durable wake queue before peeking, reading beyond the reason line, steering, or starting work.
 Session start is the only exception because its one-shot digest already drained while locked or deliberately left the queue untouched in lock-refused read-only mode.
 A status line is a wake event, not current state; use `bin/fm-crew-state.sh` when current state matters, especially before re-escalating an old decision, blocker, or pause.
-A declared `paused:` event means a bounded external wait expected to clear on its own, while `blocked:` means firstmate action is needed.
+A declared `paused:` event means a bounded external wait expected to clear on its own, `captain-held:` means an escalated decision is parked awaiting firstmate or captain action, and `blocked:` means firstmate action is needed to unblock the worker.
 
 Handle actionable wakes as follows:
 

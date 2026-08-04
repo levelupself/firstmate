@@ -199,6 +199,13 @@ test_classifier_primitives() {
     && fail "a key token in note prose changed the decision key"
   printf '%s' "$open" | grep -F $'bad key\t' >/dev/null \
     && fail "an invalid key slug entered the open-decision set"
+  printf 'needs-decision: choose a release route\ncaptain-held: parked at the review gate\n' > "$state/parked-decision.status"
+  open=$(status_open_decisions "$state/parked-decision.status")
+  printf '%s' "$open" | grep -F $'default\tneeds-decision\tchoose a release route' >/dev/null \
+    || fail "worker captain-held parking closed the still-open decision"
+  printf 'captain-held [key=default]: tracked by parked-decision-default\n' >> "$state/parked-decision.status"
+  open=$(status_open_decisions "$state/parked-decision.status")
+  [ -z "$open" ] || fail "verified keyed captain-held transfer did not close the decision: $open"
   cat > "$state/activity.status" <<'EOF'
 working [key=phase7]: Phase 7 started
 working [key=phase6]: Phase 6 started

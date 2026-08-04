@@ -68,8 +68,9 @@ FM_PAUSE_RESURFACE_SECS_DEFAULT=3600
 
 # The resolution verb and durable-backlog-transfer verb that CLOSE a keyed
 # status decision opened by needs-decision or blocked. See status_open_decisions
-# below for the status-fold contract. The transfer verb is written only after
-# fm-decision-hold.sh has verified the corresponding captain-held backlog item.
+# below for the status-fold contract. A bare transfer verb parks a worker while
+# leaving its default decision open; fm-decision-hold.sh writes the keyed form
+# only after verifying the corresponding captain-held backlog item.
 FM_CLASSIFY_RESOLVE_VERB_DEFAULT='resolved'
 FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT='captain-held'
 
@@ -147,9 +148,10 @@ status_is_paused_or_captain_held() {  # <status-line>
 # after a later, unrelated event": a subsequent done/paused/working line silently
 # masks a still-open needs-decision. status_open_decisions is the ONE authoritative
 # statement of the status-fold contract that fixes this - a needs-decision/blocked
-# line OPENS a keyed decision, and only an explicit resolution or a verified
-# captain-held backlog transfer referencing that key CLOSES it; a later unrelated
-# terminal line never clears an open captain decision.
+# line OPENS a keyed decision, and only an explicit resolution or a keyed,
+# verified captain-held backlog transfer CLOSES it. A bare captain-held parks the
+# worker without closing the decision, and later unrelated terminal lines do not
+# clear an open captain decision.
 #
 # Decision key grammar (backward-compatible with the existing "<verb>: <note>"
 # format): an OPTIONAL "[key=<slug>]" token sits between the verb and the colon,
@@ -224,9 +226,17 @@ status_open_decisions() {  # <status-file>
         [ -n "$open" ] && open="${open}"$'\n'
         open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"$'\n'
         ;;
-      "$resolve"|"$held")
+      "$resolve")
         open=$(_fm_decision_drop "$open" "$key")
         [ -n "$open" ] && open="${open}"$'\n'
+        ;;
+      "$held")
+        case "${line%%:*}" in
+          *\[key=*\]*)
+            open=$(_fm_decision_drop "$open" "$key")
+            [ -n "$open" ] && open="${open}"$'\n'
+            ;;
+        esac
         ;;
     esac
   done < "$f"
