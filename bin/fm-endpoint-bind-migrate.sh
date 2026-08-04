@@ -219,6 +219,11 @@ printf '%s\n' "$matches" | jq --arg task_id "$ID" \
   exit 1
 }
 
+if [ ! -f "$META" ] || [ -L "$META" ] || ! cmp -s -- "$META" <(sed '/^endpoint_task_id=/d; /^endpoint_binding_migration=/d; /^endpoint_binding_verified_at=/d; /^endpoint_binding_audit=/d' "$META_TMP"); then
+  echo "REFUSED: endpoint metadata for task $ID changed before publication; metadata unchanged by this migration." >&2
+  exit 1
+fi
+
 mv -f -- "$AUDIT_TMP" "$AUDIT" || {
   echo "REFUSED: could not publish endpoint-binding audit for task $ID; metadata unchanged." >&2
   exit 1

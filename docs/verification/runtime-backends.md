@@ -139,6 +139,26 @@ herdr 0.7.5
 ["pane.output_matched","pane.agent_status_changed","pane.scroll_changed"]
 ```
 
+The read-only agent-inventory fields used by legacy endpoint binding migration were verified on 2026-08-04 with Herdr 0.8.0 protocol 19.
+
+```sh
+herdr --version
+herdr status --json | jq -c '{client_version:.client.version,client_protocol:.client.protocol}'
+HERDR_SESSION=default herdr agent list --session default \
+  | jq -c '{agents_type:(.result.agents|type),count:(.result.agents|length),all_have_binding_fields:all(.result.agents[];(type=="object") and ((.foreground_cwd|type)=="string") and ((.pane_id|type)=="string") and ((.workspace_id|type)=="string") and ((.tab_id|type)=="string"))}'
+```
+
+Observed bounded output:
+
+```text
+herdr 0.8.0
+{"client_version":"0.8.0","client_protocol":19}
+{"agents_type":"array","count":9,"all_have_binding_fields":true}
+```
+
+The changing count is incidental fleet state; the verified guarantee is that the explicitly session-scoped inventory is an array and every live entry supplies string `foreground_cwd`, pane, workspace, and tab identities.
+`tests/fm-endpoint-bind-migrate.test.sh` pins exact-worktree uniqueness, recorded-endpoint correlation, durable evidence, and zero-match, ambiguous-match, and unreadable-inventory refusals through the public migration command.
+
 The CLI matrix was checked directly:
 
 | Guarantee | Command shape | Result |
