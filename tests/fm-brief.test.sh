@@ -211,6 +211,7 @@ test_ship_modes_generate_clean_briefs() {
       "$id: brief missing nonterminal working:/setup-complete gate protection"
     assert_grep 'States: working, needs-decision, captain-held, blocked, paused, done, failed.' "$brief" \
       "$id: brief missing captain-held from the ship status vocabulary"
+    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
     assert_grep 'then append `captain-held: {why the task is parked}` before going idle and stopping' "$brief" \
       "$id: brief did not tell a decision-blocked worker to declare captain-held before idling"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
