@@ -76,6 +76,7 @@ chmod +x "$FAKEBIN/herdr"
 
 run_with_fake() {
   PATH="$FAKEBIN:$PATH" \
+    FM_HERDR_BIN="$FAKEBIN/herdr" \
     FM_FAKE_HERDR_STATE="$FAKE_STATE" \
     FM_FAKE_HERDR_LOG="$FAKE_LOG" \
     FM_FAKE_HERDR_REAL_SLEEP="$REAL_SLEEP" \
