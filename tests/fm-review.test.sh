@@ -71,6 +71,25 @@ printf 'bin/fm-review.sh\t12\t15\tCheck URL normalization\tMerged PR URLs retain
 jq -e '.version == 1 and .files[0].annotations[0].confidence == "low" and (.files | length) == 1' \
   "$NOTES" >/dev/null || fail "generator did not emit the curated low-confidence schema"
 
+TWELVE="$TMP_ROOT/twelve.json"
+for n in $(seq 1 12); do
+  printf 'bin/fm-review.sh\t%s\t%s\tUncertainty %s\n' "$n" "$n" "$n"
+done | FM_ROOT_OVERRIDE="$ROOT" FM_DATA_OVERRIDE="$DATA" \
+  "$ROOT/bin/fm-review-notes.sh" example --summary "Twelve notes" --output "$TWELVE" >/dev/null
+[ "$(jq '[.files[].annotations[]] | length' "$TWELVE")" -eq 12 ] \
+  || fail "generator did not accept exactly twelve annotations"
+
+THIRTEEN="$TMP_ROOT/thirteen.json"
+if out=$(for n in $(seq 1 13); do
+    printf 'bin/fm-review.sh\t%s\t%s\tUncertainty %s\n' "$n" "$n" "$n"
+  done | FM_ROOT_OVERRIDE="$ROOT" FM_DATA_OVERRIDE="$DATA" \
+    "$ROOT/bin/fm-review-notes.sh" example --summary "Thirteen notes" --output "$THIRTEEN" 2>&1); then
+  fail "generator accepted thirteen annotations"
+fi
+assert_contains "$out" "at most 12 curated uncertainty notes" \
+  "generator should clearly reject thirteen annotations"
+[ ! -e "$THIRTEEN" ] || fail "rejected annotations left an output sidecar"
+
 READY_ROOT="$TMP_ROOT/ready-root"
 mkdir -p "$READY_ROOT/bin"
 cp "$ROOT/bin/fm-review.sh" "$READY_ROOT/bin/fm-review.sh"
@@ -78,10 +97,11 @@ cat > "$READY_ROOT/bin/fm-fleet-snapshot.sh" <<'SH'
 #!/usr/bin/env bash
 cat <<'JSON'
 {"tasks":[
- {"id":"blocked-green","pr":{"url":"https://github.com/example/project/pull/20"},"current_state":{"state":"done","detail":"checks green"},"hints":{"open_decisions":[{"key":"captain-call"}]},"backlog":{"order":1}},
+ {"id":"blocked-green","pr":{"url":"https://github.com/example/project/pull/20"},"current_state":{"state":"done","detail":"checks green"},"hints":{"open_decisions":[]},"backlog":{"order":1}},
  {"id":"stale-impact","pr":{"url":"https://github.com/example/project/pull/21"},"current_state":{"state":"done","detail":"checks green"},"hints":{"open_decisions":[]},"backlog":{"order":2}},
  {"id":"real-impact","pr":{"url":"https://github.com/example/project/pull/22"},"current_state":{"state":"done","detail":"checks green"},"hints":{"open_decisions":[]},"backlog":{"order":3}}],
  "backlog":{"records":[
+  {"id":"captain-call","state":"queued","structured":true,"kind":"captain","hold_kind":"captain","hold_reason":"choose rollout","blocked_by_ids":["blocked-green"],"unresolved_blocker_ids":[]},
   {"id":"finished","state":"done","unresolved_blocker_ids":["stale-impact"]},
   {"id":"duplicate-live","state":"queued","unresolved_blocker_ids":["stale-impact","stale-impact"]},
   {"id":"live-one","state":"queued","unresolved_blocker_ids":["real-impact"]},

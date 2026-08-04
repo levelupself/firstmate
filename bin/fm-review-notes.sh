@@ -43,7 +43,9 @@ jq -Rn --arg summary "$SUMMARY" '
     | if length < 4 or .[0] == "" or .[3] == "" then error("each note needs path, start, end, and summary") else . end
     | {path: .[0], start: (.[1] | tonumber), end: (.[2] | tonumber), summary: .[3], rationale: (.[4] // "")}
     | if .start < 1 or .end < .start then error("note ranges must be positive and ordered") else . end] as $notes
-  | if ($notes | length) == 0 then error("provide at least one curated uncertainty note") else
+  | if ($notes | length) == 0 then error("provide at least one curated uncertainty note")
+    elif ($notes | length) > 12 then error("at most 12 curated uncertainty notes are allowed")
+    else
       {version: 1, summary: $summary,
        files: [$notes | group_by(.path)[] |
          {path: .[0].path,

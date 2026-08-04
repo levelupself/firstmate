@@ -33,8 +33,11 @@ if [ -z "$ID" ]; then
     . as $s | [.tasks[]
       | select(.pr.url != null and .current_state.state == "done")
       | select((.current_state.detail // "") | test("checks green"; "i"))
-      | select((.hints.open_decisions // []) | length == 0)
       | . as $task
+      | select(any($s.backlog.records[]?;
+          .state != "done" and .structured == true and .kind == "captain"
+          and .hold_kind == "captain" and .hold_reason != null
+          and ((.blocked_by_ids // []) | index($task.id))) | not)
       | . + {unblocks: ([$s.backlog.records[]?
           | select(.state != "done")
           | select((.unresolved_blocker_ids // []) | index($task.id))
