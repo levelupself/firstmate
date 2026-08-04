@@ -27,8 +27,9 @@
 #
 #   1. lock          - acquire the per-home session lock FIRST, before any
 #                       mutating step runs.
-#   2. bootstrap      - home-local stale Herdr projection cleanup runs only
-#                       when this session actually holds the lock. Detect-only
+#   2. bootstrap      - home-local Herdr cockpit adoption and stale projection
+#                       cleanup run only when this session actually holds the
+#                       lock. Detect-only
 #                       diagnostics always run. Bootstrap's five MUTATING sweeps
 #                       (legacy PR-check migration, secondmate fast-forward,
 #                       secondmate liveness, X-mode artifact writes, fleet sync)
@@ -277,9 +278,13 @@ fi
 # --- 2. bootstrap --------------------------------------------------------
 subsection "BOOTSTRAP"
 if [ "$READ_ONLY" -eq 1 ]; then
-  BOOT_OUT=$(FM_BOOTSTRAP_DETECT_ONLY=1 "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1)
+  BOOT_OUT=$(
+    "$SCRIPT_DIR/fm-cockpit.sh" status 2>&1 || true
+    FM_BOOTSTRAP_DETECT_ONLY=1 "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1
+  )
 else
   BOOT_OUT=$(
+    "$SCRIPT_DIR/fm-cockpit.sh" adopt 2>&1 || true
     "$SCRIPT_DIR/fm-herdr-session-cleanup.sh" 2>&1 || true
     "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1
   )

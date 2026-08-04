@@ -38,7 +38,13 @@
 #   outside herdr has no workspace to inherit and uses this home's own labeled
 #   workspace, which must then match exactly one. --secondmate is the deliberate
 #   exception: it stands up that secondmate home's own workspace.
-#   Herdr additionally supports a default-off presentation-only layout when the
+#   A native Herdr supervisor adopts a per-home cockpit frame during locked
+#   session start. Ordinary crewmates and scouts split into that frame's
+#   persistent viewport instead of receiving peer tabs; the exact per-home
+#   frame record is presentation-only and never grants cross-home steering.
+#   Without a live adopted frame the spawn prints an explicit fallback and
+#   keeps the legacy peer-tab topology. Herdr additionally supports a
+#   default-off presentation-only layout when no cockpit frame owns placement and the
 #   local config/herdr-presentation-spaces flag exists. A clean fresh task first
 #   writes state/<id>.herdr-presentation atomically, then creates a disposable
 #   workspace containing only the ordinary task pane. A successful clean create
@@ -1010,10 +1016,40 @@ case "$BACKEND" in
       HERDR_LABEL_HOME=$PROJ_ABS
       HERDR_LAUNCHER_RELATIONSHIP=other-home
     fi
+    HERDR_SES=$(fm_backend_herdr_session)
+    HERDR_COCKPIT=0
+    HERDR_COCKPIT_RECORD_PRESENT=0
     HERDR_PRESENTATION_JOURNAL=$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")
     HERDR_PROJECTED=0
-    if [ "$KIND" != secondmate ] && [ -f "$CONFIG/herdr-presentation-spaces" ]; then
-      HERDR_SES=$(fm_backend_herdr_session)
+    if [ "$KIND" != secondmate ]; then
+      HERDR_COCKPIT_RECORD=$(fm_backend_herdr_cockpit_record_path "$STATE")
+      if [ -e "$HERDR_COCKPIT_RECORD" ] || [ -L "$HERDR_COCKPIT_RECORD" ]; then
+        HERDR_COCKPIT_RECORD_PRESENT=1
+        if fm_backend_herdr_cockpit_binding_live "$STATE" "$HERDR_LABEL_HOME" "$HERDR_SES"; then
+          HERDR_COCKPIT_WORKSPACE_ID=$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID
+          if spawn_herdr_presentation_order_lock_acquire "$HERDR_SES"; then
+            HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_cockpit_create_task \
+              "$STATE" "$HERDR_LABEL_HOME" "$W" "$PROJ_ABS") || exit 1
+            read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
+$HERDR_TASK_IDS
+EOF
+            HERDR_WORKSPACE_ID=$HERDR_COCKPIT_WORKSPACE_ID
+            HERDR_COCKPIT=1
+            if [ -f "$CONFIG/herdr-presentation-spaces" ]; then
+              echo "COCKPIT: adopted frame owns placement; ignoring config/herdr-presentation-spaces for $ID." >&2
+            fi
+          else
+            echo "COCKPIT: frame lock unavailable; using the ordinary peer-tab layout for $ID and bin/fm-fleet-view.sh --watch for the live panel." >&2
+          fi
+        else
+          echo "COCKPIT: recorded frame is invalid or dead; preserving it and using the ordinary peer-tab layout for $ID. Run bin/fm-cockpit.sh status." >&2
+        fi
+      else
+        echo "COCKPIT: no adopted Herdr frame for this home; using the ordinary peer-tab layout for $ID and bin/fm-fleet-view.sh --watch for the live panel." >&2
+      fi
+    fi
+    if [ "$HERDR_COCKPIT" -ne 1 ] && [ "$HERDR_COCKPIT_RECORD_PRESENT" -ne 1 ] \
+       && [ "$KIND" != secondmate ] && [ -f "$CONFIG/herdr-presentation-spaces" ]; then
       HERDR_PARENT_LABEL=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_label)
       if [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; then
         fm_backend_herdr_server_ensure "$HERDR_SES" || {
@@ -1126,7 +1162,7 @@ case "$BACKEND" in
         fi
       fi
     fi
-    if [ "$HERDR_PROJECTED" -ne 1 ]; then
+    if [ "$HERDR_COCKPIT" -ne 1 ] && [ "$HERDR_PROJECTED" -ne 1 ]; then
       HERDR_CONTAINER_RAW=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_container_ensure "$PROJ_ABS" "$HERDR_LAUNCHER_RELATIONSHIP") || exit 1
       # fm_backend_herdr_container_ensure echoes "<session>:<workspace_id>\t<seeded_default_tab_id>"
       # (the second field empty when this call ADOPTED a pre-existing workspace
@@ -1689,7 +1725,7 @@ spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
 sleep 0.3
 spawn_send_literal "$T" "$LAUNCH"
 sleep 0.3
-if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
+if [ "${HERDR_PROJECTED:-0}" -eq 1 ] || [ "${HERDR_COCKPIT:-0}" -eq 1 ]; then
   HERDR_PROJECTION_ABORT_CLEANUP=0
   spawn_herdr_presentation_order_lock_release
 fi

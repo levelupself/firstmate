@@ -13,10 +13,13 @@
 #
 # Default container shape (D4, decided empirically - see
 # herdr-verification-p2.md "Task container shape", refined by
-# docs/herdr-backend.md "Default task container shape"): ONE herdr workspace PER
-# FIRSTMATE HOME (the primary, and each secondmate, gets its own), ONE herdr TAB
-# per task inside its home's workspace. An optional, default-off presentation
-# flag creates a disposable workspace for a clean fresh task instead. That
+# docs/herdr-backend.md "Watching and task containers"): ONE herdr workspace PER
+# FIRSTMATE HOME (the primary, and each secondmate, gets its own). A native
+# Herdr supervisor session adopts its own exact pane as the head of a persistent
+# per-home cockpit frame, and ordinary children split into that frame's tab.
+# Without an adopted frame, each task keeps the legacy one-tab-per-task shape.
+# An optional, default-off presentation flag creates a disposable workspace for
+# a clean fresh task only when no cockpit frame owns placement. That
 # workspace is a non-authoritative visual projection containing only the normal
 # task pane. Its random token and mutable label never authorize lookup,
 # adoption, reuse, closure, deletion, task ownership, or endpoint selection.
@@ -117,6 +120,11 @@ FM_BACKEND_HERDR_SECONDMATE_MARKER=".fm-secondmate-home"
 # spawn can replace one verified agent-free husk under the session lock.
 # No send, capture, Treehouse, or general task-ownership path reads it.
 FM_BACKEND_HERDR_PRESENTATION_JOURNAL_SUFFIX=".herdr-presentation"
+# The per-home cockpit record is authoritative only for presentation placement.
+# It never authorizes send, capture, task ownership, teardown, or cross-home
+# supervision. Version 1 binds one physical home to one named-session workspace,
+# tab, and pinned supervisor pane, plus a replaceable last-viewport hint.
+FM_BACKEND_HERDR_COCKPIT_RECORD=".herdr-cockpit"
 
 # fm_backend_herdr_workspace_label: the per-firstmate-HOME herdr workspace
 # label (docs/herdr-backend.md "Default task container shape"). The PRIMARY home (no
@@ -1708,6 +1716,275 @@ fm_backend_herdr_agent_alive() {  # <target>
   esac
 }
 
+# fm_backend_herdr_cockpit_*: exact per-home frame binding and placement.
+# docs/herdr-backend.md "Watching and task containers" owns the product
+# behavior. This block owns the seven-line version 1 record and its mutation
+# mechanics. The record is presentation authority only and is never consulted
+# by send, capture, teardown, or task ownership paths.
+fm_backend_herdr_cockpit_record_path() {  # <state-dir>
+  printf '%s/%s' "$1" "$FM_BACKEND_HERDR_COCKPIT_RECORD"
+}
+
+fm_backend_herdr_cockpit_record_field() {  # <record> <key>
+  local record=$1 key=$2 count
+  count=$(grep -c "^${key}=" "$record" 2>/dev/null || true)
+  [ "$count" = 1 ] || return 1
+  grep "^${key}=" "$record" 2>/dev/null | cut -d= -f2-
+}
+
+fm_backend_herdr_cockpit_home_identity() {  # <home>
+  local home=$1
+  [ -d "$home" ] || return 1
+  (CDPATH='' cd -- "$home" 2>/dev/null && pwd -P)
+}
+
+fm_backend_herdr_cockpit_record_snapshot() {  # <state-dir> <home>
+  local state=$1 home=$2 record lines exact_home exact
+  FM_BACKEND_HERDR_COCKPIT_HOME=""
+  FM_BACKEND_HERDR_COCKPIT_SESSION=""
+  FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID=""
+  FM_BACKEND_HERDR_COCKPIT_TAB_ID=""
+  FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID=""
+  FM_BACKEND_HERDR_COCKPIT_VIEWPORT_PANE_ID=""
+  record=$(fm_backend_herdr_cockpit_record_path "$state")
+  [ -f "$record" ] && [ ! -L "$record" ] || return 1
+  lines=$(wc -l < "$record" 2>/dev/null | tr -d '[:space:]')
+  [ "$lines" = 7 ] || return 1
+  [ "$(fm_backend_herdr_cockpit_record_field "$record" version)" = 1 ] || return 1
+  FM_BACKEND_HERDR_COCKPIT_HOME=$(fm_backend_herdr_cockpit_record_field "$record" home) || return 1
+  FM_BACKEND_HERDR_COCKPIT_SESSION=$(fm_backend_herdr_cockpit_record_field "$record" session) || return 1
+  FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID=$(fm_backend_herdr_cockpit_record_field "$record" workspace_id) || return 1
+  FM_BACKEND_HERDR_COCKPIT_TAB_ID=$(fm_backend_herdr_cockpit_record_field "$record" tab_id) || return 1
+  FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID=$(fm_backend_herdr_cockpit_record_field "$record" head_pane_id) || return 1
+  FM_BACKEND_HERDR_COCKPIT_VIEWPORT_PANE_ID=$(fm_backend_herdr_cockpit_record_field "$record" viewport_pane_id) || return 1
+  exact_home=$(fm_backend_herdr_cockpit_home_identity "$home") || return 1
+  [ "$FM_BACKEND_HERDR_COCKPIT_HOME" = "$exact_home" ] || return 1
+  for exact in \
+    "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
+    "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" \
+    "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" \
+    "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID"; do
+    case "$exact" in ''|*[!A-Za-z0-9._:@%+-]*) return 1 ;; esac
+  done
+  case "$FM_BACKEND_HERDR_COCKPIT_VIEWPORT_PANE_ID" in
+    *[!A-Za-z0-9._:@%+-]*) return 1 ;;
+  esac
+  return 0
+}
+
+fm_backend_herdr_cockpit_write_record() {  # <state-dir> <home> <session> <workspace> <tab> <head> <viewport>
+  local state=$1 home=$2 session=$3 workspace=$4 tab=$5 head=$6 viewport=${7:-}
+  local record tmp exact_home exact
+  exact_home=$(fm_backend_herdr_cockpit_home_identity "$home") || return 1
+  for exact in "$session" "$workspace" "$tab" "$head"; do
+    case "$exact" in ''|*[!A-Za-z0-9._:@%+-]*) return 1 ;; esac
+  done
+  case "$viewport" in *[!A-Za-z0-9._:@%+-]*) return 1 ;; esac
+  mkdir -p "$state" || return 1
+  record=$(fm_backend_herdr_cockpit_record_path "$state")
+  tmp=$(umask 077; mktemp "$state/.herdr-cockpit.XXXXXX") || return 1
+  if ! {
+    printf 'version=1\n'
+    printf 'home=%s\n' "$exact_home"
+    printf 'session=%s\n' "$session"
+    printf 'workspace_id=%s\n' "$workspace"
+    printf 'tab_id=%s\n' "$tab"
+    printf 'head_pane_id=%s\n' "$head"
+    printf 'viewport_pane_id=%s\n' "$viewport"
+  } > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  chmod 0600 "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$record"
+}
+
+fm_backend_herdr_cockpit_pane_matches() {  # <session> <pane> <workspace> <tab>
+  local session=$1 pane=$2 workspace=$3 tab=$4 out actual_pane actual_workspace actual_tab
+  out=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null) || return 1
+  actual_pane=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
+  actual_workspace=$(printf '%s' "$out" | jq -r '.result.pane.workspace_id // empty' 2>/dev/null)
+  actual_tab=$(printf '%s' "$out" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
+  [ "$actual_pane" = "$pane" ] \
+    && [ "$actual_workspace" = "$workspace" ] \
+    && [ "$actual_tab" = "$tab" ]
+}
+
+fm_backend_herdr_cockpit_binding_live() {  # <state-dir> <home> [<session>]
+  local state=$1 home=$2 expected_session=${3:-}
+  fm_backend_herdr_cockpit_record_snapshot "$state" "$home" || return 1
+  [ -z "$expected_session" ] \
+    || [ "$FM_BACKEND_HERDR_COCKPIT_SESSION" = "$expected_session" ] \
+    || return 1
+  fm_backend_herdr_cockpit_pane_matches \
+    "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
+    "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" \
+    "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" \
+    "$FM_BACKEND_HERDR_COCKPIT_TAB_ID"
+}
+
+# Adopt the current exact native-Herdr pane as this home's head.
+# Mode adopt initializes only an absent record and otherwise re-adopts the same
+# exact head. Mode new explicitly replaces a different binding only after its
+# old head is positively dead or agent-free. Neither mode creates or splits a
+# pane, which makes repeated session-start adoption idempotent.
+fm_backend_herdr_cockpit_adopt() {  # <state-dir> <home> <session> <workspace> <tab> <pane> [adopt|new]
+  local state=$1 home=$2 session=$3 workspace=$4 tab=$5 pane=$6 mode=${7:-adopt}
+  local record old_state
+  case "$mode" in adopt|new) ;; *) return 2 ;; esac
+  fm_backend_herdr_cockpit_pane_matches "$session" "$pane" "$workspace" "$tab" || {
+    echo "COCKPIT: current Herdr pane identity could not be verified; preserving any recorded frame." >&2
+    return 1
+  }
+  record=$(fm_backend_herdr_cockpit_record_path "$state")
+  if [ ! -e "$record" ] && [ ! -L "$record" ]; then
+    fm_backend_herdr_cockpit_write_record "$state" "$home" "$session" "$workspace" "$tab" "$pane" "" || return 1
+    printf 'COCKPIT: adopted Herdr frame session=%s workspace=%s tab=%s head=%s\n' \
+      "$session" "$workspace" "$tab" "$pane"
+    return 0
+  fi
+  if ! fm_backend_herdr_cockpit_record_snapshot "$state" "$home"; then
+    echo "COCKPIT: recorded frame is malformed or belongs to another home; preserving it without rebuild." >&2
+    return 1
+  fi
+  if [ "$FM_BACKEND_HERDR_COCKPIT_SESSION" = "$session" ] \
+     && [ "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" = "$workspace" ] \
+     && [ "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" = "$tab" ] \
+     && [ "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" = "$pane" ]; then
+    printf 'COCKPIT: re-adopted Herdr frame session=%s workspace=%s tab=%s head=%s\n' \
+      "$session" "$workspace" "$tab" "$pane"
+    return 0
+  fi
+  old_state=$(fm_backend_herdr_pane_agent_state \
+    "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID")
+  if [ "$mode" = new ]; then
+    case "$old_state" in
+      dead|no-agent)
+        fm_backend_herdr_cockpit_write_record "$state" "$home" "$session" "$workspace" "$tab" "$pane" "" || return 1
+        printf 'COCKPIT: adopted new clean-context head=%s; prior head=%s remains %s and was not closed or split.\n' \
+          "$pane" "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" "$old_state"
+        return 0
+        ;;
+    esac
+    printf 'COCKPIT: refusing new clean-context head because recorded head %s is %s.\n' \
+      "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" "$old_state" >&2
+    return 1
+  fi
+  printf 'COCKPIT: DEAD PANE %s (%s); frame preserved and never auto-filled or re-split.\n' \
+    "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" "$old_state" >&2
+  printf 'COCKPIT: [r] resume old in the recorded pane; [n] run bin/fm-cockpit.sh new here for clean context.\n' >&2
+  return 1
+}
+
+fm_backend_herdr_cockpit_update_viewport() {  # <state-dir> <home> <pane>
+  local state=$1 home=$2 pane=$3
+  fm_backend_herdr_cockpit_record_snapshot "$state" "$home" || return 1
+  fm_backend_herdr_cockpit_write_record "$state" "$home" \
+    "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
+    "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" \
+    "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" \
+    "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" "$pane"
+}
+
+# Create one task inside an already validated cockpit frame.
+# The first child splits right from the pinned head. Later children split down
+# from the latest still-live viewport pane, keeping the head's column intact.
+# Same-labeled live panes or tabs refuse; confirmed husks are replaced only
+# after the new pane exists and has its exact task label.
+fm_backend_herdr_cockpit_create_task() {  # <state-dir> <home> <label> <cwd>
+  local state=$1 home=$2 label=$3 cwd=$4 session workspace tab head viewport
+  local panes tabs duplicate_ids dup dup_pane anchor direction ratio out pane_id actual_workspace actual_tab remaining
+  fm_backend_herdr_cockpit_binding_live "$state" "$home" || return 1
+  session=$FM_BACKEND_HERDR_COCKPIT_SESSION
+  workspace=$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID
+  tab=$FM_BACKEND_HERDR_COCKPIT_TAB_ID
+  head=$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID
+  viewport=$FM_BACKEND_HERDR_COCKPIT_VIEWPORT_PANE_ID
+  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$workspace" 2>/dev/null) || return 1
+  tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$workspace" 2>/dev/null) || return 1
+  duplicate_ids=$(printf '%s' "$panes" | jq -r --arg want "$label" \
+    '.result.panes[]? | select((.label // "") == $want) | .pane_id' 2>/dev/null) || return 1
+  while IFS= read -r dup; do
+    [ -n "$dup" ] || continue
+    case "$(fm_backend_herdr_pane_agent_state "$session" "$dup")" in
+      dead|no-agent) ;;
+      *)
+        echo "error: herdr cockpit pane '$label' already hosts a live or unreadable endpoint in workspace $workspace (session $session)" >&2
+        return 1
+        ;;
+    esac
+  done <<EOF
+$duplicate_ids
+EOF
+  while IFS= read -r dup; do
+    [ -n "$dup" ] || continue
+    dup_pane=$(fm_backend_herdr_pane_for_tab "$session" "$workspace" "$dup") || return 1
+    [ -n "$dup_pane" ] || return 1
+    case "$(fm_backend_herdr_pane_agent_state "$session" "$dup_pane")" in
+      dead|no-agent) duplicate_ids="${duplicate_ids}${duplicate_ids:+$'\n'}${dup_pane}" ;;
+      *)
+        echo "error: herdr tab '$label' already hosts a live or unreadable endpoint in workspace $workspace (session $session)" >&2
+        return 1
+        ;;
+    esac
+  done < <(printf '%s' "$tabs" | jq -r --arg want "$label" '.result.tabs[]? | select(.label == $want) | .tab_id' 2>/dev/null)
+
+  anchor=""
+  if [ -n "$viewport" ] \
+     && [ "$viewport" != "$head" ] \
+     && fm_backend_herdr_cockpit_pane_matches "$session" "$viewport" "$workspace" "$tab"; then
+    anchor=$viewport
+  fi
+  if [ -z "$anchor" ]; then
+    anchor=$(printf '%s' "$panes" | jq -r --arg tab "$tab" --arg head "$head" '
+      [.result.panes[]? | select(.tab_id == $tab and .pane_id != $head and ((.label // "") | startswith("fm-")))]
+      | last | .pane_id // empty
+    ' 2>/dev/null) || anchor=""
+  fi
+  if [ -n "$anchor" ]; then
+    direction=down
+    ratio=0.5
+  else
+    anchor=$head
+    direction=right
+    ratio=0.67
+  fi
+  out=$(fm_backend_herdr_cli "$session" pane split "$anchor" \
+    --direction "$direction" --ratio "$ratio" --cwd "$cwd" --no-focus 2>/dev/null) || return 1
+  pane_id=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
+  actual_workspace=$(printf '%s' "$out" | jq -r '.result.pane.workspace_id // empty' 2>/dev/null)
+  actual_tab=$(printf '%s' "$out" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
+  if [ -z "$pane_id" ] || [ "$actual_workspace" != "$workspace" ] || [ "$actual_tab" != "$tab" ]; then
+    echo "error: herdr cockpit split returned an incomplete or cross-frame pane identity" >&2
+    return 1
+  fi
+  if ! fm_backend_herdr_cli "$session" pane rename "$pane_id" "$label" >/dev/null 2>&1; then
+    fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id" || true
+    echo "error: could not label new herdr cockpit pane '$label'" >&2
+    return 1
+  fi
+  while IFS= read -r dup; do
+    [ -n "$dup" ] || continue
+    [ "$dup" = "$pane_id" ] && continue
+    fm_backend_herdr_explicit_close_pane_confirmed "$session" "$dup" || {
+      echo "error: failed to remove preexisting herdr cockpit husk $dup for '$label'" >&2
+      return 1
+    }
+  done < <(printf '%s\n' "$duplicate_ids" | awk 'NF && !seen[$0]++')
+  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$workspace" 2>/dev/null) || return 1
+  remaining=$(printf '%s' "$panes" | jq -r --arg want "$label" --arg replacement "$pane_id" \
+    '.result.panes[]? | select((.label // "") == $want and .pane_id != $replacement) | .pane_id' 2>/dev/null)
+  if [ -n "$remaining" ]; then
+    echo "error: failed to remove every preexisting herdr cockpit pane for '$label'" >&2
+    return 1
+  fi
+  fm_backend_herdr_cockpit_update_viewport "$state" "$home" "$pane_id" || {
+    echo "error: could not publish the herdr cockpit viewport binding" >&2
+    return 1
+  }
+  printf '%s %s' "$tab" "$pane_id"
+}
+
 # fm_backend_herdr_create_task: create the task's tab (one pane) in
 # <container> ("session:workspace_id"). Herdr does NOT enforce label
 # uniqueness itself (verified: two tabs can share a label), so the duplicate
@@ -2977,28 +3254,33 @@ EOF
   return 1
 }
 
-# fm_backend_herdr_list_live: recovery/orphan discovery. Lists every tab whose
-# label looks like a firstmate task window (fm-<id>) in <session>'s, THIS
+# fm_backend_herdr_list_live: recovery/orphan discovery. Lists every legacy
+# task tab and every cockpit task pane whose label looks like fm-<id> in this
 # HOME'S OWN workspace (fm_backend_herdr_workspace_label - never another
-# home's), by LABEL - never by trusting a stored pane id, since ids are not
-# guaranteed stable across every server lifecycle (see herdr-verification-p2.md
-# "ID stability"). A caller running as a given home (e.g. a secondmate
-# recovering its own in-flight work) naturally scopes to that home's own
-# workspace because FM_HOME already names it - no glue needed, unlike the
-# primary-spawns-a-secondmate path in fm-spawn.sh. Read-only: a session/
-# workspace that does not exist yet simply lists nothing. One
-# "<session>:<pane_id>\t<label>" line per live task tab.
+# home's). Labels, rather than stored pane ids, remain the recovery inventory
+# because ids are not guaranteed stable across every server lifecycle.
+# A caller running as a secondmate naturally scopes to that home's workspace
+# through FM_HOME. Read-only: an absent session/workspace lists nothing. One
+# "<session>:<pane_id>\t<label>" line per unique task endpoint.
 fm_backend_herdr_list_live() {  # <session>
-  local session=$1 wsid tabs tab_id label pane_id
+  local session=$1 wsid panes tabs tab_id label pane_id
   wsid=$(fm_backend_herdr_workspace_find "$session") || return 0
   [ -n "$wsid" ] || return 0
+  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>/dev/null) || return 0
   tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || return 0
-  while IFS=$'\t' read -r tab_id label; do
-    [ -n "$tab_id" ] || continue
-    pane_id=$(fm_backend_herdr_pane_for_tab "$session" "$wsid" "$tab_id") || continue
-    [ -n "$pane_id" ] || continue
-    printf '%s:%s\t%s\n' "$session" "$pane_id" "$label"
-  done < <(printf '%s' "$tabs" | jq -r '.result.tabs[]? | select(.label | startswith("fm-")) | "\(.tab_id)\t\(.label)"' 2>/dev/null)
+  {
+    printf '%s' "$panes" | jq -r --arg session "$session" '
+      .result.panes[]?
+      | select((.label // "") | startswith("fm-"))
+      | "\($session):\(.pane_id)\t\(.label)"
+    ' 2>/dev/null
+    while IFS=$'\t' read -r tab_id label; do
+      [ -n "$tab_id" ] || continue
+      pane_id=$(fm_backend_herdr_pane_for_tab "$session" "$wsid" "$tab_id") || continue
+      [ -n "$pane_id" ] || continue
+      printf '%s:%s\t%s\n' "$session" "$pane_id" "$label"
+    done < <(printf '%s' "$tabs" | jq -r '.result.tabs[]? | select(.label | startswith("fm-")) | "\(.tab_id)\t\(.label)"' 2>/dev/null)
+  } | awk -F '\t' '!seen[$1]++'
 }
 
 # --- native event push: pane.agent_status_changed subscriber -----------------
