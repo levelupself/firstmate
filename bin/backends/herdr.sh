@@ -1946,10 +1946,10 @@ fm_backend_herdr_cockpit_create_fleet_pane() {  # <session> <workspace> <tab> <h
 }
 
 # Adopt the current exact native-Herdr pane as this home's head.
-# Mode adopt initializes only an absent record and otherwise re-adopts the same
-# exact head. Mode new explicitly replaces a different binding only after its
-# old head is positively dead or agent-free. Neither mode creates or splits a
-# pane, which makes repeated session-start adoption idempotent. The existing
+# Mode adopt constructs the fleet split for an absent or validated version-1
+# record and otherwise re-adopts the same exact frame without rebuilding it.
+# Mode new explicitly replaces a different binding only after its old head is
+# positively dead or agent-free. The existing
 # launcher-identity resolver owns same-session socket proof and derives the
 # current tab and workspace from the live pane rather than stale injected IDs.
 fm_backend_herdr_cockpit_adopt() {  # <state-dir> <home> <session> [adopt|new]

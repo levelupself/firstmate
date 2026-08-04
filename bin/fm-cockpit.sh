@@ -10,9 +10,10 @@
 # runtime exits successfully with an explicit fallback to the read-only fleet
 # panel; it never builds an emulation or changes task placement.
 #
-# adopt is the locked session-start path. It initializes an absent record from
-# the exact injected Herdr pane or re-adopts the same binding after a supervisor
-# restart. It never replaces, creates, closes, moves, or splits a pane.
+# adopt is the locked session-start path. Initial adoption and conservative
+# version-1 migration add the fleet split to the exact injected Herdr frame.
+# A supervisor restart re-adopts the complete binding without replacing,
+# creating, closing, moving, or splitting any pane.
 #
 # new is the explicit clean-context recovery path for a supervisor started in a
 # different pane. It replaces the record only when the old head is positively
@@ -21,7 +22,7 @@
 # status is read-only and reports whether the current home's recorded head is
 # live. panel renders that frame together with the read-only whole-fleet view;
 # --watch refreshes it every five seconds by default. bin/backends/herdr.sh owns
-# the exact seven-line record format and atomic publication mechanics.
+# the exact eight-line record format and atomic publication mechanics.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
