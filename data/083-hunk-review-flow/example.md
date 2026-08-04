@@ -26,8 +26,9 @@ After adding the shell startup line once, a fresh Bash shell opens a specific ta
 review 083-hunk-review-flow
 ```
 
-Bare `review` selects only a checks-green task with no open captain decision, prioritizing the task that directly unblocks the most other work.
+Bare `review` selects only a checks-green task with no open captain decision, prioritizing the task that directly unblocks the most distinct non-done backlog records rather than counting repeated blocker occurrences.
 Green is not itself readiness, because a captain decision can remain the real blocker after checks pass.
+The command reads ordinary task metadata and fleet state directly, so this flow needs neither cockpit integration nor Herdr placement changes.
 
 Hunk remains a reading aid in this stage.
 Nothing the captain writes inside Hunk reaches the pull request, and GitHub remains the review system of record until a later comment-harvest bridge exists.

@@ -2,8 +2,8 @@
 # Open a task's GitHub pull-request diff in Hunk with curated crewmate notes.
 #
 # Usage: fm-review.sh [<task-id>]
-# With no id, the highest-impact checks-green task without an open captain
-# decision is selected from the fleet snapshot. A sidecar at
+# With no id, select the checks-green task without an open captain decision that
+# directly unblocks the most distinct non-done backlog records. A sidecar at
 # data/<id>/review-notes.json is optional, but --agent-notes is always enabled.
 # Hunk is a comprehension aid only: its comments do not reach the pull request,
 # and GitHub remains the review system of record.
