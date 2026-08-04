@@ -96,6 +96,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-linear-refresh.sh`   | Refresh the Linear mirror of the backlog in place; reports retired ids, never deletes |
 | `fm-linear-lib.sh`       | Sourced Linear client: config, GraphQL, the `firstmate: <id>` join, body-edit helpers |
 | `fm-backlog-tsv.sh`      | Render backlog-format Markdown (backlog plus done-archive) as machine-readable TSV   |
+| `fm-endpoint-bind-migrate.sh` | Explicitly prove and bind one legacy Herdr cleanup endpoint                    |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task                               |
 | `fm-teardown.sh`         | Fail-closed teardown: return landed ship worktrees, require completed scout deliverables, retire secondmate homes |
 | `fm-harness.sh`          | Detect the running harness and resolve crew or secondmate harness, model, and effort |
