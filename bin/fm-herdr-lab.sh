@@ -33,8 +33,13 @@ fm_herdr_lab_error() {
 }
 
 fm_herdr_lab_bin() {
-  local candidate
+  local candidate quoted
   if [ "${FM_HERDR_BIN+x}" = x ]; then
+    if [[ "$FM_HERDR_BIN" != /* ]]; then
+      printf -v quoted '%q' "$FM_HERDR_BIN"
+      fm_herdr_lab_error "FM_HERDR_BIN must be an absolute path: $quoted"
+      return 1
+    fi
     [ -x "$FM_HERDR_BIN" ] || {
       fm_herdr_lab_error "FM_HERDR_BIN is not executable: ${FM_HERDR_BIN:-<empty>}"
       return 1

@@ -135,6 +135,36 @@ herdr_test_explicit_bin_fails_closed() {
   rm -f "$output"
 }
 
+herdr_test_relative_explicit_bin_fails_closed() {
+  local tmp output status=0
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/herdr-test-safety-relative.XXXXXX") || return 1
+  output="$tmp/output"
+  cat > "$tmp/herdr" <<'EOF'
+#!/usr/bin/env bash
+echo "relative FM_HERDR_BIN executed" >&2
+exit 98
+EOF
+  chmod +x "$tmp/herdr"
+  (
+    cd "$tmp" || exit 1
+    FM_HERDR_BIN=./herdr \
+      timeout 5 "$HERDR_TEST_SAFETY_DIR/bin/fm-herdr-lab.sh" run fm-lab-relative-bin status
+  ) > "$output" 2>&1 || status=$?
+  if [ "$status" -eq 0 ] || [ "$status" -eq 98 ]; then
+    cat "$output" >&2
+    rm -rf "$tmp"
+    herdr_test_safety_fail "relative FM_HERDR_BIN was accepted"
+    return 1
+  fi
+  if ! grep -Fq 'FM_HERDR_BIN must be an absolute path: ./herdr' "$output"; then
+    cat "$output" >&2
+    rm -rf "$tmp"
+    herdr_test_safety_fail "relative FM_HERDR_BIN lacked its exact offending value"
+    return 1
+  fi
+  rm -rf "$tmp"
+}
+
 herdr_test_depth_guard() {
   local output status=0
   output=$(mktemp "${TMPDIR:-/tmp}/herdr-test-safety-depth.XXXXXX") || return 1
@@ -158,6 +188,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -e
   herdr_test_shadowed_path_terminates
   herdr_test_explicit_bin_fails_closed
+  herdr_test_relative_explicit_bin_fails_closed
   herdr_test_depth_guard
   echo "herdr-test-safety: PASS"
 fi
