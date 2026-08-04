@@ -1,5 +1,6 @@
 projects/
 armada/
+.claude/settings.local.json
 state/
 data/
 .no-mistakes/

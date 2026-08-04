@@ -196,13 +196,13 @@ case "$*" in
   *"-f"*)
     printf '   UID     PID    PPID  TTY        STIME COMMAND\n'
     if [ "${FM_FAKE_PROCESS_GAP:-0}" = 1 ]; then
-      printf ' kiman %7s %7s ?        13:02:34 /usr/bin/bash -c tool-call\n' "$pid" 1
+      printf ' tester %7s %7s ?        13:02:34 /usr/bin/bash -c tool-call\n' "$pid" 1
       exit 0
     fi
     if [ "$pid" = "$FM_FAKE_HOLDER_PID" ]; then
-      printf ' kiman %7s %7s ?        13:02:33 /usr/bin/claude --session test\n' "$pid" 1
+      printf ' tester %7s %7s ?        13:02:33 /usr/bin/claude --session test\n' "$pid" 1
     else
-      printf ' kiman %7s %7s ?        13:02:34 /usr/bin/bash -c tool-call\n' "$pid" "$FM_FAKE_HOLDER_PID"
+      printf ' tester %7s %7s ?        13:02:34 /usr/bin/bash -c tool-call\n' "$pid" "$FM_FAKE_HOLDER_PID"
     fi
     exit 0
     ;;
