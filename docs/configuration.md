@@ -33,13 +33,24 @@ This preference is local to each Firstmate home and is not part of secondmate in
 
 ## Cockpit fleet layout (config/cockpit-layout)
 
-The Herdr cockpit's fleet banner takes its geometry from the local, gitignored `config/cockpit-layout` under the effective Firstmate home, or under `FM_CONFIG_OVERRIDE` when that test override is present.
+The Herdr cockpit's fleet region takes its geometry from the local, gitignored `config/cockpit-layout` under the effective Firstmate home, or under `FM_CONFIG_OVERRIDE` when that test override is present.
 The file holds exactly one `<direction> [<order>] [<ratio>]` line; blank lines and `#` comment lines are ignored, and any other shape is a refusal rather than a fallback.
 `direction` is `stacked` for a full-width band or `side-by-side` for a column, `order` is `fleet-first` or `fleet-last` relative to the supervisor, and `ratio` is the fleet's own share of the frame between 0.10 and 0.90.
 Omitted trailing tokens take the built-in default, and an absent file means the default `stacked fleet-first 0.28`.
 Herdr silently clamps a split ratio below 0.1 and accepts out-of-range values without complaint, so the adapter validates the ratio itself instead of trusting the server.
 This preference is local to each Firstmate home and is not part of secondmate inherited configuration.
 [`docs/herdr-backend.md`](herdr-backend.md) "Watching and task containers" owns what the resolved layout does to the screen, including the warning issued before it is applied.
+
+## Cockpit fleet sections (config/cockpit-sections)
+
+How that region is divided into panes comes from the local, gitignored `config/cockpit-sections` in the same directory, and it is read only when the region is built.
+Each non-blank, non-comment line describes one pane as a comma-separated list of `bin/fm-fleet-view.sh` section names - `waiting`, `ready`, `in-flight`, `blocked`, `finished`, `failed` - and whitespace inside a line is ignored.
+An absent file means the default three panes `waiting`, `ready`, and `in-flight,blocked`, which read in the same priority order the single banner printed top to bottom.
+A section may be listed only once across the whole file, an unknown name is refused, and at most six panes are accepted, because an equal share below that starts hitting the ratio Herdr silently clamps.
+Every refusal is actionable and leaves the screen untouched rather than falling back to a shape nobody chose.
+The panes divide the band along the axis it does not already span, so a `stacked` band becomes columns and a `side-by-side` column becomes rows; the resulting panes are equal.
+This preference is local to each Firstmate home and is not part of secondmate inherited configuration.
+[`docs/herdr-backend.md`](herdr-backend.md) "Watching and task containers" owns what the resolved arrangement does to the screen and when a change to it takes effect.
 
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 

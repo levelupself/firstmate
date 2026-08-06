@@ -5,7 +5,7 @@
 #        fm-cockpit.sh switch <FM_HOME>
 #        fm-cockpit.sh show <task-id>
 #        fm-cockpit.sh next|prev
-#        fm-cockpit.sh zoom [on|off|toggle]
+#        fm-cockpit.sh zoom [on|off|toggle] [<fleet-pane>]
 #        fm-cockpit.sh focus-start|focus-stop
 #        fm-cockpit.sh focus-listen [--once]
 #
@@ -16,18 +16,21 @@
 # panel; it never builds an emulation or changes task placement.
 #
 # adopt is the locked session-start path. Initial adoption and conservative
-# version-1 migration add the fleet split to the exact injected Herdr frame.
+# version-1 migration add the fleet region to the exact injected Herdr frame:
+# one pane per configured section group, in one announced motion.
 # A supervisor restart re-adopts the complete binding without replacing,
-# creating, closing, moving, or splitting any pane.
+# creating, closing, moving, or splitting any pane, so a frame built as one
+# banner stays one banner until this home next builds a region from scratch.
 #
 # new is the explicit clean-context recovery path for a supervisor started in a
 # different pane. It replaces the record only when the old head is positively
 # dead or agent-free, and it leaves that old pane untouched.
 #
 # status is read-only and reports whether the current home's recorded head is
-# live. panel renders that frame together with the read-only whole-fleet view;
+# live. panel renders that frame together with the read-only whole-fleet view,
+# listing each fleet pane by the position `zoom` takes as its argument;
 # --watch refreshes it every five seconds by default. bin/backends/herdr.sh owns
-# the exact eight-line record format and atomic publication mechanics.
+# the exact record format and atomic publication mechanics.
 #
 # show places one of this home's workers in the viewport slot as its sole
 # occupant, parking whoever was there onto its own labelled tab. It is the
@@ -37,8 +40,8 @@
 # next and prev step the viewport along this home's workers ordered by task id,
 # wrapping at both ends, and are meant to sit on a key. They resolve a worker
 # and then hand it to the same single-occupancy placement a sidebar selection
-# uses, so a key and a click can never disagree. The pinned supervisor and the
-# fleet banner are not tasks and are never rotation targets.
+# uses, so a key and a click can never disagree. The pinned supervisor and every
+# fleet pane are not tasks and are never rotation targets.
 #
 # Bind them with Herdr's own custom-command keys, which take a chord directly
 # (Herdr 0.8.0 plugin manifest actions carry id, title, command, contexts,
@@ -141,11 +144,19 @@ elif [ "$ACTION" = next ] || [ "$ACTION" = prev ]; then
 elif [ "$ACTION" = zoom ]; then
   shift
   ZOOM_MODE=toggle
+  ZOOM_PANE=1
   case "${1:-}" in
     '') ;;
     on|off|toggle) ZOOM_MODE=$1; shift ;;
     *) usage >&2; exit 2 ;;
   esac
+  if [ "$#" -gt 0 ]; then
+    ZOOM_PANE=$1
+    shift
+    case "$ZOOM_PANE" in
+      ''|*[!0-9]*|0*) echo "fm-cockpit: fleet pane must be a positive number" >&2; exit 2 ;;
+    esac
+  fi
   [ "$#" -eq 0 ] || { usage >&2; exit 2; }
 elif [ "$ACTION" = focus-listen ]; then
   shift
@@ -292,7 +303,8 @@ render_frame() {
         printf 'PINNED head=%s [live]\n' "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID"
         printf 'VIEWPORT tab=%s [preserved]\n' "$FM_BACKEND_HERDR_COCKPIT_TAB_ID"
         printf 'FLEET column=%s [%s]; frame preserved without rebuild\n' \
-          "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" "${reason#fleet-}"
+          "${FM_BACKEND_HERDR_COCKPIT_FLEET_FAILED_PANE:-$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID}" \
+          "${reason#fleet-}"
         ;;
       *)
         printf 'PINNED unavailable; %s\n' \
@@ -307,11 +319,17 @@ render_frame() {
   label=$(FM_HOME="$FM_HOME" fm_backend_herdr_workspace_label 2>/dev/null || printf unknown)
   panes=$(fm_backend_herdr_cli "$SESSION" pane list \
     --workspace "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" 2>/dev/null || printf '{}')
+  # Every recorded fleet pane is excluded by identity, and any other pane
+  # carrying the fleet region's name is excluded too, so a banner an operator
+  # added by hand is never mistaken for a worker in the viewport.
   rows=$(printf '%s' "$panes" | jq -r \
     --arg tab "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" \
-    --arg head "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" '
+    --arg head "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" \
+    --argjson fleet "$(fm_backend_herdr_cockpit_fleet_pane_json)" '
       [.result.panes[]?
-       | select(.tab_id == $tab and .pane_id != $head and (.label // "") != "firstmate-fleet")
+       | select(.tab_id == $tab and .pane_id != $head
+                and (.pane_id | IN($fleet[]) | not)
+                and (((.label // "") | startswith("firstmate-fleet")) | not))
        | "  " + ((.label // "") | if . == "" then .pane_id else . end)
          + " [" + (.agent_status // "unknown") + "]"]
       | if length == 0 then "  empty; next worker splits right from the pinned head"
@@ -328,8 +346,35 @@ render_frame() {
   printf 'PINNED %s head=%s [live]\n' "$label" "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID"
   printf 'VIEWPORT tab=%s\n%s\n' "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" "$rows"
   printf 'PARKED each on its own tab\n%s\n' "$parked"
-  printf 'FLEET column=%s [live]\n' "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID"
+  printf 'FLEET %s [live]\n%s\n' \
+    "$(render_fleet_count)" "$(render_fleet_panes)"
   printf '%s\n' 'BOUNDARY display=all-homes steer=current-home backend=herdr'
+}
+
+# The fleet region reads as its panes, in the order they sit on screen, each
+# named by the sections it holds. That is what a `zoom <n>` argument selects,
+# so the panel is also the index for it.
+render_fleet_count() {
+  local count
+  count=$(fm_backend_herdr_cockpit_fleet_pane_json | jq -r 'length' 2>/dev/null || printf 1)
+  if [ "$count" = 1 ]; then
+    printf 'column=%s' "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID"
+  else
+    printf 'panes=%s' "$count"
+  fi
+}
+
+render_fleet_panes() {
+  local index=0 pane
+  while IFS= read -r pane; do
+    [ -n "$pane" ] || continue
+    index=$((index + 1))
+    printf '  %s %s %s\n' "$index" \
+      "$(fm_backend_herdr_cockpit_sections_describe \
+        "$(fm_backend_herdr_cockpit_fleet_pane_section "$index")")" "$pane"
+  done <<EOF
+$(printf '%s' "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_IDS" | tr ',' '\n')
+EOF
 }
 
 # The panel is one frame made of two parts, so the fleet view is told the rows
@@ -458,7 +503,8 @@ if [ "$ACTION" = next ] || [ "$ACTION" = prev ]; then
 fi
 
 # Herdr has pane zoom but no hover, floating pane, or overlay, so this is the
-# supported way to read the banner closely. It is reversible and changes
+# supported way to read one fleet pane closely; the optional number selects
+# which one, in the order `panel` lists them. It is reversible and changes
 # no split, so it needs no lock and no warning: nothing about the frame's
 # arrangement is altered, and the operator asked for it explicitly.
 if [ "$ACTION" = zoom ]; then
@@ -466,18 +512,22 @@ if [ "$ACTION" = zoom ]; then
     echo "COCKPIT: this home has no live complete frame; nothing was zoomed." >&2
     exit 1
   fi
+  ZOOM_TARGET=$(printf '%s' "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_IDS" \
+    | cut -d, -f"$ZOOM_PANE")
+  if [ -z "$ZOOM_TARGET" ]; then
+    printf 'COCKPIT: this frame has no fleet pane %s; run bin/fm-cockpit.sh panel to see which panes exist.\n' \
+      "$ZOOM_PANE" >&2
+    exit 1
+  fi
   ZOOMED=$(fm_backend_herdr_cockpit_fleet_zoom \
-    "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
-    "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" "$ZOOM_MODE") || {
+    "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$ZOOM_TARGET" "$ZOOM_MODE") || {
     echo "COCKPIT: the fleet banner could not be zoomed; the frame is unchanged." >&2
     exit 1
   }
   if [ "$ZOOMED" = true ]; then
-    printf 'COCKPIT: fleet banner %s fills the frame; run zoom off to restore it.\n' \
-      "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID"
+    printf 'COCKPIT: fleet banner %s fills the frame; run zoom off to restore it.\n' "$ZOOM_TARGET"
   else
-    printf 'COCKPIT: fleet banner %s is back to its configured size.\n' \
-      "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID"
+    printf 'COCKPIT: fleet banner %s is back to its configured size.\n' "$ZOOM_TARGET"
   fi
   exit 0
 fi
