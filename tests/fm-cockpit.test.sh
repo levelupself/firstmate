@@ -802,7 +802,7 @@ EOF
 }
 
 test_panel_renders_the_live_frame_and_fleet_view() {
-  local out log
+  local out log err="$TMP_ROOT/panel.stderr"
   awk -F '\t' -v OFS='\t' '
     $1 == "w1:p3" {$2="fm-claude-pane"; $5="working"}
     $1 == "w1:p4" {$2="fm-codex-pane"; $5="blocked"}
@@ -810,7 +810,9 @@ test_panel_renders_the_live_frame_and_fleet_view() {
   ' "$HERDR_STATE/panes.tsv" > "$HERDR_STATE/panes.next"
   mv "$HERDR_STATE/panes.next" "$HERDR_STATE/panes.tsv"
   : > "$HERDR_LOG"
-  out=$(run_cockpit panel) || fail "cockpit panel could not render the live frame"
+  out=$(run_cockpit panel 2>"$err") || fail "cockpit panel could not render the live frame"
+  [ ! -s "$err" ] \
+    || fail "cockpit panel leaked a terminal probe error without a controlling tty: $(cat "$err")"
   assert_contains "$out" "ORCHESTRATION COCKPIT" "cockpit panel omitted its heading"
   assert_contains "$out" "NAVIGATOR Herdr sidebar (all spaces and agents)" \
     "cockpit panel did not identify its live navigator"

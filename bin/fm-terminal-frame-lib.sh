@@ -18,7 +18,7 @@ fm_terminal_dimension() {  # <lines|cols>
     *) return 1 ;;
   esac
   if [ -r /dev/tty ]; then
-    value=$(stty size < /dev/tty 2>/dev/null | awk -v f="$field" '{print $f}')
+    value=$(stty size 2>/dev/null < /dev/tty | awk -v f="$field" '{print $f}')
   fi
   case "$value" in
     ''|*[!0-9]*) value=$(tput "$name" 2>/dev/null || true) ;;
