@@ -125,6 +125,14 @@ FM_BACKEND_HERDR_PRESENTATION_JOURNAL_SUFFIX=".herdr-presentation"
 # supervision. Version 1 binds one physical home to one named-session workspace,
 # tab, and pinned supervisor pane, plus a replaceable last-viewport hint.
 FM_BACKEND_HERDR_COCKPIT_RECORD=".herdr-cockpit"
+# The viewport slot is single-occupancy: it is always the right child of one
+# split from the pinned head at this exact ratio, so its width is identical
+# every time an agent enters or leaves it. Nothing ever splits the slot again.
+FM_BACKEND_HERDR_COCKPIT_VIEWPORT_RATIO="0.67"
+# The display-only metadata source used to publish pane names. Herdr's
+# sidebar otherwise names agents by space and tab, so co-located workers are
+# indistinguishable; this names each one by its task and is never an identity.
+FM_BACKEND_HERDR_COCKPIT_METADATA_SOURCE="firstmate-cockpit"
 
 # fm_backend_herdr_workspace_label: the per-firstmate-HOME herdr workspace
 # label (docs/herdr-backend.md "Default task container shape"). The PRIMARY home (no
@@ -2067,20 +2075,240 @@ fm_backend_herdr_cockpit_update_viewport() {  # <state-dir> <home> <pane>
     "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID"
 }
 
-# Create one task inside an already validated cockpit frame.
-# The first child splits right from the pinned head. Later children split down
-# from the latest still-live viewport pane, keeping the head's column intact.
-# Same-labeled live panes or tabs refuse; confirmed husks are replaced only
-# after the new pane exists and has its exact task label.
-fm_backend_herdr_cockpit_create_task() {  # <state-dir> <home> <label> <cwd>
-  local state=$1 home=$2 label=$3 cwd=$4 session workspace tab head viewport
-  local panes tabs duplicate_ids dup dup_pane anchor direction ratio out pane_id actual_workspace actual_tab remaining
+# fm_backend_herdr_cockpit_meta_field: exactly-one-line field read from a task
+# record, mirroring the frame-record reader above so this block stays
+# self-contained. A missing, duplicated, or empty key refuses.
+fm_backend_herdr_cockpit_meta_field() {  # <meta> <key>
+  local meta=$1 key=$2 count value
+  count=$(grep -c "^${key}=" "$meta" 2>/dev/null || true)
+  [ "$count" = 1 ] || return 1
+  value=$(grep "^${key}=" "$meta" 2>/dev/null | cut -d= -f2-)
+  [ -n "$value" ] || return 1
+  printf '%s' "$value"
+}
+
+# fm_backend_herdr_cockpit_owned_task: the task id THIS home owns at <pane>, or
+# refusal. Ownership is proved only from this home's own durable task record:
+# the pane's exact label must be fm-<id>, and <state>/<id>.meta must record the
+# herdr backend and the same exact endpoint identity. Herdr's sidebar displays
+# every home's agents in a shared session, so this is the single guard that
+# keeps cross-home DISPLAY from ever becoming cross-home MOVEMENT: another
+# home's pane can never match, because its records live under its own FM_HOME.
+fm_backend_herdr_cockpit_owned_task() {  # <state-dir> <session> <pane> <label>
+  local state=$1 session=$2 pane=$3 label=$4 id meta
+  case "$label" in
+    fm-?*) id=${label#fm-} ;;
+    *) return 1 ;;
+  esac
+  case "$id" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  meta="$state/$id.meta"
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  [ "$(fm_backend_herdr_cockpit_meta_field "$meta" backend)" = herdr ] || return 1
+  [ "$(fm_backend_herdr_cockpit_meta_field "$meta" endpoint_task_id)" = "$id" ] || return 1
+  [ "$(fm_backend_herdr_cockpit_meta_field "$meta" herdr_session)" = "$session" ] || return 1
+  [ "$(fm_backend_herdr_cockpit_meta_field "$meta" herdr_pane_id)" = "$pane" ] || return 1
+  [ "$(fm_backend_herdr_cockpit_meta_field "$meta" window)" = "$session:$pane" ] || return 1
+  printf '%s' "$id"
+}
+
+# fm_backend_herdr_cockpit_display_agent: publish or clear one pane's
+# display-only sidebar name. Never an endpoint identity, and a failure here is
+# cosmetic, so callers ignore it rather than failing a placement over a label.
+fm_backend_herdr_cockpit_display_agent() {  # <session> <pane> [<text>]
+  local session=$1 pane=$2 text=${3:-}
+  if [ -n "$text" ]; then
+    fm_backend_herdr_cli "$session" pane report-metadata "$pane" \
+      --source "$FM_BACKEND_HERDR_COCKPIT_METADATA_SOURCE" \
+      --display-agent "$text" >/dev/null 2>&1
+  else
+    fm_backend_herdr_cli "$session" pane report-metadata "$pane" \
+      --source "$FM_BACKEND_HERDR_COCKPIT_METADATA_SOURCE" \
+      --clear-display-agent >/dev/null 2>&1
+  fi
+}
+
+# fm_backend_herdr_cockpit_park: move <pane> out of the viewport slot onto its
+# own labelled peer tab, keeping its exact pane id (verified: herdr preserves
+# pane ids across a move, so `window=` and `herdr_pane_id=` stay valid).
+#
+# A parked worker sits in the ORDINARY non-cockpit topology - one labelled
+# fm-<id> tab of its own - so it stays exactly as reachable as it is on a home
+# that never adopted a cockpit at all. That is deliberate: it is why a dead
+# focus listener, a restart, or a second home degrades to today's behavior
+# instead of stranding a pane outside the ordinary visible topology. Parking
+# never closes a pane, and the emptied slot's tab is left for herdr to drop
+# only when it loses its own last pane.
+fm_backend_herdr_cockpit_park() {  # <session> <pane> <label>
+  local session=$1 pane=$2 label=$3 out changed
+  out=$(fm_backend_herdr_cli "$session" pane move "$pane" \
+    --new-tab --label "$label" --no-focus 2>/dev/null) || return 1
+  changed=$(printf '%s' "$out" | jq -r '.result.move_result.changed // empty' 2>/dev/null)
+  [ "$changed" = true ] || return 1
+  printf '%s' "$out" | jq -e --arg pane "$pane" \
+    '.result.move_result.pane.pane_id == $pane' >/dev/null 2>&1
+}
+
+# fm_backend_herdr_cockpit_viewport_place: make <pane> the SOLE occupant of this
+# home's viewport slot, then publish it as the recorded viewport.
+#
+# The slot is rebuilt the same way every time - one `right` split from the
+# pinned head at the fixed viewport ratio - so its width never drifts as agents
+# come and go, and it is never split a second time. Ordering is deliberate:
+# the current occupant is parked onto its own tab FIRST and the new pane is
+# moved in only afterwards. A failure between the two leaves the outgoing
+# worker safe on its own labelled tab and the slot merely empty, never a
+# worker closed, hidden, or unreachable.
+#
+# The caller owns the session presentation lock and the live-binding check.
+fm_backend_herdr_cockpit_viewport_place() {  # <state-dir> <home> <pane> <label>
+  local state=$1 home=$2 pane=$3 label=$4
+  local session workspace tab head inventory occupants occupant occupant_label out
   fm_backend_herdr_cockpit_binding_live "$state" "$home" || return 1
   session=$FM_BACKEND_HERDR_COCKPIT_SESSION
   workspace=$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID
   tab=$FM_BACKEND_HERDR_COCKPIT_TAB_ID
   head=$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID
-  viewport=$FM_BACKEND_HERDR_COCKPIT_VIEWPORT_PANE_ID
+  [ "$pane" != "$head" ] || return 1
+  [ "$pane" != "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" ] || return 1
+
+  # Park every cockpit-tab worker that is not the incoming pane. This is a
+  # reconcile, not a swap: a frame that already holds several workers (a
+  # pre-existing shredded column) converges to single occupancy on first use.
+  inventory=$(fm_backend_herdr_cli "$session" pane list --workspace "$workspace" 2>/dev/null) \
+    || return 1
+  printf '%s' "$inventory" | jq -e '.result.panes | type == "array"' \
+    >/dev/null 2>&1 || return 1
+  occupants=$(printf '%s' "$inventory" | jq -r \
+    --arg tab "$tab" --arg head "$head" --arg fleet "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" '
+      .result.panes[]?
+      | select(.tab_id == $tab and .pane_id != $head and .pane_id != $fleet)
+      | select((.label // "") | startswith("fm-"))
+      | .pane_id + "\t" + .label
+    ' 2>/dev/null) || return 1
+  while IFS=$'\t' read -r occupant occupant_label; do
+    [ -n "$occupant" ] || continue
+    [ "$occupant" != "$pane" ] || continue
+    fm_backend_herdr_cockpit_park "$session" "$occupant" "$occupant_label" || return 1
+  done <<EOF
+$occupants
+EOF
+
+  # Move the incoming pane into the freed slot. A pane already in the cockpit
+  # tab needs no move: herdr reports that as changed:false reason:same_tab, and
+  # at this point it is already the only worker there.
+  if ! fm_backend_herdr_cockpit_pane_matches "$session" "$pane" "$workspace" "$tab"; then
+    out=$(fm_backend_herdr_cli "$session" pane move "$pane" \
+      --tab "$tab" --split right --target-pane "$head" \
+      --ratio "$FM_BACKEND_HERDR_COCKPIT_VIEWPORT_RATIO" --no-focus 2>/dev/null) || return 1
+    printf '%s' "$out" | jq -e --arg pane "$pane" --arg tab "$tab" \
+      '.result.move_result.pane.pane_id == $pane and .result.move_result.pane.tab_id == $tab' \
+      >/dev/null 2>&1 || return 1
+  fi
+  fm_backend_herdr_cockpit_display_agent "$session" "$pane" "$label" || true
+  fm_backend_herdr_cockpit_update_viewport "$state" "$home" "$pane"
+}
+
+# fm_backend_herdr_cockpit_focus_place: the whole reaction to one focus event.
+# <pane> is whatever herdr just focused - any pane, in any space, belonging to
+# any home. Everything that is not this home's own cockpit-managed worker is
+# ignored silently, because a focus event is not a request to move anything:
+# a non-agent pane, the head, the fleet column, another home's worker, and a
+# worker whose durable record does not match all resolve to "do nothing".
+# Returns 0 when the pane now occupies the viewport, 1 when nothing was done.
+fm_backend_herdr_cockpit_focus_place() {  # <state-dir> <home> <session> <pane>
+  local state=$1 home=$2 session=$3 pane=$4 out label id
+  fm_backend_herdr_cockpit_binding_live "$state" "$home" "$session" || return 1
+  [ "$pane" != "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" ] || return 1
+  [ "$pane" != "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" ] || return 1
+  out=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null) || return 1
+  label=$(printf '%s' "$out" | jq -r '.result.pane.label // empty' 2>/dev/null)
+  [ -n "$label" ] || return 1
+  id=$(fm_backend_herdr_cockpit_owned_task "$state" "$session" "$pane" "$label") || return 1
+  [ -n "$id" ] || return 1
+  # Already the sole occupant: nothing to move, and no focus to restore.
+  if [ "$FM_BACKEND_HERDR_COCKPIT_VIEWPORT_PANE_ID" = "$pane" ] \
+     && fm_backend_herdr_cockpit_pane_matches "$session" "$pane" \
+       "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" "$FM_BACKEND_HERDR_COCKPIT_TAB_ID"; then
+    return 1
+  fi
+  fm_backend_herdr_cockpit_viewport_place "$state" "$home" "$pane" "$label" || return 1
+  # The click already routed herdr to the worker's own tab before this reaction
+  # could run, so put the cockpit tab back in front now that the worker is in it.
+  fm_backend_herdr_cli "$session" tab focus \
+    "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" >/dev/null 2>&1 || true
+  printf '%s' "$id"
+}
+
+# fm_backend_herdr_cockpit_ring: this home's rotatable workers, one
+# "<id>\t<pane>" line each, ordered by task id under the C collation so a chord
+# advances the same way every time regardless of spawn order or Herdr's own
+# sidebar ordering. Only panes that still exist are listed, so a torn-down task
+# leaves the ring instead of becoming a dead stop. The pinned head and the fleet
+# column are never members: they are not tasks, so no task record claims them
+# and the ownership check alone excludes them.
+fm_backend_herdr_cockpit_ring() {  # <state-dir> <session>
+  local state=$1 session=$2 meta id pane
+  for meta in "$state"/*.meta; do
+    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+    id=${meta##*/}
+    id=${id%.meta}
+    pane=$(fm_backend_herdr_cockpit_meta_field "$meta" herdr_pane_id) || continue
+    fm_backend_herdr_cockpit_owned_task "$state" "$session" "$pane" "fm-$id" >/dev/null || continue
+    [ "$(fm_backend_herdr_pane_presence_state "$session" "$pane")" = present ] || continue
+    printf '%s\t%s\n' "$id" "$pane"
+  done | LC_ALL=C sort
+}
+
+# fm_backend_herdr_cockpit_rotate: step the viewport one place along that ring
+# and place the worker it lands on, wrapping at both ends. Rotation is not a
+# second placement mechanism: it resolves a pane and hands it to the very same
+# single-occupancy path a sidebar click uses, so both routes agree by
+# construction. An empty ring does nothing; a ring of one re-places the same
+# worker, which is already a no-op when it is the sole occupant.
+fm_backend_herdr_cockpit_rotate() {  # <state-dir> <home> <session> next|prev
+  local state=$1 home=$2 session=$3 direction=$4 ring count current index target id pane
+  case "$direction" in next|prev) ;; *) return 2 ;; esac
+  fm_backend_herdr_cockpit_binding_live "$state" "$home" "$session" || return 1
+  ring=$(fm_backend_herdr_cockpit_ring "$state" "$session")
+  [ -n "$ring" ] || return 1
+  count=$(printf '%s\n' "$ring" | wc -l | tr -d '[:space:]')
+  current=$FM_BACKEND_HERDR_COCKPIT_VIEWPORT_PANE_ID
+  index=$(printf '%s\n' "$ring" | awk -F '\t' -v want="$current" \
+    'want != "" && $2 == want { print NR; exit }')
+  if [ -z "$index" ]; then
+    # Nothing recognizable in the slot: enter the ring at whichever end this
+    # direction would naturally reach first.
+    [ "$direction" = next ] && index=1 || index=$count
+  elif [ "$direction" = next ]; then
+    index=$((index % count + 1))
+  else
+    index=$((index - 1))
+    [ "$index" -ge 1 ] || index=$count
+  fi
+  target=$(printf '%s\n' "$ring" | sed -n "${index}p")
+  id=${target%%$'\t'*}
+  pane=${target##*$'\t'}
+  [ -n "$id" ] && [ -n "$pane" ] || return 1
+  fm_backend_herdr_cockpit_viewport_place "$state" "$home" "$pane" "fm-$id" || return 1
+  fm_backend_herdr_cli "$session" tab focus \
+    "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" >/dev/null 2>&1 || true
+  printf '%s' "$id"
+}
+
+# Create one task inside an already validated cockpit frame.
+# The new child always becomes the viewport slot's sole occupant: any worker
+# already there is parked onto its own labelled tab first.
+# Same-labeled live panes or tabs refuse; confirmed husks are replaced only
+# after the new pane exists and has its exact task label.
+fm_backend_herdr_cockpit_create_task() {  # <state-dir> <home> <label> <cwd>
+  local state=$1 home=$2 label=$3 cwd=$4 session workspace tab head fleet
+  local panes tabs duplicate_ids dup dup_pane occupants occupant occupant_label out pane_id actual_workspace actual_tab remaining
+  fm_backend_herdr_cockpit_binding_live "$state" "$home" || return 1
+  session=$FM_BACKEND_HERDR_COCKPIT_SESSION
+  workspace=$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID
+  tab=$FM_BACKEND_HERDR_COCKPIT_TAB_ID
+  head=$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID
+  fleet=$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID
   panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$workspace" 2>/dev/null) || return 1
   tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$workspace" 2>/dev/null) || return 1
   duplicate_ids=$(printf '%s' "$panes" | jq -r --arg want "$label" \
@@ -2110,28 +2338,27 @@ EOF
     esac
   done < <(printf '%s' "$tabs" | jq -r --arg want "$label" '.result.tabs[]? | select(.label == $want) | .tab_id' 2>/dev/null)
 
-  anchor=""
-  if [ -n "$viewport" ] \
-     && [ "$viewport" != "$head" ] \
-     && fm_backend_herdr_cockpit_pane_matches "$session" "$viewport" "$workspace" "$tab"; then
-    anchor=$viewport
-  fi
-  if [ -z "$anchor" ]; then
-    anchor=$(printf '%s' "$panes" | jq -r --arg tab "$tab" --arg head "$head" '
-      [.result.panes[]? | select(.tab_id == $tab and .pane_id != $head and ((.label // "") | startswith("fm-") and .label != "firstmate-fleet"))]
-      | last | .pane_id // empty
-    ' 2>/dev/null) || anchor=""
-  fi
-  if [ -n "$anchor" ]; then
-    direction=down
-    ratio=0.5
-  else
-    anchor=$head
-    direction=right
-    ratio=0.67
-  fi
-  out=$(fm_backend_herdr_cli "$session" pane split "$anchor" \
-    --direction "$direction" --ratio "$ratio" --cwd "$cwd" --no-focus 2>/dev/null) || return 1
+  # Free the slot before splitting into it, so the new worker lands as its sole
+  # occupant. Each outgoing worker keeps its pane id and moves to its own
+  # labelled tab; nothing is closed here.
+  printf '%s' "$panes" | jq -e '.result.panes | type == "array"' \
+    >/dev/null 2>&1 || return 1
+  occupants=$(printf '%s' "$panes" | jq -r \
+    --arg tab "$tab" --arg head "$head" --arg fleet "$fleet" '
+      .result.panes[]?
+      | select(.tab_id == $tab and .pane_id != $head and .pane_id != $fleet)
+      | select((.label // "") | startswith("fm-"))
+      | .pane_id + "\t" + .label
+    ' 2>/dev/null) || return 1
+  while IFS=$'\t' read -r occupant occupant_label; do
+    [ -n "$occupant" ] || continue
+    fm_backend_herdr_cockpit_park "$session" "$occupant" "$occupant_label" || return 1
+  done <<EOF
+$occupants
+EOF
+  out=$(fm_backend_herdr_cli "$session" pane split "$head" \
+    --direction right --ratio "$FM_BACKEND_HERDR_COCKPIT_VIEWPORT_RATIO" \
+    --cwd "$cwd" --no-focus 2>/dev/null) || return 1
   pane_id=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
   actual_workspace=$(printf '%s' "$out" | jq -r '.result.pane.workspace_id // empty' 2>/dev/null)
   actual_tab=$(printf '%s' "$out" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
@@ -2144,6 +2371,7 @@ EOF
     echo "error: could not label new herdr cockpit pane '$label'" >&2
     return 1
   fi
+  fm_backend_herdr_cockpit_display_agent "$session" "$pane_id" "$label" || true
   while IFS= read -r dup; do
     [ -n "$dup" ] || continue
     [ "$dup" = "$pane_id" ] && continue
@@ -3184,6 +3412,9 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
 fm_backend_herdr_kill_serialized() {  # <session> <pane>
   local session=$1 pane=$2
   local before active_tab info target_pane target_tab target_ws plan shell_pid plan_move_record close_failed workspace_presence
+  # Retire the display-only sidebar name before the pane goes, so a cockpit
+  # label never outlives the task it names. Purely cosmetic, never a gate.
+  fm_backend_herdr_cockpit_display_agent "$session" "$pane" || true
   before=$(fm_backend_herdr_projection_focus_snapshot "$session") || before=
   if [ -n "$before" ]; then
     active_tab=${before#*$'\t'}

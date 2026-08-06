@@ -120,8 +120,8 @@ Claude, Codex, OpenCode, Pi, pi-signed, Grok, and Kimi share that backend cleanu
 ## Herdr
 
 The compatibility floor is protocol 14.
-The latest active verification uses Herdr 0.7.5 protocol 17 on macOS aarch64, with earlier 0.7.5 protocol-16, 0.7.4, protocol-14, and 0.7.3 evidence retained where they define current behavior or fallbacks.
-Protocol 17 keeps every protocol-16 feature gate satisfied; the event and workspace-move floors remain 16.
+The latest cockpit and event-envelope verification uses Herdr 0.8.0 protocol 19, while the broader active CLI matrix uses Herdr 0.7.5 protocol 17 on macOS aarch64 and retains earlier 0.7.5 protocol-16, 0.7.4, protocol-14, and 0.7.3 evidence where they define current behavior or fallbacks.
+Protocols 17 and 19 keep every protocol-16 feature gate satisfied; the event and workspace-move floors remain 16.
 
 Core read-only probes:
 
@@ -158,6 +158,28 @@ herdr 0.8.0
 
 The changing count is incidental fleet state; the verified guarantee is that the explicitly session-scoped inventory is an array and every live entry supplies string `foreground_cwd`, pane, workspace, and tab identities.
 `tests/fm-endpoint-bind-migrate.test.sh` pins exact-worktree uniqueness, recorded-endpoint correlation, durable evidence, and zero-match, ambiguous-match, and unreadable-inventory refusals through the public migration command.
+
+### Cockpit viewport
+
+The guarded real-Herdr cockpit test ran on 2026-08-05 against Herdr 0.8.0 protocol 19:
+
+```sh
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
+  tests/fm-cockpit-herdr-e2e.test.sh
+```
+
+Observed guarantees included one stable-width viewport occupant after three placements, parking the displaced pane on an ordinary reachable tab, and restoring the cockpit tab after a programmatically driven focus event for an off-cockpit agent.
+The test used only the named lab helper and left the default session byte-identical.
+
+```text
+ok - real Herdr fm-spawn gives the viewport slot one worker and parks the rest on their own tabs
+ok - real Herdr focus placement swaps the viewport occupant and keeps the displaced worker reachable
+ok - real Herdr viewport holds exactly one agent at a stable width with three placed
+ok - real Herdr cockpit lab leaves the default fleet byte-identical
+```
+
+An operator-driven sidebar click remains pending post-merge confirmation; the real-binary verification drove focus programmatically and must not be treated as a manual click result.
+`tests/fm-cockpit.test.sh` additionally pins task-id-ordered wrapping rotation, foreign-home refusal, listener-death reachability, display-name publication and teardown, and the shared click-and-key placement path.
 
 The CLI matrix was checked directly:
 
@@ -396,6 +418,9 @@ ok - real herdr: the watcher fast-path enqueues a stale wake naming the task win
 ```
 
 Polling remained active and is covered as the fallback for capability, connect, subscribe, and repeated reader failure.
+Herdr 0.8.0 changed the streamed event-envelope spelling from the subscribed dotted form to an underscored form.
+Before the fix, the reader silently discarded every 0.8.0 event and left blocked-state escalation on its polling fallback.
+`tests/fm-backend-herdr-eventwait.test.py` separately pins both spellings through the single event reader, and the 2026-08-05 cockpit run above exercised the underscored `pane_focused` envelope on the real binary.
 
 ### Away-mode transport
 
