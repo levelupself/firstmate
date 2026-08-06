@@ -54,17 +54,20 @@ One validated version 1 frame is upgraded in place by adding its fleet pane and 
 Add `--watch` with an optional positive interval to keep that textual view live.
 
 Within an adopted frame, the right-hand viewport region is a single-occupancy slot: exactly one worker is on display there at a time.
+The first spawn may fill an empty viewport, but later spawns open on ordinary labelled peer tabs and never displace the viewport occupant; only `show`, `next`, `prev`, or an explicitly armed focus listener changes what the operator is reading.
 The slot is always the right child of one split from the pinned head at a fixed ratio, so its width is the same every time a worker enters or leaves it, and it is never subdivided to fit a second worker.
 Placing a worker parks whoever was there onto its own tab labelled with that task first, then moves the incoming pane in.
 A parked worker sits in the ordinary non-cockpit topology - one labelled `fm-<id>` tab of its own - so it stays exactly as reachable as on a home that never adopted a cockpit, keeps its own sidebar entry, and is never closed or hidden.
 Parking preserves the pane id, so `window=` and `herdr_pane_id=` stay valid across every move; `herdr_tab_id=` records the tab the task was spawned into and is not live placement authority.
 Selecting an agent in the sidebar routes Herdr to that agent's own tab, which `bin/fm-cockpit.sh focus-listen` reacts to by placing that worker in the slot and bringing the cockpit tab back to the front.
-Successful adoption starts that listener detached and best-effort, and repeated adoption is a silent no-op at the listener's per-home single-flight lock.
+Adoption deliberately leaves that listener off so session start cannot rearrange the operator's screen.
+`bin/fm-cockpit.sh focus-start` explicitly starts it detached, while `focus-stop` stops the identity-checked supervising shell, terminates its active event reader, and releases this home's per-home lock.
+Each focus subscription closes after one event and before placement begins, so focus events caused by the placement itself cannot enter a later subscription generation and trigger another move.
 Because Herdr routes to the tab before anything can observe the selection, a worker that was parked is briefly visible on its own tab before the slot updates; a worker already in the slot never moves at all.
 That reaction moves only panes this home's own task records claim, so the pinned head, the fleet column, a pane with no agent, and another home's worker are all left alone even though the sidebar displays them.
 The focus subscription is session-wide, so concurrent homes observe the same events, but each listener uses its own frame record, lock, and task metadata; ownership isolation prevents one home from moving another home's pane.
 Nothing depends on the reaction running: without it every worker simply stays on its own labelled tab, parking preserves its pane id and never closes it, and a dead listener therefore costs only the automatic return click without stranding a pane.
-Session-start adoption re-arms the listener, the shared lock helper recovers a lock whose recorded process is dead, and a listener exits when its bound frame is no longer live rather than acting on stale state.
+The shared lock helper recovers a lock whose recorded process is dead, and a listener exits when its bound frame is no longer live rather than acting on stale state.
 Workers that predate an adopted frame are migrated the first time they are selected rather than moved in bulk at adoption, so no running agent is resized for a view nobody asked for.
 `bin/fm-cockpit.sh show <task-id>` performs the same placement without any reaction running, and `next`/`prev` step the slot along this home's workers ordered by task id, wrapping at both ends and never targeting the pinned head or the fleet column.
 Rotation resolves a worker and then hands it to that same single-occupancy placement, so a key and a sidebar selection cannot disagree.

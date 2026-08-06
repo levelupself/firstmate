@@ -136,9 +136,27 @@ class EventWaitFocusModeTest(unittest.TestCase):
         # Only focus events are projected, and only as pane and workspace.
         self.assertEqual(stdout.getvalue(), "@subscribed\nw1:p7\tw1\n")
 
+    def test_focus_once_closes_its_subscription_after_one_event(self):
+        stdout = io.StringIO()
+        sock = RecordingFocusSocket()
+        with mock.patch.object(READER.socket, "socket", return_value=sock):
+            with mock.patch.object(READER.sys, "stdout", stdout):
+                result = READER.main(
+                    ["herdr-eventwait.py", "--focus-once", "socket", "1"]
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(stdout.getvalue(), "@subscribed\nw1:p7\tw1\n")
+
     def test_focus_mode_rejects_a_pane_list(self):
         self.assertEqual(
             READER.main(["herdr-eventwait.py", "--focus", "socket", "1", "w1:p1"]), 2
+        )
+        self.assertEqual(
+            READER.main(
+                ["herdr-eventwait.py", "--focus-once", "socket", "1", "w1:p1"]
+            ),
+            2,
         )
 
     def test_status_mode_still_requires_at_least_one_pane(self):

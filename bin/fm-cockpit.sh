@@ -5,6 +5,7 @@
 #        fm-cockpit.sh switch <FM_HOME>
 #        fm-cockpit.sh show <task-id>
 #        fm-cockpit.sh next|prev
+#        fm-cockpit.sh focus-start|focus-stop
 #        fm-cockpit.sh focus-listen [--once]
 #
 # The enhanced cockpit exists only when the supervisor itself runs natively in
@@ -55,19 +56,24 @@
 #   type = "shell"
 #   command = "env FM_HOME=<home> <checkout>/bin/fm-cockpit.sh prev"
 #
+# focus-start explicitly arms a detached focus-listen, and focus-stop disarms
+# that exact listener after checking its recorded process identity. Adoption
+# deliberately leaves the listener off, so session start never rearranges the
+# operator's screen merely by adopting an existing frame.
+#
 # focus-listen reacts to Herdr's own focus events so that selecting an agent in
 # the sidebar places it in the viewport instead of leaving the view on that
 # agent's tab. It holds a single-flight lock per home, moves only panes this
 # home's own task records claim, and exits when the frame stops being live.
 # Nothing depends on it: every worker it is not running for stays on an ordinary
 # labelled tab, exactly as on a home that never adopted a cockpit. --once
-# handles a single subscription window and returns, for tests and for a
-# caller that prefers to re-arm it itself. Adoption starts it detached and
-# best-effort under that same stale-owner-recovering lock. A dead listener only
-# costs the automatic return click because every parked pane remains reachable
-# on its ordinary labelled tab, and parking moves rather than closes the pane.
-# A listener exits when its recorded frame dies, while session-start adoption
-# re-arms a replacement without changing that frame or any pane.
+# handles a single subscription generation and returns, for tests and for a
+# caller that prefers to re-arm it itself. Each generation receives at most one
+# event and closes before any placement begins. Focus events caused by that
+# placement therefore have no live subscription to enter and cannot feed back
+# into another move. A dead listener only costs the automatic return click
+# because every parked pane remains reachable on its ordinary labelled tab,
+# and parking moves rather than closes the pane.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,7 +91,7 @@ case "${1:-}" in
   switch) ACTION=$1 ;;
   show) ACTION=$1 ;;
   next|prev) ACTION=$1 ;;
-  focus-listen) ACTION=$1 ;;
+  focus-start|focus-stop|focus-listen) ACTION=$1 ;;
   -h|--help) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;
 esac
@@ -153,6 +159,63 @@ fi
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-terminal-frame-lib.sh
 . "$SCRIPT_DIR/fm-terminal-frame-lib.sh"
+
+# Stopping is deliberately available even when this invocation is not running
+# inside Herdr. The lock records enough identity to signal only this home's
+# exact supervising listener rather than matching an ambient process command
+# line. Its EXIT cleanup also terminates the current event reader and releases
+# the lock before the supervisor exits.
+if [ "$ACTION" = focus-stop ]; then
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$SCRIPT_DIR/fm-wake-lib.sh"
+  FOCUS_LOCK="$STATE/.cockpit-focus.lock"
+  if [ ! -e "$FOCUS_LOCK" ] && [ ! -L "$FOCUS_LOCK" ]; then
+    echo "COCKPIT: focus placement is already stopped."
+    exit 0
+  fi
+  FOCUS_OWNER=$(fm_lock_link_owner "$FOCUS_LOCK" 2>/dev/null || true)
+  FOCUS_PID=$(cat "$FOCUS_LOCK/pid" 2>/dev/null || true)
+  FOCUS_HOME=$(cat "$FOCUS_LOCK/fm-home" 2>/dev/null || true)
+  FOCUS_PATH=$(cat "$FOCUS_LOCK/watcher-path" 2>/dev/null || true)
+  FOCUS_IDENTITY=$(cat "$FOCUS_LOCK/pid-identity" 2>/dev/null || true)
+  CURRENT_IDENTITY=$(fm_pid_identity "$FOCUS_PID" 2>/dev/null || true)
+  if [ -z "$FOCUS_OWNER" ] || ! fm_lock_points_to_owner "$FOCUS_LOCK" "$FOCUS_OWNER" \
+     || [ "$FOCUS_HOME" != "$FM_HOME" ] \
+     || [ "$FOCUS_PATH" != "$SCRIPT_DIR/fm-cockpit.sh" ] \
+     || [ -z "$FOCUS_IDENTITY" ] || [ "$CURRENT_IDENTITY" != "$FOCUS_IDENTITY" ]; then
+    if ! fm_pid_alive "$FOCUS_PID" && fm_lock_try_acquire "$FOCUS_LOCK"; then
+      fm_lock_release "$FOCUS_LOCK"
+      echo "COCKPIT: focus placement is already stopped."
+      exit 0
+    fi
+    printf 'COCKPIT: focus listener identity is unreadable or changed; refusing to signal a process (pid=%s owner=%s home=%s path=%s identity=%s).\n' \
+      "${FOCUS_PID:-missing}" \
+      "$([ -n "$FOCUS_OWNER" ] && fm_lock_points_to_owner "$FOCUS_LOCK" "$FOCUS_OWNER" && printf match || printf mismatch)" \
+      "$([ "$FOCUS_HOME" = "$FM_HOME" ] && printf match || printf mismatch)" \
+      "$([ "$FOCUS_PATH" = "$SCRIPT_DIR/fm-cockpit.sh" ] && printf match || printf mismatch)" \
+      "$([ -n "$FOCUS_IDENTITY" ] && [ "$CURRENT_IDENTITY" = "$FOCUS_IDENTITY" ] && printf match || printf mismatch)" >&2
+    exit 1
+  fi
+  kill -TERM "$FOCUS_PID" 2>/dev/null || {
+    echo "COCKPIT: could not stop the recorded focus listener." >&2
+    exit 1
+  }
+  attempt=0
+  while fm_pid_alive "$FOCUS_PID" && [ "$attempt" -lt 50 ]; do
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  if fm_pid_alive "$FOCUS_PID"; then
+    echo "COCKPIT: focus listener did not stop after TERM; no stronger signal was sent." >&2
+    exit 1
+  fi
+  if [ -e "$FOCUS_LOCK" ] || [ -L "$FOCUS_LOCK" ]; then
+    echo "COCKPIT: focus listener stopped but its ownership lock remains; refusing to report a clean stop." >&2
+    exit 1
+  fi
+  echo "COCKPIT: focus placement stopped."
+  exit 0
+fi
 
 RUNTIME=none
 if fm_backend_detect >/dev/null; then
@@ -367,6 +430,37 @@ if [ "$ACTION" = next ] || [ "$ACTION" = prev ]; then
   exit 0
 fi
 
+if [ "$ACTION" = focus-start ]; then
+  if ! fm_backend_herdr_cockpit_binding_live "$STATE" "$FM_HOME" "$SESSION"; then
+    echo "COCKPIT: this home has no live complete frame; focus placement not started." >&2
+    exit 1
+  fi
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$SCRIPT_DIR/fm-wake-lib.sh"
+  FOCUS_LOCK="$STATE/.cockpit-focus.lock"
+  if [ -e "$FOCUS_LOCK" ] || [ -L "$FOCUS_LOCK" ]; then
+    FOCUS_PID=$(cat "$FOCUS_LOCK/pid" 2>/dev/null || true)
+    if fm_pid_alive "$FOCUS_PID"; then
+      echo "COCKPIT: focus placement is already running for this home."
+      exit 0
+    fi
+  fi
+  nohup "$SCRIPT_DIR/fm-cockpit.sh" focus-listen </dev/null >/dev/null 2>&1 &
+  FOCUS_PID=$!
+  attempt=0
+  while [ "$(cat "$FOCUS_LOCK/pid" 2>/dev/null || true)" != "$FOCUS_PID" ] \
+    && fm_pid_alive "$FOCUS_PID" && [ "$attempt" -lt 50 ]; do
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  if [ "$(cat "$FOCUS_LOCK/pid" 2>/dev/null || true)" != "$FOCUS_PID" ]; then
+    echo "COCKPIT: focus listener did not publish its ownership lock." >&2
+    exit 1
+  fi
+  echo "COCKPIT: focus placement started."
+  exit 0
+fi
+
 if [ "$ACTION" = focus-listen ]; then
   if ! fm_backend_herdr_cockpit_binding_live "$STATE" "$FM_HOME" "$SESSION"; then
     echo "COCKPIT: this home has no live complete frame; focus placement not started." >&2
@@ -379,7 +473,23 @@ if [ "$ACTION" = focus-listen ]; then
     echo "COCKPIT: focus placement is already running for this home." >&2
     exit 1
   fi
-  trap 'fm_lock_release "$FOCUS_LOCK" || true' EXIT INT TERM HUP
+  FOCUS_READER_PID=
+  focus_listener_cleanup() {
+    if [ -n "$FOCUS_READER_PID" ]; then
+      kill -TERM "$FOCUS_READER_PID" 2>/dev/null || true
+      wait "$FOCUS_READER_PID" 2>/dev/null || true
+    fi
+    fm_lock_release "$FOCUS_LOCK" || true
+  }
+  trap 'focus_listener_cleanup' EXIT
+  trap 'exit 0' INT TERM HUP
+  FOCUS_OWNER=${FM_LOCK_OWNER_DIR:-}
+  FOCUS_SELF_PID=${BASHPID:-$$}
+  FOCUS_IDENTITY=$(fm_pid_identity "$FOCUS_SELF_PID") || exit 1
+  [ -n "$FOCUS_OWNER" ] || exit 1
+  printf '%s\n' "$FM_HOME" > "$FOCUS_OWNER/fm-home" || exit 1
+  printf '%s\n' "$SCRIPT_DIR/fm-cockpit.sh" > "$FOCUS_OWNER/watcher-path" || exit 1
+  printf '%s\n' "$FOCUS_IDENTITY" > "$FOCUS_OWNER/pid-identity" || exit 1
   FOCUS_WINDOW=${FM_COCKPIT_FOCUS_WINDOW:-300}
   while :; do
     if ! fm_backend_herdr_cockpit_binding_live "$STATE" "$FM_HOME" "$SESSION"; then
@@ -392,26 +502,25 @@ if [ "$ACTION" = focus-listen ]; then
       exit 1
     fi
     mapfile -t READER_CMD < <(fm_backend_herdr_event_reader_cmd)
+    FOCUS_LINES=()
+    exec {FOCUS_READER_FD}< <("${READER_CMD[@]}" --focus-once "$SOCKET" "$FOCUS_WINDOW" 2>/dev/null)
+    FOCUS_READER_PID=$!
+    mapfile -t -u "$FOCUS_READER_FD" FOCUS_LINES || true
+    exec {FOCUS_READER_FD}<&-
+    wait "$FOCUS_READER_PID" 2>/dev/null || true
+    FOCUS_READER_PID=
     while IFS=$'\t' read -r EV_PANE _; do
       [ -n "$EV_PANE" ] || continue
       [ "$EV_PANE" != "@subscribed" ] || continue
       with_presentation_lock fm_backend_herdr_cockpit_focus_place \
         "$STATE" "$FM_HOME" "$SESSION" "$EV_PANE" >/dev/null 2>&1 || true
-    done < <("${READER_CMD[@]}" --focus "$SOCKET" "$FOCUS_WINDOW" 2>/dev/null)
+      break
+    done < <(printf '%s\n' "${FOCUS_LINES[@]}")
     [ "$FOCUS_ONCE" = 0 ] || exit 0
-    sleep 1
   done
 fi
 
 MODE=adopt
 [ "$ACTION" != new ] || MODE=new
 fm_backend_herdr_cockpit_adopt "$STATE" "$FM_HOME" "$SESSION" "$MODE" || exit 1
-
-# The subscription is session-wide, but ownership remains home-local: each
-# detached listener has its own home's lock and frame record, and focus_place
-# accepts only panes claimed by that home's task metadata. Starting is
-# deliberately non-fatal because failure leaves every pane on a reachable tab.
-# fm_lock_try_acquire recovers a lock whose recorded process is dead, so a
-# restart can re-arm without a watchdog, pidfile, or second supervision loop.
-nohup "$0" focus-listen </dev/null >/dev/null 2>&1 &
 exit 0

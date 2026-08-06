@@ -36,6 +36,7 @@ Keeping both subscriptions in one reader keeps a single wire-protocol owner.
 
 Usage: herdr-eventwait.py <socket_path> <timeout_seconds> <pane_id> [<pane_id> ...]
        herdr-eventwait.py --focus <socket_path> <timeout_seconds>
+       herdr-eventwait.py --focus-once <socket_path> <timeout_seconds>
 
 Output (one line per pane.agent_status_changed event, TAB-separated, a raw
 projection - NOT the final normalized record; the bash normalizer adds the
@@ -43,7 +44,7 @@ from_status and builds the canonical shape):
   @subscribed
   <pane_id>\t<workspace_id>\t<agent_status>\t<agent>
 
-Output in --focus mode (one line per pane.focused event):
+Output in --focus or --focus-once mode (one line per pane.focused event):
   @subscribed
   <pane_id>\t<workspace_id>
 
@@ -108,7 +109,8 @@ def _event_matches(received, subscribed):
 
 
 def main(argv):
-    focus_mode = len(argv) > 1 and argv[1] == "--focus"
+    focus_mode = len(argv) > 1 and argv[1] in ("--focus", "--focus-once")
+    focus_once = len(argv) > 1 and argv[1] == "--focus-once"
     if focus_mode:
         argv = argv[:1] + argv[2:]
         if len(argv) != 3:
@@ -196,6 +198,8 @@ def main(argv):
             )
         sys.stdout.write("\t".join(fields) + "\n")
         sys.stdout.flush()
+        if focus_once:
+            return 0
 
 
 if __name__ == "__main__":

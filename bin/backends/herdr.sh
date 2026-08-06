@@ -2296,13 +2296,15 @@ fm_backend_herdr_cockpit_rotate() {  # <state-dir> <home> <session> next|prev
 }
 
 # Create one task inside an already validated cockpit frame.
-# The new child always becomes the viewport slot's sole occupant: any worker
-# already there is parked onto its own labelled tab first.
+# The first child may fill an empty viewport slot. Once any pane occupies that
+# slot, later spawns land on ordinary labelled peer tabs and leave the viewport
+# untouched. A spawn is background fleet activity, not an operator request to
+# replace the worker currently being read.
 # Same-labeled live panes or tabs refuse; confirmed husks are replaced only
 # after the new pane exists and has its exact task label.
 fm_backend_herdr_cockpit_create_task() {  # <state-dir> <home> <label> <cwd>
   local state=$1 home=$2 label=$3 cwd=$4 session workspace tab head fleet
-  local panes tabs duplicate_ids dup dup_pane occupants occupant occupant_label out pane_id actual_workspace actual_tab remaining
+  local panes tabs duplicate_ids dup dup_pane occupants out pane_id actual_workspace actual_tab remaining placement
   fm_backend_herdr_cockpit_binding_live "$state" "$home" || return 1
   session=$FM_BACKEND_HERDR_COCKPIT_SESSION
   workspace=$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID
@@ -2338,38 +2340,45 @@ EOF
     esac
   done < <(printf '%s' "$tabs" | jq -r --arg want "$label" '.result.tabs[]? | select(.label == $want) | .tab_id' 2>/dev/null)
 
-  # Free the slot before splitting into it, so the new worker lands as its sole
-  # occupant. Each outgoing worker keeps its pane id and moves to its own
-  # labelled tab; nothing is closed here.
+  # Treat every non-frame pane on the cockpit tab as a viewport occupant,
+  # regardless of its label or task metadata. A new spawn must not displace an
+  # unrecognized pane the operator may currently be reading.
   printf '%s' "$panes" | jq -e '.result.panes | type == "array"' \
     >/dev/null 2>&1 || return 1
   occupants=$(printf '%s' "$panes" | jq -r \
     --arg tab "$tab" --arg head "$head" --arg fleet "$fleet" '
       .result.panes[]?
       | select(.tab_id == $tab and .pane_id != $head and .pane_id != $fleet)
-      | select((.label // "") | startswith("fm-"))
-      | .pane_id + "\t" + .label
+      | .pane_id
     ' 2>/dev/null) || return 1
-  while IFS=$'\t' read -r occupant occupant_label; do
-    [ -n "$occupant" ] || continue
-    fm_backend_herdr_cockpit_park "$session" "$occupant" "$occupant_label" || return 1
-  done <<EOF
-$occupants
-EOF
-  out=$(fm_backend_herdr_cli "$session" pane split "$head" \
-    --direction right --ratio "$FM_BACKEND_HERDR_COCKPIT_VIEWPORT_RATIO" \
-    --cwd "$cwd" --no-focus 2>/dev/null) || return 1
-  pane_id=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
-  actual_workspace=$(printf '%s' "$out" | jq -r '.result.pane.workspace_id // empty' 2>/dev/null)
-  actual_tab=$(printf '%s' "$out" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
-  if [ -z "$pane_id" ] || [ "$actual_workspace" != "$workspace" ] || [ "$actual_tab" != "$tab" ]; then
-    echo "error: herdr cockpit split returned an incomplete or cross-frame pane identity" >&2
-    return 1
-  fi
-  if ! fm_backend_herdr_cli "$session" pane rename "$pane_id" "$label" >/dev/null 2>&1; then
-    fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id" || true
-    echo "error: could not label new herdr cockpit pane '$label'" >&2
-    return 1
+  if [ -z "$occupants" ]; then
+    placement=viewport
+    out=$(fm_backend_herdr_cli "$session" pane split "$head" \
+      --direction right --ratio "$FM_BACKEND_HERDR_COCKPIT_VIEWPORT_RATIO" \
+      --cwd "$cwd" --no-focus 2>/dev/null) || return 1
+    pane_id=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
+    actual_workspace=$(printf '%s' "$out" | jq -r '.result.pane.workspace_id // empty' 2>/dev/null)
+    actual_tab=$(printf '%s' "$out" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
+    if [ -z "$pane_id" ] || [ "$actual_workspace" != "$workspace" ] || [ "$actual_tab" != "$tab" ]; then
+      echo "error: herdr cockpit split returned an incomplete or cross-frame pane identity" >&2
+      return 1
+    fi
+    if ! fm_backend_herdr_cli "$session" pane rename "$pane_id" "$label" >/dev/null 2>&1; then
+      fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id" || true
+      echo "error: could not label new herdr cockpit pane '$label'" >&2
+      return 1
+    fi
+  else
+    placement=peer
+    out=$(fm_backend_herdr_cli "$session" tab create --workspace "$workspace" \
+      --cwd "$cwd" --label "$label" --no-focus 2>/dev/null) || return 1
+    pane_id=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
+    actual_workspace=$(printf '%s' "$out" | jq -r '.result.tab.workspace_id // .result.root_pane.workspace_id // empty' 2>/dev/null)
+    actual_tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
+    if [ -z "$pane_id" ] || [ -z "$actual_tab" ] || [ "$actual_workspace" != "$workspace" ] || [ "$actual_tab" = "$tab" ]; then
+      echo "error: herdr cockpit peer tab returned an incomplete or cross-frame pane identity" >&2
+      return 1
+    fi
   fi
   fm_backend_herdr_cockpit_display_agent "$session" "$pane_id" "$label" || true
   while IFS= read -r dup; do
@@ -2387,11 +2396,13 @@ EOF
     echo "error: failed to remove every preexisting herdr cockpit pane for '$label'" >&2
     return 1
   fi
-  fm_backend_herdr_cockpit_update_viewport "$state" "$home" "$pane_id" || {
-    echo "error: could not publish the herdr cockpit viewport binding" >&2
-    return 1
-  }
-  printf '%s %s' "$tab" "$pane_id"
+  if [ "$placement" = viewport ]; then
+    fm_backend_herdr_cockpit_update_viewport "$state" "$home" "$pane_id" || {
+      echo "error: could not publish the herdr cockpit viewport binding" >&2
+      return 1
+    }
+  fi
+  printf '%s %s' "$actual_tab" "$pane_id"
 }
 
 # fm_backend_herdr_create_task: create the task's tab (one pane) in

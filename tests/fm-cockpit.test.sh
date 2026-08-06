@@ -54,6 +54,30 @@ case "${1:-} ${2:-}" in
   "tab list")
     printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","workspace_id":"w1","label":"cockpit"}]}}'
     ;;
+  "tab create")
+    workspace=
+    label=
+    shift 2
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --workspace) workspace=$2; shift 2 ;;
+        --label) label=$2; shift 2 ;;
+        --cwd) shift 2 ;;
+        --no-focus) shift ;;
+        *) shift ;;
+      esac
+    done
+    [ -n "$workspace" ] && [ -n "$label" ] || exit 1
+    counter=$(cat "$state/counter")
+    counter=$((counter + 1))
+    printf '%s\n' "$counter" > "$state/counter"
+    tab="w1:t$counter"
+    id="w1:p$counter"
+    printf '%s\t%s\t%s\t%s\tno-agent\n' "$id" "$label" "$tab" "$workspace" >> "$state/panes.tsv"
+    jq -n --arg id "$id" --arg tab "$tab" --arg workspace "$workspace" --arg label "$label" \
+      '{result:{tab:{tab_id:$tab,workspace_id:$workspace,label:$label},
+        root_pane:{pane_id:$id,tab_id:$tab,workspace_id:$workspace,label:$label}}}'
+    ;;
   "tab get")
     tab=$3
     workspace=${tab%%:*}
@@ -209,9 +233,30 @@ chmod +x "$FAKEBIN/herdr"
 
 cat > "$FAKEBIN/nohup" <<'SH'
 #!/usr/bin/env bash
-exit 0
+printf 'nohup %s\n' "$*" >> "${FM_FAKE_HERDR_LOG:?}"
+[ "${FM_FAKE_NOHUP_RUN:-0}" = 1 ] || exit 0
+exec /usr/bin/nohup "$@"
 SH
 chmod +x "$FAKEBIN/nohup"
+
+cat > "$FAKEBIN/focus-reader" <<'SH'
+#!/usr/bin/env bash
+set -eu
+[ "${1:-}" = --focus-once ] || exit 2
+state=${FM_FAKE_FOCUS_STATE:?}
+[ -z "${FM_FAKE_FOCUS_READER_PID_FILE:-}" ] \
+  || printf '%s\n' "$$" > "$FM_FAKE_FOCUS_READER_PID_FILE"
+count=$(cat "$state" 2>/dev/null || printf 0)
+count=$((count + 1))
+printf '%s\n' "$count" > "$state"
+printf '%s\n' '@subscribed'
+if [ "$count" = 1 ] && [ -n "${FM_FAKE_FOCUS_PANE:-}" ]; then
+  printf '%s\t%s\n' "$FM_FAKE_FOCUS_PANE" w1
+else
+  sleep "${FM_FAKE_FOCUS_IDLE:-0}"
+fi
+SH
+chmod +x "$FAKEBIN/focus-reader"
 
 run_cockpit_at() {  # <pane> <socket> <action>
   PATH="$FAKEBIN:$PATH" \
@@ -230,6 +275,22 @@ run_cockpit() {
   run_cockpit_at w1:p1 /tmp/fm-cockpit-test.sock "$1"
 }
 
+focus_cockpit() {
+  PATH="$FAKEBIN:$PATH" \
+    FM_HOME="$HOME_DIR" \
+    FM_FAKE_HERDR_STATE="$HERDR_STATE" \
+    FM_FAKE_HERDR_LOG="$HERDR_LOG" \
+    FM_COCKPIT_ROOT="$ROOT" \
+    FM_BACKEND_HERDR_EVENT_READER="$FAKEBIN/focus-reader" \
+    FM_FAKE_FOCUS_STATE="$HERDR_STATE/focus-reader-count" \
+    FM_FAKE_FOCUS_READER_PID_FILE="$HERDR_STATE/focus-reader-pid" \
+    HERDR_ENV=1 \
+    HERDR_SESSION=fmtest \
+    HERDR_SOCKET_PATH=/tmp/fm-cockpit-test.sock \
+    HERDR_PANE_ID=w1:p1 \
+    "$COCKPIT" "$@"
+}
+
 test_frame_re_adoption_is_idempotent() {
   local first second before after log
   first=$(run_cockpit adopt) || fail "first cockpit adoption failed"
@@ -246,6 +307,7 @@ test_frame_re_adoption_is_idempotent() {
   assert_contains "$log" "pane get w1:p1" "re-adoption did not validate the exact recorded head"
   assert_not_contains "$log" "pane split" "re-adoption rebuilt the frame"
   assert_not_contains "$log" "tab create" "re-adoption minted a replacement tab"
+  assert_not_contains "$log" "nohup" "re-adoption silently armed focus placement"
   pass "cockpit restart re-adopts the durable frame without rebuilding it"
 }
 
@@ -373,7 +435,7 @@ place_task() {
       "$ROOT" "$HOME_DIR" "$1"
 }
 
-test_workers_land_in_persistent_viewport() {
+test_first_worker_lands_in_viewport_and_later_spawns_do_not_steal_it() {
   local first second log live
   : > "$HERDR_LOG"
   first=$(place_task fm-one) || fail "first cockpit task placement failed"
@@ -387,23 +449,25 @@ test_workers_land_in_persistent_viewport() {
 
   : > "$HERDR_LOG"
   second=$(place_task fm-two) || fail "second cockpit task placement failed"
-  [ "$second" = "w1:t1 w1:p5" ] || fail "second cockpit task returned unexpected ids: $second"
+  [ "$second" = "w1:t4 w1:p4" ] || fail "second cockpit task returned unexpected ids: $second"
   log=$(cat "$HERDR_LOG")
-  assert_contains "$log" "pane move w1:p3 --new-tab --label fm-one --no-focus" \
-    "the previous occupant was not parked onto its own labelled tab"
-  assert_contains "$log" "pane split w1:p1 --direction right --ratio 0.67" \
-    "later child did not rebuild the slot from the pinned head at its stable ratio"
-  assert_not_contains "$log" "pane close w1:p3" "parking a displaced worker closed its pane"
-  assert_not_contains "$log" "tab create" "later child minted a peer tab"
-  assert_grep 'viewport_pane_id=w1:p5' "$HOME_DIR/state/.herdr-cockpit" \
-    "latest child did not advance the viewport anchor"
+  assert_contains "$log" "tab create --workspace w1 --cwd /tmp --label fm-two --no-focus" \
+    "later child did not open on its own labelled peer tab"
+  assert_not_contains "$log" "pane move w1:p3" \
+    "later child displaced the viewport occupant"
+  assert_not_contains "$log" "pane split w1:p1" \
+    "later child split the viewport while it was occupied"
+  assert_grep 'viewport_pane_id=w1:p3' "$HOME_DIR/state/.herdr-cockpit" \
+    "later child changed the viewport anchor"
+  [ "$(pane_tab_of w1:p3)" = w1:t1 ] \
+    || fail "later child moved the worker the operator was reading"
 
   live=$(PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" \
     FM_FAKE_HERDR_STATE="$HERDR_STATE" FM_FAKE_HERDR_LOG="$HERDR_LOG" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_list_live fmtest' "$ROOT")
   assert_contains "$live" $'fmtest:w1:p3\tfm-one' "recovery inventory missed the first split-pane task"
-  assert_contains "$live" $'fmtest:w1:p5\tfm-two' "recovery inventory missed the second split-pane task"
-  pass "new Herdr workers land in the persistent viewport and remain recoverable"
+  assert_contains "$live" $'fmtest:w1:p4\tfm-two' "recovery inventory missed the peer-tab task"
+  pass "the first worker fills an empty viewport and later spawns preserve its occupant"
 }
 
 cockpit_fn() {  # <function> <args...>
@@ -430,6 +494,10 @@ EOF
 
 pane_tab_of() {  # <pane>
   awk -F '\t' -v id="$1" '$1 == id { print $3; exit }' "$HERDR_STATE/panes.tsv"
+}
+
+pane_id_by_label() {  # <label>
+  awk -F '\t' -v label="$1" '$2 == label { print $1; exit }' "$HERDR_STATE/panes.tsv"
 }
 
 test_focus_never_moves_a_pane_this_home_does_not_own() {
@@ -465,34 +533,114 @@ test_focus_never_moves_a_pane_this_home_does_not_own() {
 
 test_rotation_orders_by_task_id_wraps_and_shares_the_placement_path() {
   local alpha one two placed log
-  one=w1:p3
-  two=w1:p5
+  one=$(pane_id_by_label fm-one)
+  two=$(pane_id_by_label fm-two)
   placed=$(place_task fm-alpha) || fail "could not place the third rotation worker"
   alpha=${placed##* }
   write_task_record alpha "$alpha"
   write_task_record one "$one"
   write_task_record two "$two"
 
-  # Ring order is task id, not spawn order: alpha was placed last but sorts first.
+  # Ring order is task id, not spawn order. The background alpha spawn leaves
+  # one in the viewport, so next advances to two in the alpha, one, two ring.
   : > "$HERDR_LOG"
-  [ "$(cockpit_fn fm_backend_herdr_cockpit_rotate "$HOME_DIR/state" "$HOME_DIR" fmtest next)" = one ] \
+  [ "$(cockpit_fn fm_backend_herdr_cockpit_rotate "$HOME_DIR/state" "$HOME_DIR" fmtest next)" = two ] \
     || fail "next did not advance to the id-ordered successor"
   log=$(cat "$HERDR_LOG")
-  assert_contains "$log" "pane move $one --tab w1:t1 --split right --target-pane w1:p1 --ratio 0.67" \
+  assert_contains "$log" "pane move $two --tab w1:t1 --split right --target-pane w1:p1 --ratio 0.67" \
     "rotation did not reuse the single-occupancy placement path"
   assert_not_contains "$log" "pane close" "rotation closed a pane"
-  [ "$(pane_tab_of "$one")" = w1:t1 ] || fail "rotation did not place its target in the viewport slot"
+  [ "$(pane_tab_of "$two")" = w1:t1 ] || fail "rotation did not place its target in the viewport slot"
   [ "$(pane_tab_of "$alpha")" != w1:t1 ] || fail "rotation left two workers in the viewport slot"
 
-  [ "$(cockpit_fn fm_backend_herdr_cockpit_rotate "$HOME_DIR/state" "$HOME_DIR" fmtest next)" = two ] \
-    || fail "next did not continue along the ring"
   [ "$(cockpit_fn fm_backend_herdr_cockpit_rotate "$HOME_DIR/state" "$HOME_DIR" fmtest next)" = alpha ] \
+    || fail "next did not continue along the ring"
+  [ "$(cockpit_fn fm_backend_herdr_cockpit_rotate "$HOME_DIR/state" "$HOME_DIR" fmtest next)" = one ] \
     || fail "next did not wrap from the last worker to the first"
-  [ "$(cockpit_fn fm_backend_herdr_cockpit_rotate "$HOME_DIR/state" "$HOME_DIR" fmtest prev)" = two ] \
+  [ "$(cockpit_fn fm_backend_herdr_cockpit_rotate "$HOME_DIR/state" "$HOME_DIR" fmtest prev)" = alpha ] \
     || fail "prev did not wrap from the first worker to the last"
-  [ "$(cockpit_fn fm_backend_herdr_cockpit_rotate "$HOME_DIR/state" "$HOME_DIR" fmtest prev)" = one ] \
+  [ "$(cockpit_fn fm_backend_herdr_cockpit_rotate "$HOME_DIR/state" "$HOME_DIR" fmtest prev)" = two ] \
     || fail "prev did not step backwards along the ring"
+  [ "$(cockpit_fn fm_backend_herdr_cockpit_rotate "$HOME_DIR/state" "$HOME_DIR" fmtest prev)" = one ] \
+    || fail "prev did not continue backwards to the starting worker"
   pass "rotation walks this home's workers by task id, wraps both ways, and places through the shared path"
+}
+
+test_focus_listener_converges_and_current_occupant_is_idempotent() {
+  local current target log move_count reader_count out
+  current=$(pane_id_by_label fm-one)
+  target=$(pane_id_by_label fm-two)
+  : > "$HERDR_LOG"
+  rm -f "$HERDR_STATE/focus-reader-count"
+  timeout 1 env \
+    PATH="$FAKEBIN:$PATH" \
+    FM_HOME="$HOME_DIR" \
+    FM_FAKE_HERDR_STATE="$HERDR_STATE" \
+    FM_FAKE_HERDR_LOG="$HERDR_LOG" \
+    FM_COCKPIT_ROOT="$ROOT" \
+    FM_BACKEND_HERDR_EVENT_READER="$FAKEBIN/focus-reader" \
+    FM_FAKE_FOCUS_STATE="$HERDR_STATE/focus-reader-count" \
+    FM_FAKE_FOCUS_PANE="$target" \
+    FM_FAKE_FOCUS_IDLE=0.2 \
+    HERDR_ENV=1 HERDR_SESSION=fmtest \
+    HERDR_SOCKET_PATH=/tmp/fm-cockpit-test.sock HERDR_PANE_ID=w1:p1 \
+    "$COCKPIT" focus-listen >/dev/null 2>&1 || true
+  log=$(cat "$HERDR_LOG")
+  move_count=$(grep -c '^pane move ' "$HERDR_LOG" || true)
+  reader_count=$(cat "$HERDR_STATE/focus-reader-count")
+  [ "$move_count" = 2 ] \
+    || fail "one external focus event did not converge after its one placement: $log"
+  [ "$reader_count" -ge 2 ] \
+    || fail "convergence test never observed the listener waiting for new external input"
+  assert_contains "$log" "pane move $current --new-tab --label fm-one --no-focus" \
+    "focus listener did not park the previous occupant exactly once"
+  assert_contains "$log" "pane move $target --tab w1:t1" \
+    "focus listener did not place the externally focused pane exactly once"
+
+  : > "$HERDR_LOG"
+  rm -f "$HERDR_STATE/focus-reader-count"
+  out=$(FM_FAKE_FOCUS_PANE="$target" focus_cockpit focus-listen --once) \
+    || fail "single-generation listener rejected the current viewport occupant"
+  log=$(cat "$HERDR_LOG")
+  assert_not_contains "$log" "pane move" \
+    "focusing the current viewport occupant emitted a pane move"
+  assert_not_contains "$log" "tab focus" \
+    "focusing the current viewport occupant emitted a focus restoration"
+  [ -z "$out" ] || fail "idempotent focus listener emitted unexpected output: $out"
+  cockpit_fn fm_backend_herdr_cockpit_focus_place \
+    "$HOME_DIR/state" "$HOME_DIR" fmtest "$current" >/dev/null \
+    || fail "focus convergence test could not restore its inherited viewport fixture"
+  pass "one focus event converges without feedback and the current occupant is a no-op"
+}
+
+test_focus_listener_requires_explicit_start_and_stop_ends_supervisor_and_reader() {
+  local out again stopped supervisor_pid reader_pid attempt
+  : > "$HERDR_LOG"
+  rm -f "$HERDR_STATE/focus-reader-count" "$HERDR_STATE/focus-reader-pid"
+  out=$(FM_FAKE_NOHUP_RUN=1 FM_FAKE_FOCUS_IDLE=30 focus_cockpit focus-start) \
+    || fail "explicit focus-start did not arm the listener"
+  assert_contains "$out" "focus placement started" "focus-start did not confirm startup"
+  supervisor_pid=$(cat "$HOME_DIR/state/.cockpit-focus.lock/pid" 2>/dev/null || true)
+  attempt=0
+  while [ ! -s "$HERDR_STATE/focus-reader-pid" ] && [ "$attempt" -lt 50 ]; do
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  reader_pid=$(cat "$HERDR_STATE/focus-reader-pid" 2>/dev/null || true)
+  [ -n "$supervisor_pid" ] && kill -0 "$supervisor_pid" 2>/dev/null \
+    || fail "focus-start did not leave its identity-recorded supervisor running"
+  [ -n "$reader_pid" ] && kill -0 "$reader_pid" 2>/dev/null \
+    || fail "focus-start did not leave its supervised event reader running"
+  again=$(FM_FAKE_NOHUP_RUN=1 FM_FAKE_FOCUS_IDLE=30 focus_cockpit focus-start) \
+    || fail "repeated focus-start was not idempotent"
+  assert_contains "$again" "already running" "repeated focus-start did not report the live listener"
+  stopped=$(focus_cockpit focus-stop) || fail "focus-stop could not reach the recorded supervisor"
+  assert_contains "$stopped" "focus placement stopped" "focus-stop did not confirm shutdown"
+  kill -0 "$supervisor_pid" 2>/dev/null && fail "focus-stop left the supervising shell running"
+  kill -0 "$reader_pid" 2>/dev/null && fail "focus-stop left the supervised event reader running"
+  [ ! -e "$HOME_DIR/state/.cockpit-focus.lock" ] \
+    || fail "focus-stop left the listener lock behind"
+  pass "adoption stays passive while explicit start and stop control the full listener tree"
 }
 
 test_rotation_ring_excludes_the_supervisor_and_fleet_panes() {
@@ -563,7 +711,7 @@ test_panel_renders_the_live_frame_and_fleet_view() {
   local out log
   awk -F '\t' -v OFS='\t' '
     $1 == "w1:p3" {$2="fm-claude-pane"; $5="working"}
-    $1 == "w1:p5" {$2="fm-codex-pane"; $5="blocked"}
+    $1 == "w1:p4" {$2="fm-codex-pane"; $5="blocked"}
     {print}
   ' "$HERDR_STATE/panes.tsv" > "$HERDR_STATE/panes.next"
   mv "$HERDR_STATE/panes.next" "$HERDR_STATE/panes.tsv"
@@ -646,9 +794,11 @@ test_frame_re_adoption_is_idempotent
 test_space_switch_focuses_one_complete_frame_and_rejects_nesting
 test_version_one_frame_migrates_and_failed_creation_cleans_up
 test_adoption_requires_the_native_session_socket
-test_workers_land_in_persistent_viewport
+test_first_worker_lands_in_viewport_and_later_spawns_do_not_steal_it
 test_focus_never_moves_a_pane_this_home_does_not_own
 test_rotation_orders_by_task_id_wraps_and_shares_the_placement_path
+test_focus_listener_converges_and_current_occupant_is_idempotent
+test_focus_listener_requires_explicit_start_and_stop_ends_supervisor_and_reader
 test_rotation_ring_excludes_the_supervisor_and_fleet_panes
 test_displaced_workers_stay_reachable_without_a_listener
 test_display_and_steer_boundary_remains_explicit
