@@ -144,7 +144,7 @@ FM_BACKEND_HERDR_COCKPIT_LAYOUT_DEFAULT_RATIO="0.28"
 FM_BACKEND_HERDR_COCKPIT_LAYOUT_MIN_RATIO="0.10"
 FM_BACKEND_HERDR_COCKPIT_LAYOUT_MAX_RATIO="0.90"
 # The fleet view's own executable identity, matched by basename so a fleet
-# column an operator started through a relative path is still recognized.
+# banner an operator started through a relative path is still recognized.
 FM_BACKEND_HERDR_COCKPIT_FLEET_SCRIPT="fm-fleet-view.sh"
 # The display-only metadata source used to publish pane names. Herdr's
 # sidebar otherwise names agents by space and tab, so co-located workers are
@@ -1900,7 +1900,7 @@ fm_backend_herdr_cockpit_binding_live() {  # <state-dir> <home> [<session>]
 # means the pane is alive but is not running a watched fleet view.
 #
 # Process identity is matched on the executable's BASENAME as well as its exact
-# absolute path, so a column started through a relative path - `bin/fm-fleet-view.sh
+# absolute path, so a banner started through a relative path - `bin/fm-fleet-view.sh
 # --watch` from the checkout - is recognized as readily as the absolute
 # invocation this adapter itself uses. When the process publishes its own
 # FM_HOME and a home is supplied, that home must match; a process that publishes
