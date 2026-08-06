@@ -344,6 +344,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/stacked-pr-workflow.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/stow-memory.md",
       "audience": "maintainer-verification"
     },
