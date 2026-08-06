@@ -2,7 +2,7 @@
 
 Audience: maintainer verification.
 
-This record holds the reusable Herdr evidence the cockpit fleet banner's geometry depends on.
+This record holds the reusable Herdr evidence the cockpit fleet region's geometry depends on.
 `bin/backends/herdr.sh` owns the implementation, [`docs/herdr-backend.md`](../herdr-backend.md) "Watching and task containers" owns the product behavior, and `tests/fm-cockpit.test.sh` owns automated coverage.
 
 Verified on 2026-08-06 against herdr 0.8.0 on Linux, in an isolated `fm-lab-` session provisioned through `bin/fm-herdr-lab.sh` with the default-session tripwire.
@@ -55,7 +55,7 @@ $ herdr pane layout --pane w1:p2
 
 The three fleet panes took 18 columns each of the 54-column band and kept the band's 6 rows, while the supervisor `w1:p2` kept its own 17 rows at full width.
 Creation order is also screen order left to right, and the later splits are nested inside the band rather than against the supervisor, so dividing the band never resizes or rebuilds the pane holding the supervisor.
-At six panes the smallest share is 1/6 = 0.1667, still above the 0.1 floor Herdr silently clamps to, which is why the adapter accepts at most six.
+At the supported maximum of six panes, the smallest share is 1/6 = 0.1667, still above the 0.1 floor Herdr silently clamps to.
 
 ## Swapping preserves pane identity and a registered agent
 

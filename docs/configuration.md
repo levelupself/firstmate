@@ -46,7 +46,7 @@ This preference is local to each Firstmate home and is not part of secondmate in
 How that region is divided into panes comes from the local, gitignored `config/cockpit-sections` in the same directory, and it is read only when the region is built.
 Each non-blank, non-comment line describes one pane as a comma-separated list of `bin/fm-fleet-view.sh` section names - `waiting`, `ready`, `in-flight`, `blocked`, `finished`, `failed` - and whitespace inside a line is ignored.
 An absent file means the default three panes `waiting`, `ready`, and `in-flight,blocked`, which read in the same priority order the single banner printed top to bottom.
-A section may be listed only once across the whole file, an unknown name is refused, and at most six panes are accepted, because an equal share below that starts hitting the ratio Herdr silently clamps.
+A section may be listed only once across the whole file, an unknown name is refused, and at most six panes are accepted; every split ratio within that supported limit stays above the ratio Herdr silently clamps.
 Every refusal is actionable and leaves the screen untouched rather than falling back to a shape nobody chose.
 The panes divide the band along the axis it does not already span, so a `stacked` band becomes columns and a `side-by-side` column becomes rows; the resulting panes are equal.
 This preference is local to each Firstmate home and is not part of secondmate inherited configuration.
