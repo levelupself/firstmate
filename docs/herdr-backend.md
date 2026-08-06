@@ -47,8 +47,14 @@ Herdr's harness-agnostic `agent_status` supplies live pane state, and Firstmate'
 Operators may customize Herdr space-row content in `~/.config/herdr/config.toml` with the built-ins `state_icon`, `state_text`, `workspace`, `branch`, and `git_status`; colors are not configurable, and Firstmate does not rewrite the operator's Herdr configuration.
 The sidebar can display agents from every home in the named Herdr session, while each home keeps its own frame record and `fm-send.sh` continues to require an explicit `FM_HOME` before it will steer anything.
 The existing whole-fleet status view runs continuously in a normal split pane recorded as part of the frame, so it survives client detach.
-Frame validation proves that pane still runs the exact fleet watch command; a dead or unreadable command is displayed without rebuilding or rewriting the frame.
-One validated version 1 frame is upgraded in place by adding its fleet pane and atomically publishing version 2, while an ambiguous legacy record remains untouched.
+It defaults to a full-width banner above the supervisor holding roughly 28% of the frame, and `config/cockpit-layout` overrides that direction, order, and ratio ([`docs/configuration.md`](configuration.md) "Cockpit fleet layout").
+Building that banner is the one automatic change to the operator's screen, so the command that applies it names the exact shape it is about to create, and what it leaves untouched, before the first pane call.
+An invalid layout refuses and changes nothing rather than applying a shape nobody chose, and a banner that cannot be ordered as configured is removed again so the original screen is restored.
+Nothing in that path closes, replaces, or re-splits a pane holding a live agent: the split only adds a pane, and a fleet-first order exchanges two panes' positions while Herdr keeps both pane ids, their tab and workspace, and any registered agent ([`docs/verification/cockpit-fleet-layout.md`](verification/cockpit-fleet-layout.md)).
+A layout change takes effect the next time a banner is built, because an already-adopted frame is preserved without rebuild.
+Frame validation proves that pane still runs the exact fleet watch command, matching the executable by basename as well as by absolute path so a column started through a relative path is recognized too, and refusing a process that publishes a different home.
+A validation failure names the exact check that failed - the pane unreachable, the server's answer untrusted, no fleet view running, or the pane moved out of the recorded tab - instead of one collapsed verdict, and is displayed without rebuilding or rewriting the frame.
+One validated version 1 frame is upgraded in place by adding its fleet banner and atomically publishing version 2, while an ambiguous legacy record remains untouched.
 `bin/fm-cockpit.sh switch <FM_HOME>` validates another complete per-home frame and focuses its exact workspace in one operation; ancestor or descendant homes are rejected because cockpit frames cannot nest.
 `bin/fm-cockpit.sh panel` renders the same operator boundary as text: the native navigator role, exact pinned head, current viewport panes, live fleet-pane identity, and `display=all-homes steer=current-home` boundary.
 Add `--watch` with an optional positive interval to keep that textual view live.
@@ -340,6 +346,8 @@ Direct execution of that file runs the bounded executable-resolution and recursi
 - Mutable labels can collide; they are never placement or destructive authority.
 - A Firstmate outside Herdr cannot resolve a launcher workspace, so a colliding home label refuses new spawns until the collision is cleared.
 - Ghost and placeholder recognition depends on ANSI de-emphasis and fails safely to pending when unavailable.
+- Herdr 0.8.0 has pane zoom but no hover, floating pane, or overlay primitive, so a hover-to-expand fleet view is unavailable and is not emulated; the stacked banner is the supported way to keep fleet state visible.
+- Herdr 0.8.0 splits only `right` and `down`, so any other banner placement is reached by splitting and then exchanging the two panes.
 - Mid-session secondmate liveness is not implemented.
 - OpenCode 1.18.4 can accept Enter while busy without clearing the composer.
   The tmux backend has a busy-queue fallback, but Herdr still reports this case as submit pending and needs a separate adapter fix.
@@ -350,6 +358,7 @@ Direct execution of that file runs the bounded executable-resolution and recursi
 ```sh
 tests/herdr-test-safety.sh
 tests/fm-backend-herdr.test.sh
+tests/fm-cockpit.test.sh
 tests/fm-backend-herdr-smoke.test.sh
 tests/fm-backend-herdr-prune-safety-e2e.test.sh
 tests/fm-backend-herdr-respawn-idem-e2e.test.sh

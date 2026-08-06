@@ -31,6 +31,16 @@ The `/calm` command replaces the file atomically before changing live presentati
 The extension reloads this preference on every Pi `session_start`, including startup, new, resume, fork, and reload reasons.
 This preference is local to each Firstmate home and is not part of secondmate inherited configuration.
 
+## Cockpit fleet layout (config/cockpit-layout)
+
+The Herdr cockpit's fleet banner takes its geometry from the local, gitignored `config/cockpit-layout` under the effective Firstmate home, or under `FM_CONFIG_OVERRIDE` when that test override is present.
+The file holds exactly one `<direction> [<order>] [<ratio>]` line; blank lines and `#` comment lines are ignored, and any other shape is a refusal rather than a fallback.
+`direction` is `stacked` for a full-width band or `side-by-side` for a column, `order` is `fleet-first` or `fleet-last` relative to the supervisor, and `ratio` is the fleet's own share of the frame between 0.10 and 0.90.
+Omitted trailing tokens take the built-in default, and an absent file means the default `stacked fleet-first 0.28`.
+Herdr silently clamps a split ratio below 0.1 and accepts out-of-range values without complaint, so the adapter validates the ratio itself instead of trusting the server.
+This preference is local to each Firstmate home and is not part of secondmate inherited configuration.
+[`docs/herdr-backend.md`](herdr-backend.md) "Watching and task containers" owns what the resolved layout does to the screen, including the warning issued before it is applied.
+
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.
