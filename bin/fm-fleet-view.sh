@@ -90,15 +90,13 @@ fi
 
 command -v jq >/dev/null 2>&1 || { echo "fm-fleet-view: jq not found" >&2; exit 1; }
 
+# COLUMNS and LINES stay the explicit override: an embedding caller that has
+# already spent part of the frame states the budget it has left rather than
+# re-measuring the whole pane.
 terminal_width() {
   local width=${COLUMNS:-}
   case "$width" in
-    ''|*[!0-9]*)
-      width=
-      if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
-        width=$(tput cols 2>/dev/null || true)
-      fi
-      ;;
+    ''|*[!0-9]*) width=$(fm_terminal_dimension cols || true) ;;
   esac
   case "$width" in ''|*[!0-9]*) width=60 ;; esac
   [ "$width" -ge 20 ] || width=20
@@ -108,28 +106,11 @@ terminal_width() {
 terminal_height() {
   local height=${LINES:-}
   case "$height" in
-    ''|*[!0-9]*)
-      height=
-      if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
-        height=$(tput lines 2>/dev/null || true)
-      fi
-      ;;
+    ''|*[!0-9]*) height=$(fm_terminal_dimension lines || true) ;;
   esac
   case "$height" in ''|*[!0-9]*) height=40 ;; esac
   [ "$height" -ge 2 ] || height=2
   printf '%s\n' "$height"
-}
-
-fit_height() {  # <height> <frame>
-  local height=$1 frame=$2 total hidden
-  total=$(printf '%s\n' "$frame" | awk 'END {print NR}')
-  if [ "$total" -le "$height" ]; then
-    printf '%s\n' "$frame"
-    return 0
-  fi
-  hidden=$((total - height + 1))
-  printf '%s\n' "$frame" | head -n $((height - 1))
-  printf '… %s more rows not shown\n' "$hidden"
 }
 
 render_once() {
@@ -288,7 +269,7 @@ render_once() {
     echo "Snapshot data could not be rendered; retrying on the next redraw."
     return 1
   fi
-  fit_height "$height" "$rendered"
+  fm_terminal_fit_height "$height" "$rendered"
 }
 
 if [ "$WATCH" = 1 ]; then

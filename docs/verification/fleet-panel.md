@@ -4,6 +4,7 @@ Audience: maintainer verification.
 
 This record holds reusable evidence for the fleet panel projection and watch-mode repaint guarantees.
 The implementation is shared by `bin/fm-fleet-view.sh` and `bin/fm-cockpit.sh`, while `tests/fm-fleet-snapshot-view.test.sh` owns automated readiness agreement, section ordering, height truncation, independent section rendering, and residual-line coverage.
+`tests/fm-fleet-view-pane-fit-smoke.test.sh` owns the real-pane fit that a `LINES`-driven fixture cannot reach, because supplying `LINES` takes the explicit-override branch and never measures anything.
 
 The read-only snapshot calls `tasks-axi list` and `tasks-axi ready` once each for the primary home and once each for every readable registered secondmate home during a redraw.
 The two primary-home calls measured about 92 ms together locally, so the redraw cost scales as `2 * (1 + readable secondmate homes)` tasks-axi invocations.
@@ -58,3 +59,35 @@ done
 ```
 
 The observed pane changed directly between complete frames without a visible blank refresh.
+
+## Pane measurement and the head-preserving fit
+
+Verified on 2026-08-06 in an isolated tmux 3.4 pane on Linux, sized to twelve rows to match a cockpit fleet banner.
+
+Both callers measure the pane inside a command substitution, where stdout is a pipe.
+A probe gated on `[ -t 1 ]` therefore never runs, and the panel silently rendered against its built-in forty-row fallback: twenty lines were emitted into twelve rows, the terminal scrolled, and the title, `YOUR DECISIONS`, and `READY` were pushed off the top while only the tail remained visible.
+`stty size < /dev/tty` and `tput lines` both report the pane's own size regardless of that redirection, which is what the shared probe now uses.
+
+```sh
+$ tmux -L fmev new-session -d -s e -x 60 -y 12 "FM_HOME=$H bin/fm-fleet-view.sh --watch 1"
+$ tmux -L fmev capture-pane -p -t e:0.0
+============================================================
+FLEET STATUS
+============================================================
+
+YOUR DECISIONS (0)
+  None.
+
+READY (0)
+  None.
+
+IN FLIGHT (6)
+… 9 more rows not shown
+```
+
+The frame now fills exactly twelve rows, keeps the head the section ordering exists to protect, and discloses the dropped tail.
+
+A frame sized to exactly fill the pane also requires that painting not terminate the final row with a newline, which would walk the cursor past the bottom, scroll by one, and eat the frame's own first line.
+Newlines therefore separate rows rather than terminating them.
+`ESC[J` erases from the cursor to the end of the display, so text preceding the cursor on the final row survives and the closing erase still clears every row below.
+Twenty consecutive captures of a fixture alternating three-line and one-line frames every 0.05 seconds each showed exactly one complete frame with no residual rows from the longer one.

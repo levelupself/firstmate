@@ -1050,11 +1050,17 @@ SH
       if ($s =~ s/^\e\[\?2026[hl]// || $s =~ s/^\e\[0m//) { next }
       if ($s =~ s/^\e\[H//) { $row = 0; $text = ""; next }
       if ($s =~ s/^\e\[K//) { $screen[$row] = $text; next }
-      if ($s =~ s/^\e\[J//) { $#screen = $row - 1; next }
+      # ESC[J erases from the CURSOR to the end of the display, so whatever
+      # precedes the cursor on the current row survives. Truncating from the
+      # start of the row instead would model a terminal that erases text the
+      # real one keeps, and would mis-score any frame whose last row is not
+      # newline-terminated.
+      if ($s =~ s/^\e\[J//) { $screen[$row] = $text; $#screen = $row; next }
       if ($s =~ s/^\n//) { $row++; $text = ""; next }
       $s =~ s/^(.)//s or die "unparsed terminal stream";
       $text .= $1;
     }
+    pop @screen while @screen && (!defined $screen[-1] || $screen[-1] eq "");
     exit !(@screen == 1 && $screen[0] eq "short");
   ' "$output" || fail "a shorter watch frame left residual lines from the longer frame"
   pass "watch mode computes before painting and erases residual lines from shorter frames"

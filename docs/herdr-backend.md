@@ -47,8 +47,17 @@ Herdr's harness-agnostic `agent_status` supplies live pane state, and Firstmate'
 Operators may customize Herdr space-row content in `~/.config/herdr/config.toml` with the built-ins `state_icon`, `state_text`, `workspace`, `branch`, and `git_status`; colors are not configurable, and Firstmate does not rewrite the operator's Herdr configuration.
 The sidebar can display agents from every home in the named Herdr session, while each home keeps its own frame record and `fm-send.sh` continues to require an explicit `FM_HOME` before it will steer anything.
 The existing whole-fleet status view runs continuously in a normal split pane recorded as part of the frame, so it survives client detach.
-Frame validation proves that pane still runs the exact fleet watch command; a dead or unreadable command is displayed without rebuilding or rewriting the frame.
-One validated version 1 frame is upgraded in place by adding its fleet pane and atomically publishing version 2, while an ambiguous legacy record remains untouched.
+It defaults to a full-width banner above the supervisor holding roughly 28% of the frame, and `config/cockpit-layout` overrides that direction, order, and ratio ([`docs/configuration.md`](configuration.md) "Cockpit fleet layout").
+Building that banner is the one automatic change to the operator's screen, so the command that applies it names the exact shape it is about to create, and what it leaves untouched, before the first pane call.
+An invalid layout refuses and changes nothing rather than applying a shape nobody chose, and a banner that cannot be ordered as configured is removed again so the original screen is restored.
+Nothing in that path closes, replaces, or re-splits a pane holding a live agent: the split only adds a pane, and a fleet-first order exchanges two panes' positions while Herdr keeps both pane ids, their tab and workspace, and any registered agent ([`docs/verification/cockpit-fleet-layout.md`](verification/cockpit-fleet-layout.md)).
+A layout change takes effect the next time a banner is built, because an already-adopted frame is preserved without rebuild.
+The panel measures the pane it is actually painting into rather than assuming a full-screen terminal, so a roughly twelve-row banner renders decisions first and truncates its tail with a count of the hidden rows; letting the terminal scroll instead would cost the head, which is the part the ordering exists to protect.
+`bin/fm-cockpit.sh panel` is one frame made of its own header plus that view, so the header's spent rows are subtracted from the view's budget and its lines are clipped to the pane width; `bin/fm-cockpit.sh status` remains the untruncated detail.
+`bin/fm-cockpit.sh zoom [on|off|toggle]` fills the frame with the banner and restores it, which is the supported way to read it closely; it changes no split, moves no pane, and binds to a key exactly like `next` and `prev`.
+Frame validation proves that pane still runs the watched fleet view, matching the executable by basename as well as by absolute path so a banner started through a relative path is recognized too, and refusing a process that publishes a different home.
+A validation failure names the exact check that failed - the pane unreachable, the server's answer untrusted, no fleet view running, or the pane moved out of the recorded tab - instead of one collapsed verdict, and is displayed without rebuilding or rewriting the frame.
+One validated version 1 frame is upgraded in place by adding its fleet banner and atomically publishing version 2, while an ambiguous legacy record remains untouched.
 `bin/fm-cockpit.sh switch <FM_HOME>` validates another complete per-home frame and focuses its exact workspace in one operation; ancestor or descendant homes are rejected because cockpit frames cannot nest.
 `bin/fm-cockpit.sh panel` renders the same operator boundary as text: the native navigator role, exact pinned head, current viewport panes, live fleet-pane identity, and `display=all-homes steer=current-home` boundary.
 Add `--watch` with an optional positive interval to keep that textual view live.
@@ -64,12 +73,12 @@ Adoption deliberately leaves that listener off so session start cannot rearrange
 `bin/fm-cockpit.sh focus-start` explicitly starts it detached, while `focus-stop` stops the identity-checked supervising shell, terminates its active event reader, and releases this home's per-home lock.
 Each focus subscription closes after one event and before placement begins, so focus events caused by the placement itself cannot enter a later subscription generation and trigger another move.
 Because Herdr routes to the tab before anything can observe the selection, a worker that was parked is briefly visible on its own tab before the slot updates; a worker already in the slot never moves at all.
-That reaction moves only panes this home's own task records claim, so the pinned head, the fleet column, a pane with no agent, and another home's worker are all left alone even though the sidebar displays them.
+That reaction moves only panes this home's own task records claim, so the pinned head, the fleet banner, a pane with no agent, and another home's worker are all left alone even though the sidebar displays them.
 The focus subscription is session-wide, so concurrent homes observe the same events, but each listener uses its own frame record, lock, and task metadata; ownership isolation prevents one home from moving another home's pane.
 Nothing depends on the reaction running: without it every worker simply stays on its own labelled tab, parking preserves its pane id and never closes it, and a dead listener therefore costs only the automatic return click without stranding a pane.
 The shared lock helper recovers a lock whose recorded process is dead, and a listener exits when its bound frame is no longer live rather than acting on stale state.
 Workers that predate an adopted frame are migrated the first time they are selected rather than moved in bulk at adoption, so no running agent is resized for a view nobody asked for.
-`bin/fm-cockpit.sh show <task-id>` performs the same placement without any reaction running, and `next`/`prev` step the slot along this home's workers ordered by task id, wrapping at both ends and never targeting the pinned head or the fleet column.
+`bin/fm-cockpit.sh show <task-id>` performs the same placement without any reaction running, and `next`/`prev` step the slot along this home's workers ordered by task id, wrapping at both ends and never targeting the pinned head or the fleet banner.
 Rotation resolves a worker and then hands it to that same single-occupancy placement, so a key and a sidebar selection cannot disagree.
 Herdr 0.8.0 plugin manifest actions carry no key, and no configuration entry binds a plugin action to a chord, so rotation is bound with Herdr's own custom-command keys; `bin/fm-cockpit.sh`'s header owns that snippet, and the command never rewrites the operator's Herdr configuration.
 Each placed worker also publishes a display-only sidebar name for its task, retired when its pane is torn down, because the sidebar otherwise names agents by space and tab and cannot distinguish co-located workers.
@@ -340,6 +349,8 @@ Direct execution of that file runs the bounded executable-resolution and recursi
 - Mutable labels can collide; they are never placement or destructive authority.
 - A Firstmate outside Herdr cannot resolve a launcher workspace, so a colliding home label refuses new spawns until the collision is cleared.
 - Ghost and placeholder recognition depends on ANSI de-emphasis and fails safely to pending when unavailable.
+- Herdr 0.8.0 has pane zoom but no hover, floating pane, or overlay primitive, so a hover-to-expand fleet view is unavailable and is not emulated; the stacked banner keeps fleet state visible and `fm-cockpit.sh zoom` is the supported way to look closer.
+- Herdr 0.8.0 splits only `right` and `down`, so any other banner placement is reached by splitting and then exchanging the two panes.
 - Mid-session secondmate liveness is not implemented.
 - OpenCode 1.18.4 can accept Enter while busy without clearing the composer.
   The tmux backend has a busy-queue fallback, but Herdr still reports this case as submit pending and needs a separate adapter fix.
@@ -350,6 +361,8 @@ Direct execution of that file runs the bounded executable-resolution and recursi
 ```sh
 tests/herdr-test-safety.sh
 tests/fm-backend-herdr.test.sh
+tests/fm-cockpit.test.sh
+tests/fm-fleet-view-pane-fit-smoke.test.sh
 tests/fm-backend-herdr-smoke.test.sh
 tests/fm-backend-herdr-prune-safety-e2e.test.sh
 tests/fm-backend-herdr-respawn-idem-e2e.test.sh

@@ -129,6 +129,23 @@ FM_BACKEND_HERDR_COCKPIT_RECORD=".herdr-cockpit"
 # split from the pinned head at this exact ratio, so its width is identical
 # every time an agent enters or leaves it. Nothing ever splits the slot again.
 FM_BACKEND_HERDR_COCKPIT_VIEWPORT_RATIO="0.67"
+# Fleet banner geometry. Herdr 0.8.0 splits only `right` and `down`, and its
+# --ratio names the FIRST (original) child's fraction, not the new pane's
+# (docs/verification/cockpit-fleet-layout.md). A fleet-first order therefore
+# splits away from the head and then swaps the two panes; herdr's pane swap
+# preserves both pane ids, their tab and workspace, and a registered agent, so
+# it never closes, replaces, or re-splits the pane holding the supervisor.
+# Herdr silently clamps a ratio below 0.1 and accepts out-of-range values
+# without error, so this adapter validates the configured ratio itself.
+FM_BACKEND_HERDR_COCKPIT_LAYOUT_FILE="cockpit-layout"
+FM_BACKEND_HERDR_COCKPIT_LAYOUT_DEFAULT_DIRECTION="stacked"
+FM_BACKEND_HERDR_COCKPIT_LAYOUT_DEFAULT_ORDER="fleet-first"
+FM_BACKEND_HERDR_COCKPIT_LAYOUT_DEFAULT_RATIO="0.28"
+FM_BACKEND_HERDR_COCKPIT_LAYOUT_MIN_RATIO="0.10"
+FM_BACKEND_HERDR_COCKPIT_LAYOUT_MAX_RATIO="0.90"
+# The fleet view's own executable identity, matched by basename so a fleet
+# banner an operator started through a relative path is still recognized.
+FM_BACKEND_HERDR_COCKPIT_FLEET_SCRIPT="fm-fleet-view.sh"
 # The display-only metadata source used to publish pane names. Herdr's
 # sidebar otherwise names agents by space and tab, so co-located workers are
 # indistinguishable; this names each one by its task and is never an identity.
@@ -1866,37 +1883,33 @@ fm_backend_herdr_cockpit_workspace_matches_home() {  # <session> <workspace> <ho
   ' >/dev/null 2>&1
 }
 
+# The predicate form of fm_backend_herdr_cockpit_binding_diagnose. It must not
+# run that walk in a command substitution: callers depend on the
+# FM_BACKEND_HERDR_COCKPIT_* snapshot it publishes, which a subshell would
+# discard.
 fm_backend_herdr_cockpit_binding_live() {  # <state-dir> <home> [<session>]
-  local state=$1 home=$2 expected_session=${3:-}
-  fm_backend_herdr_cockpit_record_snapshot "$state" "$home" || return 1
-  [ "$FM_BACKEND_HERDR_COCKPIT_VERSION" = 2 ] || return 1
-  [ -z "$expected_session" ] \
-    || [ "$FM_BACKEND_HERDR_COCKPIT_SESSION" = "$expected_session" ] \
-    || return 1
-  fm_backend_herdr_cockpit_pane_matches \
-    "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
-    "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" \
-    "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" \
-    "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" \
-    || return 1
-  [ "$(fm_backend_herdr_cockpit_fleet_state \
-    "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
-    "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID")" = live ] || return 1
-  fm_backend_herdr_cockpit_pane_matches \
-    "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
-    "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" \
-    "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" \
-    "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" \
-    || return 1
-  [ "$(fm_backend_herdr_cockpit_head_state \
-    "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
-    "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID")" = live ]
+  fm_backend_herdr_cockpit_binding_diagnose "$1" "$2" "${3:-}" >/dev/null
 }
 
-fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane>
-  local session=$1 pane=$2 info
+# fm_backend_herdr_cockpit_fleet_state: what the recorded fleet pane is running.
+#
+# Each distinct cause reports itself rather than collapsing into one "dead",
+# because the three of them need three different responses: no-process-info
+# means the pane is gone or the server would not answer, unreadable means the
+# server answered in a shape this adapter cannot trust, and no-fleet-process
+# means the pane is alive but is not running a watched fleet view.
+#
+# Process identity is matched on the executable's BASENAME as well as its exact
+# absolute path, so a banner started through a relative path - `bin/fm-fleet-view.sh
+# --watch` from the checkout - is recognized as readily as the absolute
+# invocation this adapter itself uses. When the process publishes its own
+# FM_HOME and a home is supplied, that home must match; a process that publishes
+# no FM_HOME is not rejected for it, since absent evidence is not contrary
+# evidence.
+fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane> [<home>]
+  local session=$1 pane=$2 home=${3:-} info
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || {
-    printf 'unknown'
+    printf 'no-process-info'
     return 0
   }
   if ! printf '%s' "$info" | jq -e --arg pane "$pane" '
@@ -1904,18 +1917,215 @@ fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane>
     and .result.process_info.pane_id == $pane
     and (.result.process_info.foreground_processes | type) == "array"
   ' >/dev/null 2>&1; then
-    printf 'unknown'
+    printf 'unreadable'
     return 0
   fi
-  if printf '%s' "$info" | jq -e --arg script "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" '
+  if printf '%s' "$info" | jq -e \
+    --arg script "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" \
+    --arg name "$FM_BACKEND_HERDR_COCKPIT_FLEET_SCRIPT" \
+    --arg home "$home" '
+    def words: (.argv // (if (.argv0 // "") == "" then [] else [.argv0] end));
     any(.result.process_info.foreground_processes[]?;
-      ((.argv // [(.argv0 // "")]) | index($script)) != null
-      and ((.argv // []) | index("--watch")) != null)
+      (words | any(. == $script or ((. | split("/") | last) == $name)))
+      and ((words | index("--watch")) != null)
+      and ($home == ""
+           or ((words | map(select(startswith("FM_HOME=")))) as $set
+               | ($set | length) == 0 or ($set | index("FM_HOME=" + $home)) != null)))
   ' >/dev/null 2>&1; then
     printf 'live'
   else
-    printf 'dead'
+    printf 'no-fleet-process'
   fi
+}
+
+# fm_backend_herdr_cockpit_binding_diagnose: the single reason this home's
+# recorded frame is not usable, or "ok". Every refusal names the check that
+# failed so a caller can say what is wrong instead of listing everything that
+# might be. The reason is printed and the exit status is its boolean form, so
+# fm_backend_herdr_cockpit_binding_live is this same walk read as a predicate
+# and the two can never disagree about what "live" means.
+fm_backend_herdr_cockpit_binding_diagnose() {  # <state-dir> <home> [<session>]
+  local state=$1 home=$2 expected_session=${3:-} record reason=ok fleet head
+  record=$(fm_backend_herdr_cockpit_record_path "$state")
+  if ! fm_backend_herdr_cockpit_record_snapshot "$state" "$home"; then
+    if [ ! -e "$record" ] && [ ! -L "$record" ]; then
+      reason='record-absent'
+    else
+      reason='record-unreadable'
+    fi
+  elif [ "$FM_BACKEND_HERDR_COCKPIT_VERSION" != 2 ]; then
+    reason="record-version-$FM_BACKEND_HERDR_COCKPIT_VERSION"
+  elif [ -n "$expected_session" ] \
+       && [ "$FM_BACKEND_HERDR_COCKPIT_SESSION" != "$expected_session" ]; then
+    reason='session-mismatch'
+  elif ! fm_backend_herdr_cockpit_pane_matches \
+    "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
+    "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" \
+    "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" \
+    "$FM_BACKEND_HERDR_COCKPIT_TAB_ID"; then
+    reason='head-pane-mismatch'
+  else
+    # The record's own home, not the caller's argument: the snapshot has
+    # already proven they resolve to the same directory, and callers reach
+    # here with an unresolved path that would never match the resolved one
+    # the fleet view publishes.
+    fleet=$(fm_backend_herdr_cockpit_fleet_state \
+      "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
+      "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" \
+      "$FM_BACKEND_HERDR_COCKPIT_HOME")
+    if [ "$fleet" != live ]; then
+      reason="fleet-$fleet"
+    elif ! fm_backend_herdr_cockpit_pane_matches \
+      "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
+      "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" \
+      "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" \
+      "$FM_BACKEND_HERDR_COCKPIT_TAB_ID"; then
+      reason='fleet-pane-mismatch'
+    else
+      head=$(fm_backend_herdr_cockpit_head_state \
+        "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
+        "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID")
+      [ "$head" = live ] || reason="head-$head"
+    fi
+  fi
+  # Published as well as printed so a caller that needs the frame snapshot can
+  # take the predicate form (which cannot use a command substitution without
+  # discarding those globals) and still report the exact cause from one walk.
+  # shellcheck disable=SC2034  # read by bin/fm-cockpit.sh
+  FM_BACKEND_HERDR_COCKPIT_DIAGNOSIS=$reason
+  printf '%s' "$reason"
+  [ "$reason" = ok ]
+}
+
+# fm_backend_herdr_cockpit_binding_explain: the plain sentence for one reason
+# token, so every caller reports the same cause the same way.
+fm_backend_herdr_cockpit_binding_explain() {  # <reason>
+  case "$1" in
+    ok) printf 'the recorded frame is live' ;;
+    record-absent) printf 'no frame has been adopted for this home yet' ;;
+    record-unreadable) printf 'the recorded frame is malformed or belongs to another home' ;;
+    record-version-*) printf 'the recorded frame predates the fleet banner and needs re-adoption' ;;
+    session-mismatch) printf 'the recorded frame belongs to a different Herdr session' ;;
+    head-pane-mismatch) printf 'the recorded supervisor pane is gone or moved to another tab' ;;
+    fleet-no-process-info) printf 'the fleet banner pane is gone or the server would not report it' ;;
+    fleet-unreadable) printf 'the server reported the fleet banner pane in an untrusted shape' ;;
+    fleet-no-fleet-process) printf 'the fleet banner pane is not running the fleet view' ;;
+    fleet-pane-mismatch) printf 'the fleet banner pane moved out of the recorded tab' ;;
+    head-dead) printf 'the recorded supervisor pane has no live agent' ;;
+    head-unknown) printf 'the recorded supervisor pane state could not be read' ;;
+    *) printf 'the recorded frame failed check %s' "$1" ;;
+  esac
+}
+
+# fm_backend_herdr_cockpit_layout: resolve this home's fleet-banner geometry
+# into the exact herdr split this adapter will perform.
+#
+# <home>/config/cockpit-layout holds one line, "<direction> [<order>] [<ratio>]".
+# direction is stacked or side-by-side, order is fleet-first or fleet-last, and
+# ratio is the FLEET's own share of the frame. Omitted trailing tokens take the
+# built-in default. An invalid file is an actionable refusal rather than a
+# silent fallback, so a typo can never quietly rearrange the screen into a shape
+# nobody chose. The resolved geometry is applied only when a banner is actually
+# created; an already-adopted frame is preserved without rebuild.
+fm_backend_herdr_cockpit_layout() {  # <home>
+  local home=$1 config file content line count direction order ratio
+  local -a tokens=()
+  FM_BACKEND_HERDR_COCKPIT_LAYOUT_DIRECTION=""
+  FM_BACKEND_HERDR_COCKPIT_LAYOUT_ORDER=""
+  FM_BACKEND_HERDR_COCKPIT_LAYOUT_RATIO=""
+  FM_BACKEND_HERDR_COCKPIT_LAYOUT_SPLIT=""
+  FM_BACKEND_HERDR_COCKPIT_LAYOUT_SPLIT_RATIO=""
+  FM_BACKEND_HERDR_COCKPIT_LAYOUT_SWAP=""
+  FM_BACKEND_HERDR_COCKPIT_LAYOUT_SOURCE=default
+  direction=$FM_BACKEND_HERDR_COCKPIT_LAYOUT_DEFAULT_DIRECTION
+  order=$FM_BACKEND_HERDR_COCKPIT_LAYOUT_DEFAULT_ORDER
+  ratio=$FM_BACKEND_HERDR_COCKPIT_LAYOUT_DEFAULT_RATIO
+  config="${FM_CONFIG_OVERRIDE:-$home/config}"
+  file="$config/$FM_BACKEND_HERDR_COCKPIT_LAYOUT_FILE"
+  if [ -e "$file" ] || [ -L "$file" ]; then
+    if [ ! -f "$file" ] || [ -L "$file" ] || ! content=$(cat "$file" 2>/dev/null); then
+      printf 'COCKPIT: %s is not a readable regular file; refusing to guess a layout.\n' \
+        "$file" >&2
+      return 1
+    fi
+    count=$(printf '%s\n' "$content" | grep -c -v -e '^[[:space:]]*$' -e '^[[:space:]]*#' || true)
+    if [ "$count" != 1 ]; then
+      printf 'COCKPIT: %s must hold exactly one "<direction> [<order>] [<ratio>]" line; found %s.\n' \
+        "$file" "$count" >&2
+      return 1
+    fi
+    line=$(printf '%s\n' "$content" | grep -v -e '^[[:space:]]*$' -e '^[[:space:]]*#')
+    read -r -a tokens <<< "$line"
+    if [ "${#tokens[@]}" -lt 1 ] || [ "${#tokens[@]}" -gt 3 ]; then
+      printf 'COCKPIT: layout "%s" is not "<direction> [<order>] [<ratio>]".\n' "$line" >&2
+      return 1
+    fi
+    direction=${tokens[0]}
+    [ "${#tokens[@]}" -lt 2 ] || order=${tokens[1]}
+    [ "${#tokens[@]}" -lt 3 ] || ratio=${tokens[2]}
+    FM_BACKEND_HERDR_COCKPIT_LAYOUT_SOURCE=$file
+  fi
+  case "$direction" in
+    stacked) FM_BACKEND_HERDR_COCKPIT_LAYOUT_SPLIT=down ;;
+    side-by-side) FM_BACKEND_HERDR_COCKPIT_LAYOUT_SPLIT=right ;;
+    *)
+      printf 'COCKPIT: layout direction "%s" must be stacked or side-by-side.\n' "$direction" >&2
+      return 1
+      ;;
+  esac
+  case "$order" in
+    fleet-first) FM_BACKEND_HERDR_COCKPIT_LAYOUT_SWAP=1 ;;
+    fleet-last) FM_BACKEND_HERDR_COCKPIT_LAYOUT_SWAP=0 ;;
+    *)
+      printf 'COCKPIT: layout order "%s" must be fleet-first or fleet-last.\n' "$order" >&2
+      return 1
+      ;;
+  esac
+  case "$ratio" in
+    ''|*[!0-9.]*|*.*.*)
+      printf 'COCKPIT: layout ratio "%s" must be a decimal fraction.\n' "$ratio" >&2
+      return 1
+      ;;
+  esac
+  if ! awk -v r="$ratio" -v lo="$FM_BACKEND_HERDR_COCKPIT_LAYOUT_MIN_RATIO" \
+       -v hi="$FM_BACKEND_HERDR_COCKPIT_LAYOUT_MAX_RATIO" \
+       'BEGIN { exit !(r + 0 >= lo + 0 && r + 0 <= hi + 0) }'; then
+    printf 'COCKPIT: layout ratio %s is outside the supported %s-%s range.\n' \
+      "$ratio" "$FM_BACKEND_HERDR_COCKPIT_LAYOUT_MIN_RATIO" \
+      "$FM_BACKEND_HERDR_COCKPIT_LAYOUT_MAX_RATIO" >&2
+    return 1
+  fi
+  FM_BACKEND_HERDR_COCKPIT_LAYOUT_DIRECTION=$direction
+  FM_BACKEND_HERDR_COCKPIT_LAYOUT_ORDER=$order
+  FM_BACKEND_HERDR_COCKPIT_LAYOUT_RATIO=$ratio
+  # Herdr's --ratio sizes the first child, which is the head for a fleet-last
+  # order and the fleet pane only after the fleet-first swap.
+  if [ "$FM_BACKEND_HERDR_COCKPIT_LAYOUT_SWAP" = 1 ]; then
+    FM_BACKEND_HERDR_COCKPIT_LAYOUT_SPLIT_RATIO=$ratio
+  else
+    FM_BACKEND_HERDR_COCKPIT_LAYOUT_SPLIT_RATIO=$(awk -v r="$ratio" \
+      'BEGIN { printf "%.4f", 1 - r }')
+  fi
+  return 0
+}
+
+# fm_backend_herdr_cockpit_layout_describe: the one-line plain description of a
+# resolved layout, used by the pre-change warning and by callers reporting what
+# a frame was built as.
+fm_backend_herdr_cockpit_layout_describe() {
+  local place percent
+  if [ "$FM_BACKEND_HERDR_COCKPIT_LAYOUT_DIRECTION" = stacked ]; then
+    place=below
+    [ "$FM_BACKEND_HERDR_COCKPIT_LAYOUT_SWAP" != 1 ] || place=above
+  else
+    place="right of"
+    [ "$FM_BACKEND_HERDR_COCKPIT_LAYOUT_SWAP" != 1 ] || place="left of"
+  fi
+  percent=$(awk -v r="$FM_BACKEND_HERDR_COCKPIT_LAYOUT_RATIO" \
+    'BEGIN { printf "%d", r * 100 + 0.5 }')
+  printf 'fleet banner %s the supervisor at %s%% of the frame (%s, %s)' \
+    "$place" "$percent" "$FM_BACKEND_HERDR_COCKPIT_LAYOUT_DIRECTION" \
+    "$FM_BACKEND_HERDR_COCKPIT_LAYOUT_ORDER"
 }
 
 fm_backend_herdr_cockpit_discard_fleet_pane() {  # <session> <workspace> <tab> <pane>
@@ -1925,32 +2135,110 @@ fm_backend_herdr_cockpit_discard_fleet_pane() {  # <session> <workspace> <tab> <
   fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane"
 }
 
+fm_backend_herdr_cockpit_report_fleet_rollback() {  # <session> <workspace> <tab> <pane> <failure>
+  local session=$1 workspace=$2 tab=$3 pane=$4 failure=$5
+  if [ -n "$pane" ] \
+     && fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$pane"; then
+    printf 'COCKPIT: %s; the original screen was restored.\n' "$failure" >&2
+    return 0
+  fi
+  if [ -n "$pane" ]; then
+    printf 'COCKPIT: NOT-RESTORED: %s; added fleet pane %s could not be removed, and the screen still carries it for direct cleanup.\n' \
+      "$failure" "$pane" >&2
+  else
+    printf 'COCKPIT: NOT-RESTORED: %s; the added fleet pane could not be identified or removed, so the screen may still carry it for direct cleanup.\n' \
+      "$failure" >&2
+  fi
+  return 1
+}
+
+# Build this home's fleet banner in one deliberate, announced motion.
+#
+# The operator's screen is never rearranged silently: the warning below is
+# printed BEFORE the first geometry-changing call, names the exact shape about
+# to be applied, and names the file that changes it. Nothing here closes,
+# replaces, or re-splits an existing pane - the split adds a new pane, and the
+# fleet-first swap only exchanges two panes' positions while herdr keeps both
+# pane ids, their tab and workspace, and any registered agent intact.
 fm_backend_herdr_cockpit_create_fleet_pane() {  # <session> <workspace> <tab> <head> <home>
   local session=$1 workspace=$2 tab=$3 head=$4 home=$5 out pane actual_workspace actual_tab attempt
+  local layout_source
+  fm_backend_herdr_cockpit_layout "$home" || return 1
+  layout_source=$FM_BACKEND_HERDR_COCKPIT_LAYOUT_SOURCE
+  [ "$layout_source" != default ] || layout_source='built-in defaults'
+  printf 'COCKPIT: this screen is about to change - adding the %s.\n' \
+    "$(fm_backend_herdr_cockpit_layout_describe)" >&2
+  printf 'COCKPIT: layout read from %s; no existing pane is closed, replaced, or re-split. Edit %s/%s to choose another direction, order, or ratio.\n' \
+    "$layout_source" "${FM_CONFIG_OVERRIDE:-$home/config}" \
+    "$FM_BACKEND_HERDR_COCKPIT_LAYOUT_FILE" >&2
   out=$(fm_backend_herdr_cli "$session" pane split "$head" \
-    --direction right --ratio 0.25 --cwd "$home" --no-focus 2>/dev/null) || return 1
+    --direction "$FM_BACKEND_HERDR_COCKPIT_LAYOUT_SPLIT" \
+    --ratio "$FM_BACKEND_HERDR_COCKPIT_LAYOUT_SPLIT_RATIO" \
+    --cwd "$home" --no-focus 2>/dev/null) || return 1
   pane=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
   actual_workspace=$(printf '%s' "$out" | jq -r '.result.pane.workspace_id // empty' 2>/dev/null)
   actual_tab=$(printf '%s' "$out" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
   if [ -z "$pane" ] || [ "$actual_workspace" != "$workspace" ] || [ "$actual_tab" != "$tab" ]; then
+    fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$pane" \
+      "split returned invalid fleet pane metadata" || true
+    return 1
+  fi
+  if [ "$FM_BACKEND_HERDR_COCKPIT_LAYOUT_SWAP" = 1 ] \
+     && ! fm_backend_herdr_cockpit_swap_panes "$session" "$head" "$pane"; then
+    fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$pane" \
+      "could not order the fleet banner as configured" || true
     return 1
   fi
   if ! fm_backend_herdr_cli "$session" pane rename "$pane" firstmate-fleet >/dev/null 2>&1 \
      || ! fm_backend_herdr_cli "$session" pane run "$pane" \
        env "FM_HOME=$home" "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" --watch >/dev/null 2>&1; then
-    fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$pane" || true
+    fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$pane" \
+      "could not launch the fleet banner" || true
     return 1
   fi
   attempt=0
-  while [ "$(fm_backend_herdr_cockpit_fleet_state "$session" "$pane")" != live ]; do
+  while [ "$(fm_backend_herdr_cockpit_fleet_state "$session" "$pane" "$home")" != live ]; do
     attempt=$((attempt + 1))
     if [ "$attempt" -ge "${FM_BACKEND_HERDR_COCKPIT_START_POLLS:-10}" ]; then
-      fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$pane" || true
+      fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$pane" \
+        "fleet banner did not become live" || true
       return 1
     fi
     sleep 0.1
   done
   printf '%s' "$pane"
+}
+
+# fm_backend_herdr_cockpit_swap_panes: exchange two panes' screen positions.
+# Verified on herdr 0.8.0: both pane ids, their tab and workspace, and a
+# registered agent all survive the swap, so this repositions the supervisor
+# without closing, replacing, or re-splitting its pane. A swap that reports no
+# change is a failure, never a silent partial layout.
+fm_backend_herdr_cockpit_swap_panes() {  # <session> <source> <target>
+  local session=$1 source=$2 target=$3 out
+  out=$(fm_backend_herdr_cli "$session" pane swap \
+    --source-pane "$source" --target-pane "$target" 2>/dev/null) || return 1
+  printf '%s' "$out" | jq -e --arg source "$source" --arg target "$target" '
+    .result.swap.changed == true
+    and .result.swap.source_pane_id == $source
+    and .result.swap.target_pane_id == $target
+  ' >/dev/null 2>&1
+}
+
+# fm_backend_herdr_cockpit_fleet_zoom: toggle the fleet banner to fill the tab
+# and back. Herdr exposes pane zoom but no hover, floating pane, or overlay
+# primitive, so this is the supported "look closer" affordance; it is
+# reversible, changes no split, and moves no pane.
+fm_backend_herdr_cockpit_fleet_zoom() {  # <session> <pane> on|off|toggle
+  local session=$1 pane=$2 mode=$3 out
+  case "$mode" in on|off|toggle) ;; *) return 2 ;; esac
+  out=$(fm_backend_herdr_cli "$session" pane zoom "$pane" "--$mode" 2>/dev/null) || return 1
+  printf '%s' "$out" | jq -e --arg pane "$pane" \
+    '.result.zoom.pane_id == $pane and (.result.zoom.zoomed | type) == "boolean"' \
+    >/dev/null 2>&1 || return 1
+  # Not `// empty`: jq's alternative operator treats a legitimate false as
+  # absent, which would report an unzoomed banner as an unreadable answer.
+  printf '%s' "$out" | jq -r '.result.zoom.zoomed' 2>/dev/null
 }
 
 # Adopt the current exact native-Herdr pane as this home's head.
@@ -1993,7 +2281,8 @@ fm_backend_herdr_cockpit_adopt() {  # <state-dir> <home> <session> [adopt|new]
       return 1
     }
     fm_backend_herdr_cockpit_write_record "$state" "$home" "$session" "$workspace" "$tab" "$pane" "" "$fleet" || {
-      fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$fleet" || true
+      fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$fleet" \
+        "could not publish the cockpit frame record" || true
       return 1
     }
     printf 'COCKPIT: adopted Herdr frame session=%s workspace=%s tab=%s head=%s\n' \
@@ -2015,16 +2304,20 @@ fm_backend_herdr_cockpit_adopt() {  # <state-dir> <home> <session> [adopt|new]
       }
       fm_backend_herdr_cockpit_write_record "$state" "$home" "$session" "$workspace" "$tab" "$pane" \
         "$FM_BACKEND_HERDR_COCKPIT_VIEWPORT_PANE_ID" "$fleet" || {
-        fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$fleet" || true
+        fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$fleet" \
+          "could not publish the cockpit frame record" || true
         return 1
       }
       printf 'COCKPIT: migrated and re-adopted Herdr frame session=%s workspace=%s tab=%s head=%s\n' \
         "$session" "$workspace" "$tab" "$pane"
       return 0
     fi
-    if [ "$(fm_backend_herdr_cockpit_fleet_state "$session" \
-      "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID")" != live ]; then
-      echo "COCKPIT: recorded fleet column is dead or unreadable; preserving the frame without rebuild." >&2
+    fleet=$(fm_backend_herdr_cockpit_fleet_state "$session" \
+      "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" \
+      "$FM_BACKEND_HERDR_COCKPIT_HOME")
+    if [ "$fleet" != live ]; then
+      printf 'COCKPIT: %s; preserving the frame without rebuild.\n' \
+        "$(fm_backend_herdr_cockpit_binding_explain "fleet-$fleet")" >&2
       return 1
     fi
     printf 'COCKPIT: re-adopted Herdr frame session=%s workspace=%s tab=%s head=%s\n' \
@@ -2038,7 +2331,8 @@ fm_backend_herdr_cockpit_adopt() {  # <state-dir> <home> <session> [adopt|new]
       dead)
         fleet=$(fm_backend_herdr_cockpit_create_fleet_pane "$session" "$workspace" "$tab" "$pane" "$home") || return 1
         fm_backend_herdr_cockpit_write_record "$state" "$home" "$session" "$workspace" "$tab" "$pane" "" "$fleet" || {
-          fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$fleet" || true
+          fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$fleet" \
+            "could not publish the cockpit frame record" || true
           return 1
         }
         printf 'COCKPIT: adopted new clean-context head=%s; prior head=%s remains %s and was not closed or split.\n' \
@@ -2212,7 +2506,7 @@ EOF
 # <pane> is whatever herdr just focused - any pane, in any space, belonging to
 # any home. Everything that is not this home's own cockpit-managed worker is
 # ignored silently, because a focus event is not a request to move anything:
-# a non-agent pane, the head, the fleet column, another home's worker, and a
+# a non-agent pane, the head, the fleet banner, another home's worker, and a
 # worker whose durable record does not match all resolve to "do nothing".
 # Returns 0 when the pane now occupies the viewport, 1 when nothing was done.
 fm_backend_herdr_cockpit_focus_place() {  # <state-dir> <home> <session> <pane>
