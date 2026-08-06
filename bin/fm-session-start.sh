@@ -280,13 +280,14 @@ subsection "BOOTSTRAP"
 if [ "$READ_ONLY" -eq 1 ]; then
   BOOT_OUT=$(
     "$SCRIPT_DIR/fm-cockpit.sh" status 2>&1 || true
-    FM_BOOTSTRAP_DETECT_ONLY=1 "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1
+    FM_BOOTSTRAP_DETECT_ONLY=1 FM_BOOTSTRAP_PRIMARY_HARNESS="$PRIMARY_HARNESS" \
+      "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1
   )
 else
   BOOT_OUT=$(
     "$SCRIPT_DIR/fm-cockpit.sh" adopt 2>&1 || true
     "$SCRIPT_DIR/fm-herdr-session-cleanup.sh" 2>&1 || true
-    "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1
+    FM_BOOTSTRAP_PRIMARY_HARNESS="$PRIMARY_HARNESS" "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1
   )
 fi
 if [ -n "$BOOT_OUT" ]; then

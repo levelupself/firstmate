@@ -63,6 +63,7 @@ Full detail on every feature lives in [docs/architecture.md](docs/architecture.m
 - The CLI and dependencies for your selected runtime backend; tmux is the reference default.
 
 The first mate detects and offers to install supported missing tools after you approve.
+The complete required-versus-optional inventory and the Debian/Ubuntu NodeSource and GitHub CLI apt repository declarations live in [the toolchain configuration reference](docs/configuration.md#toolchain).
 Backend-specific setup is linked in [Documentation](#documentation).
 
 ### Recommended harnesses

@@ -59,7 +59,8 @@ new_world() {
 # test deliberately breaks one. Mirrors fm-bootstrap.test.sh's fixture.
 make_fake_toolchain() {
   local fakebin=$1
-  fm_fake_exit0 "$fakebin" tmux node gh-axi chrome-devtools-axi lavish-axi
+  fm_fake_exit0 "$fakebin" tmux node gh-axi chrome-devtools-axi lavish-axi claude \
+    pnpm rg xz codeburn infisical herdr
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -83,6 +84,11 @@ fi
 exit 0
 SH
   chmod +x "$fakebin/no-mistakes"
+  cat > "$fakebin/shellcheck" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'ShellCheck - shell script analysis tool' 'version: 0.11.0'
+SH
+  chmod +x "$fakebin/shellcheck"
   printf '%s\n' manual > "${fakebin%/*}/home-placeholder" 2>/dev/null || true
 }
 

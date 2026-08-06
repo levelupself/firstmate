@@ -6,7 +6,11 @@
 #          exits 0.
 #          Silent = all good.
 #          Lines: "MISSING: <tool> (install: <command>)",
+#                 "MISSING: <tool> (required: <reason>; install: <command>)",
+#                 "MISSING_OPTIONAL: <tool> (optional: <disabled feature>; install: <command>)",
 #                 "MISSING_MANUAL: <tool> (instructions: <url>)", "NEEDS_GH_AUTH",
+#                 "NEEDS_HARNESS_AUTH: claude (interactive: claude auth login --claudeai)",
+#                 "NEEDS_OPTIONAL_AUTH: @infisical/cli (optional: <disabled feature>; interactive: infisical login)",
 #                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
@@ -49,6 +53,15 @@
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than
 #          1.31.2.
+#          ripgrep, pnpm, and the pinned ShellCheck build are required bootstrap
+#          tools. ripgrep is the operating-instruction search tool, pnpm is the
+#          project package manager, and ShellCheck is the validation lint gate.
+#          xz-utils is required while ShellCheck needs installation or repair,
+#          but optional once the exact pin is already usable. codeburn,
+#          @infisical/cli, and an inactive Herdr backend are optional: their
+#          absence disables task-usage snapshots, Infisical credential workflows,
+#          or Herdr-backed dispatch respectively, but never blocks an otherwise
+#          healthy session. Herdr becomes required when it is the resolved backend.
 #          tasks-axi and quota-axi are required bootstrap tools (same class as
 #          lavish-axi). tasks-axi is also version and feature gated (0.1.1+
 #          with update --archive-body and mv [<id>...]); an installed but
@@ -497,29 +510,43 @@ secondmate_liveness_sweep() {
 install_cmd() {
   case "$1" in
     tmux|node|git|gh|curl|jq|orca|zellij) echo "brew install $1  # or the platform's package manager" ;;
+    ripgrep) echo "brew install ripgrep  # or apt install ripgrep" ;;
+    xz-utils) echo "brew install xz  # or apt install xz-utils" ;;
     cmux) echo "brew install --cask cmux  # or see https://cmux.com" ;;
     treehouse) echo "curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh" ;;
     no-mistakes) echo "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh" ;;
     gh-axi|chrome-devtools-axi|lavish-axi) echo "npm install -g $1 && $1 setup hooks" ;;
-    tasks-axi|quota-axi) echo "npm install -g $1" ;;
-    *) return 1 ;;
-  esac
-}
-
-manual_install_url() {
-  case "$1" in
-    herdr) echo "https://herdr.dev" ;;
+    tasks-axi|quota-axi|pnpm|codeburn|@infisical/cli) echo "npm install -g $1" ;;
+    shellcheck) echo "'$FM_ROOT/bin/fm-install-shellcheck.sh' '$HOME/.local/bin'" ;;
+    herdr) echo "'$FM_ROOT/bin/fm-install-herdr.sh' '$HOME/.local/bin'" ;;
     *) return 1 ;;
   esac
 }
 
 missing_tool_diagnostic() {
-  local tool=$1 instructions
-  if instructions=$(manual_install_url "$tool"); then
-    echo "MISSING_MANUAL: $tool (instructions: $instructions)"
-    return 0
-  fi
+  local tool=$1
   echo "MISSING: $tool (install: $(install_cmd "$tool"))"
+}
+
+manual_install_url() {
+  return 1
+}
+
+tool_available() {
+  case "$1" in
+    ripgrep) command -v rg >/dev/null 2>&1 ;;
+    xz-utils) command -v xz >/dev/null 2>&1 ;;
+    @infisical/cli) command -v infisical >/dev/null 2>&1 ;;
+    *) command -v "$1" >/dev/null 2>&1 ;;
+  esac
+}
+
+required_tool_diagnostic() {  # <tool> <reason>
+  echo "MISSING: $1 (required: $2; install: $(install_cmd "$1"))"
+}
+
+optional_tool_diagnostic() {  # <tool> <disabled-feature>
+  echo "MISSING_OPTIONAL: $1 (optional: $2; install: $(install_cmd "$1"))"
 }
 
 # Required-tool detection follows the RESOLVED backend, not a one-size default:
@@ -528,7 +555,10 @@ missing_tool_diagnostic() {
 # never told tmux is missing, and only orca drops treehouse. A backend value with
 # no verified dependency set is reported before the universal checks continue.
 COMMON_TOOLS="node git gh no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi"
+DECLARED_REQUIRED_TOOLS="pnpm ripgrep xz-utils shellcheck"
+DECLARED_OPTIONAL_TOOLS="codeburn @infisical/cli herdr"
 BACKEND=$(fm_backend_name)
+PRIMARY_HARNESS=${FM_BOOTSTRAP_PRIMARY_HARNESS:-$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)}
 BACKEND_VALID=1
 if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
   BACKEND_VALID=0
@@ -560,6 +590,15 @@ tool_version_at_least() {  # <tool> <min-version>
   [ "$minor" -gt "$min_minor" ] && return 0
   [ "$minor" -eq "$min_minor" ] || return 1
   [ "$patch" -ge "$min_patch" ]
+}
+
+tool_version_exact() {  # <tool> <required-version>
+  local tool=$1 required=$2 output versions version extra
+  command -v "$tool" >/dev/null 2>&1 || return 1
+  output=$("$tool" --version 2>/dev/null) || return 1
+  versions=$(printf '%s\n' "$output" | sed -nE 's/.*[vV]?([0-9]+\.[0-9]+\.[0-9]+).*/\1/p')
+  IFS=$'\n' read -r version extra <<< "$versions"
+  [ "$version" = "$required" ] && [ -z "$extra" ]
 }
 
 x_mode_write_if_changed() {
@@ -859,11 +898,44 @@ if [ "$BACKEND_VALID" -eq 0 ]; then
   echo "BACKEND_INVALID: $BACKEND (known: $FM_BACKEND_KNOWN)"
 fi
 for t in $BACKEND_TOOLS; do
-  fm_backend_required_tool_available "$BACKEND" "$t" \
-    || missing_tool_diagnostic "$t"
+  if ! fm_backend_required_tool_available "$BACKEND" "$t"; then
+    if [ "$t" = herdr ]; then
+      required_tool_diagnostic "$t" "the selected runtime backend depends on it"
+    else
+      missing_tool_diagnostic "$t"
+    fi
+  fi
 done
 for t in $COMMON_TOOLS; do
   command -v "$t" >/dev/null || missing_tool_diagnostic "$t"
+done
+for t in $DECLARED_REQUIRED_TOOLS; do
+  if ! tool_available "$t"; then
+    case "$t" in
+      pnpm) required_tool_diagnostic "$t" "project package workflows depend on it" ;;
+      ripgrep) required_tool_diagnostic "$t" "operating instructions use rg for repository search" ;;
+      xz-utils)
+        if tool_version_exact shellcheck 0.11.0; then
+          optional_tool_diagnostic "$t" "pinned ShellCheck reinstallation is unavailable"
+        else
+          required_tool_diagnostic "$t" "the pinned ShellCheck installer extracts a .tar.xz archive"
+        fi
+        ;;
+      shellcheck) required_tool_diagnostic "$t" "the validation lint gate pins ShellCheck 0.11.0" ;;
+    esac
+  fi
+done
+for t in $DECLARED_OPTIONAL_TOOLS; do
+  if ! tool_available "$t"; then
+    case "$t" in
+      codeburn) optional_tool_diagnostic "$t" "task-usage snapshots are unavailable" ;;
+      @infisical/cli) optional_tool_diagnostic "$t" "Infisical credential workflows are unavailable" ;;
+      herdr)
+        [ "$BACKEND" = herdr ] \
+          || optional_tool_diagnostic "$t" "Herdr-backed dispatch is unavailable"
+        ;;
+    esac
+  fi
 done
 # The treehouse lease-support upgrade check is only relevant when the resolved
 # backend actually requires treehouse (every backend except orca, which owns its
@@ -881,7 +953,16 @@ fi
 if command -v tasks-axi >/dev/null 2>&1 && ! fm_tasks_axi_compatible; then
   echo "MISSING: tasks-axi (install: $(install_cmd tasks-axi))"
 fi
+if command -v shellcheck >/dev/null 2>&1 && ! tool_version_exact shellcheck 0.11.0; then
+  required_tool_diagnostic shellcheck "the validation lint gate pins ShellCheck 0.11.0"
+fi
 gh auth status >/dev/null 2>&1 || echo "NEEDS_GH_AUTH"
+if [ "$PRIMARY_HARNESS" = claude ] && ! claude auth status >/dev/null 2>&1; then
+  echo "NEEDS_HARNESS_AUTH: claude (interactive: claude auth login --claudeai)"
+fi
+if command -v infisical >/dev/null 2>&1 && ! infisical login status >/dev/null 2>&1; then
+  echo "NEEDS_OPTIONAL_AUTH: @infisical/cli (optional: Infisical credential workflows are unavailable; interactive: infisical login)"
+fi
 # Worktree-tangle check: the firstmate primary checkout (FM_ROOT) must sit on its
 # default branch, not a feature branch (see fm-tangle-lib.sh). Scoped to the
 # primary only; detached-HEAD worktrees and secondmate homes never trip it.
