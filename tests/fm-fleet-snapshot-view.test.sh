@@ -832,7 +832,6 @@ test_watch_computes_before_paint_and_erases_shorter_frames() {
   ln -s "$ROOT/bin/fm-terminal-frame-lib.sh" "$watch_bin/fm-terminal-frame-lib.sh"
   cat > "$watch_bin/fm-fleet-snapshot.sh" <<'SH'
 #!/usr/bin/env bash
-printf 'COMPUTED\n' >&3
 printf '%s\n' '{}'
 SH
   cat > "$fakebin/jq" <<'SH'
@@ -847,6 +846,7 @@ if [ "$count" -eq 1 ]; then
 else
   printf 'short\n'
 fi
+printf 'RENDERED\n' >&3
 SH
   chmod +x "$watch_bin/fm-fleet-snapshot.sh" "$fakebin/jq"
   output="$home/watch.out"
@@ -864,13 +864,13 @@ SH
   expect_code 0 "$rc" "ordered watch fixture should exit cleanly"
   perl -0777 -e '
     my $s = <>;
-    my $computed = index($s, "COMPUTED\n");
+    my $computed = index($s, "RENDERED\n");
     my $paint = index($s, "\e[?2026h\e[H");
     exit !(0 <= $computed && $computed < $paint);
   ' "$output" || fail "watch mode painted an erase sequence before frame computation completed"
   perl -0777 -e '
     my $s = <>;
-    $s =~ s/COMPUTED\n//g;
+    $s =~ s/RENDERED\n//g;
     my @screen;
     my $row = 0;
     my $text = "";
