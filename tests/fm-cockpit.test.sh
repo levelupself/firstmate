@@ -74,9 +74,12 @@ case "${1:-} ${2:-}" in
     tab="w1:t$counter"
     id="w1:p$counter"
     printf '%s\t%s\t%s\t%s\tno-agent\n' "$id" "$label" "$tab" "$workspace" >> "$state/panes.tsv"
+    root_tab=${FM_FAKE_HERDR_ROOT_TAB:-$tab}
+    root_workspace=${FM_FAKE_HERDR_ROOT_WORKSPACE:-$workspace}
     jq -n --arg id "$id" --arg tab "$tab" --arg workspace "$workspace" --arg label "$label" \
+      --arg root_tab "$root_tab" --arg root_workspace "$root_workspace" \
       '{result:{tab:{tab_id:$tab,workspace_id:$workspace,label:$label},
-        root_pane:{pane_id:$id,tab_id:$tab,workspace_id:$workspace,label:$label}}}'
+        root_pane:{pane_id:$id,tab_id:$root_tab,workspace_id:$root_workspace,label:$label}}}'
     ;;
   "tab get")
     tab=$3
@@ -436,7 +439,7 @@ place_task() {
 }
 
 test_first_worker_lands_in_viewport_and_later_spawns_do_not_steal_it() {
-  local first second log live
+  local first second log live out rc
   : > "$HERDR_LOG"
   first=$(place_task fm-one) || fail "first cockpit task placement failed"
   [ "$first" = "w1:t1 w1:p3" ] || fail "first cockpit task returned unexpected ids: $first"
@@ -467,6 +470,17 @@ test_first_worker_lands_in_viewport_and_later_spawns_do_not_steal_it() {
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_list_live fmtest' "$ROOT")
   assert_contains "$live" $'fmtest:w1:p3\tfm-one' "recovery inventory missed the first split-pane task"
   assert_contains "$live" $'fmtest:w1:p4\tfm-two' "recovery inventory missed the peer-tab task"
+
+  : > "$HERDR_LOG"
+  out=$(FM_FAKE_HERDR_ROOT_TAB=w2:t5 place_task fm-cross 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "peer spawn accepted a root pane from another tab"
+  assert_contains "$out" "incomplete or cross-frame pane identity" \
+    "peer spawn did not explain its cross-frame root-pane refusal"
+  assert_not_contains "$(cat "$HERDR_LOG")" "pane report-metadata w1:p5" \
+    "peer spawn mutated a root pane before validating its frame identity"
+  awk -F '\t' '$2 != "fm-cross"' "$HERDR_STATE/panes.tsv" > "$HERDR_STATE/panes.next"
+  mv "$HERDR_STATE/panes.next" "$HERDR_STATE/panes.tsv"
   pass "the first worker fills an empty viewport and later spawns preserve its occupant"
 }
 

@@ -2304,7 +2304,7 @@ fm_backend_herdr_cockpit_rotate() {  # <state-dir> <home> <session> next|prev
 # after the new pane exists and has its exact task label.
 fm_backend_herdr_cockpit_create_task() {  # <state-dir> <home> <label> <cwd>
   local state=$1 home=$2 label=$3 cwd=$4 session workspace tab head fleet
-  local panes tabs duplicate_ids dup dup_pane occupants out pane_id actual_workspace actual_tab remaining placement
+  local panes tabs duplicate_ids dup dup_pane occupants out pane_id actual_workspace actual_tab pane_workspace pane_tab remaining placement
   fm_backend_herdr_cockpit_binding_live "$state" "$home" || return 1
   session=$FM_BACKEND_HERDR_COCKPIT_SESSION
   workspace=$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID
@@ -2373,9 +2373,12 @@ EOF
     out=$(fm_backend_herdr_cli "$session" tab create --workspace "$workspace" \
       --cwd "$cwd" --label "$label" --no-focus 2>/dev/null) || return 1
     pane_id=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
-    actual_workspace=$(printf '%s' "$out" | jq -r '.result.tab.workspace_id // .result.root_pane.workspace_id // empty' 2>/dev/null)
+    actual_workspace=$(printf '%s' "$out" | jq -r '.result.tab.workspace_id // empty' 2>/dev/null)
     actual_tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
-    if [ -z "$pane_id" ] || [ -z "$actual_tab" ] || [ "$actual_workspace" != "$workspace" ] || [ "$actual_tab" = "$tab" ]; then
+    pane_workspace=$(printf '%s' "$out" | jq -r '.result.root_pane.workspace_id // empty' 2>/dev/null)
+    pane_tab=$(printf '%s' "$out" | jq -r '.result.root_pane.tab_id // empty' 2>/dev/null)
+    if [ -z "$pane_id" ] || [ -z "$actual_tab" ] || [ "$actual_workspace" != "$workspace" ] \
+      || [ "$pane_workspace" != "$workspace" ] || [ "$pane_tab" != "$actual_tab" ] || [ "$actual_tab" = "$tab" ]; then
       echo "error: herdr cockpit peer tab returned an incomplete or cross-frame pane identity" >&2
       return 1
     fi
