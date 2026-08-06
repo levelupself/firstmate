@@ -52,6 +52,17 @@ printf '\000\001\002\003' > "$PROJECT/src/image.bin"
 git -C "$PROJECT" add -A
 fixture_commit 'add binary fixture [906-add-binary]' '2026-03-02T00:00:00Z'
 
+printf 'export const prefix = true\n' > "$PROJECT/src/prefix.ts"
+git -C "$PROJECT" add -A
+fixture_commit 'add prefix task [907-prefix]' '2026-03-03T00:00:00Z'
+PREFIX_COMMIT=$(git -C "$PROJECT" rev-parse HEAD)
+
+printf 'export const longer = true\n' > "$PROJECT/src/longer.ts"
+printf 'export const longerHelper = true\n' > "$PROJECT/src/longer-helper.ts"
+git -C "$PROJECT" add -A
+fixture_commit 'add longer prefix task [907-prefix-more]' '2026-03-04T00:00:00Z'
+LONGER_PREFIX_COMMIT=$(git -C "$PROJECT" rev-parse HEAD)
+
 # --- fixture: the raw teardown capture, with a legacy region above the v2 one -
 
 RAW="$FM_HOME/data/cost-attribution.tsv"
@@ -66,6 +77,8 @@ RAW="$FM_HOME/data/cost-attribution.tsv"
   printf '904-later-occupant\t%s\tclaude\tfable\tlow\tscout\t%s\t2026-04-01T00:00:00Z\t2026-04-01T00:30:00Z\n' "$WT_POOLED" "$PROJECT"
   printf '905-modify-memory\t%s\tcodex\tdefault\thigh\tship\t%s\t2026-03-01T00:00:00Z\t2026-03-01T01:00:00Z\n' "$WT_B" "$PROJECT"
   printf '906-add-binary\t%s\tcodex\tdefault\thigh\tship\t%s\t2026-03-02T00:00:00Z\t2026-03-02T01:00:00Z\n' "$WT_B" "$PROJECT"
+  printf '907-prefix\t%s\tcodex\tdefault\thigh\tship\t%s\t2026-03-03T00:00:00Z\t2026-03-03T01:00:00Z\n' "$WT_B" "$PROJECT"
+  printf '907-prefix-more\t%s\tcodex\tdefault\thigh\tship\t%s\t2026-03-04T00:00:00Z\t2026-03-04T01:00:00Z\n' "$WT_B" "$PROJECT"
 } > "$RAW"
 
 # --- fixture: codeburn ------------------------------------------------------
@@ -129,7 +142,7 @@ query() {  # <sql>
 # --- rebuild ----------------------------------------------------------------
 
 REBUILD_OUT=$("$STORE" rebuild 2>&1) || fail "rebuild failed: $REBUILD_OUT"
-assert_contains "$REBUILD_OUT" 'rebuilt 6 tasks' 'rebuild should report every task it ingested'
+assert_contains "$REBUILD_OUT" 'rebuilt 8 tasks' 'rebuild should report every task it ingested'
 assert_present "$DB" 'rebuild should create the store'
 pass 'rebuild builds the store from the raw capture, codeburn, and git'
 
@@ -139,6 +152,16 @@ ROW=$(query "SELECT harness, effort, kind, files_changed, prod_src_files, distin
 [ "$ROW" = 'claude|xhigh|ship|2|2|1|110|0.75|7200' ] \
   || fail "the three sources should join on one task row, got: $ROW"
 pass 'ingestion joins raw dispatch, git structure, and codeburn effort on one task'
+
+PREFIX_LINKS=$(query "SELECT task_id, sha FROM task_commit WHERE task_id IN ('907-prefix','907-prefix-more') ORDER BY task_id, sha")
+[ "$PREFIX_LINKS" = "907-prefix|$PREFIX_COMMIT
+907-prefix-more|$LONGER_PREFIX_COMMIT" ] \
+  || fail "prefix-related task identifiers must not claim each other's commits, got: $PREFIX_LINKS"
+PREFIX_STRUCTURE=$(query "SELECT task_id, files_changed FROM task WHERE task_id IN ('907-prefix','907-prefix-more') ORDER BY task_id")
+[ "$PREFIX_STRUCTURE" = '907-prefix|1
+907-prefix-more|2' ] \
+  || fail "prefix-related task identifiers must not inflate each other's structure, got: $PREFIX_STRUCTURE"
+pass 'commit linking keeps prefix-related task identifiers isolated'
 
 # Spend outside the task's own window belongs to whoever held the worktree then.
 POOLED=$(query "SELECT task_id, tokens_in, api_calls FROM task WHERE task_id IN ('903-unlinked-scout','904-later-occupant') ORDER BY task_id")

@@ -492,6 +492,11 @@ function loadCommitLog(repo) {
   return commits
 }
 
+function containsDelimitedIdentifier(text, identifier) {
+  const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(^|[^A-Za-z0-9-])${escaped}($|[^A-Za-z0-9-])`).test(text)
+}
+
 // Commit resolution is tiered and every link records which tier produced it,
 // because a link found by convention is weaker evidence than one recorded at
 // the time and the store should never blur the two.
@@ -520,7 +525,7 @@ function resolveTaskCommits(repo, taskId, annotation, commits, defaultTip) {
   const refs = git(repo, ['for-each-ref', '--format=%(refname)'])
   if (refs) {
     for (const ref of refs.split('\n').map(line => line.trim()).filter(Boolean)) {
-      if (!ref.endsWith(`/${branch}`) && !ref.includes(taskId)) continue
+      if (ref !== branch && !ref.endsWith(`/${branch}`)) continue
       const args = ['rev-list', ref]
       if (defaultTip) args.push(`^${defaultTip.sha}`)
       const list = git(repo, args)
@@ -531,7 +536,9 @@ function resolveTaskCommits(repo, taskId, annotation, commits, defaultTip) {
 
   for (const commit of commits.values()) {
     const haystack = `${commit.subject}\n${commit.body}`
-    if (haystack.includes(branch) || haystack.includes(taskId)) add(commit.sha, 'commit-message')
+    if (containsDelimitedIdentifier(haystack, branch) || containsDelimitedIdentifier(haystack, taskId)) {
+      add(commit.sha, 'commit-message')
+    }
   }
 
   return links
