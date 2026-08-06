@@ -2281,7 +2281,8 @@ fm_backend_herdr_cockpit_adopt() {  # <state-dir> <home> <session> [adopt|new]
       return 1
     }
     fm_backend_herdr_cockpit_write_record "$state" "$home" "$session" "$workspace" "$tab" "$pane" "" "$fleet" || {
-      fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$fleet" || true
+      fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$fleet" \
+        "could not publish the cockpit frame record" || true
       return 1
     }
     printf 'COCKPIT: adopted Herdr frame session=%s workspace=%s tab=%s head=%s\n' \
@@ -2303,7 +2304,8 @@ fm_backend_herdr_cockpit_adopt() {  # <state-dir> <home> <session> [adopt|new]
       }
       fm_backend_herdr_cockpit_write_record "$state" "$home" "$session" "$workspace" "$tab" "$pane" \
         "$FM_BACKEND_HERDR_COCKPIT_VIEWPORT_PANE_ID" "$fleet" || {
-        fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$fleet" || true
+        fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$fleet" \
+          "could not publish the cockpit frame record" || true
         return 1
       }
       printf 'COCKPIT: migrated and re-adopted Herdr frame session=%s workspace=%s tab=%s head=%s\n' \
@@ -2329,7 +2331,8 @@ fm_backend_herdr_cockpit_adopt() {  # <state-dir> <home> <session> [adopt|new]
       dead)
         fleet=$(fm_backend_herdr_cockpit_create_fleet_pane "$session" "$workspace" "$tab" "$pane" "$home") || return 1
         fm_backend_herdr_cockpit_write_record "$state" "$home" "$session" "$workspace" "$tab" "$pane" "" "$fleet" || {
-          fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$fleet" || true
+          fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$fleet" \
+            "could not publish the cockpit frame record" || true
           return 1
         }
         printf 'COCKPIT: adopted new clean-context head=%s; prior head=%s remains %s and was not closed or split.\n' \

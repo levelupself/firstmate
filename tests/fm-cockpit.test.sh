@@ -1041,6 +1041,29 @@ test_failed_reorder_reports_when_the_screen_cannot_be_restored() {
   pass "a failed banner rollback reports the pane still on screen"
 }
 
+test_failed_record_publication_reports_when_the_screen_cannot_be_restored() {
+  local out rc fleet
+  reset_layout_frame
+  rmdir "$LAYOUT_HOME/state"
+  touch "$LAYOUT_HOME/state" "$HERDR_STATE/fail-close"
+  out=$(run_layout_cockpit adopt 2>&1)
+  rc=$?
+  rm -f "$LAYOUT_HOME/state" "$HERDR_STATE/fail-close"
+  mkdir "$LAYOUT_HOME/state"
+  [ "$rc" -ne 0 ] || fail "adoption accepted a frame record it could not publish"
+  fleet=$(awk -F '\t' '$4 == "w3" && $1 != "w3:p1" {print $1}' "$HERDR_STATE/panes.tsv")
+  [ -n "$fleet" ] || fail "the failed record rollback did not leave its pane in the fake screen"
+  assert_contains "$out" "could not publish the cockpit frame record" \
+    "a record-publication failure did not name its cause"
+  assert_contains "$out" "NOT-RESTORED" \
+    "a failed record rollback did not report that the screen remained changed"
+  assert_contains "$out" "added fleet pane $fleet could not be removed" \
+    "a failed record rollback did not name the pane still on screen"
+  [ ! -e "$LAYOUT_HOME/state/.herdr-cockpit" ] \
+    || fail "failed record publication left a frame record"
+  pass "a failed record rollback reports the unrecorded pane still on screen"
+}
+
 test_re_adoption_neither_warns_nor_touches_the_screen() {
   local out before
   reset_layout_frame
@@ -1206,6 +1229,7 @@ test_layout_config_sets_direction_order_and_ratio
 test_invalid_layout_config_refuses_without_changing_the_screen
 test_failed_reorder_restores_the_original_screen
 test_failed_reorder_reports_when_the_screen_cannot_be_restored
+test_failed_record_publication_reports_when_the_screen_cannot_be_restored
 test_re_adoption_neither_warns_nor_touches_the_screen
 test_a_relative_path_fleet_view_still_counts_as_live
 test_an_unresolved_home_path_still_matches_the_live_banner
