@@ -4,6 +4,13 @@ This record captures the 2026-08-06 trial that informed whether ast-grep should 
 The trial used ast-grep 0.45.0 on Linux x86_64 in the Firstmate repository at commit `9cfa802`.
 It compares the structural tool with GNU grep 3.8 on three routine but different search tasks.
 
+## Prior empirical context
+
+An earlier real cross-package symbol search established 21 true references by hand.
+With zero configuration, ast-grep found all 21 references in 34 ms, and grep found the same ground truth.
+Native LSP reference search and Serena were silently partial on that task.
+That result motivated this broader bounded trial; it did not by itself establish a mandate.
+
 ## Measurement method
 
 Ground truth was established by reading every textual hit and the surrounding syntax before classifying it.

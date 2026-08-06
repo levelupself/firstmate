@@ -76,11 +76,15 @@ else
   die "need python3 or unzip to extract the ast-grep release asset"
 fi
 
-mkdir -p "$DESTINATION"
-install -m 0755 "$TMP/ast-grep" "$DESTINATION/ast-grep"
-installed_version=$("$DESTINATION/ast-grep" --version 2>/dev/null | awk '{print $2; exit}')
+chmod 0755 "$TMP/ast-grep"
+installed_version=$("$TMP/ast-grep" --version 2>/dev/null | awk '{print $2; exit}')
 [ "$installed_version" = "$FM_AST_GREP_VERSION" ] \
   || die "installed ast-grep version is '${installed_version:-<empty>}', expected exact pin $FM_AST_GREP_VERSION"
+
+mkdir -p "$DESTINATION"
+staged_binary=$(mktemp "$DESTINATION/.ast-grep.XXXXXX")
+install -m 0755 "$TMP/ast-grep" "$staged_binary"
+mv -f "$staged_binary" "$DESTINATION/ast-grep"
 
 printf 'fm-install-ast-grep.sh: installed ast-grep %s to %s\n' \
   "$installed_version" "$DESTINATION/ast-grep" >&2

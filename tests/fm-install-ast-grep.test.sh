@@ -57,11 +57,16 @@ test_rejects_wrong_installed_version() {
   local case_dir fakebin destination out rc
   case_dir="$TMP_ROOT/wrong-version"
   destination="$case_dir/destination"
+  mkdir -p "$destination"
+  printf '%s\n' 'working ast-grep sentinel' > "$destination/ast-grep"
+  chmod +x "$destination/ast-grep"
   fakebin=$(make_fake_tools "$case_dir" 0.44.1)
   out=$(PATH="$fakebin:/usr/bin:/bin" "$ROOT/bin/fm-install-ast-grep.sh" "$destination" 2>&1)
   rc=$?
   [ "$rc" -ne 0 ] || fail "installer accepted an ast-grep binary outside the exact pin"
   assert_contains "$out" "expected exact pin 0.45.0" "installer did not explain the version rejection"
+  [ "$(cat "$destination/ast-grep")" = "working ast-grep sentinel" ] \
+    || fail "installer replaced an existing ast-grep before validating the candidate"
   pass "ast-grep installer rejects a binary outside the exact pin"
 }
 
