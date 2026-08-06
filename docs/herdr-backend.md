@@ -68,7 +68,7 @@ Session-start adoption re-arms the listener, the shared lock helper recovers a l
 Workers that predate an adopted frame are migrated the first time they are selected rather than moved in bulk at adoption, so no running agent is resized for a view nobody asked for.
 `bin/fm-cockpit.sh show <task-id>` performs the same placement without any reaction running, and `next`/`prev` step the slot along this home's workers ordered by task id, wrapping at both ends and never targeting the pinned head or the fleet column.
 Rotation resolves a worker and then hands it to that same single-occupancy placement, so a key and a sidebar selection cannot disagree.
-Herdr 0.8.0 plugin manifest actions carry no key, and no configuration entry binds a plugin action to a chord, so rotation is bound with Herdr's own custom-command keys; `bin/fm-cockpit.sh`'s header owns that snippet, and Firstmate never rewrites the operator's Herdr configuration.
+Herdr 0.8.0 plugin manifest actions carry no key, and no configuration entry binds a plugin action to a chord, so rotation is bound with Herdr's own custom-command keys; `bin/fm-cockpit.sh`'s header owns that snippet, and the command never rewrites the operator's Herdr configuration.
 Each placed worker also publishes a display-only sidebar name for its task, retired when its pane is torn down, because the sidebar otherwise names agents by space and tab and cannot distinguish co-located workers.
 Task metadata still records each exact pane endpoint, and teardown still closes only that recorded pane.
 A `config/herdr-presentation-spaces` request is ignored with a visible notice while an adopted cockpit frame owns placement because disposable per-task workspaces conflict with one persistent per-home viewport.

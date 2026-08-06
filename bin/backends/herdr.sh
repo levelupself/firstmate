@@ -129,7 +129,7 @@ FM_BACKEND_HERDR_COCKPIT_RECORD=".herdr-cockpit"
 # split from the pinned head at this exact ratio, so its width is identical
 # every time an agent enters or leaves it. Nothing ever splits the slot again.
 FM_BACKEND_HERDR_COCKPIT_VIEWPORT_RATIO="0.67"
-# The display-only metadata source firstmate publishes pane names under. Herdr's
+# The display-only metadata source used to publish pane names. Herdr's
 # sidebar otherwise names agents by space and tab, so co-located workers are
 # indistinguishable; this names each one by its task and is never an identity.
 FM_BACKEND_HERDR_COCKPIT_METADATA_SOURCE="firstmate-cockpit"
@@ -2135,7 +2135,7 @@ fm_backend_herdr_cockpit_display_agent() {  # <session> <pane> [<text>]
 # fm-<id> tab of its own - so it stays exactly as reachable as it is on a home
 # that never adopted a cockpit at all. That is deliberate: it is why a dead
 # focus listener, a restart, or a second home degrades to today's behavior
-# instead of stranding a pane somewhere only firstmate knows about. Parking
+# instead of stranding a pane outside the ordinary visible topology. Parking
 # never closes a pane, and the emptied slot's tab is left for herdr to drop
 # only when it loses its own last pane.
 fm_backend_herdr_cockpit_park() {  # <session> <pane> <label>

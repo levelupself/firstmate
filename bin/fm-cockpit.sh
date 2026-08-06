@@ -41,19 +41,19 @@
 # Bind them with Herdr's own custom-command keys, which take a chord directly
 # (Herdr 0.8.0 plugin manifest actions carry id, title, command, contexts,
 # description, and platforms - no key - and no config entry binds a plugin
-# action to a chord, so a plugin cannot deliver this). Firstmate never rewrites
+# action to a chord, so a plugin cannot deliver this). This command never rewrites
 # the operator's Herdr configuration, so add this to ~/.config/herdr/config.toml
 # by hand and reload with `herdr server reload-config`:
 #
 #   [[keys.command]]
 #   key = "prefix+alt+n"
 #   type = "shell"
-#   command = "env FM_HOME=<your home> <firstmate>/bin/fm-cockpit.sh next"
+#   command = "env FM_HOME=<home> <checkout>/bin/fm-cockpit.sh next"
 #
 #   [[keys.command]]
 #   key = "prefix+alt+p"
 #   type = "shell"
-#   command = "env FM_HOME=<your home> <firstmate>/bin/fm-cockpit.sh prev"
+#   command = "env FM_HOME=<home> <checkout>/bin/fm-cockpit.sh prev"
 #
 # focus-listen reacts to Herdr's own focus events so that selecting an agent in
 # the sidebar places it in the viewport instead of leaving the view on that
