@@ -149,6 +149,53 @@ EOF
     mv "$state/panes.next" "$state/panes.tsv"
     printf '%s\n' '{"result":{"type":"pane_closed"}}'
     ;;
+  "pane move")
+    id=$3
+    shift 3
+    new_tab=0
+    target_tab=
+    move_label=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --new-tab) new_tab=1; shift ;;
+        --label) move_label=$2; shift 2 ;;
+        --tab) target_tab=$2; shift 2 ;;
+        --split|--target-pane|--ratio) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    row=$(pane_row "$id")
+    [ -n "$row" ] || exit 1
+    IFS=$'\t' read -r pane_id pane_label cur_tab workspace agent <<EOF
+$row
+EOF
+    if [ "$new_tab" = 1 ]; then
+      counter=$(cat "$state/counter")
+      counter=$((counter + 1))
+      printf '%s\n' "$counter" > "$state/counter"
+      target_tab="w1:t$counter"
+      printf '%s\t%s\n' "$target_tab" "${move_label:-$pane_label}" >> "$state/parked-tabs.tsv"
+    fi
+    [ -n "$target_tab" ] || exit 1
+    if [ "$target_tab" = "$cur_tab" ]; then
+      jq -n --arg id "$pane_id" --arg tab "$cur_tab" \
+        '{result:{move_result:{changed:false,reason:"same_tab",
+          pane:{pane_id:$id,tab_id:$tab}}}}'
+      exit 0
+    fi
+    awk -F '\t' -v OFS='\t' -v id="$id" -v tab="$target_tab" '$1 == id {$3=tab} {print}' \
+      "$state/panes.tsv" > "$state/panes.next"
+    mv "$state/panes.next" "$state/panes.tsv"
+    jq -n --arg id "$pane_id" --arg tab "$target_tab" \
+      '{result:{move_result:{changed:true,pane:{pane_id:$id,tab_id:$tab}}}}'
+    ;;
+  "pane report-metadata")
+    printf '%s\n' "$*" >> "$state/metadata.log"
+    printf '%s\n' '{"result":{"type":"pane_metadata_reported"}}'
+    ;;
+  "tab focus")
+    printf '%s\n' '{"result":{"type":"tab_focused"}}'
+    ;;
   "workspace focus")
     printf '%s\n' '{"result":{"type":"workspace_focused"}}'
     ;;
@@ -334,20 +381,139 @@ test_workers_land_in_persistent_viewport() {
 
   : > "$HERDR_LOG"
   second=$(place_task fm-two) || fail "second cockpit task placement failed"
-  [ "$second" = "w1:t1 w1:p4" ] || fail "second cockpit task returned unexpected ids: $second"
+  [ "$second" = "w1:t1 w1:p5" ] || fail "second cockpit task returned unexpected ids: $second"
   log=$(cat "$HERDR_LOG")
-  assert_contains "$log" "pane split w1:p3 --direction down --ratio 0.5" \
-    "later child did not stay within the persistent viewport"
+  assert_contains "$log" "pane move w1:p3 --new-tab --label fm-one --no-focus" \
+    "the previous occupant was not parked onto its own labelled tab"
+  assert_contains "$log" "pane split w1:p1 --direction right --ratio 0.67" \
+    "later child did not rebuild the slot from the pinned head at its stable ratio"
+  assert_not_contains "$log" "pane close w1:p3" "parking a displaced worker closed its pane"
   assert_not_contains "$log" "tab create" "later child minted a peer tab"
-  assert_grep 'viewport_pane_id=w1:p4' "$HOME_DIR/state/.herdr-cockpit" \
+  assert_grep 'viewport_pane_id=w1:p5' "$HOME_DIR/state/.herdr-cockpit" \
     "latest child did not advance the viewport anchor"
 
   live=$(PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" \
     FM_FAKE_HERDR_STATE="$HERDR_STATE" FM_FAKE_HERDR_LOG="$HERDR_LOG" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_list_live fmtest' "$ROOT")
   assert_contains "$live" $'fmtest:w1:p3\tfm-one' "recovery inventory missed the first split-pane task"
-  assert_contains "$live" $'fmtest:w1:p4\tfm-two' "recovery inventory missed the second split-pane task"
+  assert_contains "$live" $'fmtest:w1:p5\tfm-two' "recovery inventory missed the second split-pane task"
   pass "new Herdr workers land in the persistent viewport and remain recoverable"
+}
+
+cockpit_fn() {  # <function> <args...>
+  PATH="$FAKEBIN:$PATH" \
+    FM_HOME="$HOME_DIR" \
+    FM_FAKE_HERDR_STATE="$HERDR_STATE" \
+    FM_FAKE_HERDR_LOG="$HERDR_LOG" \
+    FM_COCKPIT_ROOT="$ROOT" \
+    HERDR_SESSION=fmtest \
+    bash -c '. "$0/bin/backends/herdr.sh"; fn=$1; shift; "$fn" "$@"' "$ROOT" "$@"
+}
+
+write_task_record() {  # <id> <pane>
+  cat > "$HOME_DIR/state/$1.meta" <<EOF
+window=fmtest:$2
+endpoint_task_id=$1
+backend=herdr
+herdr_session=fmtest
+herdr_workspace_id=w1
+herdr_tab_id=w1:t1
+herdr_pane_id=$2
+EOF
+}
+
+pane_tab_of() {  # <pane>
+  awk -F '\t' -v id="$1" '$1 == id { print $3; exit }' "$HERDR_STATE/panes.tsv"
+}
+
+test_focus_never_moves_a_pane_this_home_does_not_own() {
+  local foreign reserved log rc
+  # A pane labelled like a task, but with no task record in THIS home - exactly
+  # how another home's worker appears in the shared Herdr sidebar.
+  foreign=$(cockpit_fn fm_backend_herdr_cli fmtest pane split w1:p1 \
+    --direction right --ratio 0.5 | jq -r '.result.pane.pane_id')
+  cockpit_fn fm_backend_herdr_cli fmtest pane rename "$foreign" fm-foreign >/dev/null
+  rm -f "$HOME_DIR/state/foreign.meta"
+
+  : > "$HERDR_LOG"
+  cockpit_fn fm_backend_herdr_cockpit_focus_place \
+    "$HOME_DIR/state" "$HOME_DIR" fmtest "$foreign" >/dev/null 2>&1
+  rc=$?
+  log=$(cat "$HERDR_LOG")
+  [ "$rc" != 0 ] || fail "focus placement claimed a pane this home has no record of"
+  assert_not_contains "$log" "pane move" "focus placement moved a pane owned by another home"
+  assert_not_contains "$log" "pane close" "focus placement closed a pane owned by another home"
+
+  # The pinned head and the live fleet column are not tasks either.
+  for reserved in w1:p1 w1:p2; do
+    : > "$HERDR_LOG"
+    cockpit_fn fm_backend_herdr_cockpit_focus_place \
+      "$HOME_DIR/state" "$HOME_DIR" fmtest "$reserved" >/dev/null 2>&1 \
+      && fail "focus placement tried to move the supervisor or fleet pane"
+    assert_not_contains "$(cat "$HERDR_LOG")" "pane move" \
+      "focus placement moved the supervisor or fleet pane"
+  done
+  cockpit_fn fm_backend_herdr_cli fmtest pane close "$foreign" >/dev/null 2>&1 || true
+  pass "focus placement moves only panes this home's own task records claim"
+}
+
+test_rotation_orders_by_task_id_wraps_and_shares_the_placement_path() {
+  local alpha one two placed log
+  one=w1:p3
+  two=w1:p5
+  placed=$(place_task fm-alpha) || fail "could not place the third rotation worker"
+  alpha=${placed##* }
+  write_task_record alpha "$alpha"
+  write_task_record one "$one"
+  write_task_record two "$two"
+
+  # Ring order is task id, not spawn order: alpha was placed last but sorts first.
+  : > "$HERDR_LOG"
+  [ "$(cockpit_fn fm_backend_herdr_cockpit_rotate "$HOME_DIR/state" "$HOME_DIR" fmtest next)" = one ] \
+    || fail "next did not advance to the id-ordered successor"
+  log=$(cat "$HERDR_LOG")
+  assert_contains "$log" "pane move $one --tab w1:t1 --split right --target-pane w1:p1 --ratio 0.67" \
+    "rotation did not reuse the single-occupancy placement path"
+  assert_not_contains "$log" "pane close" "rotation closed a pane"
+  [ "$(pane_tab_of "$one")" = w1:t1 ] || fail "rotation did not place its target in the viewport slot"
+  [ "$(pane_tab_of "$alpha")" != w1:t1 ] || fail "rotation left two workers in the viewport slot"
+
+  [ "$(cockpit_fn fm_backend_herdr_cockpit_rotate "$HOME_DIR/state" "$HOME_DIR" fmtest next)" = two ] \
+    || fail "next did not continue along the ring"
+  [ "$(cockpit_fn fm_backend_herdr_cockpit_rotate "$HOME_DIR/state" "$HOME_DIR" fmtest next)" = alpha ] \
+    || fail "next did not wrap from the last worker to the first"
+  [ "$(cockpit_fn fm_backend_herdr_cockpit_rotate "$HOME_DIR/state" "$HOME_DIR" fmtest prev)" = two ] \
+    || fail "prev did not wrap from the first worker to the last"
+  [ "$(cockpit_fn fm_backend_herdr_cockpit_rotate "$HOME_DIR/state" "$HOME_DIR" fmtest prev)" = one ] \
+    || fail "prev did not step backwards along the ring"
+  pass "rotation walks this home's workers by task id, wraps both ways, and places through the shared path"
+}
+
+test_rotation_ring_excludes_the_supervisor_and_fleet_panes() {
+  local ring
+  ring=$(cockpit_fn fm_backend_herdr_cockpit_ring "$HOME_DIR/state" fmtest)
+  assert_not_contains "$ring" "w1:p1" "the rotation ring included the pinned supervisor pane"
+  assert_not_contains "$ring" "w1:p2" "the rotation ring included the live fleet column"
+  assert_contains "$ring" "w1:p3" "the rotation ring dropped a real worker"
+  pass "rotation never targets the pinned supervisor or the fleet column"
+}
+
+test_displaced_workers_stay_reachable_without_a_listener() {
+  local id pane tab log
+  # Nothing above ran a listener, and every displaced worker still holds a live
+  # pane on a tab of its own - the state a home that never adopted a cockpit is
+  # already in, which is why losing the listener strands nothing.
+  : > "$HERDR_LOG"
+  for id in alpha one two; do
+    pane=$(grep '^herdr_pane_id=' "$HOME_DIR/state/$id.meta" | cut -d= -f2-)
+    tab=$(pane_tab_of "$pane")
+    [ -n "$tab" ] || fail "worker $id lost its pane entirely"
+    [ "$(cockpit_fn fm_backend_herdr_pane_agent_state fmtest "$pane")" != dead ] \
+      || fail "worker $id was left with a dead pane"
+  done
+  log=$(cat "$HERDR_LOG")
+  assert_not_contains "$log" "pane close" "reading placement state closed a worker pane"
+  pass "every displaced worker keeps a live pane on its own tab with no listener running"
 }
 
 test_display_and_steer_boundary_remains_explicit() {
@@ -391,7 +557,7 @@ test_panel_renders_the_live_frame_and_fleet_view() {
   local out log
   awk -F '\t' -v OFS='\t' '
     $1 == "w1:p3" {$2="fm-claude-pane"; $5="working"}
-    $1 == "w1:p4" {$2="fm-codex-pane"; $5="blocked"}
+    $1 == "w1:p5" {$2="fm-codex-pane"; $5="blocked"}
     {print}
   ' "$HERDR_STATE/panes.tsv" > "$HERDR_STATE/panes.next"
   mv "$HERDR_STATE/panes.next" "$HERDR_STATE/panes.tsv"
@@ -405,9 +571,15 @@ test_panel_renders_the_live_frame_and_fleet_view() {
   assert_contains "$out" "VIEWPORT tab=w1:t1" \
     "cockpit panel did not identify the persistent viewport"
   assert_contains "$out" "fm-claude-pane [working]" \
-    "cockpit panel omitted the Herdr status for the Claude viewport worker"
-  assert_contains "$out" "fm-codex-pane [blocked]" \
-    "cockpit panel omitted the Herdr status for the Codex viewport worker"
+    "cockpit panel omitted the Herdr status for the viewport worker"
+  # The slot holds one worker, and the panel still accounts for the rest rather
+  # than quietly dropping them from the operator's view.
+  [ "$(printf '%s\n' "$out" | sed -n '/^VIEWPORT /,/^PARKED /p' | grep -c '^  fm-')" = 1 ] \
+    || fail "cockpit panel reported more than one worker in the viewport slot"
+  assert_contains "$out" "PARKED each on its own tab" \
+    "cockpit panel omitted the workers parked outside the viewport"
+  assert_contains "$out" "fm-codex-pane [blocked] tab=" \
+    "cockpit panel lost the parked worker and its tab"
   assert_contains "$out" "FLEET column=w1:p2 [live]" \
     "cockpit panel omitted the persistent live fleet column"
   log=$(cat "$HERDR_LOG")
@@ -469,6 +641,10 @@ test_space_switch_focuses_one_complete_frame_and_rejects_nesting
 test_version_one_frame_migrates_and_failed_creation_cleans_up
 test_adoption_requires_the_native_session_socket
 test_workers_land_in_persistent_viewport
+test_focus_never_moves_a_pane_this_home_does_not_own
+test_rotation_orders_by_task_id_wraps_and_shares_the_placement_path
+test_rotation_ring_excludes_the_supervisor_and_fleet_panes
+test_displaced_workers_stay_reachable_without_a_listener
 test_display_and_steer_boundary_remains_explicit
 test_panel_renders_the_live_frame_and_fleet_view
 test_panel_degrades_visibly_outside_herdr

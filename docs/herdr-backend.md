@@ -53,8 +53,20 @@ One validated version 1 frame is upgraded in place by adding its fleet pane and 
 `bin/fm-cockpit.sh panel` renders the same operator boundary as text: the native navigator role, exact pinned head, current viewport panes, live fleet-pane identity, and `display=all-homes steer=current-home` boundary.
 Add `--watch` with an optional positive interval to keep that textual view live.
 
-Within an adopted frame, ordinary new crewmates and scouts are split into the frame's right-hand viewport region instead of receiving peer tabs.
-The first child splits right from the pinned head, and later children split down within the existing viewport so the head stays in place.
+Within an adopted frame, the right-hand viewport region is a single-occupancy slot: exactly one worker is on display there at a time.
+The slot is always the right child of one split from the pinned head at a fixed ratio, so its width is the same every time a worker enters or leaves it, and it is never subdivided to fit a second worker.
+Placing a worker parks whoever was there onto its own tab labelled with that task first, then moves the incoming pane in.
+A parked worker sits in the ordinary non-cockpit topology - one labelled `fm-<id>` tab of its own - so it stays exactly as reachable as on a home that never adopted a cockpit, keeps its own sidebar entry, and is never closed or hidden.
+Parking preserves the pane id, so `window=` and `herdr_pane_id=` stay valid across every move; `herdr_tab_id=` records the tab the task was spawned into and is not live placement authority.
+Selecting an agent in the sidebar routes Herdr to that agent's own tab, which `bin/fm-cockpit.sh focus-listen` reacts to by placing that worker in the slot and bringing the cockpit tab back to the front.
+Because Herdr routes to the tab before anything can observe the selection, a worker that was parked is briefly visible on its own tab before the slot updates; a worker already in the slot never moves at all.
+That reaction moves only panes this home's own task records claim, so the pinned head, the fleet column, a pane with no agent, and another home's worker are all left alone even though the sidebar displays them.
+Nothing depends on the reaction running: without it every worker simply stays on its own labelled tab, which is why a stopped reaction, a restart, or a second home's cockpit can never strand a pane.
+Workers that predate an adopted frame are migrated the first time they are selected rather than moved in bulk at adoption, so no running agent is resized for a view nobody asked for.
+`bin/fm-cockpit.sh show <task-id>` performs the same placement without any reaction running, and `next`/`prev` step the slot along this home's workers ordered by task id, wrapping at both ends and never targeting the pinned head or the fleet column.
+Rotation resolves a worker and then hands it to that same single-occupancy placement, so a key and a sidebar selection cannot disagree.
+Herdr 0.8.0 plugin manifest actions carry no key, and no configuration entry binds a plugin action to a chord, so rotation is bound with Herdr's own custom-command keys; `bin/fm-cockpit.sh`'s header owns that snippet, and Firstmate never rewrites the operator's Herdr configuration.
+Each placed worker also publishes a display-only sidebar name for its task, retired when its pane is torn down, because the sidebar otherwise names agents by space and tab and cannot distinguish co-located workers.
 Task metadata still records each exact pane endpoint, and teardown still closes only that recorded pane.
 A `config/herdr-presentation-spaces` request is ignored with a visible notice while an adopted cockpit frame owns placement because disposable per-task workspaces conflict with one persistent per-home viewport.
 
@@ -273,6 +285,8 @@ Mid-session secondmate liveness is not implemented because idle secondmates are 
 ## Push events and polling fallback
 
 Protocol 16 can subscribe to `pane.agent_status_changed` over one bounded Unix-socket reader.
+The same reader serves the cockpit viewport's `pane.focused` subscription, so there is one wire-protocol owner rather than two event stacks.
+Herdr names a subscription with dots but stamps the streamed envelope with underscores on 0.8.0, while 0.7.x echoed the dotted form; the reader accepts either spelling, because matching only one drops every event while still looking exactly like an idle stream.
 `bin/fm-transition-lib.sh` owns the backend-neutral transition vocabulary and policy.
 The Herdr adapter subscribes before reconciling current levels, buffers edges during reconciliation, and returns fresh blocked transitions for this home's panes.
 The watcher maps the pane back to the task and skips secondmate endpoints and declared `paused:` waits.
