@@ -625,11 +625,12 @@ test_view_renders_each_section_alone() {
   write_fixture "$home"
   fakebin=$(make_fakebin "$home")
 
-  for section in in-flight waiting blocked finished failed; do
+  for section in in-flight waiting ready blocked finished failed; do
     view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW" --section "$section")
     case "$section" in
       in-flight) heading='IN FLIGHT (3)' ;;
       waiting) heading='WAITING ON DECISION (4)' ;;
+      ready) heading='READY (0)' ;;
       blocked) heading='BLOCKED (1)' ;;
       finished) heading='FINISHED (showing 1 of 1)' ;;
       failed) heading='FAILED (0)' ;;
@@ -654,8 +655,9 @@ test_view_rejects_unknown_section() {
   set -e
   expect_code 2 "$rc" "an unknown section should be a usage error"
   assert_contains "$output" "unknown section: typo" "unknown section error omitted the rejected value"
-  assert_contains "$output" "in-flight, waiting, blocked, finished, failed" \
+  assert_contains "$output" "in-flight, waiting, ready, blocked, finished," \
     "unknown section usage omitted valid sections"
+  assert_contains "$output" "failed" "unknown section usage omitted the failed section"
   pass "unknown fleet sections fail with usage listing every valid name"
 }
 
@@ -943,7 +945,7 @@ SH
       kill "INT", $pid;
       waitpid $pid, 0;
       exit($? >> 8);
-    ' "$watch_bin/fm-fleet-view.sh" --section in-flight --watch 0.05 > "$output" 3>&1
+    ' "$watch_bin/fm-fleet-view.sh" --section ready --watch 0.05 > "$output" 3>&1
   rc=$?
   expect_code 0 "$rc" "ordered watch fixture should exit cleanly"
   perl -0777 -e '

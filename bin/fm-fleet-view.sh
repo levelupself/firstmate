@@ -23,7 +23,8 @@ usage: fm-fleet-view.sh [--json] [--watch [interval]] [--section <name>]
 Render a narrow, prioritized fleet side panel from fm-fleet-snapshot.sh.
 Use --json to print the complete underlying snapshot.
 Use --watch to redraw every 5 seconds, or provide a positive interval in seconds.
-Use --section to render one of: in-flight, waiting, blocked, finished, failed.
+Use --section to render one of: in-flight, waiting, ready, blocked, finished,
+failed.
 EOF
 }
 
@@ -55,7 +56,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$SECTION" in
-  all|in-flight|waiting|blocked|finished|failed) ;;
+  all|in-flight|waiting|ready|blocked|finished|failed) ;;
   *)
     echo "fm-fleet-view: unknown section: $SECTION" >&2
     usage >&2
@@ -270,6 +271,14 @@ render_once() {
             $blocked[]
             | line("• "; ((.id // "unknown") + " ← " + ((.unresolved_blocker_ids // []) | join(","))
                           + (if (.blocked_reason // "") == "" then "" else " · " + .blocked_reason end)))
+          end)
+       elif $section == "ready" then
+         ("READY (\($ready | length))" | clip($width)),
+         (if ($ready | length) == 0 then
+            "  None."
+          else
+            $ready[]
+            | line("• "; ((.id // "unknown") + " · " + (.title // "unknown")))
           end)
        elif $section == "blocked" then
          ("BLOCKED (\($blocked | length))" | clip($width)),
