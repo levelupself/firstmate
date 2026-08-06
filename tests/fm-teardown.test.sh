@@ -49,6 +49,7 @@
 #   (w) index.lock mtime read failure                         -> lock kept, REFUSE
 #   (x) transient lock cleared after first failed return      -> retry ALLOW
 #   (y) persistent lock (never clears, not provably stale)    -> REFUSE loudly
+#   (z) skip-worktree or assume-unchanged tracked path        -> REFUSE with path + flag
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -865,6 +866,54 @@ test_dirty_worktree_refuses() {
   grep -q REFUSED "$case_dir/stderr" || fail "dirty-wt: no REFUSED line in stderr"
   grep -q "uncommitted changes" "$case_dir/stderr" || fail "dirty-wt: refusal did not cite uncommitted changes"
   pass "dirty worktree is refused even when its committed work has landed (dirty always wins)"
+}
+
+test_skip_worktree_flag_refuses() {
+  local case_dir rc
+  case_dir=$(make_case skip-worktree-wt)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt landed "add feature"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  printf '%s\n' "hidden edit" > "$case_dir/wt/feature.txt"
+  git -C "$case_dir/wt" update-index --skip-worktree -- feature.txt
+  [ -z "$(git -C "$case_dir/wt" status --porcelain)" ] \
+    || fail "skip-worktree-wt: precondition did not hide the modified tracked file"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "skip-worktree-wt: teardown should refuse a skip-worktree entry"
+  assert_grep "REFUSED" "$case_dir/stderr" "skip-worktree-wt: no REFUSED line in stderr"
+  assert_grep "skip-worktree" "$case_dir/stderr" "skip-worktree-wt: refusal did not name the flag"
+  assert_grep "feature.txt" "$case_dir/stderr" "skip-worktree-wt: refusal did not name the tracked path"
+  [ -f "$case_dir/state/task-x1.meta" ] || fail "skip-worktree-wt: teardown erased task metadata"
+  pass "skip-worktree entries are refused with the hidden tracked path and flag named"
+}
+
+test_assume_unchanged_flag_refuses() {
+  local case_dir rc
+  case_dir=$(make_case assume-unchanged-wt)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt landed "add feature"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  printf '%s\n' "hidden edit" > "$case_dir/wt/feature.txt"
+  git -C "$case_dir/wt" update-index --assume-unchanged -- feature.txt
+  [ -z "$(git -C "$case_dir/wt" status --porcelain)" ] \
+    || fail "assume-unchanged-wt: precondition did not hide the modified tracked file"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "assume-unchanged-wt: teardown should refuse an assume-unchanged entry"
+  assert_grep "REFUSED" "$case_dir/stderr" "assume-unchanged-wt: no REFUSED line in stderr"
+  assert_grep "assume-unchanged" "$case_dir/stderr" "assume-unchanged-wt: refusal did not name the flag"
+  assert_grep "feature.txt" "$case_dir/stderr" "assume-unchanged-wt: refusal did not name the tracked path"
+  [ -f "$case_dir/state/task-x1.meta" ] || fail "assume-unchanged-wt: teardown erased task metadata"
+  pass "assume-unchanged entries are refused with the hidden tracked path and flag named"
 }
 
 test_gh_error_and_content_absent_refuses() {
@@ -1876,6 +1925,8 @@ test_pr_check_records_remote_head_when_local_lags
 test_content_in_default_fallback_allows
 test_content_fallback_refreshes_stale_origin_ref
 test_dirty_worktree_refuses
+test_skip_worktree_flag_refuses
+test_assume_unchanged_flag_refuses
 test_gh_error_and_content_absent_refuses
 test_stale_index_lock_cleared_and_teardown_succeeds
 test_live_index_lock_is_never_removed_and_teardown_refuses

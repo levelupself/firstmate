@@ -22,6 +22,9 @@
 # A gh lookup error falls back to the content check; if that is also inconclusive,
 # teardown refuses rather than risk discarding unlanded work.
 # Uncommitted changes are never landed.
+# Tracked paths marked skip-worktree or assume-unchanged are treated as dirty
+# because those index flags hide changes
+# from the ordinary `git status --porcelain` safety check.
 # local-only projects additionally accept work merged into the local default
 # branch (firstmate performs that merge after configured approval) as a fallback
 # for the common case where there is no remote at all.
@@ -745,12 +748,38 @@ teardown_treehouse_return() {
 }
 
 validate_worktree_teardown_safety() {
+  local hidden_raw hidden entry tag path flag
   local dirty_raw dirty unpushed_raw unpushed DEFAULT unmerged_raw unmerged branch
   [ -d "$WT" ] || return 0
   [ "$FORCE" != "--force" ] || return 0
   case "$KIND" in
     secondmate|scout) return 0 ;;
   esac
+
+  if ! hidden_raw=$(git -C "$WT" ls-files -v 2>/dev/null); then
+    if worktree_safety_blocked_by_lock "hidden index flags"; then
+      return "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED"
+    fi
+    echo "REFUSED: cannot inspect worktree $WT for hidden index flags." >&2
+    echo "Restore the git index state, or get the captain's explicit OK to discard, then --force." >&2
+    return 1
+  fi
+  hidden=$(printf '%s\n' "$hidden_raw" | LC_ALL=C grep -E '^[a-zS] ' || true)
+  if [ -n "$hidden" ]; then
+    echo "REFUSED: worktree $WT has tracked paths hidden from ordinary dirty checks." >&2
+    printf '%s\n' "$hidden" | while IFS= read -r entry; do
+      tag=${entry%% *}
+      path=${entry#? }
+      case "$tag" in
+        S) flag=skip-worktree ;;
+        s) flag="skip-worktree and assume-unchanged" ;;
+        *) flag=assume-unchanged ;;
+      esac
+      printf 'hidden index flag %s: %s\n' "$flag" "$path" >&2
+    done
+    echo "Clear every listed index flag and inspect the revealed changes before teardown, or get the captain's explicit OK to discard, then --force." >&2
+    return 1
+  fi
 
   if ! dirty_raw=$(git -C "$WT" status --porcelain 2>/dev/null); then
     if worktree_safety_blocked_by_lock "uncommitted changes"; then
