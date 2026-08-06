@@ -6,6 +6,7 @@ This record tests whether the current validation and task lifecycle support depe
 
 Use semantic review increments that land on `main` promptly, and do not adopt chained pull request bases with the current tooling.
 Split policy-heavy work to reduce review load, but do not split work merely because a diff is large.
+The 68-file psychogenetic core merged in three review rounds, while the 27-file interaction inspector required four, showing that review complexity did not track raw file count.
 Each increment should have one review question, one task branch, and one validation run, and the next dependent branch should start from `main` after the prior increment lands.
 This preserves the review benefit sought from a stack while avoiding contingent checks, cumulative rereviews, and descendant restacks.
 
