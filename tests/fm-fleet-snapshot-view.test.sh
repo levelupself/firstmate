@@ -794,6 +794,7 @@ test_watch_redraws_and_exits_cleanly() {
   watch_bin="$home/bin"
   mkdir -p "$watch_bin"
   ln -s "$VIEW" "$watch_bin/fm-fleet-view.sh"
+  ln -s "$ROOT/bin/fm-terminal-frame-lib.sh" "$watch_bin/fm-terminal-frame-lib.sh"
   cat > "$watch_bin/fm-fleet-snapshot.sh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' '{"tasks":[],"backlog":{"records":[]},"secondmates":[]}'
@@ -812,11 +813,110 @@ SH
     ' "$watch_bin/fm-fleet-view.sh" --watch 0.1 > "$output"
   rc=$?
   expect_code 0 "$rc" "watch mode should exit cleanly on Ctrl-C"
-  redraws=$(LC_ALL=C grep -ao $'\033\[H\033\[2J' "$output" | wc -l | tr -d ' ')
+  redraws=$(LC_ALL=C grep -ao $'\033\[?2026h\033\[H' "$output" | wc -l | tr -d ' ')
   [ "$redraws" -ge 2 ] || fail "watch mode did not redraw: $redraws renders"
-  LC_ALL=C grep -aF $'\033[0m' "$output" >/dev/null \
-    || fail "watch mode did not restore terminal attributes on exit"
+  LC_ALL=C grep -aF $'\033[H\033[2J' "$output" >/dev/null \
+    && fail "watch mode still used a full-screen erase"
+  LC_ALL=C grep -aF $'\033[?2026l\033[0m' "$output" >/dev/null \
+    || fail "watch mode did not close synchronized output and restore terminal attributes on exit"
   pass "watch mode redraws in a narrow pane and exits cleanly on Ctrl-C"
+}
+
+test_watch_computes_before_paint_and_erases_shorter_frames() {
+  local home fakebin watch_bin output rc
+  home=$(make_home watch-order)
+  fakebin=$(fm_fakebin "$home")
+  watch_bin="$home/bin"
+  mkdir -p "$watch_bin"
+  ln -s "$VIEW" "$watch_bin/fm-fleet-view.sh"
+  ln -s "$ROOT/bin/fm-terminal-frame-lib.sh" "$watch_bin/fm-terminal-frame-lib.sh"
+  cat > "$watch_bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{}'
+SH
+  cat > "$fakebin/jq" <<'SH'
+#!/usr/bin/env bash
+count_file=${FM_TEST_JQ_COUNT:?}
+count=0
+[ ! -f "$count_file" ] || read -r count < "$count_file"
+count=$((count + 1))
+printf '%s\n' "$count" > "$count_file"
+if [ "$count" -eq 1 ]; then
+  printf 'long one\nlong two\nlong three\n'
+else
+  printf 'short\n'
+fi
+printf 'RENDERED\n' >&3
+SH
+  chmod +x "$watch_bin/fm-fleet-snapshot.sh" "$fakebin/jq"
+  output="$home/watch.out"
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_TEST_JQ_COUNT="$home/jq-count" \
+    perl -e '
+      my $pid = fork();
+      defined $pid or die "fork: $!\n";
+      exec @ARGV unless $pid;
+      select undef, undef, undef, 0.25;
+      kill "INT", $pid;
+      waitpid $pid, 0;
+      exit($? >> 8);
+    ' "$watch_bin/fm-fleet-view.sh" --watch 0.05 > "$output" 3>&1
+  rc=$?
+  expect_code 0 "$rc" "ordered watch fixture should exit cleanly"
+  perl -0777 -e '
+    my $s = <>;
+    my $computed = index($s, "RENDERED\n");
+    my $paint = index($s, "\e[?2026h\e[H");
+    exit !(0 <= $computed && $computed < $paint);
+  ' "$output" || fail "watch mode painted an erase sequence before frame computation completed"
+  perl -0777 -e '
+    my $s = <>;
+    $s =~ s/RENDERED\n//g;
+    my @screen;
+    my $row = 0;
+    my $text = "";
+    while (length $s) {
+      if ($s =~ s/^\e\[\?2026[hl]// || $s =~ s/^\e\[0m//) { next }
+      if ($s =~ s/^\e\[H//) { $row = 0; $text = ""; next }
+      if ($s =~ s/^\e\[K//) { $screen[$row] = $text; next }
+      if ($s =~ s/^\e\[J//) { $#screen = $row - 1; next }
+      if ($s =~ s/^\n//) { $row++; $text = ""; next }
+      $s =~ s/^(.)//s or die "unparsed terminal stream";
+      $text .= $1;
+    }
+    exit !(@screen == 1 && $screen[0] eq "short");
+  ' "$output" || fail "a shorter watch frame left residual lines from the longer frame"
+  pass "watch mode computes before painting and erases residual lines from shorter frames"
+}
+
+test_non_watch_outputs_remain_byte_exact() {
+  local home fakebin view_bin panel json
+  home=$(make_home non-watch-bytes)
+  fakebin=$(fm_fakebin "$home")
+  view_bin="$home/bin"
+  mkdir -p "$view_bin"
+  ln -s "$VIEW" "$view_bin/fm-fleet-view.sh"
+  ln -s "$ROOT/bin/fm-terminal-frame-lib.sh" "$view_bin/fm-terminal-frame-lib.sh"
+  cat > "$view_bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"exact":"json"}'
+SH
+  cat > "$fakebin/jq" <<'SH'
+#!/usr/bin/env bash
+printf 'plain\nframe\n'
+SH
+  chmod +x "$view_bin/fm-fleet-snapshot.sh" "$fakebin/jq"
+  PATH="$fakebin:$PATH" "$view_bin/fm-fleet-view.sh" > "$home/panel.out"
+  PATH="$fakebin:$PATH" "$view_bin/fm-fleet-view.sh" --json > "$home/json.out"
+  printf 'plain\nframe\n' > "$home/panel.expected"
+  printf '%s\n' '{"exact":"json"}' > "$home/json.expected"
+  cmp -s "$home/panel.expected" "$home/panel.out" \
+    || fail "non-watch panel output changed bytes"
+  cmp -s "$home/json.expected" "$home/json.out" \
+    || fail "--json output changed bytes"
+  panel=$(cat "$home/panel.out")
+  json=$(cat "$home/json.out")
+  assert_not_contains "$panel$json" $'\033[' "non-watch modes emitted terminal controls"
+  pass "non-watch panel and --json output remain byte-exact"
 }
 
 # A still-open decision must survive a LATER, UNRELATED terminal event on the same
@@ -1013,3 +1113,5 @@ test_view_renders_dead_secondmate_agent_status
 test_oversized_backlog_and_status_stream
 test_read_paths_do_not_mutate_fleet_state
 test_watch_redraws_and_exits_cleanly
+test_watch_computes_before_paint_and_erases_shorter_frames
+test_non_watch_outputs_remain_byte_exact

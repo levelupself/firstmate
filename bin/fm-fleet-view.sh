@@ -13,6 +13,9 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SNAPSHOT_CMD="$SCRIPT_DIR/fm-fleet-snapshot.sh"
 
+# shellcheck source=bin/fm-terminal-frame-lib.sh
+. "$SCRIPT_DIR/fm-terminal-frame-lib.sh"
+
 usage() {
   cat <<'EOF'
 usage: fm-fleet-view.sh [--json] [--watch [interval]]
@@ -238,10 +241,10 @@ render_once() {
 }
 
 if [ "$WATCH" = 1 ]; then
-  trap 'printf "\033[0m\n"; exit 0' INT TERM HUP
+  trap 'fm_terminal_watch_reset; exit 0' INT TERM HUP
   while :; do
-    printf '\033[H\033[2J'
-    render_once || true
+    frame=$(render_once) || true
+    fm_terminal_paint_frame "$frame"
     sleep "$INTERVAL"
   done
 fi
