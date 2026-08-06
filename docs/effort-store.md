@@ -49,6 +49,7 @@ An absent source and a zero must never look the same.
 - A raw line whose schema section is not the v2 join is recorded in `ingest_issue` rather than guessed into a task row, so nothing that arrives is dropped.
 
 The same rule applies inside a source.
+Binary diff additions and deletions stay NULL at both file and task levels because git cannot measure them.
 Import degrees are computed from the project's current checkout, so a path a task once touched that no longer exists there has no degree at all rather than a degree of zero.
 
 ## The durability relation

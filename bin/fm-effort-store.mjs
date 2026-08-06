@@ -696,7 +696,7 @@ CREATE TABLE task_model (
 );
 
 -- Did the work hold? One row per later task that modified code an earlier task
--- touched. introduced_path is the name the earlier task knew; modified_path is
+-- introduced. introduced_path is the name the earlier task knew; modified_path is
 -- the name at the later change, so a rename is visible rather than fatal.
 CREATE TABLE durability (
   introducing_task_id TEXT NOT NULL,
@@ -706,7 +706,6 @@ CREATE TABLE durability (
   introducing_sha     TEXT NOT NULL,
   modifying_sha       TEXT NOT NULL,
   modified_at         TEXT,
-  was_introduction    INTEGER NOT NULL,
   PRIMARY KEY (introducing_task_id, modifying_task_id, introduced_path, modifying_sha)
 );
 
@@ -913,8 +912,8 @@ function summarizeTaskGit(repo, task, links, commits, defaultTip, graph) {
     const statuses = commitFileStatuses(repo, sha)
     for (const stat of commitFileStats(repo, sha)) {
       const existing = files.get(stat.path) || {path: stat.path, adds: 0, dels: 0, introduced: false, shas: []}
-      existing.adds = stat.adds === null ? existing.adds : existing.adds + stat.adds
-      existing.dels = stat.dels === null ? existing.dels : existing.dels + stat.dels
+      existing.adds = stat.adds === null || existing.adds === null ? null : existing.adds + stat.adds
+      existing.dels = stat.dels === null || existing.dels === null ? null : existing.dels + stat.dels
       if (statuses.get(stat.path) === 'A') existing.introduced = true
       existing.shas.push(sha)
       files.set(stat.path, existing)
@@ -985,8 +984,8 @@ function summarizeTaskGit(repo, task, links, commits, defaultTip, graph) {
       files_changed: fileList.length,
       prod_src_files: fileList.filter(file => isProductionSource(file.path)).length,
       distinct_areas: new Set(fileList.map(file => areaOf(file.path))).size,
-      adds: fileList.reduce((sum, file) => sum + file.adds, 0),
-      dels: fileList.reduce((sum, file) => sum + file.dels, 0),
+      adds: fileList.some(file => file.adds === null) ? null : fileList.reduce((sum, file) => sum + file.adds, 0),
+      dels: fileList.some(file => file.dels === null) ? null : fileList.reduce((sum, file) => sum + file.dels, 0),
       import_in_degree: importIn,
       import_out_degree: importOut,
     },
@@ -1056,7 +1055,7 @@ function computeDurability(repo, perTask) {
         }
         if (!owner || ownSha === null) continue
         const ownerFile = perTask.get(owner)?.files.find(entry => entry.path === pathAtCommit)
-        if (!ownerFile) continue
+        if (!ownerFile || ownerFile.introduced !== 1) continue
         const key = `${owner} ${taskId} ${pathAtCommit} ${ownSha}`
         if (seen.has(key)) continue
         seen.add(key)
@@ -1068,7 +1067,6 @@ function computeDurability(repo, perTask) {
           introducing_sha: walkSha,
           modifying_sha: ownSha,
           modified_at: ownAt,
-          was_introduction: ownerFile.introduced,
         })
       }
     }
@@ -1192,7 +1190,7 @@ const durabilityKey = row => [
 function writeDurability(db, gitResults) {
   const statement = insert(db, 'durability', [
     'introducing_task_id', 'modifying_task_id', 'introduced_path', 'modified_path',
-    'introducing_sha', 'modifying_sha', 'modified_at', 'was_introduction',
+    'introducing_sha', 'modifying_sha', 'modified_at',
   ])
   const rows = sortedBy(gitResults.durability, row =>
     durabilityKey(row))
@@ -1202,7 +1200,7 @@ function writeDurability(db, gitResults) {
     if (seen.has(key)) continue
     seen.add(key)
     statement.run(row.introducing_task_id, row.modifying_task_id, row.introduced_path,
-      row.modified_path, row.introducing_sha, row.modifying_sha, bind(row.modified_at), row.was_introduction)
+      row.modified_path, row.introducing_sha, row.modifying_sha, bind(row.modified_at))
   }
 }
 

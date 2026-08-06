@@ -44,6 +44,14 @@ printf "import { remember } from './engine/Memory'\nexport const use = () => rem
 git -C "$PROJECT" add -A
 fixture_commit 'rename and extend memory [902-extend-memory]' '2026-02-01T00:00:00Z'
 
+printf 'export const durable = true\n' >> "$PROJECT/src/engine/Memory.ts"
+git -C "$PROJECT" add -A
+fixture_commit 'modify memory again [905-modify-memory]' '2026-03-01T00:00:00Z'
+
+printf '\000\001\002\003' > "$PROJECT/src/image.bin"
+git -C "$PROJECT" add -A
+fixture_commit 'add binary fixture [906-add-binary]' '2026-03-02T00:00:00Z'
+
 # --- fixture: the raw teardown capture, with a legacy region above the v2 one -
 
 RAW="$FM_HOME/data/cost-attribution.tsv"
@@ -56,6 +64,8 @@ RAW="$FM_HOME/data/cost-attribution.tsv"
   printf '902-extend-memory\t%s\tcodex\tdefault\thigh\tship\t%s\t2026-02-01T00:00:00Z\t2026-02-01T01:00:00Z\n' "$WT_B" "$PROJECT"
   printf '903-unlinked-scout\t%s\tclaude\tfable\tlow\tscout\t%s\t2026-03-01T00:00:00Z\t2026-03-01T00:30:00Z\n' "$WT_POOLED" "$PROJECT"
   printf '904-later-occupant\t%s\tclaude\tfable\tlow\tscout\t%s\t2026-04-01T00:00:00Z\t2026-04-01T00:30:00Z\n' "$WT_POOLED" "$PROJECT"
+  printf '905-modify-memory\t%s\tcodex\tdefault\thigh\tship\t%s\t2026-03-01T00:00:00Z\t2026-03-01T01:00:00Z\n' "$WT_B" "$PROJECT"
+  printf '906-add-binary\t%s\tcodex\tdefault\thigh\tship\t%s\t2026-03-02T00:00:00Z\t2026-03-02T01:00:00Z\n' "$WT_B" "$PROJECT"
 } > "$RAW"
 
 # --- fixture: codeburn ------------------------------------------------------
@@ -119,7 +129,7 @@ query() {  # <sql>
 # --- rebuild ----------------------------------------------------------------
 
 REBUILD_OUT=$("$STORE" rebuild 2>&1) || fail "rebuild failed: $REBUILD_OUT"
-assert_contains "$REBUILD_OUT" 'rebuilt 4 tasks' 'rebuild should report every task it ingested'
+assert_contains "$REBUILD_OUT" 'rebuilt 6 tasks' 'rebuild should report every task it ingested'
 assert_present "$DB" 'rebuild should create the store'
 pass 'rebuild builds the store from the raw capture, codeburn, and git'
 
@@ -189,10 +199,21 @@ pass 'annotations are validated rather than coerced into a value nobody gave'
 
 # --- the durability relation ------------------------------------------------
 
-DURABILITY=$(query "SELECT introducing_task_id, modifying_task_id, introduced_path, modified_path, was_introduction FROM durability")
-[ "$DURABILITY" = '901-introduce-memory|902-extend-memory|src/Memory.ts|src/engine/Memory.ts|1' ] \
+DURABILITY=$(query "SELECT introducing_task_id, modifying_task_id, introduced_path, modified_path FROM durability ORDER BY modifying_task_id")
+[ "$DURABILITY" = '901-introduce-memory|902-extend-memory|src/Memory.ts|src/engine/Memory.ts
+901-introduce-memory|905-modify-memory|src/Memory.ts|src/engine/Memory.ts' ] \
   || fail "the durability relation should link the later task across the rename, got: $DURABILITY"
-pass 'durability links a task to the later task that modified its code, across a file rename'
+pass 'durability skips an intermediate modifier while retaining links to the introducing task across a rename'
+
+# --- unavailable binary diff measurements ----------------------------------
+
+BINARY_FILE=$(query "SELECT adds, dels FROM task_file WHERE task_id = '906-add-binary' AND path = 'src/image.bin'")
+[ "$BINARY_FILE" = 'NULL|NULL' ] \
+  || fail "binary file measurements should remain unknown, got: $BINARY_FILE"
+BINARY_TASK=$(query "SELECT files_changed, prod_src_files, distinct_areas, adds, dels FROM task WHERE task_id = '906-add-binary'")
+[ "$BINARY_TASK" = '1|0|1|NULL|NULL' ] \
+  || fail "task totals containing binary measurements should remain unknown, got: $BINARY_TASK"
+pass 'binary diff measurements remain NULL at file and task levels while known counts remain real'
 
 # --- rebuild identity -------------------------------------------------------
 
