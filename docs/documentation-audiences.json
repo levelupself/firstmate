@@ -328,6 +328,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/verification/ast-grep-trial.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/dispatch-auth.md",
       "audience": "maintainer-verification"
     },

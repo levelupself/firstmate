@@ -57,11 +57,12 @@
 #          tools. ripgrep is the operating-instruction search tool, pnpm is the
 #          project package manager, and ShellCheck is the validation lint gate.
 #          xz-utils is required while ShellCheck needs installation or repair,
-#          but optional once the exact pin is already usable. codeburn,
+#          but optional once the exact pin is already usable. ast-grep, codeburn,
 #          @infisical/cli, and an inactive Herdr backend are optional: their
-#          absence disables task-usage snapshots, Infisical credential workflows,
-#          or Herdr-backed dispatch respectively, but never blocks an otherwise
-#          healthy session. Herdr becomes required when it is the resolved backend.
+#          absence disables structural search, task-usage snapshots, Infisical
+#          credential workflows, or Herdr-backed dispatch respectively, but never
+#          blocks an otherwise healthy session. Herdr becomes required when it is
+#          the resolved backend.
 #          tasks-axi and quota-axi are required bootstrap tools (same class as
 #          lavish-axi). tasks-axi is also version and feature gated (0.1.1+
 #          with update --archive-body and mv [<id>...]); an installed but
@@ -518,6 +519,7 @@ install_cmd() {
     gh-axi|chrome-devtools-axi|lavish-axi) echo "npm install -g $1 && $1 setup hooks" ;;
     tasks-axi|quota-axi|pnpm|codeburn|@infisical/cli) echo "npm install -g $1" ;;
     shellcheck) echo "'$FM_ROOT/bin/fm-install-shellcheck.sh' '$HOME/.local/bin'" ;;
+    ast-grep) echo "'$FM_ROOT/bin/fm-install-ast-grep.sh' '$HOME/.local/bin'" ;;
     herdr) echo "'$FM_ROOT/bin/fm-install-herdr.sh' '$HOME/.local/bin'" ;;
     *) return 1 ;;
   esac
@@ -556,7 +558,7 @@ optional_tool_diagnostic() {  # <tool> <disabled-feature>
 # no verified dependency set is reported before the universal checks continue.
 COMMON_TOOLS="node git gh no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi"
 DECLARED_REQUIRED_TOOLS="pnpm ripgrep xz-utils shellcheck"
-DECLARED_OPTIONAL_TOOLS="codeburn @infisical/cli herdr"
+DECLARED_OPTIONAL_TOOLS="ast-grep codeburn @infisical/cli herdr"
 BACKEND=$(fm_backend_name)
 PRIMARY_HARNESS=${FM_BOOTSTRAP_PRIMARY_HARNESS:-$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)}
 BACKEND_VALID=1
@@ -566,6 +568,7 @@ if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
 fi
 TOOLS="$BACKEND_TOOLS $COMMON_TOOLS"
 NO_MISTAKES_MIN=1.31.2
+AST_GREP_VERSION=0.45.0
 
 treehouse_supports_lease() {
   treehouse get --help 2>&1 | grep -Eq '(^|[^[:alnum:]_-])--lease([^[:alnum:]_-]|$)'
@@ -928,6 +931,7 @@ done
 for t in $DECLARED_OPTIONAL_TOOLS; do
   if ! tool_available "$t"; then
     case "$t" in
+      ast-grep) optional_tool_diagnostic "$t" "structural repository search is unavailable" ;;
       codeburn) optional_tool_diagnostic "$t" "task-usage snapshots are unavailable" ;;
       @infisical/cli) optional_tool_diagnostic "$t" "Infisical credential workflows are unavailable" ;;
       herdr)
@@ -937,6 +941,9 @@ for t in $DECLARED_OPTIONAL_TOOLS; do
     esac
   fi
 done
+if command -v ast-grep >/dev/null 2>&1 && ! tool_version_exact ast-grep "$AST_GREP_VERSION"; then
+  optional_tool_diagnostic ast-grep "the pinned structural-search build is unavailable"
+fi
 # The treehouse lease-support upgrade check is only relevant when the resolved
 # backend actually requires treehouse (every backend except orca, which owns its
 # own worktrees); an orca home must not be told to upgrade a provider it never uses.

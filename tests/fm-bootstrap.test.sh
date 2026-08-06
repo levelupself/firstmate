@@ -40,6 +40,11 @@ make_fake_toolchain() {
   fakebin=$(fm_fakebin "$dir")
   fm_fake_exit0 "$fakebin" tmux node gh-axi chrome-devtools-axi lavish-axi \
     pnpm rg xz codeburn infisical herdr
+  cat > "$fakebin/ast-grep" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'ast-grep 0.45.0'
+SH
+  chmod +x "$fakebin/ast-grep"
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
@@ -503,6 +508,24 @@ SH
   pass "bootstrap: Herdr installation is explicit, consent-gated, and pinned"
 }
 
+test_ast_grep_install_uses_pinned_installer_after_consent() {
+  local case_dir fake_root out
+  case_dir="$TMP_ROOT/ast-grep-install"
+  fake_root="$case_dir/root"
+  mkdir -p "$fake_root/bin"
+  cat > "$fake_root/bin/fm-install-ast-grep.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'fake pinned ast-grep install to %s\n' "$1"
+SH
+  chmod +x "$fake_root/bin/fm-install-ast-grep.sh"
+  out=$(HOME="$case_dir/home" FM_ROOT_OVERRIDE="$fake_root" \
+    "$ROOT/bin/fm-bootstrap.sh" install ast-grep 2>&1)
+  assert_contains "$out" "installing ast-grep:" "approved ast-grep install should name the selected tool"
+  assert_contains "$out" "fake pinned ast-grep install to $case_dir/home/.local/bin" \
+    "approved ast-grep install should use the repository's pinned installer"
+  pass "bootstrap: ast-grep installation is explicit, consent-gated, and pinned"
+}
+
 test_declared_runtime_tool_diagnostics() {
   local label tool executable classification reason case_dir fakebin bash_env out expected n
   n=0
@@ -530,6 +553,7 @@ missing pnpm is required^pnpm^pnpm^MISSING^required: project package workflows d
 missing ripgrep is required^ripgrep^rg^MISSING^required: operating instructions use rg for repository search;
 missing xz-utils is required^xz-utils^xz^MISSING^required: the pinned ShellCheck installer extracts a .tar.xz archive;
 missing ShellCheck is required^shellcheck^shellcheck^MISSING^required: the validation lint gate pins ShellCheck 0.11.0;
+missing ast-grep is optional^ast-grep^ast-grep^MISSING_OPTIONAL^optional: structural repository search is unavailable;
 missing codeburn is optional^codeburn^codeburn^MISSING_OPTIONAL^optional: task-usage snapshots are unavailable;
 missing Infisical CLI is optional^@infisical/cli^infisical^MISSING_OPTIONAL^optional: Infisical credential workflows are unavailable;
 missing inactive Herdr is optional^herdr^herdr^MISSING_OPTIONAL^optional: Herdr-backed dispatch is unavailable;
@@ -572,6 +596,24 @@ SH
   assert_contains "$out" "MISSING: shellcheck (required: the validation lint gate pins ShellCheck 0.11.0;" \
     "an unpinned ShellCheck build should request the verified repository installer"
   pass "bootstrap enforces the exact ShellCheck validation pin"
+}
+
+test_ast_grep_exact_pin_stays_optional() {
+  local case_dir fakebin out
+  case_dir="$TMP_ROOT/ast-grep-pin"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  cat > "$fakebin/ast-grep" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'ast-grep 0.44.1'
+SH
+  chmod +x "$fakebin/ast-grep"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" "MISSING_OPTIONAL: ast-grep (optional: the pinned structural-search build is unavailable;" \
+    "an unpinned ast-grep build should request the verified repository installer without blocking bootstrap"
+  pass "bootstrap keeps the exact ast-grep pin optional"
 }
 
 test_environment_local_auth_diagnostics() {
@@ -946,9 +988,11 @@ test_orca_backend_gates_orca_tool_only_when_selected
 test_session_provider_backends_do_not_require_tmux
 test_session_provider_backends_gate_own_cli_not_tmux
 test_herdr_install_uses_pinned_installer_after_consent
+test_ast_grep_install_uses_pinned_installer_after_consent
 test_declared_runtime_tool_diagnostics
 test_xz_is_optional_when_shellcheck_pin_is_usable
 test_shellcheck_exact_pin
+test_ast_grep_exact_pin_stays_optional
 test_environment_local_auth_diagnostics
 test_cmux_bundled_cli_satisfies_dependency
 test_unknown_backend_reports_invalid_configuration

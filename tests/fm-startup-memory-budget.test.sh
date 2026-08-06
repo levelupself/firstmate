@@ -17,6 +17,10 @@ make_fake_toolchain() {
   fakebin=$(fm_fakebin "$dir")
   fm_fake_exit0 "$fakebin" node gh-axi chrome-devtools-axi lavish-axi quota-axi \
     pnpm rg xz codeburn infisical herdr
+  cat > "$fakebin/ast-grep" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'ast-grep 0.45.0'
+SH
   cat > "$fakebin/shellcheck" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' 'ShellCheck - shell script analysis tool' 'version: 0.11.0'

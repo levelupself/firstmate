@@ -70,6 +70,11 @@ esac
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 CAPTAIN_HELD_VERB=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+IFS= read -r -d '' SEARCH_GUIDANCE <<'EOF' || true
+`ast-grep` is an optional structural-search aid for code questions where text search over-matches; invoke it only as `ast-grep`, never `sg`.
+Keep `rg` as the text-search baseline, and hand-check unfamiliar ast-grep patterns because a plausible wrong pattern can return partial or unexpectedly broad results.
+EOF
+SEARCH_GUIDANCE=${SEARCH_GUIDANCE%$'\n'}
 
 resolve_directory_input() {
   local name=$1 path=$2 resolved
@@ -267,6 +272,8 @@ The worktree is your laboratory - install, run, edit, and make scratch commits f
 The report is the only thing that survives, so anything worth keeping must be in it.
 
 # Rules
+$SEARCH_GUIDANCE
+
 1. Never push to any remote and never open a PR.
 2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
@@ -380,6 +387,8 @@ If the top-level path is the primary checkout or not the worktree you were launc
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
 
 # Rules
+$SEARCH_GUIDANCE
+
 $RULE1
 2. Stay inside this worktree; modify nothing outside it.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.

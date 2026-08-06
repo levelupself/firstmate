@@ -213,12 +213,34 @@ test_ship_modes_generate_clean_briefs() {
       "$id: brief missing captain-held from the ship status vocabulary"
     assert_grep "Never set Git's \`skip-worktree\` or \`assume-unchanged\` index flags" "$brief" \
       "$id: brief did not prohibit dirty-check-hiding index flags"
+    assert_grep 'ast-grep` is an optional structural-search aid' "$brief" \
+      "$id: brief did not teach the optional structural-search layer"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'invoke it only as `ast-grep`, never `sg`' "$brief" \
+      "$id: brief did not prevent the sg command collision"
+    assert_grep 'hand-check unfamiliar ast-grep patterns' "$brief" \
+      "$id: brief did not carry the trial-backed wrong-pattern warning"
     # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
     assert_grep 'then append `captain-held: {why the task is parked}` before going idle and stopping' "$brief" \
       "$id: brief did not tell a decision-blocked worker to declare captain-held before idling"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
+}
+
+test_scout_brief_teaches_optional_structural_search() {
+  local home id brief
+  home="$TMP_ROOT/scout-structural-search-home"
+  mkdir -p "$home/data"
+  id="brief-scout-structural-search"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep 'ast-grep` is an optional structural-search aid' "$brief" \
+    "scout brief did not teach the optional structural-search layer"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'Keep `rg` as the text-search baseline' "$brief" \
+    "scout brief did not preserve text search as the baseline"
+  pass "fm-brief.sh: scout briefs teach trial-backed optional structural search"
 }
 
 test_faster_paths_use_configured_authority_without_stacked_review() {
@@ -654,6 +676,7 @@ test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
+test_scout_brief_teaches_optional_structural_search
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
