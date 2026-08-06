@@ -32,6 +32,7 @@ FORMAT=panel
 WATCH=0
 INTERVAL=5
 SECTION=all
+SECTION_SET=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --json) FORMAT=json ;;
@@ -39,8 +40,12 @@ while [ $# -gt 0 ]; do
       [ $# -gt 1 ] || { usage >&2; exit 2; }
       shift
       SECTION=$1
+      SECTION_SET=1
       ;;
-    --section=*) SECTION=${1#--section=} ;;
+    --section=*)
+      SECTION=${1#--section=}
+      SECTION_SET=1
+      ;;
     --watch)
       WATCH=1
       if [ $# -gt 1 ] && [[ $2 != -* ]]; then
@@ -55,8 +60,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-case "$SECTION" in
-  all|in-flight|waiting|ready|blocked|finished|failed) ;;
+case "$SECTION_SET:$SECTION" in
+  0:all|1:in-flight|1:waiting|1:ready|1:blocked|1:finished|1:failed) ;;
   *)
     echo "fm-fleet-view: unknown section: $SECTION" >&2
     usage >&2

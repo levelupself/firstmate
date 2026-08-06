@@ -648,16 +648,18 @@ test_view_renders_each_section_alone() {
 }
 
 test_view_rejects_unknown_section() {
-  local output rc
-  set +e
-  output=$($VIEW --section typo 2>&1)
-  rc=$?
-  set -e
-  expect_code 2 "$rc" "an unknown section should be a usage error"
-  assert_contains "$output" "unknown section: typo" "unknown section error omitted the rejected value"
-  assert_contains "$output" "in-flight, waiting, ready, blocked, finished," \
-    "unknown section usage omitted valid sections"
-  assert_contains "$output" "failed" "unknown section usage omitted the failed section"
+  local output rc section
+  for section in typo all; do
+    set +e
+    output=$($VIEW --section "$section" 2>&1)
+    rc=$?
+    set -e
+    expect_code 2 "$rc" "an unsupported section should be a usage error"
+    assert_contains "$output" "unknown section: $section" "unknown section error omitted the rejected value"
+    assert_contains "$output" "in-flight, waiting, ready, blocked, finished," \
+      "unknown section usage omitted valid sections"
+    assert_contains "$output" "failed" "unknown section usage omitted the failed section"
+  done
   pass "unknown fleet sections fail with usage listing every valid name"
 }
 
