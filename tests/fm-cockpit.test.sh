@@ -662,12 +662,12 @@ test_rotation_orders_by_task_id_wraps_and_shares_the_placement_path() {
 }
 
 test_focus_listener_converges_and_current_occupant_is_idempotent() {
-  local current target log move_count reader_count out
+  local current target log move_count reader_count out listener_pid attempt
   current=$(pane_id_by_label fm-one)
   target=$(pane_id_by_label fm-two)
   : > "$HERDR_LOG"
   rm -f "$HERDR_STATE/focus-reader-count"
-  timeout 1 env \
+  env \
     PATH="$FAKEBIN:$PATH" \
     FM_HOME="$HOME_DIR" \
     FM_FAKE_HERDR_STATE="$HERDR_STATE" \
@@ -679,10 +679,22 @@ test_focus_listener_converges_and_current_occupant_is_idempotent() {
     FM_FAKE_FOCUS_IDLE=0.2 \
     HERDR_ENV=1 HERDR_SESSION=fmtest \
     HERDR_SOCKET_PATH=/tmp/fm-cockpit-test.sock HERDR_PANE_ID=w1:p1 \
-    "$COCKPIT" focus-listen >/dev/null 2>&1 || true
+    "$COCKPIT" focus-listen >/dev/null 2>&1 &
+  listener_pid=$!
+  attempt=0
+  reader_count=0
+  while [ "$reader_count" -lt 2 ] && kill -0 "$listener_pid" 2>/dev/null \
+    && [ "$attempt" -lt 50 ]; do
+    sleep 0.1
+    reader_count=$(cat "$HERDR_STATE/focus-reader-count" 2>/dev/null || printf 0)
+    case "$reader_count" in ''|*[!0-9]*) reader_count=0 ;; esac
+    attempt=$((attempt + 1))
+  done
+  kill -TERM "$listener_pid" 2>/dev/null || true
+  wait "$listener_pid" 2>/dev/null || true
   log=$(cat "$HERDR_LOG")
   move_count=$(grep -c '^pane move ' "$HERDR_LOG" || true)
-  reader_count=$(cat "$HERDR_STATE/focus-reader-count")
+  reader_count=$(cat "$HERDR_STATE/focus-reader-count" 2>/dev/null || printf 0)
   [ "$move_count" = 2 ] \
     || fail "one external focus event did not converge after its one placement: $log"
   [ "$reader_count" -ge 2 ] \
