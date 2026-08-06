@@ -518,6 +518,7 @@ test_declared_runtime_tool_diagnostics() {
       rm -f "$fakebin/shellcheck"
     fi
     bash_env="$case_dir/mask-tool.bash"
+    # shellcheck disable=SC2016 # Dollar expressions must remain literal for the generated child-shell fixture.
     printf 'command() {\n  if [ "${1:-}" = -v ] && [ "${2:-}" = "%s" ]; then return 1; fi\n  builtin command "$@"\n}\n%s() { return 127; }\n' \
       "$executable" "$executable" > "$bash_env"
     out=$(PATH="$fakebin:$BASE_PATH" BASH_ENV="$bash_env" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
@@ -544,6 +545,7 @@ test_xz_is_optional_when_shellcheck_pin_is_usable() {
   fakebin=$(make_fake_toolchain "$case_dir")
   rm -f "$fakebin/xz"
   bash_env="$case_dir/mask-xz.bash"
+  # shellcheck disable=SC2016 # Dollar expressions must remain literal for the generated child-shell fixture.
   printf '%s\n' \
     'command() { if [ "${1:-}" = -v ] && [ "${2:-}" = xz ]; then return 1; fi; builtin command "$@"; }' \
     'xz() { return 127; }' > "$bash_env"
