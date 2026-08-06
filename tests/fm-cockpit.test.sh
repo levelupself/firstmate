@@ -17,6 +17,7 @@ HERDR_LOG="$FAKE_DIR/herdr.log"
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$HOME_DIR/config" "$HOME_DIR/projects" \
   "$SECOND_HOME/state" "$HERDR_STATE"
 printf 'w1:p1\tfirstmate-head\tw1:t1\tw1\tlive\n' > "$HERDR_STATE/panes.tsv"
+printf 'w1:t1\tcockpit\tw1\nw2:t1\tcockpit\tw2\nw3:t1\tcockpit\tw3\n' > "$HERDR_STATE/tabs.tsv"
 printf '1\n' > "$HERDR_STATE/counter"
 : > "$HERDR_LOG"
 # The shared primary fixture asks for one fleet pane holding the whole default
@@ -77,7 +78,23 @@ case "${1:-} ${2:-}" in
     printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fm-cockpit-test.sock"}]}'
     ;;
   "tab list")
-    printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","workspace_id":"w1","label":"cockpit"}]}}'
+    # Derived from the tabs this session actually has, not a fixed stub. Herdr
+    # labels a created TAB even though it leaves that tab's root pane
+    # unlabelled, so a stubbed tab list would hide every caller that finds a
+    # worker by its tab.
+    tab_ws=
+    shift 2
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --workspace) tab_ws=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    jq -Rn --arg ws "$tab_ws" '
+      [inputs | split("\t") | {tab_id:.[0],label:.[1],workspace_id:.[2]}
+       | select($ws == "" or .workspace_id == $ws)]
+      | {result:{tabs:.}}
+    ' < "$state/tabs.tsv"
     ;;
   "tab create")
     workspace=
@@ -98,13 +115,18 @@ case "${1:-} ${2:-}" in
     printf '%s\n' "$counter" > "$state/counter"
     tab="w1:t$counter"
     id="w1:p$counter"
-    printf '%s\t%s\t%s\t%s\tno-agent\n' "$id" "$label" "$tab" "$workspace" >> "$state/panes.tsv"
+    # --label names the TAB. Herdr 0.8.0 leaves the new tab's root pane
+    # unlabelled, and this fake must too: a fake that fills the pane label in
+    # would make every caller that reads a pane's own label appear to work
+    # (docs/verification/cockpit-placement.md).
+    printf '%s\t\t%s\t%s\tno-agent\n' "$id" "$tab" "$workspace" >> "$state/panes.tsv"
+    printf '%s\t%s\t%s\n' "$tab" "$label" "$workspace" >> "$state/tabs.tsv"
     root_tab=${FM_FAKE_HERDR_ROOT_TAB:-$tab}
     root_workspace=${FM_FAKE_HERDR_ROOT_WORKSPACE:-$workspace}
     jq -n --arg id "$id" --arg tab "$tab" --arg workspace "$workspace" --arg label "$label" \
       --arg root_tab "$root_tab" --arg root_workspace "$root_workspace" \
       '{result:{tab:{tab_id:$tab,workspace_id:$workspace,label:$label},
-        root_pane:{pane_id:$id,tab_id:$root_tab,workspace_id:$root_workspace,label:$label}}}'
+        root_pane:{pane_id:$id,tab_id:$root_tab,workspace_id:$root_workspace,label:""}}}'
     ;;
   "tab get")
     tab=$3
@@ -330,6 +352,7 @@ case "${1:-} ${2:-}" in
       printf '%s\n' "$counter" > "$state/counter"
       target_tab="w1:t$counter"
       printf '%s\t%s\n' "$target_tab" "${move_label:-$pane_label}" >> "$state/parked-tabs.tsv"
+      printf '%s\t%s\tw1\n' "$target_tab" "${move_label:-$pane_label}" >> "$state/tabs.tsv"
     fi
     [ -n "$target_tab" ] || exit 1
     if [ "$target_tab" = "$cur_tab" ]; then

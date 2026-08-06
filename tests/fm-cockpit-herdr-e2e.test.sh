@@ -124,8 +124,10 @@ SECOND_PANE=$(grep '^herdr_pane_id=' "$SECOND_META" | cut -d= -f2-)
 [ "$FIRST_PANE" != "$HEAD" ] && [ "$SECOND_PANE" != "$HEAD" ] \
   && [ "$FIRST_PANE" != "$SECOND_PANE" ] || fail "cockpit spawns returned duplicate panes"
 
-# The viewport slot is single-occupancy: the second spawn takes it and the
-# first is parked onto its own labelled tab, keeping its exact pane id.
+# The viewport slot is single-occupancy and a spawn never claims it from a
+# worker already there: the first spawn may fill an empty slot, and every later
+# spawn opens on its own labelled peer tab instead
+# (docs/herdr-backend.md "Watching and task containers").
 viewport_workers() {  # -> pane ids sharing the cockpit tab, minus head and fleet
   lab pane list --workspace "$WORKSPACE" | jq -r \
     --arg tab "$TAB" --arg head "$HEAD" '
@@ -137,37 +139,53 @@ viewport_workers() {  # -> pane ids sharing the cockpit tab, minus head and flee
 pane_tab() {  # <pane> -> its current tab id
   lab pane get "$1" | jq -r '.result.pane.tab_id // empty'
 }
-
-[ "$(viewport_workers | tr '\n' ' ' | tr -s ' ' | sed 's/ $//')" = "$SECOND_PANE" ] \
-  || fail "the viewport slot did not hold exactly the newest worker"
-[ "$(pane_tab "$FIRST_PANE")" != "$TAB" ] \
-  || fail "the displaced worker was left in the cockpit tab"
-lab tab list --workspace "$WORKSPACE" | jq -e --arg want fm-cockpit-one \
-  '[.result.tabs[] | select(.label == $want)] | length == 1' >/dev/null \
-  || fail "the displaced worker did not land on its own labelled tab"
-pass "real Herdr fm-spawn gives the viewport slot one worker and parks the rest on their own tabs"
-
-# Acceptance: a focus event naming an off-cockpit agent puts that pane in the
-# viewport, and the worker it displaces stays reachable on a tab of its own.
-PARKED_TAB=$(pane_tab "$FIRST_PANE")
-[ -n "$PARKED_TAB" ] && [ "$PARKED_TAB" != "$TAB" ] \
-  || fail "the displaced worker has no tab of its own to be selected from"
-# Selecting that agent in the sidebar routes Herdr to its own tab; this is that
-# same routing, and the adoption-armed reaction to it is what the viewport slot
-# is for.
-lab tab focus "$PARKED_TAB" >/dev/null 2>&1 || true
-for _ in $(seq 1 40); do
-  [ "$(pane_tab "$FIRST_PANE")" = "$TAB" ] && break
-  sleep 0.25
-done
+pane_label() {  # <pane> -> its own label, not its tab's
+  lab pane get "$1" | jq -r '.result.pane.label // ""'
+}
 
 [ "$(viewport_workers | tr '\n' ' ' | tr -s ' ' | sed 's/ $//')" = "$FIRST_PANE" ] \
-  || fail "focusing an off-cockpit worker did not move it into the viewport slot"
+  || fail "the viewport slot did not keep the worker that filled it"
 [ "$(pane_tab "$SECOND_PANE")" != "$TAB" ] \
+  || fail "a later spawn claimed the viewport instead of its own tab"
+lab tab list --workspace "$WORKSPACE" | jq -e --arg want fm-cockpit-two \
+  '[.result.tabs[] | select(.label == $want)] | length == 1' >/dev/null \
+  || fail "the later spawn did not land on its own labelled tab"
+# Herdr labels the TAB a spawn creates but leaves that tab's root pane
+# unlabelled, and a pane's own label is the identity focus placement reads back
+# from a sidebar selection and the panel lists parked workers by. A peer worker
+# whose pane carries no label is invisible to both
+# (docs/verification/cockpit-placement.md).
+[ "$(pane_label "$SECOND_PANE")" = fm-cockpit-two ] \
+  || fail "the peer-tab worker's own pane carries no task label: [$(pane_label "$SECOND_PANE")]"
+pass "real Herdr fm-spawn keeps the viewport occupant and gives later spawns their own labelled tab and pane"
+
+# Acceptance: placing an off-cockpit worker puts that pane in the viewport as
+# its sole occupant, and the worker it displaces stays reachable on a tab of its
+# own.
+#
+# This drives the placement through `show`, which the product describes as the
+# same single-occupancy placement a sidebar selection performs, with no reaction
+# running. That is deliberate: `show`, `next`, `prev` and the focus listener all
+# hand the same pane to the same placement function, so exercising it here
+# covers the placement contract on a real server deterministically, without this
+# required lane depending on a detached listener and live focus events. The
+# focus listener's own behavior against a real Herdr server is not covered by
+# any test and is tracked separately.
+PARKED_TAB=$(pane_tab "$SECOND_PANE")
+[ -n "$PARKED_TAB" ] && [ "$PARKED_TAB" != "$TAB" ] \
+  || fail "the peer worker has no tab of its own to be selected from"
+cockpit_env "$ROOT/bin/fm-cockpit.sh" show cockpit-two >/dev/null \
+  || fail "could not place the peer worker in the viewport slot"
+
+[ "$(viewport_workers | tr '\n' ' ' | tr -s ' ' | sed 's/ $//')" = "$SECOND_PANE" ] \
+  || fail "placing an off-cockpit worker did not move it into the viewport slot"
+[ "$(pane_tab "$FIRST_PANE")" != "$TAB" ] \
   || fail "the previous viewport occupant was not parked out"
-[ -n "$(pane_tab "$SECOND_PANE")" ] \
+[ -n "$(pane_tab "$FIRST_PANE")" ] \
   || fail "the previous viewport occupant became unreachable"
-pass "real Herdr focus placement swaps the viewport occupant and keeps the displaced worker reachable"
+[ "$(pane_label "$FIRST_PANE")" = fm-cockpit-one ] \
+  || fail "the parked worker lost the task label it is listed and re-selected by"
+pass "real Herdr placement swaps the viewport occupant and keeps the displaced worker reachable"
 
 # Acceptance: the slot still holds exactly one agent, at its stable width,
 # after a third worker is placed.
@@ -178,8 +196,12 @@ spawn_real cockpit-three cockpit-three-ok >/dev/null \
 THIRD_PANE=$(grep '^herdr_pane_id=' "$HOME_DIR/state/cockpit-three.meta" | cut -d= -f2-)
 [ "$(viewport_workers | wc -l | tr -d ' ')" = 1 ] \
   || fail "three placed workers left more than one agent in the viewport slot"
-[ "$(viewport_workers | tr -d '\n')" = "$THIRD_PANE" ] \
-  || fail "the viewport slot does not hold the newest worker"
+# The occupied slot is what the third spawn must not take, so the worker placed
+# there by the operator's own selection is still the one on display.
+[ "$(viewport_workers | tr -d '\n')" = "$SECOND_PANE" ] \
+  || fail "a background spawn replaced the worker the operator was reading"
+[ "$(pane_tab "$THIRD_PANE")" != "$TAB" ] \
+  || fail "the third spawn claimed the viewport instead of its own tab"
 # The cockpit tab carries the fleet column's split plus exactly one
 # head-versus-viewport split at the fixed ratio. Two splits and three panes mean
 # the slot was rebuilt the way it always is and never subdivided a second time
@@ -198,8 +220,12 @@ assert_contains "$PANEL_OUT" "NAVIGATOR Herdr sidebar (all spaces and agents)" \
   "real cockpit panel omitted the all-space navigator"
 assert_contains "$PANEL_OUT" "PINNED firstmate head=$HEAD [live]" \
   "real cockpit panel omitted the pinned controller"
-assert_contains "$PANEL_OUT" "cockpit-three" \
+assert_contains "$PANEL_OUT" "fm-cockpit-two" \
   "real cockpit panel omitted the current viewport worker"
+# A peer-tab worker is listed only if its own pane carries the task label, so
+# this is the panel's half of the same identity the focus reaction reads.
+assert_contains "$PANEL_OUT" "fm-cockpit-three" \
+  "real cockpit panel omitted a worker parked on its own tab"
 assert_contains "$PANEL_OUT" "BOUNDARY display=all-homes steer=current-home backend=herdr" \
   "real cockpit panel lost the display and steer boundary"
 assert_contains "$PANEL_OUT" "FLEET STATUS" \

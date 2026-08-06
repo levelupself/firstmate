@@ -72,6 +72,7 @@ The first spawn may fill an empty viewport, but later spawns open on ordinary la
 The slot is always the right child of one split from the pinned head at a fixed ratio, so its width is the same every time a worker enters or leaves it, and it is never subdivided to fit a second worker.
 Placing a worker parks whoever was there onto its own tab labelled with that task first, then moves the incoming pane in.
 A parked worker sits in the ordinary non-cockpit topology - one labelled `fm-<id>` tab of its own - so it stays exactly as reachable as on a home that never adopted a cockpit, keeps its own sidebar entry, and is never closed or hidden.
+Its pane carries that same `fm-<id>` label as well as its tab, because Herdr labels only the tab a spawn creates while a sidebar selection and the panel's parked list are both resolved from the pane's own label ([`docs/verification/cockpit-placement.md`](verification/cockpit-placement.md)).
 Parking preserves the pane id, so `window=` and `herdr_pane_id=` stay valid across every move; `herdr_tab_id=` records the tab the task was spawned into and is not live placement authority.
 Selecting an agent in the sidebar routes Herdr to that agent's own tab, which `bin/fm-cockpit.sh focus-listen` reacts to by placing that worker in the slot and bringing the cockpit tab back to the front.
 Adoption deliberately leaves that listener off so session start cannot rearrange the operator's screen.
@@ -367,6 +368,7 @@ Direct execution of that file runs the bounded executable-resolution and recursi
 tests/herdr-test-safety.sh
 tests/fm-backend-herdr.test.sh
 tests/fm-cockpit.test.sh
+tests/fm-cockpit-herdr-e2e.test.sh
 tests/fm-fleet-view-pane-fit-smoke.test.sh
 tests/fm-backend-herdr-smoke.test.sh
 tests/fm-backend-herdr-prune-safety-e2e.test.sh

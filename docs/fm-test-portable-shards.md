@@ -53,6 +53,12 @@ The two parallel lanes use longest-processing-time assignment from those measure
 It keeps watcher, lock, AFK, real tmux, daemon, secondmate lifecycle, bootstrap, live-harness opt-in, GUI-backend, and other unproven work serial.
 Membership is derived rather than enumerated, so a newly added test lands here by default.
 
+That default is safe for a test that can run anywhere and unsafe for one that cannot.
+A script gated on a live Herdr exits 0 through its own `command -v herdr` guard on any runner without Herdr, and the portable lanes install none, so landing there makes it indistinguishable from a passing test while the partition checks still count it as covered.
+Only `tests-herdr` installs Herdr and passes `--fail-on-gate-skip 'herdr not found'`, and it selects `--family real-herdr-gated`.
+`--check-coverage` therefore requires every script carrying that guard to be classified `real-herdr-gated`, derived from the script's own gate rather than a maintained name list, and names any script that is not.
+A test excluded from the portable lanes for a live dependency is an exclusion someone chose; the guard is what keeps it from becoming one nobody noticed.
+
 ## Portable serial CI shards
 
 On green CI run [30725985757](https://github.com/kunchenguid/firstmate/actions/runs/30725985757), that remainder accumulated 19m04s of script time against a 20-minute job timeout.
