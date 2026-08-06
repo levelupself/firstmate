@@ -249,6 +249,7 @@ case "${1:-} ${2:-}" in
     ;;
   "pane close")
     id=$3
+    [ ! -e "$state/fail-close" ] || exit 1
     awk -F '\t' -v id="$id" '$1 != id {print}' "$state/panes.tsv" > "$state/panes.next"
     mv "$state/panes.next" "$state/panes.tsv"
     printf '%s\n' '{"result":{"type":"pane_closed"}}'
@@ -1019,6 +1020,27 @@ test_failed_reorder_restores_the_original_screen() {
   pass "a banner that cannot be ordered as configured restores the original screen"
 }
 
+test_failed_reorder_reports_when_the_screen_cannot_be_restored() {
+  local out rc fleet
+  reset_layout_frame
+  touch "$HERDR_STATE/fail-swap" "$HERDR_STATE/fail-close"
+  out=$(run_layout_cockpit adopt 2>&1)
+  rc=$?
+  rm -f "$HERDR_STATE/fail-swap" "$HERDR_STATE/fail-close"
+  [ "$rc" -ne 0 ] || fail "adoption accepted a banner it could neither order nor remove"
+  fleet=$(awk -F '\t' '$4 == "w3" && $1 != "w3:p1" {print $1}' "$HERDR_STATE/panes.tsv")
+  [ -n "$fleet" ] || fail "the failed close did not leave the added pane in the fake screen"
+  assert_contains "$out" "NOT-RESTORED" \
+    "a failed rollback did not report that the screen remained changed"
+  assert_contains "$out" "added fleet pane $fleet could not be removed" \
+    "a failed rollback did not name the pane still on screen"
+  assert_contains "$out" "the screen still carries it" \
+    "a failed rollback did not explain the remaining screen state"
+  [ ! -e "$LAYOUT_HOME/state/.herdr-cockpit" ] \
+    || fail "a failed rollback published a frame record"
+  pass "a failed banner rollback reports the pane still on screen"
+}
+
 test_re_adoption_neither_warns_nor_touches_the_screen() {
   local out before
   reset_layout_frame
@@ -1183,6 +1205,7 @@ test_default_layout_warns_before_it_changes_the_screen
 test_layout_config_sets_direction_order_and_ratio
 test_invalid_layout_config_refuses_without_changing_the_screen
 test_failed_reorder_restores_the_original_screen
+test_failed_reorder_reports_when_the_screen_cannot_be_restored
 test_re_adoption_neither_warns_nor_touches_the_screen
 test_a_relative_path_fleet_view_still_counts_as_live
 test_an_unresolved_home_path_still_matches_the_live_banner

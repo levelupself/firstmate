@@ -2135,6 +2135,23 @@ fm_backend_herdr_cockpit_discard_fleet_pane() {  # <session> <workspace> <tab> <
   fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane"
 }
 
+fm_backend_herdr_cockpit_report_fleet_rollback() {  # <session> <workspace> <tab> <pane> <failure>
+  local session=$1 workspace=$2 tab=$3 pane=$4 failure=$5
+  if [ -n "$pane" ] \
+     && fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$pane"; then
+    printf 'COCKPIT: %s; the original screen was restored.\n' "$failure" >&2
+    return 0
+  fi
+  if [ -n "$pane" ]; then
+    printf 'COCKPIT: NOT-RESTORED: %s; added fleet pane %s could not be removed, and the screen still carries it for direct cleanup.\n' \
+      "$failure" "$pane" >&2
+  else
+    printf 'COCKPIT: NOT-RESTORED: %s; the added fleet pane could not be identified or removed, so the screen may still carry it for direct cleanup.\n' \
+      "$failure" >&2
+  fi
+  return 1
+}
+
 # Build this home's fleet banner in one deliberate, announced motion.
 #
 # The operator's screen is never rearranged silently: the warning below is
@@ -2162,25 +2179,29 @@ fm_backend_herdr_cockpit_create_fleet_pane() {  # <session> <workspace> <tab> <h
   actual_workspace=$(printf '%s' "$out" | jq -r '.result.pane.workspace_id // empty' 2>/dev/null)
   actual_tab=$(printf '%s' "$out" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
   if [ -z "$pane" ] || [ "$actual_workspace" != "$workspace" ] || [ "$actual_tab" != "$tab" ]; then
+    fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$pane" \
+      "split returned invalid fleet pane metadata" || true
     return 1
   fi
   if [ "$FM_BACKEND_HERDR_COCKPIT_LAYOUT_SWAP" = 1 ] \
      && ! fm_backend_herdr_cockpit_swap_panes "$session" "$head" "$pane"; then
-    fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$pane" || true
-    echo "COCKPIT: could not order the fleet banner as configured; the original screen was restored." >&2
+    fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$pane" \
+      "could not order the fleet banner as configured" || true
     return 1
   fi
   if ! fm_backend_herdr_cli "$session" pane rename "$pane" firstmate-fleet >/dev/null 2>&1 \
      || ! fm_backend_herdr_cli "$session" pane run "$pane" \
        env "FM_HOME=$home" "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" --watch >/dev/null 2>&1; then
-    fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$pane" || true
+    fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$pane" \
+      "could not launch the fleet banner" || true
     return 1
   fi
   attempt=0
   while [ "$(fm_backend_herdr_cockpit_fleet_state "$session" "$pane" "$home")" != live ]; do
     attempt=$((attempt + 1))
     if [ "$attempt" -ge "${FM_BACKEND_HERDR_COCKPIT_START_POLLS:-10}" ]; then
-      fm_backend_herdr_cockpit_discard_fleet_pane "$session" "$workspace" "$tab" "$pane" || true
+      fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$pane" \
+        "fleet banner did not become live" || true
       return 1
     fi
     sleep 0.1
