@@ -2,8 +2,12 @@
 
 Audience: maintainer verification.
 
-This record holds reusable evidence for the fleet panel watch-mode repaint guarantee.
-The implementation is shared by `bin/fm-fleet-view.sh` and `bin/fm-cockpit.sh`, while `tests/fm-fleet-snapshot-view.test.sh` owns automated ordering and residual-line coverage.
+This record holds reusable evidence for the fleet panel projection and watch-mode repaint guarantees.
+The implementation is shared by `bin/fm-fleet-view.sh` and `bin/fm-cockpit.sh`, while `tests/fm-fleet-snapshot-view.test.sh` owns automated readiness agreement, section ordering, height truncation, independent section rendering, and residual-line coverage.
+
+The read-only snapshot calls `tasks-axi list` and `tasks-axi ready` once each for the primary home and once each for every readable registered secondmate home during a redraw.
+The two primary-home calls measured about 92 ms together locally, so the redraw cost scales as `2 * (1 + readable secondmate homes)` tasks-axi invocations.
+The focused regression compares both the snapshot and rendered READY identities directly with `tasks-axi ready`, checks that only open queued dependency blockers enter BLOCKED, and verifies that the displayed counts describe the complete represented lists even when pane-height truncation hides rows.
 
 Verified on 2026-08-05 in an isolated tmux 3.4 pane on Linux.
 

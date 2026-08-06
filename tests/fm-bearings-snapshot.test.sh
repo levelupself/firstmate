@@ -196,7 +196,7 @@ run() {  # <home> <fakebin> <args...>
 
 # End-to-end Domain Alpha regression fixture.
 # The parent event claims Phase 7 started, while the registered home has no child
-# metadata, every sample-rollout item is Done, and only an external legal hold remains.
+# metadata, every sample-rollout item is Done, and a stale missing dependency edge remains.
 write_domain_alpha_fixture() {  # <parent-home> <secondmate-home>
   local home=$1 mate=$2 i
   mkdir -p "$mate/state" "$mate/data" "$mate/config" "$mate/projects" "$mate/bin"
@@ -235,11 +235,11 @@ test_domain_alpha_stale_parent_event_does_not_become_current_work() {
     (.in_flight | any(.[]; .id == "domain-alpha") | not)
       and (.secondmates | any(.[];
         .id == "domain-alpha"
-          and .state == "externally_held"
+          and .state == "no_active_work"
           and .provenance == "structured-home"
           and .freshness == "fresh"
           and .contradiction == true))
-      and (.gates | any(.[]; .id == "legal-release" and .owner == "domain-alpha"))
+      and (.gates | any(.[]; .id == "legal-release" and .owner == "domain-alpha" and .blocked_by == "-"))
       and (.landed | any(.[]; .id == "phase7" and .owner == "domain-alpha"))
   ' >/dev/null || fail "stale parent Phase 7 event overrode authoritative Domain Alpha state: $json"
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
@@ -260,7 +260,7 @@ test_domain_alpha_stale_parent_event_does_not_become_current_work() {
       and .contradiction == true
   ' >/dev/null || fail "bounded terminal contradiction evidence was not labeled and subordinate: $canonical"
   [ ! -s "$home/net.log" ] || fail "Domain Alpha structured-home read made a network call: $(cat "$home/net.log")"
-  pass "Domain Alpha structured state overrides a stale parent Phase 7 event"
+  pass "Domain Alpha structured state overrides a stale parent event and resolves a missing blocker"
 }
 
 test_gnu_stat_uses_file_formats_without_bsd_fallback_pollution() {
@@ -643,6 +643,7 @@ test_parent_evidence_reconciles_by_verb_and_key() {
 ## In flight
 
 ## Queued
+- [ ] external-legal - External legal review (repo: sample) (kind: ship)
 - [ ] legal-release - Legal release blocked-by: external-legal - legal review (repo: sample) (kind: ship)
 
 ## Done
@@ -651,6 +652,7 @@ EOF
 ## In flight
 
 ## Queued
+- [ ] external-vendor - External vendor release (repo: sample) (kind: ship)
 - [ ] vendor-release - Vendor release blocked-by: external-vendor - vendor review (repo: sample) (kind: ship)
 
 ## Done
@@ -1015,7 +1017,7 @@ test_perl_fallback_bounds_github_call() {
   fakebin=$(make_fakebin "$home")
   toolbin="$home/toolbin"
   mkdir -p "$toolbin"
-  for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc perl sleep cat find; do
+  for cmd in bash dirname basename jq date sed awk git grep tail cut tr head sort wc perl sleep cat find node tasks-axi; do
     ln -s "$(command -v "$cmd")" "$toolbin/$cmd"
   done
   started=$(date +%s)
@@ -1856,9 +1858,9 @@ EOF
   mv "$ha/data/backlog.next" "$ha/data/backlog.md"
   json=$(run "$home" "$fakebin" --json)
   printf '%s' "$json" | jq -e '
-    (.decisions_open | any(.id == "home-assistant/captain-run") | not)
-      and (.gates | any(.id == "captain-run" and .owner == "home-assistant" and .blocked_by == "missing"))
-  ' >/dev/null || fail "a missing Home Assistant blocker was treated as Done: $json"
+    ([.decisions_open[] | select(.id == "home-assistant/captain-run")] | length) == 1
+      and (.gates | any(.id == "captain-run" and .owner == "home-assistant") | not)
+  ' >/dev/null || fail "a missing Home Assistant blocker disagreed with tasks-axi semantics: $json"
 
   sed 's/(kind: program)/(kind: mystery)/' "$hibit/data/backlog.md" > "$hibit/data/backlog.next"
   mv "$hibit/data/backlog.next" "$hibit/data/backlog.md"

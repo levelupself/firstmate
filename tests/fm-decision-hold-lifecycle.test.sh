@@ -33,7 +33,8 @@ EOF
 
 run_bearings() {  # <home>
   local home=$1
-  PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_BEARINGS_NOW=2026-07-14T12:00:00Z \
+  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
+    FM_HOME="$home" FM_BEARINGS_NOW=2026-07-14T12:00:00Z \
     "$BEARINGS" --json
 }
 

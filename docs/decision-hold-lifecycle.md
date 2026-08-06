@@ -30,8 +30,9 @@ A failed intermediate step leaves the hold open.
 
 ## Structured read surfaces
 
-`bin/fm-fleet-snapshot.sh` parses canonical tasks-axi `(hold: ...)` and `(hold-kind: captain)` metadata alongside existing backlog fields.
-It resolves every repeated `blocked-by:` edge against structured Done records, keeps missing blockers unresolved, and classifies only an unblocked captain hold as actionable.
+`bin/fm-fleet-snapshot.sh` joins Markdown presentation fields to the structured state and ready set produced by tasks-axi.
+Tasks-axi is the sole producer of active holds, queued readiness, and unresolved blocker identities, including the rule that closed or missing task identities are not open blockers.
+The snapshot classifies only an unblocked active captain hold as actionable.
 Its secondmate-home summary classifies an actionable captain hold as `captain_decision` and preserves blocked captain holds as queued work in the owning home.
 
 `bin/fm-bearings-snapshot.sh` projects actionable captain holds into `decisions_open` and leaves blocked captain holds in ordinary queued gates.
@@ -64,9 +65,10 @@ ok - main-home and secondmate-home captain holds remain correctly routed
 ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id
 
 $ bash tests/fm-fleet-snapshot-view.test.sh
-ok - backlog normalization preserves strict roles and resolves every blocker compatibly
+ok - backlog normalization takes readiness, holds, and blockers from tasks-axi
 ok - durable captain-held transfer closes the duplicate live status decision
 ok - snapshot parses tasks-axi rows and respects operational overrides
+ok - fleet snapshot and panel ready sets agree exactly with tasks-axi
 
 $ bash tests/fm-bearings-snapshot.test.sh
 ok - a completed scout with decision-like report prose is a pointer, not pending
