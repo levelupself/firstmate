@@ -2,8 +2,8 @@
 # Build and maintain the derived agentic-effort store.
 #
 # The store is the reference class for agentic engineering work: one SQLite file
-# under this home's gitignored data/, joining the append-only teardown capture
-# (data/cost-attribution.tsv, owned by bin/fm-teardown.sh) with codeburn spend
+# under this home's gitignored data/, joining the separately delivered,
+# append-only teardown capture (data/cost-attribution.tsv) with codeburn spend
 # and the project's own git history. It is derived, so it is safe to delete;
 # `rebuild` recreates it exactly. It never writes the raw capture.
 #

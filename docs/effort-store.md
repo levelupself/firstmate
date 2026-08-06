@@ -9,8 +9,9 @@ It is not a cost tracker: spend is one column among structure, process, time, an
 
 ## Two layers
 
-The raw layer is `data/cost-attribution.tsv`, appended at teardown by [`bin/fm-teardown.sh`](../bin/fm-teardown.sh), whose header owns its schema and append safety.
+The required raw layer is `data/cost-attribution.tsv`, produced by the separately delivered teardown capture.
 It is append-only and irreplaceable, because it records facts that exist for a few seconds before teardown removes the volatile task metadata.
+This derived-store change consumes that file but does not add or modify its producer.
 
 The derived layer is one SQLite file, `data/effort-store.sqlite`, under this home's gitignored `data/`.
 It is recomputed from its sources and is safe to delete; `fm-effort-store.sh rebuild` recreates it.
@@ -26,6 +27,8 @@ Nothing in the derived layer is ever written back to the raw layer.
 | annotation | `data/effort-annotations.jsonl` | the posterior that no artifact records |
 
 Records are keyed by task, so any later source that can name a task contributes with no schema change.
+Codeburn records are matched to the recorded worktree exactly first and then by a normalized project key.
+An ambiguous normalized match is recorded as missing instead of attributing spend to a guess, and records are included only inside the task's exact timestamp window.
 
 ## The two fields that are not automatic
 

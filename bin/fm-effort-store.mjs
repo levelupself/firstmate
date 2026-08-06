@@ -2,10 +2,11 @@
 // Ingestion and schema for the derived agentic-effort store.
 //
 // This module owns the derived layer only. The raw layer -
-// data/cost-attribution.tsv, appended at teardown by bin/fm-teardown.sh - is
-// irreplaceable and is never written here. Everything in the database is
-// recomputed from three joined sources plus one recorded-by-hand source, so the
-// file is safe to delete at any time and `rebuild` restores it exactly.
+// data/cost-attribution.tsv, produced by the separately delivered teardown
+// capture - is irreplaceable and is never written here. Everything in the
+// database is recomputed from three joined sources plus one recorded-by-hand
+// source, so the file is safe to delete at any time and `rebuild` restores it
+// exactly.
 //
 //   raw         data/cost-attribution.tsv       identity, dispatch axes, window
 //   codeburn    codeburn export --format json   effort tokens and notional cost
@@ -79,7 +80,7 @@ function readTextFile(file) {
 }
 
 // The raw layer escapes backslash, tab, CR and LF so a value can never break
-// the row. bin/fm-teardown.sh's header owns that contract; this is its inverse.
+// the row. The teardown capture owns that contract; this is its inverse.
 function unescapeRawValue(value) {
   let out = ''
   for (let i = 0; i < value.length; i += 1) {
