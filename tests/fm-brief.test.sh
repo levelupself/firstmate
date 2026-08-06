@@ -215,6 +215,7 @@ test_ship_modes_generate_clean_briefs() {
       "$id: brief did not prohibit dirty-check-hiding index flags"
     assert_grep 'ast-grep` is an optional structural-search aid' "$brief" \
       "$id: brief did not teach the optional structural-search layer"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
     assert_grep 'invoke it only as `ast-grep`, never `sg`' "$brief" \
       "$id: brief did not prevent the sg command collision"
     assert_grep 'hand-check unfamiliar ast-grep patterns' "$brief" \
@@ -236,6 +237,7 @@ test_scout_brief_teaches_optional_structural_search() {
   brief="$home/data/$id/brief.md"
   assert_grep 'ast-grep` is an optional structural-search aid' "$brief" \
     "scout brief did not teach the optional structural-search layer"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
   assert_grep 'Keep `rg` as the text-search baseline' "$brief" \
     "scout brief did not preserve text search as the baseline"
   pass "fm-brief.sh: scout briefs teach trial-backed optional structural search"
