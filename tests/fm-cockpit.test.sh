@@ -464,7 +464,9 @@ EOF
     FM_COCKPIT_ROOT="$ROOT" HERDR_ENV=1 HERDR_SESSION=fmtest \
     HERDR_SOCKET_PATH=/tmp/fm-cockpit-test.sock HERDR_PANE_ID=w2:p1 \
     "$COCKPIT" panel) || fail "dead fleet column could not be rendered read-only"
-  assert_contains "$out" "FLEET column=$fleet [no-fleet-process]; frame preserved without rebuild" \
+  # The panel clips every row to the measured terminal width, so assert the
+  # stable cause here and leave the full diagnostic wording to `status` below.
+  assert_contains "$out" "FLEET column=$fleet [no-fleet-process]" \
     "a fleet pane running no fleet view did not report that exact cause"
   assert_not_contains "$(cat "$HERDR_LOG")" "pane split" \
     "dead fleet command was silently rebuilt"
