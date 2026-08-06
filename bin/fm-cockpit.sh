@@ -86,6 +86,8 @@ fi
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-terminal-frame-lib.sh
+. "$SCRIPT_DIR/fm-terminal-frame-lib.sh"
 
 RUNTIME=none
 if fm_backend_detect >/dev/null; then
@@ -195,10 +197,10 @@ render_panel() {
 
 if [ "$ACTION" = panel ]; then
   if [ "$PANEL_WATCH" = 1 ]; then
-    trap 'printf "\033[0m\n"; exit 0' INT TERM HUP
+    trap 'fm_terminal_watch_reset; exit 0' INT TERM HUP
     while :; do
-      printf '\033[H\033[2J'
-      render_panel || true
+      frame=$(render_panel) || true
+      fm_terminal_paint_frame "$frame"
       sleep "$PANEL_INTERVAL"
     done
   fi
