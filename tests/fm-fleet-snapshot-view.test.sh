@@ -616,7 +616,10 @@ test_view_renders_snapshot() {
     "queue summary should distinguish dispatchable from blocked"
   assert_not_contains "$view" "fm-peek.sh fm-secondmate-task" \
     "view must not tell firstmate to routinely peek secondmates"
-  pass "fleet view renders the prioritized side-panel sections"
+  test_view_renders_each_section_alone
+  test_view_rejects_unknown_section
+  test_default_view_output_is_unchanged
+  pass "fleet view renders prioritized and standalone sections without changing the default"
 }
 
 test_view_renders_each_section_alone() {
@@ -644,7 +647,6 @@ test_view_renders_each_section_alone() {
     "in-flight section should quietly qualify dispatched tasks with unreadable runtime state"
   assert_not_contains "$view" "UNKNOWN" \
     "in-flight section should not present unreadable runtime state as a separate category"
-  pass "each valid fleet section renders alone with its own counted heading"
 }
 
 test_view_rejects_unknown_section() {
@@ -660,7 +662,6 @@ test_view_rejects_unknown_section() {
       "unknown section usage omitted valid sections"
     assert_contains "$output" "failed" "unknown section usage omitted the failed section"
   done
-  pass "unknown fleet sections fail with usage listing every valid name"
 }
 
 test_default_view_output_is_unchanged() {
@@ -704,7 +705,6 @@ Still blocked:
 EOF
   cmp -s "$home/expected" "$home/actual" \
     || fail "default panel output changed from its established bytes"
-  pass "default fleet panel output remains byte-identical"
 }
 
 test_view_buckets_reconciled_states() {
@@ -1196,9 +1196,6 @@ test_parked_scout_decision_stays_pending
 test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
 test_view_renders_snapshot
-test_view_renders_each_section_alone
-test_view_rejects_unknown_section
-test_default_view_output_is_unchanged
 test_view_buckets_reconciled_states
 test_view_renders_dead_secondmate_agent_status
 test_oversized_backlog_and_status_stream
