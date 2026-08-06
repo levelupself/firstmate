@@ -15,11 +15,11 @@
 #     data/backlog.md and cover In flight, Queued, and Done.
 #     Canonical tasks-axi rows are structured; free-form non-empty lines in
 #     those sections are preserved as unstructured records.
-#     Structured rows preserve captain-hold metadata such as hold_kind and
-#     hold_reason when tasks-axi emits it. They also carry normalized current_role,
-#     requires_child_metadata, blocked_by_ids, unresolved_blocker_ids, and
-#     captain_actionable fields. Repeated blocker tokens remain ordered; a blocker
-#     resolves only when its structured record is Done, and missing ids stay open.
+#     Structured rows preserve presentation metadata from Markdown, while
+#     tasks-axi is the sole producer of queued readiness, active hold state, and
+#     unresolved blockers. They also carry normalized current_role,
+#     requires_child_metadata, dispatchable, blocked_by_ids,
+#     unresolved_blocker_ids, and captain_actionable fields.
 #   tasks[]: one row per state/<id>.meta, sorted by id.
 #     current_state is parsed from bin/fm-crew-state.sh <id> and preserves
 #     state, source, detail, and raw line separately.
@@ -181,6 +181,7 @@ while [ $# -gt 0 ]; do
 done
 
 command -v jq >/dev/null 2>&1 || { echo "fm-fleet-snapshot: jq not found" >&2; exit 1; }
+command -v tasks-axi >/dev/null 2>&1 || { echo "fm-fleet-snapshot: tasks-axi not found" >&2; exit 1; }
 
 bool_json() {
   if [ "$1" = 1 ]; then printf 'true'; else printf 'false'; fi
@@ -392,30 +393,126 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
             key:(.body_lines[1] | sub("^Decision key: "; ""))
           }
         else .captain_decision = null end)
-    | .records as $records
-    | (reduce ($records[] | select(.structured)) as $record ({};
-         .[$record.id] = ((.[$record.id] // true) and ($record.state == "done")))) as $resolved_ids
     | .records |= map(
         if .structured then
-          . as $record
-          | .unresolved_blocker_ids = [
-              $record.blocked_by_ids[] as $blocker
-              | select($resolved_ids[$blocker] != true)
-              | $blocker
-            ]
-          | .current_role =
-              (if .state == "in_flight" and .hold_reason != null and .hold_kind != null then "held"
-               elif .state == "in_flight" and .kind == "program" then "program"
+          .current_role =
+              (if .state == "in_flight" and .kind == "program" then "program"
                elif .state == "in_flight" then "worker"
                elif .state == "queued" then "queued"
                else "done" end)
           | .requires_child_metadata = (.current_role == "worker")
-          | .captain_actionable =
-              (.state == "queued" and .kind == "captain" and .hold_kind == "captain"
-               and .hold_reason != null and (.unresolved_blocker_ids | length) == 0)
         else . end)
     | del(.section,.order)
   ' < "$backlog"
+}
+
+# Read the structured-state projection from tasks-axi once per snapshot.
+# This keeps backlog.md as the source document while making tasks-axi the only producer of
+# readiness, active holds, and resolved blocker ids. A measured invocation is
+# about 30-40ms locally, below 1% of the default five-second watch interval.
+backlog_semantics_json() {  # [<backlog-path>]
+  local backlog=${1:-$BACKLOG} output
+  if [ ! -f "$backlog" ]; then
+    printf '[]\n'
+    return 0
+  fi
+  output=$(tasks-axi list --file "$backlog" \
+    --fields blocked,blocked_by,held,hold_kind,hold_reason) || {
+      echo "fm-fleet-snapshot: tasks-axi state read failed" >&2
+      return 1
+    }
+  printf '%s\n' "$output" | awk '
+    function csv(line, fields,    c,i,n,quoted) {
+      n=1
+      fields[n]=""
+      for (i=1; i<=length(line); i++) {
+        c=substr(line,i,1)
+        if (c == "\"") {
+          if (quoted && substr(line,i+1,1) == "\"") {
+            fields[n]=fields[n] "\""
+            i++
+          } else {
+            quoted=!quoted
+          }
+        } else if (c == "," && !quoted) {
+          n++
+          fields[n]=""
+        } else {
+          fields[n]=fields[n] c
+        }
+      }
+      return n
+    }
+    /^tasks\[[0-9]+\]\{/ { rows=1; next }
+    rows && /^  / {
+      sub(/^  /, "")
+      if (csv($0, field) != 10) {
+        print "__FM_INVALID_TASKS_AXI_ROW__"
+        exit
+      }
+      print field[1]
+      print field[2]
+      print field[3]
+      print field[6]
+      print field[7]
+      print field[8]
+      print field[9]
+      print field[10]
+      next
+    }
+    rows { exit }
+  ' | jq -Rn '
+    [inputs] as $fields
+    | if (($fields | length) % 8) != 0
+         or ($fields | index("__FM_INVALID_TASKS_AXI_ROW__")) != null then
+        error("invalid tasks-axi row shape")
+      else [range(0; $fields | length; 8) as $i
+       | {id:$fields[$i], state:$fields[$i + 1], kind:$fields[$i + 2],
+          blocked:($fields[$i + 3] == "yes"),
+          unresolved_blocker_ids:(if $fields[$i + 4] == "none" then []
+                                  else ($fields[$i + 4] | split(",")) end),
+          held:($fields[$i + 5] == "yes"),
+          hold_kind:(if $fields[$i + 6] == "-" then null else $fields[$i + 6] end),
+          hold_reason:(if $fields[$i + 7] == "-" then null else $fields[$i + 7] end)}]
+      end
+  ' || { echo "fm-fleet-snapshot: tasks-axi state output was invalid" >&2; return 1; }
+}
+
+apply_backlog_semantics() {  # stdin: <markdown-json> <tasks-axi-json>
+  jq -s '
+    .[0] as $backlog
+    | .[1] as $semantics
+    | ($semantics | map({key:.id,value:.}) | from_entries) as $by_id
+    | $backlog
+    | .records |= map(
+        if .structured then
+          . as $record
+          | ($by_id[$record.id] // null) as $semantic
+          | if $semantic == null then
+              error("tasks-axi omitted structured task " + $record.id)
+            else
+              .blocked = $semantic.blocked
+              | .unresolved_blocker_ids = $semantic.unresolved_blocker_ids
+              | .hold_active = $semantic.held
+              | .hold_kind = $semantic.hold_kind
+              | .hold_reason = $semantic.hold_reason
+              | .hold = $semantic.hold_reason
+              | .current_role =
+                  (if $semantic.state == "in_flight" and $semantic.held then "held"
+                   elif $semantic.state == "in_flight" and $semantic.kind == "program" then "program"
+                   elif $semantic.state == "in_flight" then "worker"
+                   elif $semantic.state == "queued" then "queued"
+                   else "done" end)
+              | .requires_child_metadata = (.current_role == "worker")
+              | .dispatchable = ($semantic.state == "queued"
+                                  and ($semantic.blocked | not) and ($semantic.held | not)
+                                  and $semantic.kind != "public-followup")
+              | .captain_actionable = ($semantic.state == "queued" and $semantic.held
+                                       and $semantic.hold_kind == "captain"
+                                       and ($semantic.blocked | not))
+            end
+        else . end)
+  '
 }
 
 FM_FLEET_USAGE_TIMEOUT=${FM_FLEET_USAGE_TIMEOUT:-5}
@@ -769,7 +866,7 @@ secondmate_home_summary_json() {
        + ([ $tasks[] as $t | ($t.hints.open_decisions // [])[]
             | {id:$t.id,key,verb,summary:(.summary | trunc(160)),reason:null,source:"status"} ])) as $decisions_all
     | ([ $queued_all[]
-         | select((.unresolved_blocker_ids | length) > 0 or (.hold_reason != null and .hold_kind != null))
+         | select((.unresolved_blocker_ids | length) > 0 or .hold_active == true)
          | {id:(.id | trunc(120)),title:(.title | trunc(90)),
             blocked_by:((.unresolved_blocker_ids | join(",")) | if . == "" then null else trunc(120) end),
             blocked_by_ids:(.blocked_by_ids | map(trunc(120))),
@@ -778,7 +875,7 @@ secondmate_home_summary_json() {
        + [ $owned_in_flight[] as $work
            | $tasks[]
            | select(.id == $work.id and (.current_state.state == "parked" or .current_state.state == "paused" or .current_state.state == "blocked"))
-           | select(($work.hold_reason != null and $work.hold_kind != null) | not)
+           | select(($work.hold_active // false) | not)
            | {id,title:((.backlog.title // .id) | trunc(90)),blocked_by:null,
               blocked_by_ids:[],unresolved_blocker_ids:[],
               reason:((.current_state.detail // .current_state.state) | trunc(120)),source:"child-state"} ]) as $holds_all
@@ -1419,7 +1516,11 @@ scout_report_lines() {
     | jq -s 'sort_by(.id)'
 }
 
-BACKLOG_JSON=$(backlog_json) || { echo "fm-fleet-snapshot: backlog read failed" >&2; exit 1; }
+BACKLOG_MARKDOWN_JSON=$(backlog_json) || { echo "fm-fleet-snapshot: backlog read failed" >&2; exit 1; }
+BACKLOG_SEMANTICS_JSON=$(backlog_semantics_json) \
+  || { echo "fm-fleet-snapshot: backlog semantics read failed" >&2; exit 1; }
+BACKLOG_JSON=$(printf '%s\n%s\n' "$BACKLOG_MARKDOWN_JSON" "$BACKLOG_SEMANTICS_JSON" | apply_backlog_semantics) \
+  || { echo "fm-fleet-snapshot: backlog semantics join failed" >&2; exit 1; }
 TASKS_JSON=$(task_json_lines) || { echo "fm-fleet-snapshot: task snapshot failed" >&2; exit 1; }
 
 if [ "$OUTPUT_MODE" = secondmate-home-summary ]; then

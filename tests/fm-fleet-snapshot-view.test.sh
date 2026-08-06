@@ -152,7 +152,7 @@ test_empty_fleet_json() {
   ' >/dev/null \
     || fail "empty snapshot schema or absence markers wrong: $out"
   view=$(FM_HOME="$home" "$VIEW")
-  assert_contains "$view" "No active tasks." "empty fleet view should report no active tasks"
+  assert_contains "$view" "IN FLIGHT (0)" "empty fleet view should report no active tasks"
   pass "empty fleet snapshot and view use explicit absence markers"
 }
 
@@ -361,10 +361,10 @@ EOF
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "captain-run")
     | .blocked_by_ids == ["worker", "missing"]
-      and .unresolved_blocker_ids == ["missing"]
-      and .captain_actionable == false
-  ' >/dev/null || fail "a missing blocker was incorrectly treated as resolved: $out"
-  pass "backlog normalization preserves strict roles and resolves every blocker compatibly"
+      and .unresolved_blocker_ids == []
+      and .captain_actionable == true
+  ' >/dev/null || fail "snapshot disagreed with tasks-axi missing-blocker semantics: $out"
+  pass "backlog normalization takes readiness, holds, and blockers from tasks-axi"
 }
 
 test_event_hints_follow_reconciled_current_state() {
@@ -564,62 +564,123 @@ EOF
       and .paths.report.present == true
   ' >/dev/null || fail "bold task did not join to override-backed backlog and report"
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" "$VIEW")
-  assert_contains "$view" "• bold-task · Bold Task" \
-    "view should render the in-flight task from the snapshot"
-  assert_contains "$view" "QUEUED 4 · READY 2 · BLOCKED 2" \
-    "view should classify queued tasks by cleared blockers"
+  assert_not_contains "$view" "bold-task" \
+    "finished work should not crowd the default utilization view"
+  assert_contains "$view" "READY (3)" \
+    "view should classify dispatchable tasks through tasks-axi"
+  assert_contains "$view" "BLOCKED (1)" \
+    "view should count only genuinely open blockers"
   assert_contains "$view" "• blocked-reason ← queued-comma · waits on queued-comma" \
     "view should render a blocked reason without title metadata"
-  assert_contains "$view" "• mixed-blockers ← missing" \
-    "view should classify and render only unresolved plural blockers"
-  assert_contains "$view" "https://github.com/kunchenguid/firstmate/pull/43" \
-    "view should render a landed PR artifact"
+  assert_not_contains "$view" "mixed-blockers ←" \
+    "a stale or missing dependency edge must not render as an open blocker"
   pass "snapshot parses tasks-axi rows and respects operational overrides"
 }
 
+test_ready_set_agrees_with_tasks_axi() {
+  local home authoritative snapshot_ids view view_ids
+  home=$(make_home ready-agreement)
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] running - Running task (repo: firstmate) (kind: ship)
+
+## Queued
+- [ ] ready-a - Ready task (repo: firstmate) (kind: ship)
+- [ ] blocked-open - Blocked task (repo: firstmate) (kind: ship) blocked-by: running - waits for running
+- [ ] stale-edge - Stale edge task (repo: firstmate) (kind: ship) blocked-by: closed - historical edge
+- [ ] captain-choice - Choose a route (repo: firstmate) (kind: captain) (hold: choose blue or green) (hold-kind: captain)
+- [ ] do-not-build - Do not build yet (repo: firstmate) (kind: ship) (hold: specification is not approved) (hold-kind: external)
+
+## Done
+- [x] closed - Closed task (repo: firstmate) (kind: ship) (done 2026-08-05)
+EOF
+  authoritative=$(tasks-axi ready --file "$home/data/backlog.md" | awk '
+    /^ready\[[0-9]+\]\{/ { rows=1; next }
+    rows && /^  / { sub(/^  /, ""); sub(/,.*/, ""); print; next }
+    rows { exit }
+  ' | LC_ALL=C sort)
+  snapshot_ids=$(FM_HOME="$home" "$SNAPSHOT" --json \
+    | jq -r '.backlog.records[] | select(.dispatchable == true) | .id' | LC_ALL=C sort)
+  [ "$snapshot_ids" = "$authoritative" ] \
+    || fail "snapshot ready set disagreed with tasks-axi: snapshot=$snapshot_ids tasks-axi=$authoritative"
+  view=$(FM_HOME="$home" "$VIEW" --section ready)
+  view_ids=$(printf '%s\n' "$view" | sed -n 's/^• \([^ ]*\).*/\1/p' | LC_ALL=C sort)
+  [ "$view_ids" = "$authoritative" ] \
+    || fail "panel ready set disagreed with tasks-axi: panel=$view_ids tasks-axi=$authoritative"
+  assert_contains "$view" "READY (2)" "ready heading count must equal the rendered tasks-axi set"
+  view=$(FM_HOME="$home" "$VIEW" --section blocked)
+  assert_contains "$view" "BLOCKED (1)" "only one dependency is genuinely open"
+  assert_contains "$view" "blocked-open ← running" "open dependency missing from blocked panel"
+  assert_not_contains "$view" "stale-edge" "closed dependency edge rendered as a blocker"
+  assert_not_contains "$view" "do-not-build" "held work rendered as a dependency blocker"
+  view=$(FM_HOME="$home" "$VIEW" --section waiting)
+  assert_contains "$view" "YOUR DECISIONS (1)" "captain-held queue must contain exactly the actionable hold"
+  assert_contains "$view" "choose blue or green" "captain-held row omitted the answerable question"
+  assert_not_contains "$view" "do-not-build" "an external hold leaked into the captain decision queue"
+  pass "fleet snapshot and panel ready sets agree exactly with tasks-axi"
+}
+
+test_view_respects_terminal_height() {
+  local home view lines i
+  home=$(make_home height-aware)
+  printf '## Queued\n' > "$home/data/backlog.md"
+  i=1
+  while [ "$i" -le 20 ]; do
+    printf -- '- [ ] ready-%02d - Ready task %02d (repo: firstmate) (kind: ship)\n' "$i" "$i" \
+      >> "$home/data/backlog.md"
+    i=$((i + 1))
+  done
+  view=$(LINES=12 COLUMNS=60 FM_HOME="$home" "$VIEW")
+  lines=$(printf '%s\n' "$view" | awk 'END {print NR}')
+  [ "$lines" -le 12 ] || fail "fleet view emitted $lines rows into a 12-row pane"
+  assert_contains "$view" "READY (20)" "height-aware render lost the authoritative ready count"
+  assert_contains "$view" "more rows not shown" "truncated panel did not disclose hidden rows"
+  pass "fleet view fits the terminal height and discloses truncation"
+}
+
 test_view_renders_snapshot() {
-  local home fakebin view working_line waiting_line finished_line queued_line working_section
+  local home fakebin view decisions_line ready_line inflight_line blocked_line inflight_section
   home=$(make_home view)
   write_fixture "$home"
   fakebin=$(make_fakebin "$home")
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
-  working_line=$(printf '%s\n' "$view" | grep -n '^WORKING NOW' | cut -d: -f1)
-  waiting_line=$(printf '%s\n' "$view" | grep -n '^WAITING ON DECISION' | cut -d: -f1)
-  finished_line=$(printf '%s\n' "$view" | grep -n '^FINISHED' | cut -d: -f1)
-  queued_line=$(printf '%s\n' "$view" | grep -n '^QUEUED' | cut -d: -f1)
-  [ "$working_line" -lt "$waiting_line" ] && [ "$waiting_line" -lt "$finished_line" ] && [ "$finished_line" -lt "$queued_line" ] \
+  decisions_line=$(printf '%s\n' "$view" | grep -n '^YOUR DECISIONS' | cut -d: -f1)
+  ready_line=$(printf '%s\n' "$view" | grep -n '^READY' | cut -d: -f1)
+  inflight_line=$(printf '%s\n' "$view" | grep -n '^IN FLIGHT' | cut -d: -f1)
+  blocked_line=$(printf '%s\n' "$view" | grep -n '^BLOCKED' | cut -d: -f1)
+  [ "$decisions_line" -lt "$ready_line" ] && [ "$ready_line" -lt "$inflight_line" ] && [ "$inflight_line" -lt "$blocked_line" ] \
     || fail "fleet view priority order is wrong: $view"
-  assert_contains "$view" "WORKING NOW (1)" \
-    "only a reconciled working state should count as working"
+  assert_contains "$view" "IN FLIGHT (3)" \
+    "dispatched work should include working and unreadable runtime state"
   assert_contains "$view" "• ship-task · Ship Task" \
     "view should render the active task"
-  working_section=$(printf '%s\n' "$view" | sed -n '/^WORKING NOW/,/^WAITING ON DECISION/p')
-  assert_not_contains "$working_section" "scout-task" \
-    "a done task must never appear under WORKING NOW"
-  assert_not_contains "$working_section" "secondmate-task" \
-    "a parked task must never appear under WORKING NOW"
-  assert_contains "$view" "WAITING ON DECISION (4)" \
+  inflight_section=$(printf '%s\n' "$view" | sed -n '/^IN FLIGHT/,/^BLOCKED/p')
+  assert_not_contains "$inflight_section" "secondmate-task" \
+    "a parked task must never appear under IN FLIGHT"
+  assert_contains "$view" "YOUR DECISIONS (4)" \
     "decisions should have a prominent dedicated section"
   assert_contains "$view" "! secondmate-task" \
     "live decisions should appear in the decision section"
-  assert_contains "$view" "  choose the public API shape" \
+  assert_contains "$view" "choose the public API shape" \
     "live decisions should show their one-line reason"
   assert_contains "$view" "! decision-one" \
     "queued decision holds should move out of the queue"
-  assert_contains "$view" "  choose API A or B" \
+  assert_contains "$view" "choose API A or B" \
     "queued decision holds should show their one-line reason"
-  assert_contains "$view" "https://github.com/kunchenguid/firstmate/pull/7" \
-    "finished work should include its PR link"
-  assert_contains "$view" "UNKNOWN (2)" \
-    "a task without a reconciled state should have its own honest bucket"
-  assert_contains "$view" "QUEUED 1 · READY 0 · BLOCKED 1" \
+  assert_not_contains "$view" "FINISHED" \
+    "history must not crowd the default utilization view"
+  assert_not_contains "$view" "UNKNOWN" \
+    "unreadable dispatched work must fold into IN FLIGHT"
+  assert_contains "$view" "READY (0)" \
+    "ready count should match the rendered ready list"
+  assert_contains "$view" "BLOCKED (1)" \
     "queue summary should distinguish dispatchable from blocked"
   assert_not_contains "$view" "fm-peek.sh fm-secondmate-task" \
     "view must not tell firstmate to routinely peek secondmates"
   test_view_renders_each_section_alone
   test_view_rejects_unknown_section
-  test_default_view_output_is_unchanged
-  pass "fleet view renders prioritized and standalone sections without changing the default"
+  test_default_view_output_is_prioritized
+  pass "fleet view renders the prioritized default and each standalone section"
 }
 
 test_view_renders_each_section_alone() {
@@ -632,18 +693,18 @@ test_view_renders_each_section_alone() {
     view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW" --section "$section")
     case "$section" in
       in-flight) heading='IN FLIGHT (3)' ;;
-      waiting) heading='WAITING ON DECISION (4)' ;;
+      waiting) heading='YOUR DECISIONS (4)' ;;
       ready) heading='READY (0)' ;;
       blocked) heading='BLOCKED (1)' ;;
       finished) heading='FINISHED (showing 1 of 1)' ;;
       failed) heading='FAILED (0)' ;;
     esac
     assert_contains "$view" "$heading" "$section section omitted its counted heading"
-    [ "$(printf '%s\n' "$view" | grep -Ec '^(IN FLIGHT|WORKING NOW|WAITING ON DECISION|FINISHED|FAILED|PAUSED|UNKNOWN|QUEUED|READY|BLOCKED)')" -eq 1 ] \
+    [ "$(printf '%s\n' "$view" | grep -Ec '^(IN FLIGHT|YOUR DECISIONS|FINISHED|FAILED|READY|BLOCKED)')" -eq 1 ] \
       || fail "$section section rendered another section: $view"
   done
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW" --section in-flight)
-  assert_contains "$view" "state unavailable:" \
+  assert_contains "$view" "state unavailable" \
     "in-flight section should quietly qualify dispatched tasks with unreadable runtime state"
   assert_not_contains "$view" "UNKNOWN" \
     "in-flight section should not present unreadable runtime state as a separate category"
@@ -664,7 +725,7 @@ test_view_rejects_unknown_section() {
   done
 }
 
-test_default_view_output_is_unchanged() {
+test_default_view_output_is_prioritized() {
   local home view_bin
   home=$(make_home default-view-bytes)
   view_bin="$home/bin"
@@ -682,33 +743,24 @@ SH
 FLEET STATUS
 =============================================
 
-WORKING NOW (0)
-  No active tasks.
-
-WAITING ON DECISION (0)
-  No decisions or merges pending.
-
-FINISHED (showing 0 of 0)
-  Nothing has finished successfully.
-
-FAILED (0)
-  No failed tasks.
-
-UNKNOWN (0)
-  No tasks with unknown state.
-
-QUEUED 0 · READY 0 · BLOCKED 0
-Ready now:
+YOUR DECISIONS (0)
   None.
-Still blocked:
+
+READY (0)
+  None.
+
+IN FLIGHT (0)
+  None.
+
+BLOCKED (0)
   None.
 EOF
   cmp -s "$home/expected" "$home/actual" \
-    || fail "default panel output changed from its established bytes"
+    || fail "default panel output did not match the prioritized live-work contract"
 }
 
 test_view_buckets_reconciled_states() {
-  local home fakebin view id fixture_gen working_section waiting_section finished_section failed_section unknown_section
+  local home fakebin view id fixture_gen working_section waiting_section finished_section failed_section
   home=$(make_home state-buckets)
   mkdir -p "$home/projects/working-ship-task" "$home/projects/parked-task" \
     "$home/projects/done-task" "$home/projects/failed-task" "$home/projects/merge-ready"
@@ -741,28 +793,26 @@ EOF
   fakebin=$(make_fakebin "$home")
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
 
-  assert_contains "$view" "WORKING NOW (1)" "only genuinely running work belongs in WORKING NOW"
-  assert_contains "$view" "WAITING ON DECISION (2)" "parked decisions and merge-ready work belong in WAITING ON DECISION"
-  assert_contains "$view" "FINISHED (showing 1 of 1)" "successful terminal work belongs in FINISHED"
-  assert_contains "$view" "FAILED (1)" "unsuccessful terminal work belongs in FAILED"
-  assert_contains "$view" "UNKNOWN (1)" "indeterminate work belongs in UNKNOWN"
-  working_section=$(printf '%s\n' "$view" | sed -n '/^WORKING NOW/,/^WAITING ON DECISION/p')
-  waiting_section=$(printf '%s\n' "$view" | sed -n '/^WAITING ON DECISION/,/^FINISHED/p')
-  finished_section=$(printf '%s\n' "$view" | sed -n '/^FINISHED/,/^FAILED/p')
-  failed_section=$(printf '%s\n' "$view" | sed -n '/^FAILED/,/^UNKNOWN/p')
-  unknown_section=$(printf '%s\n' "$view" | sed -n '/^UNKNOWN/,/^QUEUED/p')
-  assert_contains "$working_section" "working-ship-task" "working task missing from WORKING NOW"
-  assert_not_contains "$working_section" "parked-task" "parked task leaked into WORKING NOW"
-  assert_not_contains "$working_section" "done-task" "done task leaked into WORKING NOW"
-  assert_not_contains "$working_section" "failed-task" "failed task leaked into WORKING NOW"
-  assert_not_contains "$working_section" "unknown-task" "unknown task leaked into WORKING NOW"
-  assert_contains "$waiting_section" "parked-task" "parked task missing from WAITING ON DECISION"
+  assert_contains "$view" "IN FLIGHT (2)" "working and unreadable dispatched work belong in IN FLIGHT"
+  assert_contains "$view" "YOUR DECISIONS (2)" "parked decisions and merge-ready work belong in YOUR DECISIONS"
+  assert_not_contains "$view" "FINISHED" "successful history should be absent from the default view"
+  assert_not_contains "$view" "FAILED" "failed history should be absent from the default view"
+  assert_not_contains "$view" "UNKNOWN" "indeterminate dispatched work should fold into IN FLIGHT"
+  working_section=$(printf '%s\n' "$view" | sed -n '/^IN FLIGHT/,/^BLOCKED/p')
+  waiting_section=$(printf '%s\n' "$view" | sed -n '/^YOUR DECISIONS/,/^READY/p')
+  assert_contains "$working_section" "working-ship-task" "working task missing from IN FLIGHT"
+  assert_contains "$working_section" "unknown-task" "unreadable dispatched task missing from IN FLIGHT"
+  assert_not_contains "$working_section" "parked-task" "parked task leaked into IN FLIGHT"
+  assert_not_contains "$working_section" "done-task" "done task leaked into IN FLIGHT"
+  assert_not_contains "$working_section" "failed-task" "failed task leaked into IN FLIGHT"
+  assert_contains "$waiting_section" "parked-task" "parked task missing from YOUR DECISIONS"
   assert_contains "$waiting_section" "choose the gate resolution" "parked task reason missing"
-  assert_contains "$waiting_section" "merge-ready" "merge-ready task missing from WAITING ON DECISION"
-  assert_contains "$waiting_section" "https://github.com/acme/alpha/pull/42" "merge-ready PR link missing"
-  assert_contains "$finished_section" "done-task" "done task missing from FINISHED"
-  assert_contains "$failed_section" "failed-task" "failed task missing from FAILED"
-  assert_contains "$unknown_section" "unknown-task" "unknown task missing from UNKNOWN"
+  assert_contains "$waiting_section" "merge-ready" "merge-ready task missing from YOUR DECISIONS"
+  assert_contains "$waiting_section" "merge approval pending" "merge-ready action missing"
+  finished_section=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW" --section finished)
+  failed_section=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW" --section failed)
+  assert_contains "$finished_section" "done-task" "done task missing from opt-in FINISHED"
+  assert_contains "$failed_section" "failed-task" "failed task missing from opt-in FAILED"
   pass "fleet view buckets every task by reconciled state"
 }
 
@@ -782,8 +832,10 @@ test_view_renders_dead_secondmate_agent_status() {
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
   assert_contains "$view" "• dead-secondmate ·" \
     "view should retain a degraded task row when current state is unknown"
-  assert_contains "$view" "UNKNOWN (1)" \
-    "view should label unavailable task state instead of crashing"
+  assert_contains "$view" "IN FLIGHT (1)" \
+    "view should fold unavailable runtime state into dispatched work"
+  assert_contains "$view" "state unavailable" \
+    "view should quietly qualify unavailable runtime state"
   pass "fleet view degrades an unreadable task row to unknown"
 }
 
@@ -837,7 +889,7 @@ test_oversized_backlog_and_status_stream() {
     || fail "oversized snapshot lost backlog or task data"
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" COLUMNS=60 "$VIEW")
   bearings=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$BEARINGS" --json)
-  assert_contains "$view" "WAITING ON DECISION (1)" "oversized fleet view should still render"
+  assert_contains "$view" "YOUR DECISIONS (1)" "oversized fleet view should still render"
   printf '%s' "$bearings" | jq -e '.schema == "fm-bearings.v1" and (.gates | length) == 20' >/dev/null \
     || fail "oversized bearings snapshot did not render its bounded projection"
   pass "oversized backlog and status payloads stream through snapshot, fleet view, and bearings"
@@ -1195,6 +1247,8 @@ test_completed_scout_report_is_pointer_not_pending
 test_parked_scout_decision_stays_pending
 test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
+test_ready_set_agrees_with_tasks_axi
+test_view_respects_terminal_height
 test_view_renders_snapshot
 test_view_buckets_reconciled_states
 test_view_renders_dead_secondmate_agent_status
