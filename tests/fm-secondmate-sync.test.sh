@@ -293,6 +293,11 @@ make_fake_toolchain() {
   mkdir -p "$fakebin"
   fm_fake_exit0 "$fakebin" node gh-axi chrome-devtools-axi lavish-axi \
     pnpm rg xz codeburn infisical herdr
+  cat > "$fakebin/ast-grep" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'ast-grep 0.45.0'
+SH
+  chmod +x "$fakebin/ast-grep"
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 if [ -n "${FM_FAKE_TMUX_LOG:-}" ]; then
