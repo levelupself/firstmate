@@ -18,20 +18,34 @@ SNAPSHOT_CMD="$SCRIPT_DIR/fm-fleet-snapshot.sh"
 
 usage() {
   cat <<'EOF'
-usage: fm-fleet-view.sh [--json] [--watch [interval]]
+usage: fm-fleet-view.sh [--json] [--watch [interval]] [--section <name>]
 
 Render a narrow, prioritized fleet side panel from fm-fleet-snapshot.sh.
 Use --json to print the complete underlying snapshot.
 Use --watch to redraw every 5 seconds, or provide a positive interval in seconds.
+Use --section to render one of: in-flight, waiting, ready, blocked, finished,
+failed.
 EOF
 }
 
 FORMAT=panel
 WATCH=0
 INTERVAL=5
+SECTION=all
+SECTION_SET=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --json) FORMAT=json ;;
+    --section)
+      [ $# -gt 1 ] || { usage >&2; exit 2; }
+      shift
+      SECTION=$1
+      SECTION_SET=1
+      ;;
+    --section=*)
+      SECTION=${1#--section=}
+      SECTION_SET=1
+      ;;
     --watch)
       WATCH=1
       if [ $# -gt 1 ] && [[ $2 != -* ]]; then
@@ -45,6 +59,15 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+case "$SECTION_SET:$SECTION" in
+  0:all|1:in-flight|1:waiting|1:ready|1:blocked|1:finished|1:failed) ;;
+  *)
+    echo "fm-fleet-view: unknown section: $SECTION" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
 
 if [ "$FORMAT" = json ] && [ "$WATCH" = 1 ]; then
   echo "fm-fleet-view: --json and --watch cannot be combined" >&2
@@ -87,7 +110,7 @@ render_once() {
     return 1
   fi
 
-  printf '%s\n' "$snapshot" | jq -r --argjson width "$width" '
+  printf '%s\n' "$snapshot" | jq -r --argjson width "$width" --arg section "$SECTION" '
     def clean: tostring | gsub("[[:space:]]+"; " ");
     def clip($n):
       clean
@@ -162,11 +185,22 @@ render_once() {
         | select(((.unresolved_blocker_ids // []) | length) == 0)]) as $ready
     | ([$queued[]
         | select(((.unresolved_blocker_ids // []) | length) > 0)]) as $blocked
-    | ("=" * $width),
-      ("FLEET STATUS" | clip($width)),
-      ("=" * $width),
-      "",
-      ("WORKING NOW (\($working | length))" | clip($width)),
+    | (if $section == "all" then
+         ("=" * $width),
+         ("FLEET STATUS" | clip($width)),
+         ("=" * $width),
+         ""
+       else empty end),
+      (if $section == "in-flight" then
+       ("IN FLIGHT (\(($working | length) + ($unknown | length)))" | clip($width)),
+       ($working[]
+        | line("• "; ((.id // "unknown") + " · " + task_title(.))),
+          line("  "; ((.current_state.state // "unknown") + ": " + task_step(.)))),
+       ($unknown[]
+        | line("• "; ((.id // "unknown") + " · " + task_title(.))),
+          line("  "; ("state unavailable: " + task_step(.))))
+       elif $section == "all" then
+       ("WORKING NOW (\($working | length))" | clip($width)),
       (if ($working | length) == 0 then
          "  No active tasks."
        else
@@ -174,7 +208,9 @@ render_once() {
          | line("• "; ((.id // "unknown") + " · " + task_title(.))),
            line("  "; ((.current_state.state // "unknown") + ": " + task_step(.)))
        end),
-      "",
+      (if $section == "all" then "" else empty end)
+       else empty end),
+      (if $section == "all" or $section == "waiting" then
       (if ($waiting | length) > 0 then "!" * $width else empty end),
       ("WAITING ON DECISION (\($waiting | length))" | clip($width)),
       (if ($waiting | length) == 0 then
@@ -186,7 +222,9 @@ render_once() {
            (if .artifact == null then empty else line("  "; .artifact) end)
        end),
       (if ($waiting | length) > 0 then "!" * $width else empty end),
-      "",
+      (if $section == "all" then "" else empty end)
+       else empty end),
+      (if $section == "all" or $section == "finished" then
       ("FINISHED (showing \([($finished[:5])[]] | length) of \($finished | length))" | clip($width)),
       (if ($finished | length) == 0 then
          "  Nothing has finished successfully."
@@ -196,7 +234,9 @@ render_once() {
            line("  "; (.summary // "done")),
            (if .artifact == null then empty else line("  "; .artifact) end)
        end),
-      "",
+      (if $section == "all" then "" else empty end)
+       else empty end),
+      (if $section == "all" or $section == "failed" then
       ("FAILED (\($failed | length))" | clip($width)),
       (if ($failed | length) == 0 then
          "  No failed tasks."
@@ -205,14 +245,16 @@ render_once() {
          | line("• "; ((.id // "unknown") + " · " + task_title(.))),
            line("  "; task_step(.))
        end),
-      "",
-      (if ($paused | length) == 0 then empty else
+      (if $section == "all" then "" else empty end)
+       else empty end),
+      (if $section == "all" and ($paused | length) > 0 then
          ("PAUSED (\($paused | length))" | clip($width)),
          ($paused[]
           | line("• "; ((.id // "unknown") + " · " + task_title(.))),
             line("  "; task_step(.))),
          ""
-       end),
+       else empty end),
+      (if $section == "all" then
       ("UNKNOWN (\($unknown | length))" | clip($width)),
       (if ($unknown | length) == 0 then
          "  No tasks with unknown state."
@@ -221,18 +263,38 @@ render_once() {
          | line("• "; ((.id // "unknown") + " · " + task_title(.))),
            line("  "; task_step(.))
        end),
-      "",
-      ("QUEUED \($queued | length) · READY \($ready | length) · BLOCKED \($blocked | length)" | clip($width)),
-      "Ready now:",
-      (if ($ready | length) == 0 then "  None." else $ready[] | line("• "; ((.id // "unknown") + " · " + (.title // "unknown"))) end),
-      "Still blocked:",
-      (if ($blocked | length) == 0 then
-         "  None."
-       else
-         $blocked[]
-         | line("• "; ((.id // "unknown") + " ← " + ((.unresolved_blocker_ids // []) | join(","))
-                       + (if (.blocked_reason // "") == "" then "" else " · " + .blocked_reason end)))
-       end)
+      (if $section == "all" then "" else empty end)
+       else empty end),
+      (if $section == "all" then
+         ("QUEUED \($queued | length) · READY \($ready | length) · BLOCKED \($blocked | length)" | clip($width)),
+         "Ready now:",
+         (if ($ready | length) == 0 then "  None." else $ready[] | line("• "; ((.id // "unknown") + " · " + (.title // "unknown"))) end),
+         "Still blocked:",
+         (if ($blocked | length) == 0 then
+            "  None."
+          else
+            $blocked[]
+            | line("• "; ((.id // "unknown") + " ← " + ((.unresolved_blocker_ids // []) | join(","))
+                          + (if (.blocked_reason // "") == "" then "" else " · " + .blocked_reason end)))
+          end)
+       elif $section == "ready" then
+         ("READY (\($ready | length))" | clip($width)),
+         (if ($ready | length) == 0 then
+            "  None."
+          else
+            $ready[]
+            | line("• "; ((.id // "unknown") + " · " + (.title // "unknown")))
+          end)
+       elif $section == "blocked" then
+         ("BLOCKED (\($blocked | length))" | clip($width)),
+         (if ($blocked | length) == 0 then
+            "  None."
+          else
+            $blocked[]
+            | line("• "; ((.id // "unknown") + " ← " + ((.unresolved_blocker_ids // []) | join(","))
+                          + (if (.blocked_reason // "") == "" then "" else " · " + .blocked_reason end)))
+          end)
+       else empty end)
   ' || {
     echo "FLEET VIEW DEGRADED"
     echo "Snapshot data could not be rendered; retrying on the next redraw."

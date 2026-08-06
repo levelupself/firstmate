@@ -616,7 +616,95 @@ test_view_renders_snapshot() {
     "queue summary should distinguish dispatchable from blocked"
   assert_not_contains "$view" "fm-peek.sh fm-secondmate-task" \
     "view must not tell firstmate to routinely peek secondmates"
-  pass "fleet view renders the prioritized side-panel sections"
+  test_view_renders_each_section_alone
+  test_view_rejects_unknown_section
+  test_default_view_output_is_unchanged
+  pass "fleet view renders prioritized and standalone sections without changing the default"
+}
+
+test_view_renders_each_section_alone() {
+  local home fakebin section view heading
+  home=$(make_home view-sections)
+  write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+
+  for section in in-flight waiting ready blocked finished failed; do
+    view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW" --section "$section")
+    case "$section" in
+      in-flight) heading='IN FLIGHT (3)' ;;
+      waiting) heading='WAITING ON DECISION (4)' ;;
+      ready) heading='READY (0)' ;;
+      blocked) heading='BLOCKED (1)' ;;
+      finished) heading='FINISHED (showing 1 of 1)' ;;
+      failed) heading='FAILED (0)' ;;
+    esac
+    assert_contains "$view" "$heading" "$section section omitted its counted heading"
+    [ "$(printf '%s\n' "$view" | grep -Ec '^(IN FLIGHT|WORKING NOW|WAITING ON DECISION|FINISHED|FAILED|PAUSED|UNKNOWN|QUEUED|READY|BLOCKED)')" -eq 1 ] \
+      || fail "$section section rendered another section: $view"
+  done
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW" --section in-flight)
+  assert_contains "$view" "state unavailable:" \
+    "in-flight section should quietly qualify dispatched tasks with unreadable runtime state"
+  assert_not_contains "$view" "UNKNOWN" \
+    "in-flight section should not present unreadable runtime state as a separate category"
+}
+
+test_view_rejects_unknown_section() {
+  local output rc section
+  for section in typo all; do
+    set +e
+    output=$($VIEW --section "$section" 2>&1)
+    rc=$?
+    set -e
+    expect_code 2 "$rc" "an unsupported section should be a usage error"
+    assert_contains "$output" "unknown section: $section" "unknown section error omitted the rejected value"
+    assert_contains "$output" "in-flight, waiting, ready, blocked, finished," \
+      "unknown section usage omitted valid sections"
+    assert_contains "$output" "failed" "unknown section usage omitted the failed section"
+  done
+}
+
+test_default_view_output_is_unchanged() {
+  local home view_bin
+  home=$(make_home default-view-bytes)
+  view_bin="$home/bin"
+  mkdir -p "$view_bin"
+  ln -s "$VIEW" "$view_bin/fm-fleet-view.sh"
+  ln -s "$ROOT/bin/fm-terminal-frame-lib.sh" "$view_bin/fm-terminal-frame-lib.sh"
+  cat > "$view_bin/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"tasks":[],"backlog":{"records":[]},"secondmate_landed":{"records":[]}}'
+SH
+  chmod +x "$view_bin/fm-fleet-snapshot.sh"
+  COLUMNS=45 "$view_bin/fm-fleet-view.sh" > "$home/actual"
+  cat > "$home/expected" <<'EOF'
+=============================================
+FLEET STATUS
+=============================================
+
+WORKING NOW (0)
+  No active tasks.
+
+WAITING ON DECISION (0)
+  No decisions or merges pending.
+
+FINISHED (showing 0 of 0)
+  Nothing has finished successfully.
+
+FAILED (0)
+  No failed tasks.
+
+UNKNOWN (0)
+  No tasks with unknown state.
+
+QUEUED 0 · READY 0 · BLOCKED 0
+Ready now:
+  None.
+Still blocked:
+  None.
+EOF
+  cmp -s "$home/expected" "$home/actual" \
+    || fail "default panel output changed from its established bytes"
 }
 
 test_view_buckets_reconciled_states() {
@@ -859,7 +947,7 @@ SH
       kill "INT", $pid;
       waitpid $pid, 0;
       exit($? >> 8);
-    ' "$watch_bin/fm-fleet-view.sh" --watch 0.05 > "$output" 3>&1
+    ' "$watch_bin/fm-fleet-view.sh" --section ready --watch 0.05 > "$output" 3>&1
   rc=$?
   expect_code 0 "$rc" "ordered watch fixture should exit cleanly"
   perl -0777 -e '
@@ -906,13 +994,13 @@ printf 'plain\nframe\n'
 SH
   chmod +x "$view_bin/fm-fleet-snapshot.sh" "$fakebin/jq"
   PATH="$fakebin:$PATH" "$view_bin/fm-fleet-view.sh" > "$home/panel.out"
-  PATH="$fakebin:$PATH" "$view_bin/fm-fleet-view.sh" --json > "$home/json.out"
+  PATH="$fakebin:$PATH" "$view_bin/fm-fleet-view.sh" --json --section blocked > "$home/json.out"
   printf 'plain\nframe\n' > "$home/panel.expected"
   printf '%s\n' '{"exact":"json"}' > "$home/json.expected"
   cmp -s "$home/panel.expected" "$home/panel.out" \
     || fail "non-watch panel output changed bytes"
   cmp -s "$home/json.expected" "$home/json.out" \
-    || fail "--json output changed bytes"
+    || fail "--json output changed bytes when combined with --section"
   panel=$(cat "$home/panel.out")
   json=$(cat "$home/json.out")
   assert_not_contains "$panel$json" $'\033[' "non-watch modes emitted terminal controls"
