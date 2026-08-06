@@ -1988,6 +1988,11 @@ fm_backend_herdr_cockpit_binding_diagnose() {  # <state-dir> <home> [<session>]
       [ "$head" = live ] || reason="head-$head"
     fi
   fi
+  # Published as well as printed so a caller that needs the frame snapshot can
+  # take the predicate form (which cannot use a command substitution without
+  # discarding those globals) and still report the exact cause from one walk.
+  # shellcheck disable=SC2034  # read by bin/fm-cockpit.sh
+  FM_BACKEND_HERDR_COCKPIT_DIAGNOSIS=$reason
   printf '%s' "$reason"
   [ "$reason" = ok ]
 }

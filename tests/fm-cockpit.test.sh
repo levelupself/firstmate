@@ -899,7 +899,7 @@ reset_layout_frame() {
   : > "$HERDR_LOG"
 }
 
-run_layout_cockpit() {  # <action>
+run_layout_cockpit() {  # <action> [<args...>]
   PATH="$FAKEBIN:$PATH" \
     FM_HOME="$LAYOUT_HOME" \
     FM_FAKE_HERDR_STATE="$HERDR_STATE" \
@@ -910,7 +910,7 @@ run_layout_cockpit() {  # <action>
     HERDR_SESSION=fmtest \
     HERDR_SOCKET_PATH=/tmp/fm-cockpit-test.sock \
     HERDR_PANE_ID=w3:p1 \
-    "$COCKPIT" "$1"
+    "$COCKPIT" "$@"
 }
 
 layout_rows() {  # visual order of this frame's panes, top first
@@ -1113,25 +1113,55 @@ test_fleet_diagnostics_name_the_check_that_failed() {
 }
 
 test_banner_zoom_is_reversible_and_moves_no_pane() {
-  local fleet before zoomed
+  local fleet before out log
   reset_layout_frame
   run_layout_cockpit adopt >/dev/null 2>&1 || fail "banner adoption failed"
   fleet=$(grep '^fleet_pane_id=' "$LAYOUT_HOME/state/.herdr-cockpit" | cut -d= -f2-)
   before=$(layout_rows)
   : > "$HERDR_LOG"
-  zoomed=$(cockpit_fn fm_backend_herdr_cockpit_fleet_zoom fmtest "$fleet" on) \
-    || fail "the banner could not be zoomed"
-  [ "$zoomed" = true ] || fail "zooming the banner did not report it zoomed: $zoomed"
-  zoomed=$(cockpit_fn fm_backend_herdr_cockpit_fleet_zoom fmtest "$fleet" off) \
-    || fail "the banner could not be unzoomed"
-  [ "$zoomed" = false ] || fail "unzooming the banner did not report it unzoomed: $zoomed"
-  assert_not_contains "$(cat "$HERDR_LOG")" "pane split" "zooming re-split the frame"
-  assert_not_contains "$(cat "$HERDR_LOG")" "pane move" "zooming moved a pane"
-  assert_not_contains "$(cat "$HERDR_LOG")" "pane close" "zooming closed a pane"
+  out=$(run_layout_cockpit zoom on 2>&1) || fail "the banner could not be zoomed: $out"
+  assert_contains "$out" "fleet banner $fleet fills the frame" \
+    "zooming did not report the banner filling the frame"
+  out=$(run_layout_cockpit zoom off 2>&1) || fail "the banner could not be unzoomed: $out"
+  assert_contains "$out" "back to its configured size" \
+    "unzooming did not report the banner restored"
+  log=$(cat "$HERDR_LOG")
+  assert_contains "$log" "pane zoom $fleet --on" "zoom on did not reach the banner pane"
+  assert_contains "$log" "pane zoom $fleet --off" "zoom off did not reach the banner pane"
+  assert_not_contains "$log" "pane split" "zooming re-split the frame"
+  assert_not_contains "$log" "pane move" "zooming moved a pane"
+  assert_not_contains "$log" "pane close" "zooming closed a pane"
   [ "$(layout_rows)" = "$before" ] || fail "zooming rearranged the frame"
-  cockpit_fn fm_backend_herdr_cockpit_fleet_zoom fmtest "$fleet" sideways >/dev/null 2>&1 \
+  run_layout_cockpit zoom sideways >/dev/null 2>&1 \
     && fail "an unsupported zoom mode was accepted"
   pass "the banner zooms and unzooms without splitting, moving, or closing a pane"
+}
+
+test_status_names_the_check_that_failed() {
+  local out
+  reset_layout_frame
+  out=$(run_layout_cockpit status 2>&1) \
+    && fail "status reported a live frame before one was adopted"
+  assert_contains "$out" "no frame has been adopted for this home yet" \
+    "status did not name the absent frame as the cause"
+  assert_contains "$out" "(record-absent)" "status omitted the exact failing check"
+  assert_not_contains "$out" "absent, invalid, or dead" \
+    "status still collapsed every cause into one verdict"
+
+  run_layout_cockpit adopt >/dev/null 2>&1 || fail "banner adoption failed"
+  set_fleet_pane_status fleet-no-watch >/dev/null
+  out=$(run_layout_cockpit status 2>&1) \
+    && fail "status reported a live frame with no fleet view running"
+  assert_contains "$out" "not running the fleet view" \
+    "status did not name the idle banner pane as the cause"
+  assert_contains "$out" "(fleet-no-fleet-process)" "status omitted the exact failing check"
+
+  set_fleet_pane_status fleet-gone >/dev/null
+  out=$(run_layout_cockpit status 2>&1) \
+    && fail "status reported a live frame with an unreachable banner pane"
+  assert_contains "$out" "(fleet-no-process-info)" \
+    "status did not distinguish an unreachable pane from an idle one"
+  pass "status names the exact check that failed instead of one collapsed verdict"
 }
 
 test_frame_re_adoption_is_idempotent
@@ -1158,3 +1188,4 @@ test_a_relative_path_fleet_view_still_counts_as_live
 test_an_unresolved_home_path_still_matches_the_live_banner
 test_fleet_diagnostics_name_the_check_that_failed
 test_banner_zoom_is_reversible_and_moves_no_pane
+test_status_names_the_check_that_failed

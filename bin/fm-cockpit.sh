@@ -5,6 +5,7 @@
 #        fm-cockpit.sh switch <FM_HOME>
 #        fm-cockpit.sh show <task-id>
 #        fm-cockpit.sh next|prev
+#        fm-cockpit.sh zoom [on|off|toggle]
 #        fm-cockpit.sh focus-start|focus-stop
 #        fm-cockpit.sh focus-listen [--once]
 #
@@ -91,6 +92,7 @@ case "${1:-}" in
   switch) ACTION=$1 ;;
   show) ACTION=$1 ;;
   next|prev) ACTION=$1 ;;
+  zoom) ACTION=$1 ;;
   focus-start|focus-stop|focus-listen) ACTION=$1 ;;
   -h|--help) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;
@@ -136,6 +138,15 @@ elif [ "$ACTION" = show ]; then
   esac
 elif [ "$ACTION" = next ] || [ "$ACTION" = prev ]; then
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+elif [ "$ACTION" = zoom ]; then
+  shift
+  ZOOM_MODE=toggle
+  case "${1:-}" in
+    '') ;;
+    on|off|toggle) ZOOM_MODE=$1; shift ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
 elif [ "$ACTION" = focus-listen ]; then
   shift
   FOCUS_ONCE=0
@@ -256,7 +267,7 @@ if [ "$ACTION" = switch ]; then
 fi
 
 render_frame() {
-  local label panes rows parked head_state fleet_state
+  local label panes rows parked reason
   printf '%s\n' 'ORCHESTRATION COCKPIT'
   if [ "$RUNTIME" != herdr ]; then
     printf 'NAVIGATOR plain fleet panel (Herdr sidebar unavailable on %s)\n' "$RUNTIME"
@@ -266,33 +277,29 @@ render_frame() {
     return 0
   fi
 
+  # One walk reports both the verdict and the exact check that failed, so the
+  # panel names the cause instead of listing everything it might have been.
   if ! fm_backend_herdr_cockpit_binding_live "$STATE" "$FM_HOME" "$SESSION"; then
+    reason=$FM_BACKEND_HERDR_COCKPIT_DIAGNOSIS
     printf '%s\n' 'NAVIGATOR Herdr sidebar (all spaces and agents)'
-    if fm_backend_herdr_cockpit_record_snapshot "$STATE" "$FM_HOME" \
-       && [ "$FM_BACKEND_HERDR_COCKPIT_SESSION" = "$SESSION" ]; then
-      head_state=$(fm_backend_herdr_cockpit_head_state \
-        "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
-        "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID")
-      if [ "$head_state" = dead ]; then
+    case "$reason" in
+      head-dead)
         printf 'PINNED DEAD PANE %s; [r] resume old; [n] new clean context\n' \
           "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID"
         printf '%s\n' 'VIEWPORT preserved; never auto-filled or re-split'
-      elif [ "$head_state" = live ] && [ "$FM_BACKEND_HERDR_COCKPIT_VERSION" = 2 ]; then
-        fleet_state=$(fm_backend_herdr_cockpit_fleet_state \
-          "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
-          "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID")
+        ;;
+      fleet-*)
         printf 'PINNED head=%s [live]\n' "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID"
         printf 'VIEWPORT tab=%s [preserved]\n' "$FM_BACKEND_HERDR_COCKPIT_TAB_ID"
         printf 'FLEET column=%s [%s]; frame preserved without rebuild\n' \
-          "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" "$fleet_state"
-      else
-        printf '%s\n' 'PINNED unavailable; frame absent, invalid, or unreadable'
+          "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" "${reason#fleet-}"
+        ;;
+      *)
+        printf 'PINNED unavailable; %s\n' \
+          "$(fm_backend_herdr_cockpit_binding_explain "$reason")"
         printf '%s\n' 'VIEWPORT ordinary peer-endpoint layout remains active'
-      fi
-    else
-      printf '%s\n' 'PINNED unavailable; frame absent, invalid, or unreadable'
-      printf '%s\n' 'VIEWPORT ordinary peer-endpoint layout remains active'
-    fi
+        ;;
+    esac
     printf '%s\n' 'BOUNDARY display=all-homes steer=current-home backend=herdr'
     return 0
   fi
@@ -325,10 +332,34 @@ render_frame() {
   printf '%s\n' 'BOUNDARY display=all-homes steer=current-home backend=herdr'
 }
 
+# The panel is one frame made of two parts, so the fleet view is told the rows
+# this header has already spent instead of budgeting for the whole pane. Without
+# that the two parts each fit individually, their sum overflows, and the
+# terminal scrolls exactly this header off the top.
 render_panel() {
-  render_frame
-  printf '\n'
-  FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-fleet-view.sh"
+  local frame rows cols spent budget
+  rows=${LINES:-}
+  case "$rows" in ''|*[!0-9]*) rows=$(fm_terminal_dimension lines || true) ;; esac
+  case "$rows" in ''|*[!0-9]*) rows=40 ;; esac
+  cols=${COLUMNS:-}
+  case "$cols" in ''|*[!0-9]*) cols=$(fm_terminal_dimension cols || true) ;; esac
+  case "$cols" in ''|*[!0-9]*) cols=60 ;; esac
+  [ "$cols" -ge 20 ] || cols=20
+  # Clipped by character, exactly as the fleet view clips its own rows: a header
+  # line wider than the pane wraps onto a second physical row, which makes the
+  # row budget below undercount and scrolls the top of the panel away. Full
+  # untruncated detail stays available from `fm-cockpit.sh status`.
+  frame=$(render_frame | jq -Rr --argjson width "$cols" '
+    if length <= $width then .
+    elif $width <= 1 then .[:$width]
+    else .[:($width - 1)] + "…" end')
+  spent=$(( $(printf '%s\n' "$frame" | awk 'END {print NR}') + 1 ))
+  budget=$((rows - spent))
+  [ "$budget" -ge 2 ] || budget=2
+  fm_terminal_fit_height "$rows" \
+    "$frame
+
+$(LINES="$budget" COLUMNS="$cols" FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-fleet-view.sh")"
 }
 
 if [ "$ACTION" = panel ]; then
@@ -354,19 +385,15 @@ if [ "$ACTION" = status ]; then
       "${FM_BACKEND_HERDR_COCKPIT_VIEWPORT_PANE_ID:-none}"
     exit 0
   fi
-  if fm_backend_herdr_cockpit_record_snapshot "$STATE" "$FM_HOME" \
-     && [ "$FM_BACKEND_HERDR_COCKPIT_SESSION" = "$SESSION" ]; then
-    HEAD_STATE=$(fm_backend_herdr_cockpit_head_state \
-      "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
-      "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID")
-    if [ "$HEAD_STATE" = dead ]; then
-      printf 'COCKPIT: DEAD PANE %s; frame preserved and never auto-filled or re-split.\n' \
-        "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" >&2
-      echo "COCKPIT: [r] resume old in the recorded pane; [n] run bin/fm-cockpit.sh new here for clean context." >&2
-      exit 1
-    fi
+  REASON=$FM_BACKEND_HERDR_COCKPIT_DIAGNOSIS
+  if [ "$REASON" = head-dead ]; then
+    printf 'COCKPIT: DEAD PANE %s; frame preserved and never auto-filled or re-split.\n' \
+      "$FM_BACKEND_HERDR_COCKPIT_HEAD_PANE_ID" >&2
+    echo "COCKPIT: [r] resume old in the recorded pane; [n] run bin/fm-cockpit.sh new here for clean context." >&2
+    exit 1
   fi
-  echo "COCKPIT: unavailable because this home's recorded Herdr frame is absent, invalid, or dead; use bin/fm-fleet-view.sh --watch." >&2
+  printf 'COCKPIT: unavailable because %s (%s); use bin/fm-fleet-view.sh --watch.\n' \
+    "$(fm_backend_herdr_cockpit_binding_explain "$REASON")" "$REASON" >&2
   exit 1
 fi
 
@@ -427,6 +454,31 @@ if [ "$ACTION" = next ] || [ "$ACTION" = prev ]; then
     exit 1
   }
   printf 'COCKPIT: %s now occupies the viewport alone.\n' "$ROTATED"
+  exit 0
+fi
+
+# Herdr has pane zoom but no hover, floating pane, or overlay, so this is the
+# whole supported way to read the banner closely. It is reversible and changes
+# no split, so it needs no lock and no warning: nothing about the frame's
+# arrangement is altered, and the operator asked for it explicitly.
+if [ "$ACTION" = zoom ]; then
+  if ! fm_backend_herdr_cockpit_binding_live "$STATE" "$FM_HOME" "$SESSION"; then
+    echo "COCKPIT: this home has no live complete frame; nothing was zoomed." >&2
+    exit 1
+  fi
+  ZOOMED=$(fm_backend_herdr_cockpit_fleet_zoom \
+    "$FM_BACKEND_HERDR_COCKPIT_SESSION" \
+    "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" "$ZOOM_MODE") || {
+    echo "COCKPIT: the fleet banner could not be zoomed; the frame is unchanged." >&2
+    exit 1
+  }
+  if [ "$ZOOMED" = true ]; then
+    printf 'COCKPIT: fleet banner %s fills the frame; run zoom off to restore it.\n' \
+      "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID"
+  else
+    printf 'COCKPIT: fleet banner %s is back to its configured size.\n' \
+      "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID"
+  fi
   exit 0
 fi
 

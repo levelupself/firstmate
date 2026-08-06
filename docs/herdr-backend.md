@@ -52,6 +52,9 @@ Building that banner is the one automatic change to the operator's screen, so th
 An invalid layout refuses and changes nothing rather than applying a shape nobody chose, and a banner that cannot be ordered as configured is removed again so the original screen is restored.
 Nothing in that path closes, replaces, or re-splits a pane holding a live agent: the split only adds a pane, and a fleet-first order exchanges two panes' positions while Herdr keeps both pane ids, their tab and workspace, and any registered agent ([`docs/verification/cockpit-fleet-layout.md`](verification/cockpit-fleet-layout.md)).
 A layout change takes effect the next time a banner is built, because an already-adopted frame is preserved without rebuild.
+The panel measures the pane it is actually painting into rather than assuming a full-screen terminal, so a roughly twelve-row banner renders decisions first and truncates its tail with a count of the hidden rows; letting the terminal scroll instead would cost the head, which is the part the ordering exists to protect.
+`bin/fm-cockpit.sh panel` is one frame made of its own header plus that view, so the header's spent rows are subtracted from the view's budget and its lines are clipped to the pane width; `bin/fm-cockpit.sh status` remains the untruncated detail.
+`bin/fm-cockpit.sh zoom [on|off|toggle]` fills the frame with the banner and restores it, which is the whole supported way to read it closely; it changes no split, moves no pane, and binds to a key exactly like `next` and `prev`.
 Frame validation proves that pane still runs the exact fleet watch command, matching the executable by basename as well as by absolute path so a column started through a relative path is recognized too, and refusing a process that publishes a different home.
 A validation failure names the exact check that failed - the pane unreachable, the server's answer untrusted, no fleet view running, or the pane moved out of the recorded tab - instead of one collapsed verdict, and is displayed without rebuilding or rewriting the frame.
 One validated version 1 frame is upgraded in place by adding its fleet banner and atomically publishing version 2, while an ambiguous legacy record remains untouched.
@@ -346,7 +349,7 @@ Direct execution of that file runs the bounded executable-resolution and recursi
 - Mutable labels can collide; they are never placement or destructive authority.
 - A Firstmate outside Herdr cannot resolve a launcher workspace, so a colliding home label refuses new spawns until the collision is cleared.
 - Ghost and placeholder recognition depends on ANSI de-emphasis and fails safely to pending when unavailable.
-- Herdr 0.8.0 has pane zoom but no hover, floating pane, or overlay primitive, so a hover-to-expand fleet view is unavailable and is not emulated; the stacked banner is the supported way to keep fleet state visible.
+- Herdr 0.8.0 has pane zoom but no hover, floating pane, or overlay primitive, so a hover-to-expand fleet view is unavailable and is not emulated; the stacked banner keeps fleet state visible and `fm-cockpit.sh zoom` is the supported way to look closer.
 - Herdr 0.8.0 splits only `right` and `down`, so any other banner placement is reached by splitting and then exchanging the two panes.
 - Mid-session secondmate liveness is not implemented.
 - OpenCode 1.18.4 can accept Enter while busy without clearing the composer.
@@ -359,6 +362,7 @@ Direct execution of that file runs the bounded executable-resolution and recursi
 tests/herdr-test-safety.sh
 tests/fm-backend-herdr.test.sh
 tests/fm-cockpit.test.sh
+tests/fm-fleet-view-pane-fit-smoke.test.sh
 tests/fm-backend-herdr-smoke.test.sh
 tests/fm-backend-herdr-prune-safety-e2e.test.sh
 tests/fm-backend-herdr-respawn-idem-e2e.test.sh
