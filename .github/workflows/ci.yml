@@ -327,6 +327,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
+      - name: Install tasks-axi
+        run: |
+          set -eu
+          npm install -g tasks-axi
+          tasks-axi --version
       - name: Run snapshot consumers with stock Bash
         shell: /bin/bash {0}
         env:
@@ -339,6 +344,7 @@ jobs:
           esac
           /bin/bash --version | head -1
           command -v jq >/dev/null || { echo "::error::jq is required"; exit 1; }
+          command -v tasks-axi >/dev/null || { echo "::error::tasks-axi is required"; exit 1; }
 
           shell_inventory="$RUNNER_TEMP/fm-shell-inventory"
           bin/fm-lint.sh --list-files > "$shell_inventory"
