@@ -463,6 +463,7 @@ EOF
     FM_FAKE_HERDR_STATE="$HERDR_STATE" FM_FAKE_HERDR_LOG="$HERDR_LOG" \
     FM_COCKPIT_ROOT="$ROOT" HERDR_ENV=1 HERDR_SESSION=fmtest \
     HERDR_SOCKET_PATH=/tmp/fm-cockpit-test.sock HERDR_PANE_ID=w2:p1 \
+    LINES=40 COLUMNS=120 \
     "$COCKPIT" panel) || fail "dead fleet column could not be rendered read-only"
   # The panel clips every row to the measured terminal width, so assert the
   # stable cause here and leave the full diagnostic wording to `status` below.
@@ -812,7 +813,11 @@ test_panel_renders_the_live_frame_and_fleet_view() {
   ' "$HERDR_STATE/panes.tsv" > "$HERDR_STATE/panes.next"
   mv "$HERDR_STATE/panes.next" "$HERDR_STATE/panes.tsv"
   : > "$HERDR_LOG"
-  out=$(run_cockpit panel 2>"$err") || fail "cockpit panel could not render the live frame"
+  # This fixture asserts the complete logical panel, independently of the CI
+  # runner's controlling-terminal size. The real-pane smoke test exercises the
+  # terminal measurement branch.
+  out=$(LINES=40 COLUMNS=120 run_cockpit panel 2>"$err") \
+    || fail "cockpit panel could not render the live frame"
   [ ! -s "$err" ] \
     || fail "cockpit panel leaked a terminal probe error without a controlling tty: $(cat "$err")"
   assert_contains "$out" "ORCHESTRATION COCKPIT" "cockpit panel omitted its heading"
@@ -846,7 +851,8 @@ test_panel_renders_the_live_frame_and_fleet_view() {
 
 test_panel_degrades_visibly_outside_herdr() {
   local out
-  out=$(env -u HERDR_ENV -u TMUX FM_HOME="$HOME_DIR" "$COCKPIT" panel) \
+  out=$(env -u HERDR_ENV -u TMUX FM_HOME="$HOME_DIR" LINES=40 COLUMNS=120 \
+    "$COCKPIT" panel) \
     || fail "plain cockpit panel fallback should remain usable"
   assert_contains "$out" "NAVIGATOR plain fleet panel (Herdr sidebar unavailable on none)" \
     "plain cockpit panel did not explain its navigator fallback"
@@ -1145,17 +1151,20 @@ test_fleet_diagnostics_name_the_check_that_failed() {
   reset_layout_frame
   run_layout_cockpit adopt >/dev/null 2>&1 || fail "banner adoption failed"
   fleet=$(set_fleet_pane_status fleet-gone)
-  out=$(run_layout_cockpit panel 2>&1) || fail "panel did not render an unreachable banner"
+  out=$(LINES=40 COLUMNS=120 run_layout_cockpit panel 2>&1) \
+    || fail "panel did not render an unreachable banner"
   assert_contains "$out" "FLEET column=$fleet [no-process-info]" \
     "an unreachable banner pane did not report that cause"
 
   set_fleet_pane_status fleet-unreadable >/dev/null
-  out=$(run_layout_cockpit panel 2>&1) || fail "panel did not render an untrusted response"
+  out=$(LINES=40 COLUMNS=120 run_layout_cockpit panel 2>&1) \
+    || fail "panel did not render an untrusted response"
   assert_contains "$out" "FLEET column=$fleet [unreadable]" \
     "an untrusted process report did not report that cause"
 
   set_fleet_pane_status fleet-no-watch >/dev/null
-  out=$(run_layout_cockpit panel 2>&1) || fail "panel did not render a non-watching banner"
+  out=$(LINES=40 COLUMNS=120 run_layout_cockpit panel 2>&1) \
+    || fail "panel did not render a non-watching banner"
   assert_contains "$out" "FLEET column=$fleet [no-fleet-process]" \
     "a pane running no fleet view did not report that cause"
   pass "each fleet-banner failure reports its own cause instead of one collapsed verdict"
