@@ -406,22 +406,28 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
   ' < "$backlog"
 }
 
-# Read the structured-state projection from tasks-axi once per snapshot.
+# Read the structured-state projection and authoritative ready set from tasks-axi.
 # This keeps backlog.md as the source document while making tasks-axi the only producer of
-# readiness, active holds, and resolved blocker ids. A measured invocation is
-# about 30-40ms locally, below 1% of the default five-second watch interval.
+# readiness, active holds, and resolved blocker ids. The two calls measured about
+# 92ms together locally. A full redraw makes the same two calls for the primary
+# home and each readable registered secondmate home, so this cost scales as
+# 2 * (1 + readable secondmate homes) tasks-axi invocations per redraw.
 backlog_semantics_json() {  # [<backlog-path>]
-  local backlog=${1:-$BACKLOG} output
+  local backlog=${1:-$BACKLOG} list_output ready_output semantic_fields semantics ready_lines ready_ids
   if [ ! -f "$backlog" ]; then
     printf '[]\n'
     return 0
   fi
-  output=$(tasks-axi list --file "$backlog" \
+  list_output=$(tasks-axi list --file "$backlog" \
     --fields blocked,blocked_by,held,hold_kind,hold_reason) || {
       echo "fm-fleet-snapshot: tasks-axi state read failed" >&2
       return 1
     }
-  printf '%s\n' "$output" | awk '
+  ready_output=$(tasks-axi ready --file "$backlog") || {
+    echo "fm-fleet-snapshot: tasks-axi ready read failed" >&2
+    return 1
+  }
+  semantic_fields=$(printf '%s\n' "$list_output" | awk '
     function csv(line, fields,    c,i,n,quoted) {
       n=1
       fields[n]=""
@@ -461,8 +467,9 @@ backlog_semantics_json() {  # [<backlog-path>]
       next
     }
     rows { exit }
-  ' | jq -Rn '
-    [inputs] as $fields
+  ') || { echo "fm-fleet-snapshot: tasks-axi state output was invalid" >&2; return 1; }
+  semantics=$(printf '%s\n' "$semantic_fields" | jq -Rn '
+    [inputs | select(length > 0)] as $fields
     | if (($fields | length) % 8) != 0
          or ($fields | index("__FM_INVALID_TASKS_AXI_ROW__")) != null then
         error("invalid tasks-axi row shape")
@@ -475,7 +482,52 @@ backlog_semantics_json() {  # [<backlog-path>]
           hold_kind:(if $fields[$i + 6] == "-" then null else $fields[$i + 6] end),
           hold_reason:(if $fields[$i + 7] == "-" then null else $fields[$i + 7] end)}]
       end
-  ' || { echo "fm-fleet-snapshot: tasks-axi state output was invalid" >&2; return 1; }
+  ') || { echo "fm-fleet-snapshot: tasks-axi state output was invalid" >&2; return 1; }
+  ready_lines=$(printf '%s\n' "$ready_output" | awk '
+    function csv(line, fields,    c,i,n,quoted) {
+      n=1
+      fields[n]=""
+      for (i=1; i<=length(line); i++) {
+        c=substr(line,i,1)
+        if (c == "\"") {
+          if (quoted && substr(line,i+1,1) == "\"") {
+            fields[n]=fields[n] "\""
+            i++
+          } else {
+            quoted=!quoted
+          }
+        } else if (c == "," && !quoted) {
+          n++
+          fields[n]=""
+        } else {
+          fields[n]=fields[n] c
+        }
+      }
+      return n
+    }
+    /^ready\[[0-9]+\]\{/ { rows=1; seen=1; next }
+    /^ready: 0 unblocked queued tasks$/ { seen=1; next }
+    rows && /^  / {
+      sub(/^  /, "")
+      csv($0, field)
+      print field[1]
+      next
+    }
+    rows { exit }
+    END { if (!seen) exit 1 }
+  ') || {
+    echo "fm-fleet-snapshot: tasks-axi ready output was invalid" >&2
+    return 1
+  }
+  ready_ids=$(printf '%s\n' "$ready_lines" | jq -Rn '[inputs | select(length > 0)]') || {
+    echo "fm-fleet-snapshot: tasks-axi ready ids were invalid" >&2
+    return 1
+  }
+  printf '%s\n%s\n' "$semantics" "$ready_ids" | jq -s '
+    .[0] as $semantics
+    | (.[1] | map({key:.,value:true}) | from_entries) as $ready
+    | $semantics | map(.dispatchable = ($ready[.id] == true))
+  ' || { echo "fm-fleet-snapshot: tasks-axi semantics join failed" >&2; return 1; }
 }
 
 apply_backlog_semantics() {  # stdin: <markdown-json> <tasks-axi-json>
@@ -504,9 +556,7 @@ apply_backlog_semantics() {  # stdin: <markdown-json> <tasks-axi-json>
                    elif $semantic.state == "queued" then "queued"
                    else "done" end)
               | .requires_child_metadata = (.current_role == "worker")
-              | .dispatchable = ($semantic.state == "queued"
-                                  and ($semantic.blocked | not) and ($semantic.held | not)
-                                  and $semantic.kind != "public-followup")
+              | .dispatchable = $semantic.dispatchable
               | .captain_actionable = ($semantic.state == "queued" and $semantic.held
                                        and $semantic.hold_kind == "captain"
                                        and ($semantic.blocked | not))
