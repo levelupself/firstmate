@@ -38,7 +38,7 @@
 # wrapping at both ends, and are meant to sit on a key. They resolve a worker
 # and then hand it to the same single-occupancy placement a sidebar selection
 # uses, so a key and a click can never disagree. The pinned supervisor and the
-# fleet column are not tasks and are never rotation targets.
+# fleet banner are not tasks and are never rotation targets.
 #
 # Bind them with Herdr's own custom-command keys, which take a chord directly
 # (Herdr 0.8.0 plugin manifest actions carry id, title, command, contexts,
@@ -458,7 +458,7 @@ if [ "$ACTION" = next ] || [ "$ACTION" = prev ]; then
 fi
 
 # Herdr has pane zoom but no hover, floating pane, or overlay, so this is the
-# whole supported way to read the banner closely. It is reversible and changes
+# supported way to read the banner closely. It is reversible and changes
 # no split, so it needs no lock and no warning: nothing about the frame's
 # arrangement is altered, and the operator asked for it explicitly.
 if [ "$ACTION" = zoom ]; then

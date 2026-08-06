@@ -2227,7 +2227,7 @@ fm_backend_herdr_cockpit_swap_panes() {  # <session> <source> <target>
 
 # fm_backend_herdr_cockpit_fleet_zoom: toggle the fleet banner to fill the tab
 # and back. Herdr exposes pane zoom but no hover, floating pane, or overlay
-# primitive, so this is the whole supported "look closer" affordance; it is
+# primitive, so this is the supported "look closer" affordance; it is
 # reversible, changes no split, and moves no pane.
 fm_backend_herdr_cockpit_fleet_zoom() {  # <session> <pane> on|off|toggle
   local session=$1 pane=$2 mode=$3 out
@@ -2506,7 +2506,7 @@ EOF
 # <pane> is whatever herdr just focused - any pane, in any space, belonging to
 # any home. Everything that is not this home's own cockpit-managed worker is
 # ignored silently, because a focus event is not a request to move anything:
-# a non-agent pane, the head, the fleet column, another home's worker, and a
+# a non-agent pane, the head, the fleet banner, another home's worker, and a
 # worker whose durable record does not match all resolve to "do nothing".
 # Returns 0 when the pane now occupies the viewport, 1 when nothing was done.
 fm_backend_herdr_cockpit_focus_place() {  # <state-dir> <home> <session> <pane>
