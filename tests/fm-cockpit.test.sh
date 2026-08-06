@@ -207,6 +207,12 @@ esac
 SH
 chmod +x "$FAKEBIN/herdr"
 
+cat > "$FAKEBIN/nohup" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$FAKEBIN/nohup"
+
 run_cockpit_at() {  # <pane> <socket> <action>
   PATH="$FAKEBIN:$PATH" \
     FM_HOME="$HOME_DIR" \

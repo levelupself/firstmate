@@ -152,14 +152,14 @@ pass "real Herdr fm-spawn gives the viewport slot one worker and parks the rest 
 PARKED_TAB=$(pane_tab "$FIRST_PANE")
 [ -n "$PARKED_TAB" ] && [ "$PARKED_TAB" != "$TAB" ] \
   || fail "the displaced worker has no tab of its own to be selected from"
-cockpit_env env FM_COCKPIT_FOCUS_WINDOW=8 \
-  "$ROOT/bin/fm-cockpit.sh" focus-listen --once > "$TMP_ROOT/listener.log" 2>&1 &
-LISTENER_PID=$!
-sleep 2
 # Selecting that agent in the sidebar routes Herdr to its own tab; this is that
-# same routing, and the reaction to it is what the viewport slot is for.
+# same routing, and the adoption-armed reaction to it is what the viewport slot
+# is for.
 lab tab focus "$PARKED_TAB" >/dev/null 2>&1 || true
-wait "$LISTENER_PID" 2>/dev/null || true
+for _ in $(seq 1 40); do
+  [ "$(pane_tab "$FIRST_PANE")" = "$TAB" ] && break
+  sleep 0.25
+done
 
 [ "$(viewport_workers | tr '\n' ' ' | tr -s ' ' | sed 's/ $//')" = "$FIRST_PANE" ] \
   || fail "focusing an off-cockpit worker did not move it into the viewport slot"

@@ -2162,7 +2162,7 @@ fm_backend_herdr_cockpit_park() {  # <session> <pane> <label>
 # The caller owns the session presentation lock and the live-binding check.
 fm_backend_herdr_cockpit_viewport_place() {  # <state-dir> <home> <pane> <label>
   local state=$1 home=$2 pane=$3 label=$4
-  local session workspace tab head occupant occupant_label out
+  local session workspace tab head inventory occupants occupant occupant_label out
   fm_backend_herdr_cockpit_binding_live "$state" "$home" || return 1
   session=$FM_BACKEND_HERDR_COCKPIT_SESSION
   workspace=$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID
@@ -2174,17 +2174,24 @@ fm_backend_herdr_cockpit_viewport_place() {  # <state-dir> <home> <pane> <label>
   # Park every cockpit-tab worker that is not the incoming pane. This is a
   # reconcile, not a swap: a frame that already holds several workers (a
   # pre-existing shredded column) converges to single occupancy on first use.
+  inventory=$(fm_backend_herdr_cli "$session" pane list --workspace "$workspace" 2>/dev/null) \
+    || return 1
+  printf '%s' "$inventory" | jq -e '.result.panes | type == "array"' \
+    >/dev/null 2>&1 || return 1
+  occupants=$(printf '%s' "$inventory" | jq -r \
+    --arg tab "$tab" --arg head "$head" --arg fleet "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" '
+      .result.panes[]?
+      | select(.tab_id == $tab and .pane_id != $head and .pane_id != $fleet)
+      | select((.label // "") | startswith("fm-"))
+      | .pane_id + "\t" + .label
+    ' 2>/dev/null) || return 1
   while IFS=$'\t' read -r occupant occupant_label; do
     [ -n "$occupant" ] || continue
     [ "$occupant" != "$pane" ] || continue
     fm_backend_herdr_cockpit_park "$session" "$occupant" "$occupant_label" || return 1
-  done < <(fm_backend_herdr_cli "$session" pane list --workspace "$workspace" 2>/dev/null \
-    | jq -r --arg tab "$tab" --arg head "$head" --arg fleet "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_ID" '
-        .result.panes[]?
-        | select(.tab_id == $tab and .pane_id != $head and .pane_id != $fleet)
-        | select((.label // "") | startswith("fm-"))
-        | .pane_id + "\t" + .label
-      ' 2>/dev/null)
+  done <<EOF
+$occupants
+EOF
 
   # Move the incoming pane into the freed slot. A pane already in the cockpit
   # tab needs no move: herdr reports that as changed:false reason:same_tab, and
@@ -2295,7 +2302,7 @@ fm_backend_herdr_cockpit_rotate() {  # <state-dir> <home> <session> next|prev
 # after the new pane exists and has its exact task label.
 fm_backend_herdr_cockpit_create_task() {  # <state-dir> <home> <label> <cwd>
   local state=$1 home=$2 label=$3 cwd=$4 session workspace tab head fleet
-  local panes tabs duplicate_ids dup dup_pane occupant occupant_label out pane_id actual_workspace actual_tab remaining
+  local panes tabs duplicate_ids dup dup_pane occupants occupant occupant_label out pane_id actual_workspace actual_tab remaining
   fm_backend_herdr_cockpit_binding_live "$state" "$home" || return 1
   session=$FM_BACKEND_HERDR_COCKPIT_SESSION
   workspace=$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID
@@ -2334,15 +2341,21 @@ EOF
   # Free the slot before splitting into it, so the new worker lands as its sole
   # occupant. Each outgoing worker keeps its pane id and moves to its own
   # labelled tab; nothing is closed here.
-  while IFS=$'\t' read -r occupant occupant_label; do
-    [ -n "$occupant" ] || continue
-    fm_backend_herdr_cockpit_park "$session" "$occupant" "$occupant_label" || return 1
-  done < <(printf '%s' "$panes" | jq -r --arg tab "$tab" --arg head "$head" --arg fleet "$fleet" '
+  printf '%s' "$panes" | jq -e '.result.panes | type == "array"' \
+    >/dev/null 2>&1 || return 1
+  occupants=$(printf '%s' "$panes" | jq -r \
+    --arg tab "$tab" --arg head "$head" --arg fleet "$fleet" '
       .result.panes[]?
       | select(.tab_id == $tab and .pane_id != $head and .pane_id != $fleet)
       | select((.label // "") | startswith("fm-"))
       | .pane_id + "\t" + .label
-    ' 2>/dev/null)
+    ' 2>/dev/null) || return 1
+  while IFS=$'\t' read -r occupant occupant_label; do
+    [ -n "$occupant" ] || continue
+    fm_backend_herdr_cockpit_park "$session" "$occupant" "$occupant_label" || return 1
+  done <<EOF
+$occupants
+EOF
   out=$(fm_backend_herdr_cli "$session" pane split "$head" \
     --direction right --ratio "$FM_BACKEND_HERDR_COCKPIT_VIEWPORT_RATIO" \
     --cwd "$cwd" --no-focus 2>/dev/null) || return 1

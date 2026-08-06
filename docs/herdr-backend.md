@@ -59,9 +59,12 @@ Placing a worker parks whoever was there onto its own tab labelled with that tas
 A parked worker sits in the ordinary non-cockpit topology - one labelled `fm-<id>` tab of its own - so it stays exactly as reachable as on a home that never adopted a cockpit, keeps its own sidebar entry, and is never closed or hidden.
 Parking preserves the pane id, so `window=` and `herdr_pane_id=` stay valid across every move; `herdr_tab_id=` records the tab the task was spawned into and is not live placement authority.
 Selecting an agent in the sidebar routes Herdr to that agent's own tab, which `bin/fm-cockpit.sh focus-listen` reacts to by placing that worker in the slot and bringing the cockpit tab back to the front.
+Successful adoption starts that listener detached and best-effort, and repeated adoption is a silent no-op at the listener's per-home single-flight lock.
 Because Herdr routes to the tab before anything can observe the selection, a worker that was parked is briefly visible on its own tab before the slot updates; a worker already in the slot never moves at all.
 That reaction moves only panes this home's own task records claim, so the pinned head, the fleet column, a pane with no agent, and another home's worker are all left alone even though the sidebar displays them.
-Nothing depends on the reaction running: without it every worker simply stays on its own labelled tab, which is why a stopped reaction, a restart, or a second home's cockpit can never strand a pane.
+The focus subscription is session-wide, so concurrent homes observe the same events, but each listener uses its own frame record, lock, and task metadata; ownership isolation prevents one home from moving another home's pane.
+Nothing depends on the reaction running: without it every worker simply stays on its own labelled tab, parking preserves its pane id and never closes it, and a dead listener therefore costs only the automatic return click without stranding a pane.
+Session-start adoption re-arms the listener, the shared lock helper recovers a lock whose recorded process is dead, and a listener exits when its bound frame is no longer live rather than acting on stale state.
 Workers that predate an adopted frame are migrated the first time they are selected rather than moved in bulk at adoption, so no running agent is resized for a view nobody asked for.
 `bin/fm-cockpit.sh show <task-id>` performs the same placement without any reaction running, and `next`/`prev` step the slot along this home's workers ordered by task id, wrapping at both ends and never targeting the pinned head or the fleet column.
 Rotation resolves a worker and then hands it to that same single-occupancy placement, so a key and a sidebar selection cannot disagree.

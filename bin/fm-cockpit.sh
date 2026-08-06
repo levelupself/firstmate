@@ -62,7 +62,12 @@
 # Nothing depends on it: every worker it is not running for stays on an ordinary
 # labelled tab, exactly as on a home that never adopted a cockpit. --once
 # handles a single subscription window and returns, for tests and for a
-# supervisor that prefers to re-arm it itself.
+# caller that prefers to re-arm it itself. Adoption starts it detached and
+# best-effort under that same stale-owner-recovering lock. A dead listener only
+# costs the automatic return click because every parked pane remains reachable
+# on its ordinary labelled tab, and parking moves rather than closes the pane.
+# A listener exits when its recorded frame dies, while session-start adoption
+# re-arms a replacement without changing that frame or any pane.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -400,4 +405,13 @@ fi
 
 MODE=adopt
 [ "$ACTION" != new ] || MODE=new
-fm_backend_herdr_cockpit_adopt "$STATE" "$FM_HOME" "$SESSION" "$MODE"
+fm_backend_herdr_cockpit_adopt "$STATE" "$FM_HOME" "$SESSION" "$MODE" || exit 1
+
+# The subscription is session-wide, but ownership remains home-local: each
+# detached listener has its own home's lock and frame record, and focus_place
+# accepts only panes claimed by that home's task metadata. Starting is
+# deliberately non-fatal because failure leaves every pane on a reachable tab.
+# fm_lock_try_acquire recovers a lock whose recorded process is dead, so a
+# restart can re-arm without a watchdog, pidfile, or second supervision loop.
+nohup "$0" focus-listen </dev/null >/dev/null 2>&1 &
+exit 0
