@@ -206,7 +206,8 @@ test_agent_state_dispatcher_and_compatibility() {
 make_toolchain() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
-  fm_fake_exit0 "$fakebin" node gh-axi chrome-devtools-axi lavish-axi pi-signed
+  fm_fake_exit0 "$fakebin" node gh-axi chrome-devtools-axi lavish-axi pi-signed \
+    pnpm rg xz codeburn infisical herdr
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -229,6 +230,11 @@ fi
 exit 0
 SH
   chmod +x "$fakebin/no-mistakes"
+  cat > "$fakebin/shellcheck" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'ShellCheck - shell script analysis tool' 'version: 0.11.0'
+SH
+  chmod +x "$fakebin/shellcheck"
   cat > "$fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
 case "${1:-} ${2:-}" in

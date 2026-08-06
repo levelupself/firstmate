@@ -38,7 +38,8 @@ unset TMUX TMUX_PANE HERDR_ENV HERDR_PANE_ID HERDR_SESSION HERDR_SOCKET_PATH \
 make_fake_toolchain() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
-  fm_fake_exit0 "$fakebin" tmux node gh-axi chrome-devtools-axi lavish-axi
+  fm_fake_exit0 "$fakebin" tmux node gh-axi chrome-devtools-axi lavish-axi \
+    pnpm rg xz codeburn infisical herdr
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
@@ -69,6 +70,11 @@ fi
 exit 0
 SH
   chmod +x "$fakebin/no-mistakes"
+  cat > "$fakebin/shellcheck" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'ShellCheck - shell script analysis tool' 'version: 0.11.0'
+SH
+  chmod +x "$fakebin/shellcheck"
   add_tasks_axi "$fakebin" "0.1.1"
   add_quota_axi "$fakebin"
   printf '%s\n' "$fakebin"
@@ -461,17 +467,14 @@ test_session_provider_backends_gate_own_cli_not_tmux() {
     printf '%s\n' "$backend" > "$case_dir/home/config/backend"
     # Toolchain has jq + treehouse but NOT the session CLI and NOT tmux.
     fakebin=$(make_fake_toolchain_no_tmux "$case_dir")
+    rm -f "$fakebin/$cli"
     out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
       FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
-    if [ "$backend" = herdr ]; then
-      missing="MISSING_MANUAL: herdr (instructions: https://herdr.dev)"
-    else
-      missing="MISSING: $cli"
-    fi
+    missing="MISSING: $cli"
     assert_contains "$out" "$missing" "backend=$backend must fail closed on its own missing session CLI"
     if [ "$backend" = herdr ]; then
-      assert_not_contains "$out" "MISSING: herdr (install:" \
-        "backend=herdr must not advertise manual guidance as an executable install command"
+      assert_contains "$out" "fm-install-herdr.sh" \
+        "backend=herdr should offer the repository's pinned installer after consent"
     fi
     assert_not_contains "$out" "MISSING: tmux" "backend=$backend must not demand tmux when its own CLI is missing"
   done <<'ROWS'
@@ -482,14 +485,117 @@ ROWS
   pass "bootstrap: a session-provider backend gates its own CLI, never a false tmux requirement"
 }
 
-test_herdr_install_requires_manual_action() {
-  local out status
-  out=$("$ROOT/bin/fm-bootstrap.sh" install herdr 2>&1)
-  status=$?
-  [ "$status" -ne 0 ] || fail "install herdr should fail instead of evaluating its manual-install hint"
-  [ "$out" = "error: herdr requires manual installation (instructions: https://herdr.dev)" ] \
-    || fail "install herdr should return actionable manual-install guidance, got: $out"
-  pass "bootstrap: Herdr manual-install guidance is never executed as a shell command"
+test_herdr_install_uses_pinned_installer_after_consent() {
+  local case_dir fake_root out
+  case_dir="$TMP_ROOT/herdr-install"
+  fake_root="$case_dir/root"
+  mkdir -p "$fake_root/bin"
+  cat > "$fake_root/bin/fm-install-herdr.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'fake pinned Herdr install to %s\n' "$1"
+SH
+  chmod +x "$fake_root/bin/fm-install-herdr.sh"
+  out=$(HOME="$case_dir/home" FM_ROOT_OVERRIDE="$fake_root" \
+    "$ROOT/bin/fm-bootstrap.sh" install herdr 2>&1)
+  assert_contains "$out" "installing herdr:" "approved Herdr install should name the selected tool"
+  assert_contains "$out" "fake pinned Herdr install to $case_dir/home/.local/bin" \
+    "approved Herdr install should use the repository's pinned installer"
+  pass "bootstrap: Herdr installation is explicit, consent-gated, and pinned"
+}
+
+test_declared_runtime_tool_diagnostics() {
+  local label tool executable classification reason case_dir fakebin bash_env out expected n
+  n=0
+  while IFS='^' read -r label tool executable classification reason; do
+    [ -n "$label" ] || continue
+    n=$((n + 1))
+    case_dir="$TMP_ROOT/declared-tool-$n"
+    mkdir -p "$case_dir/home/config"
+    printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+    fakebin=$(make_fake_toolchain "$case_dir")
+    rm -f "$fakebin/$executable"
+    if [ "$tool" = xz-utils ]; then
+      rm -f "$fakebin/shellcheck"
+    fi
+    bash_env="$case_dir/mask-tool.bash"
+    # shellcheck disable=SC2016 # Dollar expressions must remain literal for the generated child-shell fixture.
+    printf 'command() {\n  if [ "${1:-}" = -v ] && [ "${2:-}" = "%s" ]; then return 1; fi\n  builtin command "$@"\n}\n%s() { return 127; }\n' \
+      "$executable" "$executable" > "$bash_env"
+    out=$(PATH="$fakebin:$BASE_PATH" BASH_ENV="$bash_env" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+      FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+    expected="$classification: $tool ($reason"
+    assert_contains "$out" "$expected" "$label should emit its classified diagnostic"
+  done <<'ROWS'
+missing pnpm is required^pnpm^pnpm^MISSING^required: project package workflows depend on it;
+missing ripgrep is required^ripgrep^rg^MISSING^required: operating instructions use rg for repository search;
+missing xz-utils is required^xz-utils^xz^MISSING^required: the pinned ShellCheck installer extracts a .tar.xz archive;
+missing ShellCheck is required^shellcheck^shellcheck^MISSING^required: the validation lint gate pins ShellCheck 0.11.0;
+missing codeburn is optional^codeburn^codeburn^MISSING_OPTIONAL^optional: task-usage snapshots are unavailable;
+missing Infisical CLI is optional^@infisical/cli^infisical^MISSING_OPTIONAL^optional: Infisical credential workflows are unavailable;
+missing inactive Herdr is optional^herdr^herdr^MISSING_OPTIONAL^optional: Herdr-backed dispatch is unavailable;
+ROWS
+  pass "bootstrap classifies every newly declared runtime tool as required or optional"
+}
+
+test_xz_is_optional_when_shellcheck_pin_is_usable() {
+  local case_dir fakebin bash_env out
+  case_dir="$TMP_ROOT/xz-optional"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  rm -f "$fakebin/xz"
+  bash_env="$case_dir/mask-xz.bash"
+  # shellcheck disable=SC2016 # Dollar expressions must remain literal for the generated child-shell fixture.
+  printf '%s\n' \
+    'command() { if [ "${1:-}" = -v ] && [ "${2:-}" = xz ]; then return 1; fi; builtin command "$@"; }' \
+    'xz() { return 127; }' > "$bash_env"
+  out=$(PATH="$fakebin:$BASE_PATH" BASH_ENV="$bash_env" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" "MISSING_OPTIONAL: xz-utils (optional: pinned ShellCheck reinstallation is unavailable;" \
+    "xz-utils should not block a session that already has the exact ShellCheck pin"
+  pass "bootstrap keeps xz-utils non-blocking after the pinned ShellCheck build is usable"
+}
+
+test_shellcheck_exact_pin() {
+  local case_dir fakebin out
+  case_dir="$TMP_ROOT/shellcheck-pin"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  cat > "$fakebin/shellcheck" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'version: 0.12.0'
+SH
+  chmod +x "$fakebin/shellcheck"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" "MISSING: shellcheck (required: the validation lint gate pins ShellCheck 0.11.0;" \
+    "an unpinned ShellCheck build should request the verified repository installer"
+  pass "bootstrap enforces the exact ShellCheck validation pin"
+}
+
+test_environment_local_auth_diagnostics() {
+  local case_dir fakebin out
+  case_dir="$TMP_ROOT/environment-auth"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  cat > "$fakebin/claude" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-} ${2:-}" != 'auth status' ]
+SH
+  cat > "$fakebin/infisical" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-} ${2:-}" != 'login status' ]
+SH
+  chmod +x "$fakebin/claude" "$fakebin/infisical"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_BOOTSTRAP_PRIMARY_HARNESS=claude FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" "NEEDS_HARNESS_AUTH: claude (interactive: claude auth login --claudeai)" \
+    "selected-Claude authentication should be reported as an interactive required boundary"
+  assert_contains "$out" "NEEDS_OPTIONAL_AUTH: @infisical/cli (optional: Infisical credential workflows are unavailable; interactive: infisical login)" \
+    "Infisical authentication should be reported as an interactive optional boundary"
+  pass "bootstrap reports OS-local interactive authentication boundaries without attempting login"
 }
 
 test_cmux_bundled_cli_satisfies_dependency() {
@@ -839,7 +945,11 @@ test_git_is_required_with_supported_install_instruction
 test_orca_backend_gates_orca_tool_only_when_selected
 test_session_provider_backends_do_not_require_tmux
 test_session_provider_backends_gate_own_cli_not_tmux
-test_herdr_install_requires_manual_action
+test_herdr_install_uses_pinned_installer_after_consent
+test_declared_runtime_tool_diagnostics
+test_xz_is_optional_when_shellcheck_pin_is_usable
+test_shellcheck_exact_pin
+test_environment_local_auth_diagnostics
 test_cmux_bundled_cli_satisfies_dependency
 test_unknown_backend_reports_invalid_configuration
 test_json_backends_require_jq_not_tmux
