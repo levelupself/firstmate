@@ -641,10 +641,12 @@ test_focus_listener_requires_explicit_start_and_stop_ends_supervisor_and_reader(
     attempt=$((attempt + 1))
   done
   reader_pid=$(cat "$HERDR_STATE/focus-reader-pid" 2>/dev/null || true)
-  [ -n "$supervisor_pid" ] && kill -0 "$supervisor_pid" 2>/dev/null \
-    || fail "focus-start did not leave its identity-recorded supervisor running"
-  [ -n "$reader_pid" ] && kill -0 "$reader_pid" 2>/dev/null \
-    || fail "focus-start did not leave its supervised event reader running"
+  if [ -z "$supervisor_pid" ] || ! kill -0 "$supervisor_pid" 2>/dev/null; then
+    fail "focus-start did not leave its identity-recorded supervisor running"
+  fi
+  if [ -z "$reader_pid" ] || ! kill -0 "$reader_pid" 2>/dev/null; then
+    fail "focus-start did not leave its supervised event reader running"
+  fi
   again=$(FM_FAKE_NOHUP_RUN=1 FM_FAKE_FOCUS_IDLE=30 focus_cockpit focus-start) \
     || fail "repeated focus-start was not idempotent"
   assert_contains "$again" "already running" "repeated focus-start did not report the live listener"

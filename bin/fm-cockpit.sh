@@ -474,6 +474,7 @@ if [ "$ACTION" = focus-listen ]; then
     exit 1
   fi
   FOCUS_READER_PID=
+  # shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap below.
   focus_listener_cleanup() {
     if [ -n "$FOCUS_READER_PID" ]; then
       kill -TERM "$FOCUS_READER_PID" 2>/dev/null || true
