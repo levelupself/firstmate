@@ -278,10 +278,12 @@ test_no_mistakes_dod_wording() {
     "no-mistakes DOD must exclude non-task-specific scaffold boilerplate from --intent"
   assert_grep "Include this artifact-style constraint in \`--intent\`" "$brief" \
     "no-mistakes DOD must carry the artifact-style constraint into pipeline prompts"
-  assert_grep "risk rationales and fix summaries, must use role-neutral prose with no second person" "$brief" \
-    "no-mistakes DOD must require role-neutral generated risk and fix prose"
+  assert_grep "pipeline-authored risk rationales, fix summaries, and PR bodies must use role-neutral prose with no second person" "$brief" \
+    "no-mistakes DOD must scope role-neutral prose to pipeline-authored review artifacts"
   assert_grep "no captain, user, firstmate, or crewmate role nouns" "$brief" \
     "no-mistakes DOD must prohibit conversational role nouns in generated artifacts"
+  assert_grep "this constraint does not apply to product code, prompts, or user-facing copy" "$brief" \
+    "no-mistakes DOD must exclude product content from the artifact-style constraint"
   # The apostrophe in "firstmate's authority check" is now structurally safe
   # (no `$(...)` wrapper around the heredoc), so it renders verbatim instead of
   # being reworded or escaped away. test_no_heredoc_in_command_substitution
