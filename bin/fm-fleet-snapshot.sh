@@ -257,14 +257,17 @@ first_pr_url_in_file() {  # <file>
 }
 
 backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
-  local backlog=${1:-$BACKLOG}
-  if [ ! -f "$backlog" ]; then
+  local backlog=${1:-$BACKLOG} backlog_content
+  if [ "$#" -ge 2 ]; then
+    backlog_content=$2
+  elif [ -f "$backlog" ]; then
+    backlog_content=$(< "$backlog")
+  else
     jq -n --arg path "$backlog" '{path:$path,present:false,records:[]}'
     return 0
   fi
 
-  # shellcheck disable=SC2094
-  jq -Rn --arg path "$backlog" '
+  printf '%s\n' "$backlog_content" | jq -Rn --arg path "$backlog" '
     def trim: gsub("^[[:space:]]+|[[:space:]]+$"; "");
     def section_state:
       if . == "In flight" then "in_flight"
@@ -403,7 +406,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
           | .requires_child_metadata = (.current_role == "worker")
         else . end)
     | del(.section,.order)
-  ' < "$backlog"
+  '
 }
 
 # Read the structured-state projection and authoritative ready set from tasks-axi.
@@ -413,17 +416,21 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
 # home and each readable registered secondmate home, so this cost scales as
 # 2 * (1 + readable secondmate homes) tasks-axi invocations per redraw.
 backlog_semantics_json() {  # [<backlog-path>]
-  local backlog=${1:-$BACKLOG} list_output ready_output semantic_fields semantics ready_lines ready_ids
-  if [ ! -f "$backlog" ]; then
+  local backlog=${1:-$BACKLOG} backlog_content list_output ready_output semantic_fields semantics ready_lines ready_ids
+  if [ "$#" -ge 2 ]; then
+    backlog_content=$2
+  elif [ -f "$backlog" ]; then
+    backlog_content=$(< "$backlog")
+  else
     printf '[]\n'
     return 0
   fi
-  list_output=$(tasks-axi list --file "$backlog" \
+  list_output=$(printf '%s\n' "$backlog_content" | tasks-axi list --file /dev/stdin \
     --fields blocked,blocked_by,held,hold_kind,hold_reason) || {
       echo "fm-fleet-snapshot: tasks-axi state read failed" >&2
       return 1
     }
-  ready_output=$(tasks-axi ready --file "$backlog") || {
+  ready_output=$(printf '%s\n' "$backlog_content" | tasks-axi ready --file /dev/stdin) || {
     echo "fm-fleet-snapshot: tasks-axi ready read failed" >&2
     return 1
   }
@@ -1566,9 +1573,17 @@ scout_report_lines() {
     | jq -s 'sort_by(.id)'
 }
 
-BACKLOG_MARKDOWN_JSON=$(backlog_json) || { echo "fm-fleet-snapshot: backlog read failed" >&2; exit 1; }
-BACKLOG_SEMANTICS_JSON=$(backlog_semantics_json) \
-  || { echo "fm-fleet-snapshot: backlog semantics read failed" >&2; exit 1; }
+if [ -f "$BACKLOG" ]; then
+  BACKLOG_SOURCE=$(< "$BACKLOG")
+  BACKLOG_MARKDOWN_JSON=$(backlog_json "$BACKLOG" "$BACKLOG_SOURCE") \
+    || { echo "fm-fleet-snapshot: backlog read failed" >&2; exit 1; }
+  BACKLOG_SEMANTICS_JSON=$(backlog_semantics_json "$BACKLOG" "$BACKLOG_SOURCE") \
+    || { echo "fm-fleet-snapshot: backlog semantics read failed" >&2; exit 1; }
+else
+  BACKLOG_MARKDOWN_JSON=$(backlog_json) || { echo "fm-fleet-snapshot: backlog read failed" >&2; exit 1; }
+  BACKLOG_SEMANTICS_JSON=$(backlog_semantics_json) \
+    || { echo "fm-fleet-snapshot: backlog semantics read failed" >&2; exit 1; }
+fi
 BACKLOG_JSON=$(printf '%s\n%s\n' "$BACKLOG_MARKDOWN_JSON" "$BACKLOG_SEMANTICS_JSON" | apply_backlog_semantics) \
   || { echo "fm-fleet-snapshot: backlog semantics join failed" >&2; exit 1; }
 TASKS_JSON=$(task_json_lines) || { echo "fm-fleet-snapshot: task snapshot failed" >&2; exit 1; }

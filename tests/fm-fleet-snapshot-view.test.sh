@@ -620,6 +620,38 @@ EOF
   pass "fleet snapshot and panel ready sets agree exactly with tasks-axi"
 }
 
+test_backlog_projection_uses_one_source_image() {
+  local home fakebin real_tasks_axi out
+  home=$(make_home coherent-backlog)
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] held-task - Held task (repo: firstmate) (kind: ship) (hold: approval pending) (hold-kind: external)
+EOF
+  fakebin=$(make_fakebin "$home")
+  real_tasks_axi=$(command -v tasks-axi)
+  cat > "$fakebin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+set -u
+"${REAL_TASKS_AXI:?}" "$@"
+rc=$?
+if [ "${1:-}" = list ]; then
+  cat > "${RACE_BACKLOG:?}" <<'EOF'
+## Queued
+- [ ] held-task - Held task (repo: firstmate) (kind: ship)
+EOF
+fi
+exit "$rc"
+SH
+  chmod +x "$fakebin/tasks-axi"
+  out=$(PATH="$fakebin:$PATH" REAL_TASKS_AXI="$real_tasks_axi" RACE_BACKLOG="$home/data/backlog.md" \
+    FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "held-task")
+    | .hold_active == true and .dispatchable == false
+  ' >/dev/null || fail "backlog changed between tasks-axi projections: $out"
+  pass "snapshot derives all backlog projections from one source image"
+}
+
 test_view_respects_terminal_height() {
   local home view lines i
   home=$(make_home height-aware)
@@ -1248,6 +1280,7 @@ test_parked_scout_decision_stays_pending
 test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
 test_ready_set_agrees_with_tasks_axi
+test_backlog_projection_uses_one_source_image
 test_view_respects_terminal_height
 test_view_renders_snapshot
 test_view_buckets_reconciled_states
