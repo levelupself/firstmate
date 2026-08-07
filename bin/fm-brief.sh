@@ -335,7 +335,7 @@ EOF
 This project ships **local-only**: no remote, no PR, no pipeline.
 Committing is a midpoint, not the finish - after committing, run the local tests and verify branch \`fm/$ID\` is ready to merge as it stands. Do NOT push, do NOT open a PR, do NOT merge.
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
-This mode has exactly one terminal report: only after the tests pass locally and the working tree is clean with nothing uncommitted or unpushed, append \`done: ready in branch fm/$ID\` to the status file and stop.
+This mode has exactly one terminal report: only once tests pass locally, the tree has no uncommitted changes, and the branch is mergeable exactly as it stands, append \`done: ready in branch fm/$ID, tests pass, tree clean\` to the status file and stop.
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
 EOF
     ;;
@@ -402,9 +402,8 @@ $RULE1
    would act on (setup done, bug reproduced, fix implemented, validation passed) and the
    needs-decision/blocked/paused/done/failed states. No step-by-step FYI progress lines;
    firstmate reads your pane for that.
-   A mid-task \`working:\` line (including setup complete) is nonterminal: do not end the
-   turn after it; continue the same stage until its Definition of done terminal condition, and
-   write only that mode's exact terminal \`done:\` report after its condition holds.
+   A mid-task \`working:\` line (including setup complete) is nonterminal: do not end the turn
+   after it; continue until this mode's one terminal report under Definition of done, the only \`done:\` you write.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
    a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long

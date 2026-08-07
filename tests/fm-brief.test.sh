@@ -334,7 +334,7 @@ test_terminal_report_cannot_be_written_at_commit() {
     assert_no_grep "The task is complete only when committed" "$brief" \
       "${id_proj%%:*}: brief still declares the task complete at the implementation commit"
     # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
-    assert_grep 'write only that mode'"'"'s exact terminal `done:` report after its condition holds' "$brief" \
+    assert_grep 'this mode'"'"'s one terminal report under Definition of done, the only `done:` you write' "$brief" \
       "${id_proj%%:*}: status protocol did not tie done: to the mode's single terminal report"
     assert_grep "This mode has exactly one terminal report" "$brief" \
       "${id_proj%%:*}: Definition of done did not name a single terminal report"
@@ -359,8 +359,10 @@ test_terminal_report_cannot_be_written_at_commit() {
   brief="$home/data/brief-term-lo/brief.md"
   assert_grep "Committing is a midpoint, not the finish - after committing, run the local tests and verify branch \`fm/brief-term-lo\` is ready to merge as it stands." "$brief" \
     "local-only brief must continue from committing into local verification"
-  assert_grep "only after the tests pass locally and the working tree is clean with nothing uncommitted or unpushed, append \`done: ready in branch fm/brief-term-lo\`" "$brief" \
-    "local-only terminal report must require passing tests and a clean, fully pushed branch"
+  assert_grep "only once tests pass locally, the tree has no uncommitted changes, and the branch is mergeable exactly as it stands, append \`done: ready in branch fm/brief-term-lo, tests pass, tree clean\`" "$brief" \
+    "local-only terminal report must carry passing-test, clean-tree, and merge-ready evidence"
+  assert_no_grep "unpushed" "$brief" \
+    "local-only brief must not require push evidence when pushing is forbidden"
   assert_no_grep "/no-mistakes yourself" "$brief" \
     "local-only brief must not send the worker into the no-mistakes pipeline"
   pass "fm-brief.sh: every ship mode names one terminal report unreachable at commit time"
