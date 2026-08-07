@@ -334,7 +334,7 @@ test_terminal_report_cannot_be_written_at_commit() {
     assert_no_grep "The task is complete only when committed" "$brief" \
       "${id_proj%%:*}: brief still declares the task complete at the implementation commit"
     # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
-    assert_grep 'that mode'"'"'s terminal report is the only `done:` you ever write' "$brief" \
+    assert_grep 'write only that mode'"'"'s exact terminal `done:` report after its condition holds' "$brief" \
       "${id_proj%%:*}: status protocol did not tie done: to the mode's single terminal report"
     assert_grep "This mode has exactly one terminal report" "$brief" \
       "${id_proj%%:*}: Definition of done did not name a single terminal report"
@@ -353,12 +353,14 @@ test_terminal_report_cannot_be_written_at_commit() {
   # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
   assert_grep 'only an opened PR can produce it: append `done: PR {url}` to the status file and stop.' "$brief" \
     "direct-PR terminal report must require the opened PR URL"
-  assert_grep "push your branch and open a PR with \`gh-axi\`. Never stop there or wait to be told." "$brief" \
+  assert_grep "push your branch and open a PR with \`gh-axi\`; never stop there or wait to be told." "$brief" \
     "direct-PR brief must send the worker straight from commit into pushing the PR"
 
   brief="$home/data/brief-term-lo/brief.md"
-  assert_grep "only a committed branch that is clean and rebased onto the current default branch can produce it: append \`done: ready in branch fm/brief-term-lo\` to the status file and stop." "$brief" \
-    "local-only terminal report must require a clean, rebased, committed branch"
+  assert_grep "Committing is a midpoint, not the finish - after committing, run the local tests and verify branch \`fm/brief-term-lo\` is ready to merge as it stands." "$brief" \
+    "local-only brief must continue from committing into local verification"
+  assert_grep "only after the tests pass locally and the working tree is clean with nothing uncommitted or unpushed, append \`done: ready in branch fm/brief-term-lo\`" "$brief" \
+    "local-only terminal report must require passing tests and a clean, fully pushed branch"
   assert_no_grep "/no-mistakes yourself" "$brief" \
     "local-only brief must not send the worker into the no-mistakes pipeline"
   pass "fm-brief.sh: every ship mode names one terminal report unreachable at commit time"
