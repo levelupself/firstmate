@@ -33,6 +33,9 @@
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> captain merge
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                captain approves, firstmate merges to local main
+# Each ship mode names exactly one terminal report and ties the status protocol's
+# "done:" verb to it, so a worker that has committed but not reached that mode's
+# gate has no wording it can honestly read as finished.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # Ship briefs prohibit skip-worktree and assume-unchanged index flags because
 # they conceal tracked changes from ordinary dirty-worktree checks.
@@ -320,8 +323,8 @@ case "$MODE" in
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 This project ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
-The task is complete only when committed on your branch.
-When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
+Committing is a midpoint, not the finish - once the implementation is committed, keep going in the same turn: push your branch and open a PR with \`gh-axi\`. Never stop there or wait to be told.
+This mode has exactly one terminal report, and only an opened PR can produce it: append \`done: PR {url}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
     ;;
@@ -331,9 +334,9 @@ EOF
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 This project ships **local-only**: no remote, no PR, no pipeline.
-The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge.
+The deliverable is a committed, clean branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge.
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
-When it is implemented and committed, append \`done: ready in branch fm/$ID\` to the status file and stop.
+This mode has exactly one terminal report, and only a committed branch that is clean and rebased onto the current default branch can produce it: append \`done: ready in branch fm/$ID\` to the status file and stop.
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
 EOF
     ;;
@@ -343,9 +346,9 @@ EOF
     RULE1='1. Never push to the default branch. Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
-The task is complete only when committed on your branch.
-When you believe it is complete, append \`done: {summary}\` to the status file and stop.
-Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
+This project ships **no-mistakes**: the deliverable is a PR whose checks are green.
+Committing is a midpoint, not the finish - once the implementation is committed, keep going in the same turn and invoke /no-mistakes yourself to validate and ship the PR. Never stop there or wait to be told.
+This mode has exactly one terminal report, and only a green CI run can produce it: \`done: PR {url} checks green\`.
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
@@ -401,7 +404,9 @@ $RULE1
    needs-decision/blocked/paused/done/failed states. No step-by-step FYI progress lines;
    firstmate reads your pane for that.
    A mid-task \`working:\` line (including setup complete) is nonterminal: do not end the
-   turn after it; continue the same stage until a defined \`done:\` gate under Definition of done.
+   turn after it; continue the same stage until the single terminal report defined under
+   Definition of done - that mode's terminal report is the only \`done:\` you ever write,
+   so never write a \`done:\` of your own wording or before its condition holds.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
    a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long
