@@ -10,101 +10,105 @@ Verified on 2026-08-07 against herdr 0.8.0 on Linux, in the isolated `fm-lab-115
 Every Herdr call below was made through the lab helper's `run` subcommand, which appends a trailing `--session <lab>` to each call.
 The `scroll` objects were removed from the `pane_info` and `root_pane` bodies because they are terminal geometry noise unrelated to this guarantee; everything else is verbatim.
 
+A `probe` workspace was created first as scaffolding, giving the ids `w1`, `w1:t1`, and `w1:p1`; the transcript starts at the operation under test.
+
 ## Creating a labelled tab leaves that tab's root pane unlabelled
 
 ```sh
 $ herdr --version
 herdr 0.8.0
 
-$ herdr workspace create --label probe --cwd /tmp --no-focus
-"result": {
-"root_pane": {
-"agent_status": "unknown",
-"cwd": "/tmp",
-"focused": false,
-"foreground_cwd": "/tmp",
-"pane_id": "w1:p2",
-"revision": 0,
-"tab_id": "w1:t2",
-"terminal_id": "term_65873835bebf92",
-"workspace_id": "w1"
-},
-"tab": {
-"agent_status": "unknown",
-"focused": false,
-"label": "fm-peer-one",
-"number": 2,
-"pane_count": 1,
-"tab_id": "w1:t2",
-"workspace_id": "w1"
-},
-"type": "tab_created"
-}
+$ herdr tab create --workspace w1 --cwd /tmp --label fm-peer-one --no-focus
+{
+  "id": "cli:tab:create",
+  "result": {
+    "root_pane": {
+      "agent_status": "unknown",
+      "cwd": "/tmp",
+      "focused": false,
+      "foreground_cwd": "/tmp",
+      "pane_id": "w1:p2",
+      "revision": 0,
+      "tab_id": "w1:t2",
+      "terminal_id": "term_65873835bebf92",
+      "workspace_id": "w1"
+    },
+    "tab": {
+      "agent_status": "unknown",
+      "focused": false,
+      "label": "fm-peer-one",
+      "number": 2,
+      "pane_count": 1,
+      "tab_id": "w1:t2",
+      "workspace_id": "w1"
+    },
+    "type": "tab_created"
+  }
 }
 
 $ herdr pane get w1:p2
 {
-"id": "cli:pane:get",
-"result": {
-"pane": {
-"agent_status": "unknown",
-"cwd": "/tmp",
-"focused": false,
-"foreground_cwd": "/tmp",
-"pane_id": "w1:p2",
-"revision": 1,
-"tab_id": "w1:t2",
-"terminal_id": "term_65873835bebf92",
-"terminal_title": "fungiman@appa: /tmp",
-"terminal_title_stripped": "fungiman@appa: /tmp",
-"workspace_id": "w1"
-},
-"type": "pane_info"
-}
+  "id": "cli:pane:get",
+  "result": {
+    "pane": {
+      "agent_status": "unknown",
+      "cwd": "/tmp",
+      "focused": false,
+      "foreground_cwd": "/tmp",
+      "pane_id": "w1:p2",
+      "revision": 1,
+      "tab_id": "w1:t2",
+      "terminal_id": "term_65873835bebf92",
+      "terminal_title": "fungiman@appa: /tmp",
+      "terminal_title_stripped": "fungiman@appa: /tmp",
+      "workspace_id": "w1"
+    },
+    "type": "pane_info"
+  }
 }
 
 $ herdr pane rename w1:p2 fm-peer-one
 {
-"id": "cli:pane:rename",
-"result": {
-"pane": {
-"agent_status": "unknown",
-"cwd": "/tmp",
-"focused": false,
-"foreground_cwd": "/tmp",
-"label": "fm-peer-one",
-"pane_id": "w1:p2",
-"revision": 1,
-"tab_id": "w1:t2",
-"terminal_id": "term_65873835bebf92",
-"terminal_title": "fungiman@appa: /tmp",
-"terminal_title_stripped": "fungiman@appa: /tmp",
-"workspace_id": "w1"
-},
-"type": "pane_info"
-}
+  "id": "cli:pane:rename",
+  "result": {
+    "pane": {
+      "agent_status": "unknown",
+      "cwd": "/tmp",
+      "focused": false,
+      "foreground_cwd": "/tmp",
+      "label": "fm-peer-one",
+      "pane_id": "w1:p2",
+      "revision": 1,
+      "tab_id": "w1:t2",
+      "terminal_id": "term_65873835bebf92",
+      "terminal_title": "fungiman@appa: /tmp",
+      "terminal_title_stripped": "fungiman@appa: /tmp",
+      "workspace_id": "w1"
+    },
+    "type": "pane_info"
+  }
 }
 
 $ herdr pane get w1:p2
 {
-"id": "cli:pane:get",
-"result": {
-"pane": {
-"agent_status": "unknown",
-"cwd": "/tmp",
-"focused": false,
-"foreground_cwd": "/tmp",
-"label": "fm-peer-one",
-"pane_id": "w1:p2",
-"revision": 1,
-"tab_id": "w1:t2",
-"terminal_id": "term_65873835bebf92",
-"terminal_title": "fungiman@appa: /tmp",
-"terminal_title_stripped": "fungiman@appa: /tmp",
-"workspace_id": "w1"
-},
-"type": "pane_info"
-}
+  "id": "cli:pane:get",
+  "result": {
+    "pane": {
+      "agent_status": "unknown",
+      "cwd": "/tmp",
+      "focused": false,
+      "foreground_cwd": "/tmp",
+      "label": "fm-peer-one",
+      "pane_id": "w1:p2",
+      "revision": 1,
+      "tab_id": "w1:t2",
+      "terminal_id": "term_65873835bebf92",
+      "terminal_title": "fungiman@appa: /tmp",
+      "terminal_title_stripped": "fungiman@appa: /tmp",
+      "workspace_id": "w1"
+    },
+    "type": "pane_info"
+  }
 }
 ```
 
