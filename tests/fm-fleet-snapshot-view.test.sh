@@ -710,9 +710,10 @@ test_view_renders_snapshot() {
   assert_not_contains "$view" "fm-peek.sh fm-secondmate-task" \
     "view must not tell firstmate to routinely peek secondmates"
   test_view_renders_each_section_alone
+  test_view_renders_several_sections_in_priority_order
   test_view_rejects_unknown_section
   test_default_view_output_is_prioritized
-  pass "fleet view renders the prioritized default and each standalone section"
+  pass "fleet view renders the prioritized default, section groups, and each standalone section"
 }
 
 test_view_renders_each_section_alone() {
@@ -743,7 +744,7 @@ test_view_renders_each_section_alone() {
 }
 
 test_view_rejects_unknown_section() {
-  local output rc section
+  local output rc section name
   for section in typo all; do
     set +e
     output=$($VIEW --section "$section" 2>&1)
@@ -751,10 +752,46 @@ test_view_rejects_unknown_section() {
     set -e
     expect_code 2 "$rc" "an unsupported section should be a usage error"
     assert_contains "$output" "unknown section: $section" "unknown section error omitted the rejected value"
-    assert_contains "$output" "in-flight, waiting, ready, blocked, finished," \
-      "unknown section usage omitted valid sections"
-    assert_contains "$output" "failed" "unknown section usage omitted the failed section"
+    for name in waiting ready in-flight blocked finished failed; do
+      assert_contains "$output" "$name" "unknown section usage omitted the $name section"
+    done
   done
+  # A rejected name inside a list is rejected as itself, and nothing renders.
+  set +e
+  output=$($VIEW --section ready,typo 2>&1)
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "an unsupported section inside a list should be a usage error"
+  assert_contains "$output" "unknown section: typo" \
+    "a bad name inside a section list was not named on its own"
+  assert_not_contains "$output" "READY (" "a rejected section list still rendered part of the fleet"
+}
+
+test_view_renders_several_sections_in_priority_order() {
+  local home fakebin view expected
+  home=$(make_home view-multi-section)
+  write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+
+  # One pane of a cockpit region holds a group of sections, so the group has to
+  # render as one panel rather than as a concatenation the caller controls.
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW" --section in-flight,blocked)
+  assert_contains "$view" 'IN FLIGHT (3)' "a section group omitted its first section"
+  assert_contains "$view" 'BLOCKED (1)' "a section group omitted its second section"
+  assert_not_contains "$view" 'YOUR DECISIONS' "a section group rendered a section it was not asked for"
+  assert_not_contains "$view" 'FLEET STATUS' "a section group printed the whole-panel heading"
+
+  # Whatever order the sections are asked for, the panel reads in its own
+  # priority order: decisions can never be pushed below running work.
+  expected=$view
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW" --section blocked --section in-flight)
+  [ "$view" = "$expected" ] \
+    || fail "the same sections rendered differently when asked for in another order"
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW" --section blocked,in-flight,blocked)
+  [ "$view" = "$expected" ] || fail "a repeated section rendered twice"
+
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW" --section 'in-flight, blocked')
+  [ "$view" = "$expected" ] || fail "a section list written with a space was not accepted"
 }
 
 test_default_view_output_is_prioritized() {

@@ -2,7 +2,7 @@
 
 Audience: maintainer verification.
 
-This record holds the reusable Herdr evidence the cockpit fleet banner's geometry depends on.
+This record holds the reusable Herdr evidence the cockpit fleet region's geometry depends on.
 `bin/backends/herdr.sh` owns the implementation, [`docs/herdr-backend.md`](../herdr-backend.md) "Watching and task containers" owns the product behavior, and `tests/fm-cockpit.test.sh` owns automated coverage.
 
 Verified on 2026-08-06 against herdr 0.8.0 on Linux, in an isolated `fm-lab-` session provisioned through `bin/fm-herdr-lab.sh` with the default-session tripwire.
@@ -31,6 +31,31 @@ $ herdr pane layout --pane w1:p1
 
 The original pane received 6 of 23 rows and the new pane 17, so `--ratio` names the first child's share.
 A fleet-last order can pass `1 - <fleet share>` directly; a fleet-first order passes the fleet share and then reorders.
+
+## Splitting the newest child repeatedly divides the band into equal panes
+
+Each split's rect is the previous split's remainder, so the share that leaves the pane being split with one N-th of the whole band is `1 / (panes still to place)`.
+For three panes that is 1/3 and then 1/2.
+The 28% band above was divided across its own axis with those two ratios.
+
+```sh
+$ herdr pane split w1:p3 --direction right --ratio 0.3333 --no-focus
+"w1:p4"
+$ herdr pane split w1:p4 --direction right --ratio 0.5000 --no-focus
+"w1:p5"
+$ herdr pane layout --pane w1:p2
+{"panes":[{"pane_id":"w1:p3","rect":{"height":6,"width":18,"x":26,"y":1}},
+          {"pane_id":"w1:p4","rect":{"height":6,"width":18,"x":44,"y":1}},
+          {"pane_id":"w1:p5","rect":{"height":6,"width":18,"x":62,"y":1}},
+          {"pane_id":"w1:p2","rect":{"height":17,"width":54,"x":26,"y":7}}],
+ "splits":[{"direction":"down","id":"split_0_root","ratio":0.28},
+           {"direction":"right","id":"split_1_0","ratio":0.3333},
+           {"direction":"right","id":"split_2_01","ratio":0.5}]}
+```
+
+The three fleet panes took 18 columns each of the 54-column band and kept the band's 6 rows, while the supervisor `w1:p2` kept its own 17 rows at full width.
+Creation order is also screen order left to right, and the later splits are nested inside the band rather than against the supervisor, so dividing the band never resizes or rebuilds the pane holding the supervisor.
+At the supported maximum of six panes, the smallest share is 1/6 = 0.1667, still above the 0.1 floor Herdr silently clamps to.
 
 ## Swapping preserves pane identity and a registered agent
 

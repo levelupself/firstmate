@@ -19,6 +19,11 @@ mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$HOME_DIR/config" "$HOME_DIR/projec
 printf 'w1:p1\tfirstmate-head\tw1:t1\tw1\tlive\n' > "$HERDR_STATE/panes.tsv"
 printf '1\n' > "$HERDR_STATE/counter"
 : > "$HERDR_LOG"
+# The shared primary fixture asks for one fleet pane holding the whole default
+# banner, so the placement, rotation, and focus tests below keep talking about
+# the same frame they always did. The dedicated layout home further down is
+# where the several-pane arrangement itself is exercised.
+printf 'waiting,ready,in-flight,blocked\n' > "$HOME_DIR/config/cockpit-sections"
 
 cat > "$FAKEBIN/herdr" <<'SH'
 #!/usr/bin/env bash
@@ -39,6 +44,20 @@ printf '%s\n' "$*" >> "$log"
 
 pane_row() {
   awk -F '\t' -v id="$1" '$1 == id { print; exit }' "$state/panes.tsv"
+}
+
+# fail_after <verb>: succeed for the first N calls of this verb and fail from
+# then on, where N is the number in "$state/fail-<verb>-after". A whole-region
+# build makes several calls of the same kind, so a test needs to break the third
+# split or the second close specifically, not every one of them.
+fail_after() {  # <verb>
+  local marker="$state/fail-$1-after" seen
+  [ -f "$marker" ] || return 0
+  seen=$(cat "$state/count-$1" 2>/dev/null || printf 0)
+  seen=$((seen + 1))
+  printf '%s\n' "$seen" > "$state/count-$1"
+  [ "$seen" -gt "$(cat "$marker")" ] && exit 1
+  return 0
 }
 
 # Field-wise, never `IFS=$'\t' read`: tab is IFS whitespace, so that collapses
@@ -124,6 +143,7 @@ case "${1:-} ${2:-}" in
     fi
     ;;
   "pane split")
+    fail_after split
     row=$(pane_row "$3")
     [ -n "$row" ] || exit 1
     source_id=$(pane_field "$row" 1)
@@ -191,7 +211,20 @@ case "${1:-} ${2:-}" in
   "pane run")
     id=$3
     [ ! -e "$state/fail-run" ] || exit 1
-    awk -F '\t' -v OFS='\t' -v id="$id" '$1 == id {$5="fleet-live"} {print}' \
+    fail_after run
+    # The launched --section argument is kept with the pane, so process-info
+    # reports back exactly what this pane was started with rather than a
+    # constant the adapter would always agree with.
+    run_section=
+    shift 3
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --section) run_section=${2:-}; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    awk -F '\t' -v OFS='\t' -v id="$id" -v section="$run_section" \
+      '$1 == id {$5="fleet-live"; $6=section} {print}' \
       "$state/panes.tsv" > "$state/panes.next"
     mv "$state/panes.next" "$state/panes.tsv"
     printf '%s\n' '{"result":{"type":"command_started"}}'
@@ -201,6 +234,14 @@ case "${1:-} ${2:-}" in
     row=$(pane_row "$info_pane")
     [ -n "$row" ] || exit 1
     status=$(printf '%s' "$row" | awk -F '\t' '{print $5}')
+    pane_section=$(printf '%s' "$row" | awk -F '\t' '{print $6}')
+    section_argv() {  # extra argv words for whatever this pane was launched with
+      if [ -n "$pane_section" ]; then
+        jq -cn --arg s "$pane_section" '["--section",$s]'
+      else
+        printf '[]'
+      fi
+    }
     emit_processes() {  # <argv-json>
       jq -n --arg pane "$info_pane" --argjson argv "$1" \
         '{result:{type:"pane_process_info",process_info:{pane_id:$pane,shell_pid:100,
@@ -210,16 +251,24 @@ case "${1:-} ${2:-}" in
     case "$status" in
       fleet-live)
         emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
-          '["bash",$s,"--watch"]')"
+          --argjson extra "$(section_argv)" '["bash",$s,"--watch"] + $extra')"
         ;;
       fleet-relative)
         # The same watcher, started by hand from the checkout through a
         # relative path rather than the adapter's absolute invocation.
-        emit_processes '["bash","bin/fm-fleet-view.sh","--watch"]'
+        emit_processes "$(jq -cn --argjson extra "$(section_argv)" \
+          '["bash","bin/fm-fleet-view.sh","--watch"] + $extra')"
         ;;
       fleet-env-home)
         emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
-          --arg h "FM_HOME=${FM_FAKE_FLEET_HOME:-}" '["env",$h,$s,"--watch"]')"
+          --arg h "FM_HOME=${FM_FAKE_FLEET_HOME:-}" --argjson extra "$(section_argv)" \
+          '["env",$h,$s,"--watch"] + $extra')"
+        ;;
+      fleet-other-sections)
+        # A fleet view for this home, watching, but not the part of the fleet
+        # the frame recorded for this pane.
+        emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
+          '["bash",$s,"--watch","--section","failed"]')"
         ;;
       fleet-no-watch)
         emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
@@ -250,6 +299,7 @@ case "${1:-} ${2:-}" in
   "pane close")
     id=$3
     [ ! -e "$state/fail-close" ] || exit 1
+    fail_after close
     awk -F '\t' -v id="$id" '$1 != id {print}' "$state/panes.tsv" > "$state/panes.next"
     mv "$state/panes.next" "$state/panes.tsv"
     printf '%s\n' '{"result":{"type":"pane_closed"}}'
@@ -376,8 +426,11 @@ test_frame_re_adoption_is_idempotent() {
   local first second before after log
   first=$(run_cockpit adopt) || fail "first cockpit adoption failed"
   assert_contains "$first" "adopted Herdr frame" "first adoption did not report its frame"
-  assert_grep 'fleet_pane_id=w1:p2' "$HOME_DIR/state/.herdr-cockpit" \
+  assert_grep 'fleet_pane_ids=w1:p2' "$HOME_DIR/state/.herdr-cockpit" \
     "first adoption did not bind the persistent fleet pane"
+  assert_grep 'fleet_pane_sections=waiting,ready,in-flight,blocked' \
+    "$HOME_DIR/state/.herdr-cockpit" \
+    "first adoption did not record what its fleet pane shows"
   before=$(sha256sum "$HOME_DIR/state/.herdr-cockpit" | awk '{print $1}')
   : > "$HERDR_LOG"
   second=$(run_cockpit adopt) || fail "cockpit restart re-adoption failed"
@@ -450,10 +503,10 @@ EOF
     "$COCKPIT" adopt) || fail "validated version-1 cockpit frame did not migrate"
   assert_contains "$out" "migrated and re-adopted Herdr frame" \
     "version-1 migration was not explicit"
-  assert_grep 'version=2' "$SECOND_HOME/state/.herdr-cockpit" \
+  assert_grep 'version=3' "$SECOND_HOME/state/.herdr-cockpit" \
     "version-1 cockpit record did not advance atomically"
 
-  fleet=$(grep '^fleet_pane_id=' "$SECOND_HOME/state/.herdr-cockpit" | cut -d= -f2-)
+  fleet=$(grep '^fleet_pane_ids=' "$SECOND_HOME/state/.herdr-cockpit" | cut -d= -f2- | cut -d, -f1)
   awk -F '\t' -v OFS='\t' -v pane="$fleet" '$1 == pane {$5="no-agent"} {print}' \
     "$HERDR_STATE/panes.tsv" > "$HERDR_STATE/panes.next"
   mv "$HERDR_STATE/panes.next" "$HERDR_STATE/panes.tsv"
@@ -475,7 +528,7 @@ EOF
     || fail "dead fleet rendering rewrote the frame record"
 
   rm "$SECOND_HOME/state/.herdr-cockpit"
-  awk -F '\t' -v pane="$fleet" '$1 != pane {print}' \
+  awk -F '\t' '$4 != "w2" || $1 == "w2:p1" {print}' \
     "$HERDR_STATE/panes.tsv" > "$HERDR_STATE/panes.next"
   mv "$HERDR_STATE/panes.next" "$HERDR_STATE/panes.tsv"
   touch "$HERDR_STATE/fail-run"
@@ -915,11 +968,25 @@ printf 'layout\n' > "$LAYOUT_HOME/.fm-secondmate-home"
 
 reset_layout_frame() {
   rm -f "$LAYOUT_HOME/state/.herdr-cockpit" "$LAYOUT_HOME/config/cockpit-layout" \
-    "$HERDR_STATE/fail-swap"
+    "$LAYOUT_HOME/config/cockpit-sections" "$HERDR_STATE/fail-swap" \
+    "$HERDR_STATE"/fail-*-after "$HERDR_STATE"/count-*
   awk -F '\t' '$4 != "w3" {print}' "$HERDR_STATE/panes.tsv" > "$HERDR_STATE/panes.next"
   mv "$HERDR_STATE/panes.next" "$HERDR_STATE/panes.tsv"
   printf 'w3:p1\tlayout-head\tw3:t1\tw3\tlive\n' >> "$HERDR_STATE/panes.tsv"
   : > "$HERDR_LOG"
+}
+
+fleet_panes_of() {  # this frame's recorded fleet panes, one per line
+  grep '^fleet_pane_ids=' "$LAYOUT_HOME/state/.herdr-cockpit" | cut -d= -f2- | tr ',' '\n'
+}
+
+fleet_pane_at() {  # <1-based position>
+  fleet_panes_of | sed -n "$1p"
+}
+
+added_layout_panes() {  # every non-head pane the fake screen currently carries
+  awk -F '\t' '$4 == "w3" && $1 != "w3:p1" { printf "%s ", $1 } END { print "" }' \
+    "$HERDR_STATE/panes.tsv"
 }
 
 run_layout_cockpit() {  # <action> [<args...>]
@@ -941,7 +1008,7 @@ layout_rows() {  # visual order of this frame's panes, top first
 }
 
 test_default_layout_warns_before_it_changes_the_screen() {
-  local timeline out fleet
+  local timeline out first second third
   reset_layout_frame
   # The warning and the herdr calls share one append-mode file, so their
   # relative order in it is the real order they happened in.
@@ -957,45 +1024,133 @@ test_default_layout_warns_before_it_changes_the_screen() {
     "$COCKPIT" adopt 2>>"$timeline") || fail "default banner adoption failed"
   assert_contains "$out" "adopted Herdr frame" "default adoption did not report its frame"
 
-  local body warn_line split_line
+  local body warn_line split_line warnings
   body=$(cat "$timeline")
   assert_contains "$body" "this screen is about to change" \
     "no warning was given before the screen changed"
   assert_contains "$body" "fleet banner above the supervisor at 28% of the frame (stacked, fleet-first)" \
     "the warning did not name the exact shape about to be applied"
+  assert_contains "$body" "one pane per group: waiting | ready | in-flight,blocked" \
+    "the warning did not name the panes the region is about to become"
   assert_contains "$body" "no existing pane is closed, replaced, or re-split" \
     "the warning did not state what it leaves alone"
   assert_contains "$body" "$LAYOUT_HOME/config/cockpit-layout" \
     "the warning did not name the file that changes the layout"
+  assert_contains "$body" "$LAYOUT_HOME/config/cockpit-sections" \
+    "the warning did not name the file that changes the arrangement"
+  warnings=$(grep -c 'this screen is about to change' "$timeline")
+  [ "$warnings" = 1 ] \
+    || fail "a three-pane region warned $warnings times instead of announcing itself once"
   warn_line=$(grep -n 'this screen is about to change' "$timeline" | head -1 | cut -d: -f1)
   split_line=$(grep -n '^pane split' "$timeline" | head -1 | cut -d: -f1)
   [ -n "$warn_line" ] && [ -n "$split_line" ] && [ "$warn_line" -lt "$split_line" ] \
     || fail "the warning did not precede the pane split that changed the screen"
 
-  fleet=$(grep '^fleet_pane_id=' "$LAYOUT_HOME/state/.herdr-cockpit" | cut -d= -f2-)
+  first=$(fleet_pane_at 1)
+  second=$(fleet_pane_at 2)
+  third=$(fleet_pane_at 3)
   assert_contains "$body" "pane split w3:p1 --direction down --ratio 0.28" \
-    "the default banner did not split the frame as a 28% stacked band"
-  assert_contains "$body" "pane swap --source-pane w3:p1 --target-pane $fleet" \
-    "the default fleet-first order did not put the banner ahead of the supervisor"
-  [ "$(layout_rows)" = "$fleet w3:p1 " ] \
-    || fail "the fleet banner did not end up above the supervisor: $(layout_rows)"
-  pass "the default banner is a stacked 28% fleet-on-top band announced before it is applied"
+    "the default region did not split the frame as a 28% stacked band"
+  assert_contains "$body" "pane swap --source-pane w3:p1 --target-pane $first" \
+    "the default fleet-first order did not put the region ahead of the supervisor"
+  # Equal thirds of a stacked band: each division leaves the pane it splits with
+  # one third of the whole, so the shares are 1/3 and then 1/2 of the remainder.
+  assert_contains "$body" "pane split $first --direction right --ratio 0.3333" \
+    "the second pane did not take an equal share across the band"
+  assert_contains "$body" "pane split $second --direction right --ratio 0.5000" \
+    "the third pane did not take an equal share of what was left"
+  assert_contains "$body" "pane run $first env FM_HOME=$LAYOUT_HOME" \
+    "the first pane was not launched for this home"
+  assert_contains "$body" "--watch --section waiting" \
+    "the decisions pane was not launched as its own section"
+  assert_contains "$body" "--watch --section ready" \
+    "the ready pane was not launched as its own section"
+  assert_contains "$body" "--watch --section in-flight,blocked" \
+    "the running-work pane was not launched with its section group"
+  [ "$(layout_rows)" = "$first $second $third w3:p1 " ] \
+    || fail "the fleet panes did not end up above the supervisor in reading order: $(layout_rows)"
+  pass "the default region is three equal decisions-first panes announced once before they are applied"
+}
+
+test_sections_config_sets_the_pane_arrangement() {
+  local out body first second
+  reset_layout_frame
+  printf '# the queue, then everything else\nready,waiting\nin-flight, blocked\n' \
+    > "$LAYOUT_HOME/config/cockpit-sections"
+  out=$(run_layout_cockpit adopt 2>&1) || fail "configured arrangement adoption failed: $out"
+  body=$(cat "$HERDR_LOG")
+  first=$(fleet_pane_at 1)
+  second=$(fleet_pane_at 2)
+  [ -n "$second" ] || fail "the configured arrangement did not create a second pane"
+  [ -z "$(fleet_pane_at 3)" ] || fail "the configured arrangement created a third pane"
+  assert_contains "$body" "pane split $first --direction right --ratio 0.5000" \
+    "two configured panes did not divide the band in half"
+  assert_contains "$body" "--watch --section ready,waiting" \
+    "the first configured pane did not carry its own section group"
+  assert_contains "$body" "--watch --section in-flight,blocked" \
+    "a section list written with a space was not accepted"
+  assert_grep 'fleet_pane_sections=ready,waiting|in-flight,blocked' \
+    "$LAYOUT_HOME/state/.herdr-cockpit" \
+    "the frame did not record which sections each pane holds"
+  [ "$(layout_rows)" = "$first $second w3:p1 " ] \
+    || fail "the configured panes did not sit above the supervisor: $(layout_rows)"
+  pass "config/cockpit-sections chooses how many fleet panes there are and what each one holds"
+}
+
+test_invalid_sections_config_refuses_without_changing_the_screen() {
+  local out rc before
+  reset_layout_frame
+  before=$(layout_rows)
+  printf 'waiting\nnonsense\n' > "$LAYOUT_HOME/config/cockpit-sections"
+  out=$(run_layout_cockpit adopt 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "an unknown fleet section was accepted"
+  assert_contains "$out" 'fleet section "nonsense" must be one of' \
+    "the refusal did not name the invalid section"
+  assert_not_contains "$(cat "$HERDR_LOG")" "pane split" \
+    "an invalid arrangement still changed the screen"
+  assert_not_contains "$out" "this screen is about to change" \
+    "an invalid arrangement warned about a change it never made"
+  [ "$(layout_rows)" = "$before" ] || fail "an invalid arrangement rearranged the frame"
+  [ ! -e "$LAYOUT_HOME/state/.herdr-cockpit" ] \
+    || fail "an invalid arrangement published a frame record"
+
+  printf 'waiting,ready\nready\n' > "$LAYOUT_HOME/config/cockpit-sections"
+  out=$(run_layout_cockpit adopt 2>&1) \
+    && fail "a section claimed by two panes was accepted"
+  assert_contains "$out" 'fleet section "ready" is listed more than once' \
+    "the refusal did not name the duplicated section"
+
+  printf 'waiting\nready\nin-flight\nblocked\nfinished\nfailed\nwaiting\n' \
+    > "$LAYOUT_HOME/config/cockpit-sections"
+  out=$(run_layout_cockpit adopt 2>&1) \
+    && fail "an arrangement past the supported pane count was accepted"
+  assert_contains "$out" "at most 6" "the refusal did not name the supported pane count"
+  pass "an invalid arrangement refuses and leaves the screen exactly as it was"
 }
 
 test_layout_config_sets_direction_order_and_ratio() {
-  local out fleet body
+  local out first second third body
   reset_layout_frame
   printf 'side-by-side fleet-last 0.35\n' > "$LAYOUT_HOME/config/cockpit-layout"
   out=$(run_layout_cockpit adopt 2>&1) || fail "configured banner adoption failed"
   body=$(cat "$HERDR_LOG")
-  fleet=$(grep '^fleet_pane_id=' "$LAYOUT_HOME/state/.herdr-cockpit" | cut -d= -f2-)
+  first=$(fleet_pane_at 1)
+  second=$(fleet_pane_at 2)
+  third=$(fleet_pane_at 3)
   assert_contains "$body" "pane split w3:p1 --direction right --ratio 0.6500" \
     "a fleet-last side-by-side layout did not leave the supervisor the first 65%"
   assert_not_contains "$body" "pane swap" \
     "a fleet-last order still reordered the panes"
-  [ "$(layout_rows)" = "w3:p1 $fleet " ] \
-    || fail "the configured banner did not follow the supervisor: $(layout_rows)"
-  pass "config/cockpit-layout sets the banner's direction, order, and ratio"
+  # A column is divided the other way, so its panes stack instead of sitting
+  # side by side; the band never divides along the axis it already spans.
+  assert_contains "$body" "pane split $first --direction down --ratio 0.3333" \
+    "a side-by-side region did not stack its panes down the column"
+  assert_contains "$body" "pane split $second --direction down --ratio 0.5000" \
+    "the third pane of a column did not stack under the second"
+  [ "$(layout_rows)" = "w3:p1 $first $second $third " ] \
+    || fail "the configured region did not follow the supervisor: $(layout_rows)"
+  pass "config/cockpit-layout sets the region's direction, order, and ratio"
 }
 
 test_invalid_layout_config_refuses_without_changing_the_screen() {
@@ -1064,7 +1219,7 @@ test_failed_reorder_reports_when_the_screen_cannot_be_restored() {
 }
 
 test_failed_record_publication_reports_when_the_screen_cannot_be_restored() {
-  local out rc fleet
+  local out rc stranded
   reset_layout_frame
   rmdir "$LAYOUT_HOME/state"
   touch "$LAYOUT_HOME/state" "$HERDR_STATE/fail-close"
@@ -1073,17 +1228,79 @@ test_failed_record_publication_reports_when_the_screen_cannot_be_restored() {
   rm -f "$LAYOUT_HOME/state" "$HERDR_STATE/fail-close"
   mkdir "$LAYOUT_HOME/state"
   [ "$rc" -ne 0 ] || fail "adoption accepted a frame record it could not publish"
-  fleet=$(awk -F '\t' '$4 == "w3" && $1 != "w3:p1" {print $1}' "$HERDR_STATE/panes.tsv")
-  [ -n "$fleet" ] || fail "the failed record rollback did not leave its pane in the fake screen"
+  stranded=$(added_layout_panes)
+  [ "$(printf '%s' "$stranded" | wc -w)" = 3 ] \
+    || fail "the failed record rollback did not leave every pane in the fake screen: $stranded"
   assert_contains "$out" "could not publish the cockpit frame record" \
     "a record-publication failure did not name its cause"
   assert_contains "$out" "NOT-RESTORED" \
     "a failed record rollback did not report that the screen remained changed"
-  assert_contains "$out" "added fleet pane $fleet could not be removed" \
-    "a failed record rollback did not name the pane still on screen"
+  assert_contains "$out" "added fleet panes ${stranded% } could not be removed" \
+    "a failed record rollback did not name every pane still on screen"
   [ ! -e "$LAYOUT_HOME/state/.herdr-cockpit" ] \
     || fail "failed record publication left a frame record"
-  pass "a failed record rollback reports the unrecorded pane still on screen"
+  pass "a failed record rollback reports every unrecorded pane still on screen"
+}
+
+test_a_later_pane_failure_removes_every_pane_the_region_added() {
+  local out rc before
+  reset_layout_frame
+  before=$(layout_rows)
+  # The whole region is built before anything is launched, so failing the third
+  # split is a failure with two panes already on screen.
+  printf '2\n' > "$HERDR_STATE/fail-split-after"
+  out=$(run_layout_cockpit adopt 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "adoption accepted a region it could not finish building"
+  assert_contains "$out" "could not divide the fleet region into its configured panes" \
+    "a failed later split did not name what went wrong"
+  assert_contains "$out" "the original screen was restored" \
+    "a failed later split did not say the screen was put back"
+  [ -z "$(added_layout_panes)" ] \
+    || fail "a failed later split left panes behind: $(added_layout_panes)"
+  [ "$(layout_rows)" = "$before" ] \
+    || fail "a failed later split left the frame changed: $(layout_rows)"
+  [ ! -e "$LAYOUT_HOME/state/.herdr-cockpit" ] \
+    || fail "a failed later split published a frame record"
+
+  # The same guarantee once every pane exists and the last one will not start.
+  reset_layout_frame
+  printf '2\n' > "$HERDR_STATE/fail-run-after"
+  out=$(run_layout_cockpit adopt 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "adoption accepted a region whose last pane never launched"
+  assert_contains "$out" "could not launch the fleet banner" \
+    "a failed later launch did not name what went wrong"
+  assert_contains "$out" "the original screen was restored" \
+    "a failed later launch did not say the screen was put back"
+  [ -z "$(added_layout_panes)" ] \
+    || fail "a failed later launch left panes behind: $(added_layout_panes)"
+  pass "a failure on a later pane removes every pane the region added"
+}
+
+test_a_later_pane_cleanup_failure_reports_each_pane_still_on_screen() {
+  local out rc stranded
+  reset_layout_frame
+  # Every pane is created, the last one will not launch, and only the first
+  # removal succeeds: the report must distinguish what came off the screen from
+  # what is still on it.
+  printf '2\n' > "$HERDR_STATE/fail-run-after"
+  printf '1\n' > "$HERDR_STATE/fail-close-after"
+  out=$(run_layout_cockpit adopt 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "adoption accepted a region it could neither launch nor remove"
+  stranded=$(added_layout_panes)
+  [ "$(printf '%s' "$stranded" | wc -w)" = 2 ] \
+    || fail "the one verified removal did not take exactly one pane off the screen: $stranded"
+  assert_contains "$out" "NOT-RESTORED" \
+    "a partial rollback did not report that the screen remained changed"
+  assert_contains "$out" "added fleet panes ${stranded% } could not be removed" \
+    "a partial rollback did not name exactly the panes still on screen"
+  assert_not_contains "$out" "the original screen was restored" \
+    "a partial rollback still claimed the screen was put back"
+  [ ! -e "$LAYOUT_HOME/state/.herdr-cockpit" ] \
+    || fail "a partial rollback published a frame record"
+  pass "a rollback that cannot remove every pane reports exactly which ones remain"
 }
 
 test_re_adoption_neither_warns_nor_touches_the_screen() {
@@ -1102,9 +1319,9 @@ test_re_adoption_neither_warns_nor_touches_the_screen() {
   pass "re-adopting a live frame changes nothing and announces nothing"
 }
 
-set_fleet_pane_status() {  # <status>
+set_fleet_pane_status() {  # <status> [<1-based fleet pane, default 1>]
   local fleet
-  fleet=$(grep '^fleet_pane_id=' "$LAYOUT_HOME/state/.herdr-cockpit" | cut -d= -f2-)
+  fleet=$(fleet_pane_at "${2:-1}")
   awk -F '\t' -v OFS='\t' -v pane="$fleet" -v status="$1" \
     '$1 == pane {$5=status} {print}' "$HERDR_STATE/panes.tsv" > "$HERDR_STATE/panes.next"
   mv "$HERDR_STATE/panes.next" "$HERDR_STATE/panes.tsv"
@@ -1182,11 +1399,90 @@ test_fleet_diagnostics_name_the_check_that_failed() {
   pass "each fleet-banner failure reports its own cause instead of one collapsed verdict"
 }
 
+test_every_fleet_pane_must_be_live_and_show_what_the_frame_recorded() {
+  local out live third
+  reset_layout_frame
+  run_layout_cockpit adopt >/dev/null 2>&1 || fail "region adoption failed"
+  live=$(LINES=40 COLUMNS=120 run_layout_cockpit panel 2>&1) \
+    || fail "panel did not render the live region"
+  assert_contains "$live" "FLEET panes=3 [live]" \
+    "the panel did not report the region as its several panes"
+  assert_contains "$live" "1 waiting $(fleet_pane_at 1)" \
+    "the panel did not name the first pane by what it shows"
+  assert_contains "$live" "3 in-flight,blocked $(fleet_pane_at 3)" \
+    "the panel did not name the last pane by what it shows"
+
+  # A pane other than the first is just as load-bearing: the region is live
+  # only while every one of its panes is.
+  third=$(set_fleet_pane_status fleet-gone 3)
+  out=$(run_layout_cockpit status 2>&1) \
+    && fail "status reported a live region with its third pane gone"
+  assert_contains "$out" "(fleet-no-process-info)" \
+    "status did not name the failing check for a later pane"
+  out=$(LINES=40 COLUMNS=120 run_layout_cockpit panel 2>&1) \
+    || fail "panel did not render a region with one dead pane"
+  assert_contains "$out" "FLEET column=$third [no-process-info]" \
+    "the panel did not name the exact pane that failed"
+
+  # A pane running a fleet view for the right home, watching, but showing a
+  # different part of the fleet than the record binds it to.
+  set_fleet_pane_status fleet-live 3 >/dev/null
+  out=$(run_layout_cockpit status 2>&1) || fail "restoring the third pane did not restore the region"
+  set_fleet_pane_status fleet-other-sections 2 >/dev/null
+  out=$(run_layout_cockpit status 2>&1) \
+    && fail "status accepted a fleet pane showing sections the frame never recorded"
+  assert_contains "$out" "(fleet-wrong-sections)" \
+    "status did not distinguish a mismatched section list from a missing fleet view"
+  assert_contains "$out" "showing different sections than the frame recorded" \
+    "the refusal did not explain the section mismatch in plain words"
+  pass "the region is live only while every pane is live and showing what the frame recorded"
+}
+
+test_a_version_two_frame_stays_live_as_its_single_pane_arrangement() {
+  local out
+  reset_layout_frame
+  # A frame adopted before the region could hold more than one pane: one banner,
+  # no recorded section argument. It stays usable, and re-adoption leaves it
+  # alone rather than quietly rearranging a screen the operator already has.
+  printf 'w3:p2\tfirstmate-fleet\tw3:t1\tw3\tfleet-live\n' >> "$HERDR_STATE/panes.tsv"
+  cat > "$LAYOUT_HOME/state/.herdr-cockpit" <<EOF
+version=2
+home=$LAYOUT_HOME
+session=fmtest
+workspace_id=w3
+tab_id=w3:t1
+head_pane_id=w3:p1
+viewport_pane_id=
+fleet_pane_id=w3:p2
+EOF
+  : > "$HERDR_LOG"
+  out=$(run_layout_cockpit status 2>&1) \
+    || fail "a single-pane frame from before the arrangement was rejected: $out"
+  assert_contains "$out" "COCKPIT: live session=fmtest" \
+    "a single-pane frame did not report itself live"
+  out=$(LINES=40 COLUMNS=120 run_layout_cockpit panel 2>&1) \
+    || fail "a single-pane frame could not be rendered"
+  assert_contains "$out" "FLEET column=w3:p2 [live]" \
+    "a single-pane frame did not render as one banner"
+  assert_contains "$out" "1 all w3:p2" \
+    "a banner with no recorded sections was not shown as holding all of them"
+
+  out=$(run_layout_cockpit adopt 2>&1) || fail "a single-pane frame could not be re-adopted: $out"
+  assert_contains "$out" "re-adopted Herdr frame" "re-adoption did not report the preserved frame"
+  assert_not_contains "$out" "this screen is about to change" \
+    "re-adoption rearranged a frame the operator already had"
+  assert_not_contains "$(cat "$HERDR_LOG")" "pane split" \
+    "re-adoption rebuilt an existing frame into the configured arrangement"
+  assert_grep 'version=2' "$LAYOUT_HOME/state/.herdr-cockpit" \
+    "re-adoption rewrote a frame it was supposed to preserve"
+  pass "a frame adopted as one banner stays live and is never rearranged behind the operator"
+}
+
 test_banner_zoom_is_reversible_and_moves_no_pane() {
   local fleet before out log
   reset_layout_frame
   run_layout_cockpit adopt >/dev/null 2>&1 || fail "banner adoption failed"
-  fleet=$(grep '^fleet_pane_id=' "$LAYOUT_HOME/state/.herdr-cockpit" | cut -d= -f2-)
+  fleet=$(fleet_pane_at 1)
   before=$(layout_rows)
   : > "$HERDR_LOG"
   out=$(run_layout_cockpit zoom on 2>&1) || fail "the banner could not be zoomed: $out"
@@ -1204,7 +1500,20 @@ test_banner_zoom_is_reversible_and_moves_no_pane() {
   [ "$(layout_rows)" = "$before" ] || fail "zooming rearranged the frame"
   run_layout_cockpit zoom sideways >/dev/null 2>&1 \
     && fail "an unsupported zoom mode was accepted"
-  pass "the banner zooms and unzooms without splitting, moving, or closing a pane"
+
+  # Every pane of the region is readable up close, not only the first one.
+  : > "$HERDR_LOG"
+  out=$(run_layout_cockpit zoom on 3 2>&1) || fail "a later fleet pane could not be zoomed: $out"
+  assert_contains "$out" "fleet banner $(fleet_pane_at 3) fills the frame" \
+    "zooming a later pane did not report that pane"
+  assert_contains "$(cat "$HERDR_LOG")" "pane zoom $(fleet_pane_at 3) --on" \
+    "zooming a later pane did not reach it"
+  out=$(run_layout_cockpit zoom on 9 2>&1) \
+    && fail "zoom accepted a fleet pane this frame does not have"
+  assert_contains "$out" "this frame has no fleet pane 9" \
+    "zoom did not explain which pane was missing"
+  [ "$(layout_rows)" = "$before" ] || fail "a refused zoom rearranged the frame"
+  pass "each fleet pane zooms and unzooms without splitting, moving, or closing a pane"
 }
 
 test_status_names_the_check_that_failed() {
@@ -1250,14 +1559,20 @@ test_panel_renders_the_live_frame_and_fleet_view
 test_panel_degrades_visibly_outside_herdr
 test_dead_head_is_preserved_until_explicit_new_context
 test_default_layout_warns_before_it_changes_the_screen
+test_sections_config_sets_the_pane_arrangement
+test_invalid_sections_config_refuses_without_changing_the_screen
 test_layout_config_sets_direction_order_and_ratio
 test_invalid_layout_config_refuses_without_changing_the_screen
 test_failed_reorder_restores_the_original_screen
 test_failed_reorder_reports_when_the_screen_cannot_be_restored
+test_a_later_pane_failure_removes_every_pane_the_region_added
+test_a_later_pane_cleanup_failure_reports_each_pane_still_on_screen
 test_failed_record_publication_reports_when_the_screen_cannot_be_restored
 test_re_adoption_neither_warns_nor_touches_the_screen
 test_a_relative_path_fleet_view_still_counts_as_live
 test_an_unresolved_home_path_still_matches_the_live_banner
 test_fleet_diagnostics_name_the_check_that_failed
+test_every_fleet_pane_must_be_live_and_show_what_the_frame_recorded
+test_a_version_two_frame_stays_live_as_its_single_pane_arrangement
 test_banner_zoom_is_reversible_and_moves_no_pane
 test_status_names_the_check_that_failed

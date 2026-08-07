@@ -7,6 +7,11 @@
 # blocked queued work.
 # Unreadable worker state stays under in-flight with a quiet qualifier.
 # Finished and failed history is available only through --section.
+# --section may be repeated and may carry a comma-separated list, so one render
+# can hold any subset of sections. Whatever the caller asks for, the sections are
+# emitted in this file's own priority order rather than the order they were
+# requested: the reading order is a property of the view, not of its arguments,
+# so a caller cannot demote decisions by listing them last.
 # Queued readiness, dependency blockers, and active holds come from the snapshot's
 # tasks-axi projection; the renderer does not derive backlog state itself.
 # Watch mode uses only bash, jq, terminal control sequences, and sleep; a failed
@@ -21,20 +26,28 @@ SNAPSHOT_CMD="$SCRIPT_DIR/fm-fleet-snapshot.sh"
 
 usage() {
   cat <<'EOF'
-usage: fm-fleet-view.sh [--json] [--watch [interval]] [--section <name>]
+usage: fm-fleet-view.sh [--json] [--watch [interval]] [--section <names>]...
 
 Render a narrow, prioritized fleet side panel from fm-fleet-snapshot.sh.
 Use --json to print the complete underlying snapshot.
 Use --watch to redraw every 5 seconds, or provide a positive interval in seconds.
-Use --section to render one of: in-flight, waiting, ready, blocked, finished,
-failed.
+Use --section to render a subset of: waiting, ready, in-flight, blocked,
+finished, failed. The flag may be repeated and accepts a comma-separated list;
+the sections are always rendered in that priority order, whatever order they
+were asked for. Without --section the panel renders its default banner:
+a heading followed by waiting, ready, in-flight, and blocked.
 EOF
 }
+
+# The one priority order every render obeys, and the order the checks below
+# validate against.
+SECTION_ORDER="waiting ready in-flight blocked finished failed"
+DEFAULT_SECTIONS="waiting ready in-flight blocked"
 
 FORMAT=panel
 WATCH=0
 INTERVAL=5
-SECTION=all
+REQUESTED=
 SECTION_SET=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -42,11 +55,11 @@ while [ $# -gt 0 ]; do
     --section)
       [ $# -gt 1 ] || { usage >&2; exit 2; }
       shift
-      SECTION=$1
+      REQUESTED="$REQUESTED,$1"
       SECTION_SET=1
       ;;
     --section=*)
-      SECTION=${1#--section=}
+      REQUESTED="$REQUESTED,${1#--section=}"
       SECTION_SET=1
       ;;
     --watch)
@@ -63,14 +76,41 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-case "$SECTION_SET:$SECTION" in
-  0:all|1:in-flight|1:waiting|1:ready|1:blocked|1:finished|1:failed) ;;
-  *)
-    echo "fm-fleet-view: unknown section: $SECTION" >&2
+SECTIONS=$DEFAULT_SECTIONS
+if [ "$SECTION_SET" = 1 ]; then
+  requested_name=
+  known=
+  selected=
+  while IFS= read -r requested_name; do
+    [ -n "$requested_name" ] || continue
+    known=0
+    for candidate in $SECTION_ORDER; do
+      [ "$candidate" != "$requested_name" ] || known=1
+    done
+    if [ "$known" != 1 ]; then
+      echo "fm-fleet-view: unknown section: $requested_name" >&2
+      usage >&2
+      exit 2
+    fi
+    selected="$selected $requested_name"
+  done <<EOF
+$(printf '%s' "${REQUESTED#,}" | tr -d '[:space:]' | tr ',' '\n')
+EOF
+  if [ -z "$selected" ]; then
+    echo "fm-fleet-view: --section needs at least one section name" >&2
     usage >&2
     exit 2
-    ;;
-esac
+  fi
+  # Rebuilt from the priority order rather than kept as given, so a repeated or
+  # out-of-order request still renders exactly once and in the same place.
+  SECTIONS=
+  for candidate in $SECTION_ORDER; do
+    case " $selected " in
+      *" $candidate "*) SECTIONS="$SECTIONS $candidate" ;;
+    esac
+  done
+  SECTIONS=${SECTIONS# }
+fi
 
 if [ "$FORMAT" = json ] && [ "$WATCH" = 1 ]; then
   echo "fm-fleet-view: --json and --watch cannot be combined" >&2
@@ -89,6 +129,13 @@ if [ "$FORMAT" = json ]; then
 fi
 
 command -v jq >/dev/null 2>&1 || { echo "fm-fleet-view: jq not found" >&2; exit 1; }
+
+SECTIONS_JSON=$(printf '%s' "$SECTIONS" | tr ' ' '\n' | jq -Rn '[inputs | select(length > 0)]')
+LAST_SECTION=${SECTIONS##* }
+# The framed heading belongs to the whole-fleet panel. A caller asking for named
+# sections is filling part of a larger frame and supplies its own.
+BANNER=true
+[ "$SECTION_SET" = 0 ] || BANNER=false
 
 # COLUMNS and LINES stay the explicit override: an embedding caller that has
 # already spent part of the frame states the budget it has left rather than
@@ -122,7 +169,13 @@ render_once() {
     return 1
   fi
 
-  if ! rendered=$(printf '%s\n' "$snapshot" | jq -r --argjson width "$width" --arg section "$SECTION" '
+  if ! rendered=$(printf '%s\n' "$snapshot" | jq -r --argjson width "$width" \
+    --argjson sections "$SECTIONS_JSON" --arg last "$LAST_SECTION" \
+    --argjson banner "$BANNER" '
+    # One section is rendered when it was selected, and separated from the next
+    # one only while another selected section still follows it.
+    def wanted($name): ($sections | index($name)) != null;
+    def gap($name): if $last == $name then empty else "" end;
     def clean: tostring | gsub("[[:space:]]+"; " ");
     def clip($n):
       clean
@@ -189,13 +242,13 @@ render_once() {
         | select(.state == "queued" and .structured == true and .dispatchable == true)]) as $ready
     | ([.backlog.records[]?
         | select(.state == "queued" and .structured == true and .blocked == true)]) as $blocked
-    | (if $section == "all" then
+    | (if $banner then
          ("=" * $width),
          ("FLEET STATUS" | clip($width)),
          ("=" * $width),
          ""
        else empty end),
-      (if $section == "all" or $section == "waiting" then
+      (if wanted("waiting") then
       ("YOUR DECISIONS (\($waiting | length))" | clip($width)),
       (if ($waiting | length) == 0 then
          "  None."
@@ -204,18 +257,18 @@ render_once() {
          | line("! "; (.id + " · " + .summary
                         + (if .artifact == null then "" else " · " + .artifact end)))
        end),
-      (if $section == "all" then "" else empty end)
+      gap("waiting")
        else empty end),
-      (if $section == "all" or $section == "ready" then
+      (if wanted("ready") then
        ("READY (\($ready | length))" | clip($width)),
        (if ($ready | length) == 0 then
           "  None."
         else
           $ready[] | line("• "; ((.id // "unknown") + " · " + (.title // "unknown")))
         end),
-       (if $section == "all" then "" else empty end)
+       gap("ready")
        else empty end),
-      (if $section == "all" or $section == "in-flight" then
+      (if wanted("in-flight") then
        ("IN FLIGHT (\($in_flight | length))" | clip($width)),
        (if ($in_flight | length) == 0 then
           "  None."
@@ -228,9 +281,9 @@ render_once() {
                            else " · " + $state end)
                         + " · " + task_title(.)))
         end),
-       (if $section == "all" then "" else empty end)
+       gap("in-flight")
        else empty end),
-      (if $section == "all" or $section == "blocked" then
+      (if wanted("blocked") then
        ("BLOCKED (\($blocked | length))" | clip($width)),
        (if ($blocked | length) == 0 then
           "  None."
@@ -238,9 +291,10 @@ render_once() {
           $blocked[]
           | line("• "; ((.id // "unknown") + " ← " + ((.unresolved_blocker_ids // []) | join(","))
                         + (if (.blocked_reason // "") == "" then "" else " · " + .blocked_reason end)))
-        end)
+        end),
+       gap("blocked")
        else empty end),
-      (if $section == "finished" then
+      (if wanted("finished") then
       ("FINISHED (showing \([($finished[:5])[]] | length) of \($finished | length))" | clip($width)),
       (if ($finished | length) == 0 then
          "  Nothing has finished successfully."
@@ -250,9 +304,9 @@ render_once() {
            line("  "; (.summary // "done")),
            (if .artifact == null then empty else line("  "; .artifact) end)
        end),
-      (if $section == "all" then "" else empty end)
+      gap("finished")
        else empty end),
-      (if $section == "failed" then
+      (if wanted("failed") then
       ("FAILED (\($failed | length))" | clip($width)),
       (if ($failed | length) == 0 then
          "  No failed tasks."
@@ -261,7 +315,7 @@ render_once() {
          | line("• "; ((.id // "unknown") + " · " + task_title(.))),
            line("  "; task_step(.))
        end),
-      (if $section == "all" then "" else empty end)
+      gap("failed")
        else empty end),
       empty
   '); then
