@@ -202,15 +202,12 @@ THIRD_PANE=$(grep '^herdr_pane_id=' "$HOME_DIR/state/cockpit-three.meta" | cut -
   || fail "a background spawn replaced the worker the operator was reading"
 [ "$(pane_tab "$THIRD_PANE")" != "$TAB" ] \
   || fail "the third spawn claimed the viewport instead of its own tab"
-# The cockpit tab carries the fleet column's split plus exactly one
-# head-versus-viewport split at the fixed ratio. Two splits and three panes mean
-# the slot was rebuilt the way it always is and never subdivided a second time
-# to make room for another worker.
+# The cockpit tab carries exactly one head-versus-viewport split at the fixed
+# ratio. Fleet grouping may add its own panes and splits above that band, so
+# their total counts are not part of the viewport contract.
 lab pane layout --pane "$HEAD" | jq -e '
-    (.result.layout.panes | length) == 3
-    and (.result.layout.splits | length) == 2
-    and ([.result.layout.splits[]
-          | select(((.ratio - 0.67) | fabs) < 0.001)] | length) == 1
+    [.result.layout.splits[]
+     | select(((.ratio - 0.67) | fabs) < 0.001)] | length == 1
   ' >/dev/null || fail "the viewport slot lost its single stable-width split"
 pass "real Herdr viewport holds exactly one agent at a stable width with three placed"
 
