@@ -315,6 +315,59 @@ test_no_mistakes_dod_wording() {
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose, now parse-safe"
 }
 
+# Seven consecutive workers (measured 2026-08-06, two harnesses, two repos)
+# reported `done:` at their implementation commit and then went idle, because the
+# no-mistakes DOD opened with "The task is complete only when committed on your
+# branch" and named a `done: {summary}` gate there. The fix removes the ambiguity
+# rather than warning about it: every ship mode now states one terminal report
+# whose evidence cannot exist at commit time, and the status protocol ties `done:`
+# to exactly that report. Each mode is pinned here so a rewrite cannot quietly
+# reintroduce a commit-time finish line in one branch while fixing another.
+test_terminal_report_cannot_be_written_at_commit() {
+  local home brief
+  home="$TMP_ROOT/terminal-report-home"
+  write_registry "$home"
+
+  for id_proj in "brief-term-nm:no-registry-proj" "brief-term-dp:direct-proj" "brief-term-lo:local-proj"; do
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "${id_proj%%:*}" "${id_proj##*:}" >/dev/null 2>&1
+    brief="$home/data/${id_proj%%:*}/brief.md"
+    assert_no_grep "The task is complete only when committed" "$brief" \
+      "${id_proj%%:*}: brief still declares the task complete at the implementation commit"
+    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+    assert_grep 'this mode'"'"'s one terminal report under Definition of done, the only `done:` you write' "$brief" \
+      "${id_proj%%:*}: status protocol did not tie done: to the mode's single terminal report"
+    assert_grep "This mode has exactly one terminal report" "$brief" \
+      "${id_proj%%:*}: Definition of done did not name a single terminal report"
+  done
+
+  brief="$home/data/brief-term-nm/brief.md"
+  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+  assert_grep 'only a green CI run can produce it: `done: PR {url} checks green`' "$brief" \
+    "no-mistakes terminal report must require evidence only a green CI run produces"
+  assert_grep "invoke /no-mistakes yourself to validate and ship the PR. Never stop there or wait to be told." "$brief" \
+    "no-mistakes brief must send the worker straight from commit into validation"
+  assert_no_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \
+    "no-mistakes brief still parks the worker for a validation handoff"
+
+  brief="$home/data/brief-term-dp/brief.md"
+  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+  assert_grep 'only an opened PR can produce it: append `done: PR {url}` to the status file and stop.' "$brief" \
+    "direct-PR terminal report must require the opened PR URL"
+  assert_grep "push your branch and open a PR with \`gh-axi\`; never stop there or wait to be told." "$brief" \
+    "direct-PR brief must send the worker straight from commit into pushing the PR"
+
+  brief="$home/data/brief-term-lo/brief.md"
+  assert_grep "Committing is a midpoint, not the finish - after committing, run the local tests and verify branch \`fm/brief-term-lo\` is ready to merge as it stands." "$brief" \
+    "local-only brief must continue from committing into local verification"
+  assert_grep "only once tests pass locally, the tree has no uncommitted changes, and the branch is mergeable exactly as it stands, append \`done: ready in branch fm/brief-term-lo, tests pass, tree clean\`" "$brief" \
+    "local-only terminal report must carry passing-test, clean-tree, and merge-ready evidence"
+  assert_no_grep "unpushed" "$brief" \
+    "local-only brief must not require push evidence when pushing is forbidden"
+  assert_no_grep "/no-mistakes yourself" "$brief" \
+    "local-only brief must not send the worker into the no-mistakes pipeline"
+  pass "fm-brief.sh: every ship mode names one terminal report unreachable at commit time"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -679,6 +732,7 @@ test_ship_modes_generate_clean_briefs
 test_scout_brief_teaches_optional_structural_search
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
+test_terminal_report_cannot_be_written_at_commit
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
