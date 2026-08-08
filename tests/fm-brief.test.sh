@@ -368,6 +368,62 @@ test_terminal_report_cannot_be_written_at_commit() {
   pass "fm-brief.sh: every ship mode names one terminal report unreachable at commit time"
 }
 
+# Generated ship briefs said nothing about when a behavioural test is written, so
+# the requirement was carried only by ad-hoc steers, and those asked for the weaker
+# retroactive form: implement, then revert the source to watch the test fail. That
+# form goes stale the moment a later fix round rewrites the source or the test, and
+# an assertion written after the implementation describes what the code does rather
+# than what the product should do. Every ship mode now carries the red-first
+# requirement in the shared rules, with the retroactive check kept only as a
+# disclosed fallback pinned to the shipped head.
+test_behavioral_tests_are_red_first() {
+  local home brief id
+
+  home="$TMP_ROOT/red-first-home"
+  write_registry "$home"
+
+  for id_proj in "brief-red-nm:no-registry-proj" "brief-red-dp:direct-proj" "brief-red-lo:local-proj"; do
+    id=${id_proj%%:*}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "${id_proj##*:}" >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+
+    assert_grep "Write behavioral tests RED-FIRST: run the new test before the implementation exists" "$brief" \
+      "$id: ship brief did not require the failing test before the implementation exists"
+    assert_grep "record the failure message you actually saw" "$brief" \
+      "$id: ship brief accepted an unrecorded red state instead of the observed failure message"
+    assert_grep "then implement and watch it pass" "$brief" \
+      "$id: ship brief did not close the red-first cycle on an observed green"
+    assert_grep "A test with no meaningful red state" "$brief" \
+      "$id: ship brief did not exempt tests that cannot meaningfully fail first"
+    assert_grep "a snapshot of existing output, a type-level assertion, a fixture correction - is exempt" "$brief" \
+      "$id: ship brief did not name the non-behavioural exemptions"
+    assert_grep "Only where red-first is genuinely impractical" "$brief" \
+      "$id: ship brief did not keep the retroactive check as a narrow fallback"
+    assert_grep "confirm the test fails with the implementation reverted AT THE SHIPPED HEAD" "$brief" \
+      "$id: ship brief did not pin the fallback check to the shipped head"
+    assert_grep "that same check is stale at any earlier commit" "$brief" \
+      "$id: ship brief let a fallback check performed at the implementation commit still count"
+  done
+
+  # The rule sits with the work rules, ahead of the long status protocol, and the
+  # no-mistakes escalation pointer must follow the renumbering rather than aiming
+  # at whatever rule now occupies slot 7.
+  brief="$home/data/brief-red-nm/brief.md"
+  assert_grep "escalate to firstmate (rule 8) and stop" "$brief" \
+    "no-mistakes DOD escalation pointer did not follow the renumbered needs-decision rule"
+  assert_no_grep "escalate to firstmate (rule 7)" "$brief" \
+    "no-mistakes DOD still points at the pre-renumbering escalation rule"
+
+  # Scouts produce a report, never a shipped change, so the requirement must not
+  # leak into their contract.
+  id="brief-red-scout"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  assert_no_grep "RED-FIRST" "$home/data/$id/brief.md" \
+    "scout brief carried a ship-only test-discipline rule"
+
+  pass "fm-brief.sh: every ship mode requires red-first behavioural tests"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -733,6 +789,7 @@ test_scout_brief_teaches_optional_structural_search
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_terminal_report_cannot_be_written_at_commit
+test_behavioral_tests_are_red_first
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
