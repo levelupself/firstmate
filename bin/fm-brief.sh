@@ -39,6 +39,11 @@
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # Ship briefs prohibit skip-worktree and assume-unchanged index flags because
 # they conceal tracked changes from ordinary dirty-worktree checks.
+# Ship briefs require behavioral tests red-first - observed failing before the
+# implementation exists - because a retroactive check goes stale on the next fix
+# round and an assertion written last describes the code rather than the product.
+# Tests with no meaningful red state are exempt, and the retroactive check remains
+# only as a disclosed fallback pinned to the shipped head.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
@@ -356,7 +361,7 @@ Include this artifact-style constraint in \`--intent\`: pipeline-authored risk r
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 
 Two firstmate-specific rules layer on top of that guidance:
-- ask-user findings are never yours to answer: escalate to firstmate (rule 7) and stop.
+- ask-user findings are never yours to answer: escalate to firstmate (rule 8) and stop.
   Firstmate applies the authority contract in its \`AGENTS.md\` and obtains any required captain decision.
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
@@ -395,7 +400,12 @@ $RULE1
 2. Stay inside this worktree; modify nothing outside it.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Never set Git's \`skip-worktree\` or \`assume-unchanged\` index flags; they conceal tracked changes from safety checks.
-5. Report status by appending one line:
+5. Write behavioral tests RED-FIRST: run the new test before the implementation exists,
+   record the failure message you actually saw, then implement and watch it pass.
+   A test with no meaningful red state - a snapshot of existing output, a type-level assertion, a fixture correction - is exempt.
+   Only where red-first is genuinely impractical, say why in the PR body (or the commit message when this mode opens no PR)
+   and instead confirm the test fails with the implementation reverted AT THE SHIPPED HEAD; that same check is stale at any earlier commit.
+6. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, $CAPTAIN_HELD_VERB, blocked, $PAUSED_VERB, done, failed.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
@@ -408,11 +418,11 @@ $RULE1
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
    a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long
    cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
-6. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
-7. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
+7. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
+8. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\`, then append \`$CAPTAIN_HELD_VERB: {why the task is parked}\` before going idle and stopping. Firstmate will apply the configured authority and reply with the decision.
    When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
-8. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
+9. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
