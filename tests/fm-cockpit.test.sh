@@ -17,6 +17,7 @@ HERDR_LOG="$FAKE_DIR/herdr.log"
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$HOME_DIR/config" "$HOME_DIR/projects" \
   "$SECOND_HOME/state" "$HERDR_STATE"
 printf 'w1:p1\tfirstmate-head\tw1:t1\tw1\tlive\n' > "$HERDR_STATE/panes.tsv"
+printf 'w1:t1\tcockpit\tw1\nw2:t1\tcockpit\tw2\nw3:t1\tcockpit\tw3\n' > "$HERDR_STATE/tabs.tsv"
 printf '1\n' > "$HERDR_STATE/counter"
 : > "$HERDR_LOG"
 # The shared primary fixture asks for one fleet pane holding the whole default
@@ -66,6 +67,16 @@ pane_field() {  # <row> <field-number>
   printf '%s' "$1" | awk -F '\t' -v n="$2" '{print $n}'
 }
 
+remove_tab_if_empty() {  # <tab-id>
+  tab_id=$1
+  if ! awk -F '\t' -v tab="$tab_id" '$3 == tab { found=1 } END { exit !found }' \
+    "$state/panes.tsv"; then
+    awk -F '\t' -v tab="$tab_id" '$1 != tab {print}' "$state/tabs.tsv" \
+      > "$state/tabs.next"
+    mv "$state/tabs.next" "$state/tabs.tsv"
+  fi
+}
+
 case "${1:-} ${2:-}" in
   "status --json")
     printf '%s\n' '{"client":{"protocol":16,"version":"0.7.3"},"server":{"running":true}}'
@@ -77,7 +88,23 @@ case "${1:-} ${2:-}" in
     printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fm-cockpit-test.sock"}]}'
     ;;
   "tab list")
-    printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","workspace_id":"w1","label":"cockpit"}]}}'
+    # Derived from the tabs this session actually has, not a fixed stub. Herdr
+    # labels a created TAB even though it leaves that tab's root pane
+    # unlabelled, so a stubbed tab list would hide every caller that finds a
+    # worker by its tab.
+    tab_ws=
+    shift 2
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --workspace) tab_ws=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    jq -Rn --arg ws "$tab_ws" '
+      [inputs | split("\t") | {tab_id:.[0],label:.[1],workspace_id:.[2]}
+       | select($ws == "" or .workspace_id == $ws)]
+      | {result:{tabs:.}}
+    ' < "$state/tabs.tsv"
     ;;
   "tab create")
     workspace=
@@ -98,13 +125,18 @@ case "${1:-} ${2:-}" in
     printf '%s\n' "$counter" > "$state/counter"
     tab="w1:t$counter"
     id="w1:p$counter"
-    printf '%s\t%s\t%s\t%s\tno-agent\n' "$id" "$label" "$tab" "$workspace" >> "$state/panes.tsv"
+    # --label names the TAB. Herdr 0.8.0 leaves the new tab's root pane
+    # unlabelled, and this fake must too: a fake that fills the pane label in
+    # would make every caller that reads a pane's own label appear to work
+    # (docs/verification/cockpit-placement.md).
+    printf '%s\t\t%s\t%s\tno-agent\n' "$id" "$tab" "$workspace" >> "$state/panes.tsv"
+    printf '%s\t%s\t%s\n' "$tab" "$label" "$workspace" >> "$state/tabs.tsv"
     root_tab=${FM_FAKE_HERDR_ROOT_TAB:-$tab}
     root_workspace=${FM_FAKE_HERDR_ROOT_WORKSPACE:-$workspace}
     jq -n --arg id "$id" --arg tab "$tab" --arg workspace "$workspace" --arg label "$label" \
       --arg root_tab "$root_tab" --arg root_workspace "$root_workspace" \
       '{result:{tab:{tab_id:$tab,workspace_id:$workspace,label:$label},
-        root_pane:{pane_id:$id,tab_id:$root_tab,workspace_id:$root_workspace,label:$label}}}'
+        root_pane:{pane_id:$id,tab_id:$root_tab,workspace_id:$root_workspace,label:""}}}'
     ;;
   "tab get")
     tab=$3
@@ -300,8 +332,12 @@ case "${1:-} ${2:-}" in
     id=$3
     [ ! -e "$state/fail-close" ] || exit 1
     fail_after close
+    row=$(pane_row "$id")
+    [ -n "$row" ] || exit 1
+    old_tab=$(pane_field "$row" 3)
     awk -F '\t' -v id="$id" '$1 != id {print}' "$state/panes.tsv" > "$state/panes.next"
     mv "$state/panes.next" "$state/panes.tsv"
+    remove_tab_if_empty "$old_tab"
     printf '%s\n' '{"result":{"type":"pane_closed"}}'
     ;;
   "pane move")
@@ -330,6 +366,7 @@ case "${1:-} ${2:-}" in
       printf '%s\n' "$counter" > "$state/counter"
       target_tab="w1:t$counter"
       printf '%s\t%s\n' "$target_tab" "${move_label:-$pane_label}" >> "$state/parked-tabs.tsv"
+      printf '%s\t%s\tw1\n' "$target_tab" "${move_label:-$pane_label}" >> "$state/tabs.tsv"
     fi
     [ -n "$target_tab" ] || exit 1
     if [ "$target_tab" = "$cur_tab" ]; then
@@ -341,6 +378,7 @@ case "${1:-} ${2:-}" in
     awk -F '\t' -v OFS='\t' -v id="$id" -v tab="$target_tab" '$1 == id {$3=tab} {print}' \
       "$state/panes.tsv" > "$state/panes.next"
     mv "$state/panes.next" "$state/panes.tsv"
+    remove_tab_if_empty "$cur_tab"
     jq -n --arg id "$pane_id" --arg tab "$target_tab" \
       '{result:{move_result:{changed:true,pane:{pane_id:$id,tab_id:$tab}}}}'
     ;;
@@ -626,6 +664,31 @@ cockpit_fn() {  # <function> <args...>
     FM_COCKPIT_ROOT="$ROOT" \
     HERDR_SESSION=fmtest \
     bash -c '. "$0/bin/backends/herdr.sh"; fn=$1; shift; "$fn" "$@"' "$ROOT" "$@"
+}
+
+test_fake_tab_inventory_tracks_last_pane_departure() {
+  local created pane source_tab moved target_tab
+  created=$(cockpit_fn fm_backend_herdr_cli fmtest tab create \
+    --workspace w1 --cwd /tmp --label fm-lifecycle --no-focus)
+  pane=$(printf '%s' "$created" | jq -r '.result.root_pane.pane_id')
+  source_tab=$(printf '%s' "$created" | jq -r '.result.tab.tab_id')
+  cockpit_fn fm_backend_herdr_cli fmtest pane close "$pane" >/dev/null
+  ! awk -F '\t' -v tab="$source_tab" '$1 == tab { found=1 } END { exit !found }' \
+    "$HERDR_STATE/tabs.tsv" || fail "closing a tab's last pane left the tab in inventory"
+
+  created=$(cockpit_fn fm_backend_herdr_cli fmtest tab create \
+    --workspace w1 --cwd /tmp --label fm-moving --no-focus)
+  pane=$(printf '%s' "$created" | jq -r '.result.root_pane.pane_id')
+  source_tab=$(printf '%s' "$created" | jq -r '.result.tab.tab_id')
+  moved=$(cockpit_fn fm_backend_herdr_cli fmtest pane move "$pane" \
+    --new-tab --label fm-moved --no-focus)
+  target_tab=$(printf '%s' "$moved" | jq -r '.result.move_result.pane.tab_id')
+  ! awk -F '\t' -v tab="$source_tab" '$1 == tab { found=1 } END { exit !found }' \
+    "$HERDR_STATE/tabs.tsv" || fail "moving a tab's last pane left the source tab in inventory"
+  awk -F '\t' -v tab="$target_tab" '$1 == tab { found=1 } END { exit !found }' \
+    "$HERDR_STATE/tabs.tsv" || fail "moving a pane did not retain its destination tab"
+  cockpit_fn fm_backend_herdr_cli fmtest pane close "$pane" >/dev/null
+  pass "fake tab inventory follows the last pane through close and move"
 }
 
 write_task_record() {  # <id> <pane>
@@ -1576,3 +1639,4 @@ test_every_fleet_pane_must_be_live_and_show_what_the_frame_recorded
 test_a_version_two_frame_stays_live_as_its_single_pane_arrangement
 test_banner_zoom_is_reversible_and_moves_no_pane
 test_status_names_the_check_that_failed
+test_fake_tab_inventory_tracks_last_pane_departure

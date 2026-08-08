@@ -3014,6 +3014,16 @@ EOF
       echo "error: herdr cockpit peer tab returned an incomplete or cross-frame pane identity" >&2
       return 1
     fi
+    # `tab create --label` names the TAB; on herdr 0.8.0 the tab's root pane is
+    # left unlabelled (docs/verification/cockpit-placement.md). The pane's own
+    # label is what focus placement reads back from a sidebar selection and what
+    # the panel lists parked workers by, so a peer worker without it is
+    # invisible to both. Label it exactly as the viewport path labels its own.
+    if ! fm_backend_herdr_cli "$session" pane rename "$pane_id" "$label" >/dev/null 2>&1; then
+      fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id" || true
+      echo "error: could not label new herdr cockpit peer pane '$label'" >&2
+      return 1
+    fi
   fi
   fm_backend_herdr_cockpit_display_agent "$session" "$pane_id" "$label" || true
   while IFS= read -r dup; do

@@ -156,6 +156,7 @@ family_for_basename() {
     fm-afk-inject-herdr-e2e.test.sh|fm-afk-launch.test.sh|fm-backend-autodetect-smoke.test.sh|\
     fm-backend-herdr-eventwait-smoke.test.sh|fm-backend-herdr-presentation-e2e.test.sh|\
     fm-backend-herdr-launcher-workspace-e2e.test.sh|\
+    fm-backend-herdr-focus-flash-e2e.test.sh|fm-cockpit-herdr-e2e.test.sh|\
     fm-backend-herdr-prune-safety-e2e.test.sh|fm-backend-herdr-respawn-idem-e2e.test.sh|\
     fm-herdr-session-cleanup-e2e.test.sh|\
     fm-backend-herdr-smoke.test.sh|fm-backend-herdr-workspace-per-home-e2e.test.sh)
@@ -556,7 +557,7 @@ select_lane() {
 }
 
 run_coverage_guard() {
-  local tmp missing extra a b shard
+  local tmp missing extra a b shard script
   local -a saved_scripts=()
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-coverage.XXXXXX")
 
@@ -655,6 +656,27 @@ run_coverage_guard() {
     log "coverage guard: union of portable shards + portable serial + Herdr must equal tests/*.test.sh"
     [ -z "$missing" ] || { log "missing from union:"; printf '%s\n' "$missing" >&2; }
     [ -z "$extra" ] || { log "extra beyond inventory:"; printf '%s\n' "$extra" >&2; }
+    rm -rf "$tmp"
+    return 1
+  fi
+
+  # A script that refuses to run without a live Herdr belongs in the one lane
+  # that installs Herdr and hard-fails on its skip token. Anywhere else its own
+  # gate exits 0 on every runner, which is indistinguishable from passing: the
+  # partition checks above still see it covered. Derived from each script's own
+  # gate rather than a maintained name list, so a newly added Herdr test cannot
+  # be classified into silence.
+  : >"$tmp/herdr_gated"
+  while IFS= read -r script; do
+    [ -n "$script" ] || continue
+    grep -q 'command -v herdr' "$script" 2>/dev/null || continue
+    printf '%s\n' "$script" >>"$tmp/herdr_gated"
+  done <"$tmp/all"
+  LC_ALL=C sort -u -o "$tmp/herdr_gated" "$tmp/herdr_gated"
+  missing=$(comm -23 "$tmp/herdr_gated" "$tmp/herdr" || true)
+  if [ -n "$missing" ]; then
+    log "coverage guard: these scripts gate on a live Herdr but are not in the real-herdr-gated lane, so they exit 0 unrun wherever they are:"
+    printf '%s\n' "$missing" >&2
     rm -rf "$tmp"
     return 1
   fi
