@@ -19,7 +19,8 @@ The key is sent as the bare `Authorization` header value expected by Linear pers
 
 ## The join
 
-Nothing about firstmate's branch naming is load-bearing here, and it cannot be:
+For ongoing mirror lookups, nothing about firstmate's branch naming is
+load-bearing, and it cannot be:
 Linear's own branch convention is `<user>/<issue-key>-<slug>`, and firstmate's
 branches are `fm/<task-id>`, which can never match.
 
@@ -142,10 +143,9 @@ list is the input.
 
 **The mapping is the branch name**, `fm/<task-id>`, which firstmate wrote when it
 dispatched the work. That is an exact mechanical join. `data/done-archive.md` is
-**not** used to recover it: matching archived entries to pull requests by
-proximity was tried on 2026-08-03 and produced cross-assigned results. The
-archive is read only to give a created issue a better title than the pull request
-subject, never to derive the id.
+**not** used to recover it because proximity matching can cross-assign tasks and
+pull requests. The archive is read only to give a created issue a better title
+than the pull request subject, never to derive the id.
 
 A branch that is not `fm/<numbered-task-id>` is **reported as unmapped and
 nothing is written for it**. An unmapped pull request listed honestly is a fine
@@ -156,8 +156,9 @@ the derived task id, the pull request number, and the branch the id came from. A
 created issue repeats that provenance in its description, so the mapping stays
 checkable in Linear long after the run.
 
-Exit codes: `0` imported (or inert because Linear is not configured), `2` usage or
-unresolvable team, `3` Linear or GitHub unreachable, `4` some operations failed.
+Exit codes: `0` imported (or inert because Linear is not configured), `2` usage,
+`3` Linear or GitHub unreachable, `4` some operations failed (including a team
+that cannot be resolved when an issue must be created).
 
 ## Refreshing in place: `bin/fm-linear-refresh.sh`
 

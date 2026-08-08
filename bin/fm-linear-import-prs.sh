@@ -30,8 +30,9 @@
 # Re-runnable: an issue already Done is not transitioned again and a pull request
 # already attached is not attached again, so a second import converges.
 #
-# Exit codes: 0 imported (or inert because Linear is not configured), 2 usage or
-# unresolvable team, 3 Linear or GitHub unreachable, 4 some operations failed.
+# Exit codes: 0 imported (or inert because Linear is not configured), 2 usage,
+# 3 Linear or GitHub unreachable, 4 some operations failed (including a team
+# that cannot be resolved when an issue must be created).
 #
 # Single quotes below are on purpose twice over: $id and friends inside the
 # GraphQL documents are GraphQL variables, not shell expansions, and the
