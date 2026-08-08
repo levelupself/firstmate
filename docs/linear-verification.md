@@ -193,9 +193,17 @@ documented magic word (including the list form and any configured
 ## 8. The two facts a merge writes, read back from the real board
 
 Date: 2026-08-08.
-Credential note: this home's `LINEAR_API_KEY` is empty, so the new scripts were
-not run against the API. What is checked here is the shape they write, read back
-from an issue the same mutations already produced on the live board.
+
+Credential boundary, and why this section is split the way it is. `LINEAR_API_KEY`
+is configured in the main firstmate home's private, gitignored `.env`. It is
+deliberately not reachable from an isolated task worktree, and it is not copied
+into one, so work validated in a worktree cannot execute the live API and the
+live runs belong to the main home. That is the intended boundary, not a gap in
+the setup.
+
+What follows is therefore split: the write shape below was confirmed live by
+reading a real board issue back, while the new scripts' own live execution was
+not performed here and is recorded as outstanding at the end of this section.
 
 `bin/fm-linear-merge-write.sh` writes exactly two things: a `stateId` pointing at
 the team's completed "Done" status (`fml_set_state`) and an
@@ -218,8 +226,19 @@ sends, and the completed status is the one `fml_done_state_id` selects: the
 status literally named "Done" whose type is `completed`. The description's first
 line is the join, unchanged.
 
-Still unverified against production, and blocked on that empty credential: a run
-of `fm-linear-merge-write.sh` or `fm-linear-import-prs.sh` against the live API.
+### Outstanding, and owned by the main home
+
+Not performed here, and not claimed: a run of `fm-linear-merge-write.sh` or
+`fm-linear-import-prs.sh` against the live API, and the read-back of an issue
+those scripts themselves wrote. Both require the credential that stays in the
+main home, so both are main-home work rather than something a task worktree can
+close.
+
+`fm-linear-import-prs.sh --dry-run` exists so the second one can be reviewed
+before it is run: it prints, per pull request, the title it would use and where
+that title came from, the exact description including the join line and the
+pull-request provenance, the attachment URL, and whether it would move the issue
+to Done or leave an already-completed one alone, while issuing no mutations.
 
 ## 9. The import mapping, against the real merged pull requests
 

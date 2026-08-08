@@ -131,6 +131,12 @@ created=0; linked=0; unmapped=0; unchanged=0; failed=0
 
 audit() { printf '  %-9s %-12s %-34s PR #%-5s branch %s\n' "$1" "${2:--}" "${3:--}" "$4" "$5"; }
 
+# A dry run has to be REVIEWABLE: a verdict and a task id are not enough to
+# judge before anything reaches a real board. plan() records one line of what
+# WOULD be written, and the lines are flushed under that pull request's audit
+# line. Nothing accumulates outside a dry run.
+plan() { [ -n "$DRY" ] && printf '      %s\n' "$1" >> "$TMP/plan"; return 0; }
+
 # A firstmate task id as the dispatcher writes it: a numeric prefix and a slug.
 # Deliberately stricter than the id validation used elsewhere, because the only
 # question here is "did firstmate create this branch for a numbered backlog
@@ -163,6 +169,7 @@ while IFS= read -r row; do
     continue
   fi
 
+  : > "$TMP/plan"
   set +e
   issue_row=$(fml_find_issue "$task_id")
   rc=$?
@@ -186,7 +193,8 @@ while IFS= read -r row; do
     # No mirrored issue: create one from what GitHub proves, recording where it
     # came from so the mapping stays checkable long after this run.
     title=$(awk -F'\t' -v id="$task_id" '$1 == id {print $2; exit}' "$TMP/titles.tsv")
-    [ -n "$title" ] || title=$pr_title
+    title_source="the backlog or its archive"
+    [ -n "$title" ] || { title=$pr_title; title_source="the pull request subject"; }
     {
       printf '`firstmate: %s`\n' "$task_id"
       printf '\n**Delivered:** %s\n' "$pr_url"
@@ -201,10 +209,18 @@ while IFS= read -r row; do
       continue
     fi
     if [ -n "$DRY" ]; then
-      audit "create" "(new)" "$task_id" "$number" "$branch"
+      # Show the whole thing: the title and where it came from, then the exact
+      # description, so the plan can be judged without running the import.
+      plan "would create with title: $title"
+      plan "title taken from $title_source"
+      plan "description it would write:"
+      while IFS= read -r desc_line; do
+        [ -n "$desc_line" ] && plan "  | $desc_line"
+      done < "$TMP/desc"
+      ident="(new)"
+      verdict=created
       created=$((created + 1))
-      continue
-    fi
+    else
     vars=$(jq -cn --arg t "$TEAM_ID" --arg ti "$title" --rawfile d "$TMP/desc" '{t:$t, ti:$ti, d:$d}')
     if fml_graphql 'mutation fmCreate($t: String!, $ti: String!, $d: String!) {
       issueCreate(input: { teamId: $t, title: $ti, description: $d }) {
@@ -221,6 +237,7 @@ while IFS= read -r row; do
       echo "    create rejected by Linear" >&2
       failed=$((failed + 1))
       continue
+    fi
     fi
   fi
 
@@ -243,6 +260,7 @@ while IFS= read -r row; do
       echo "    $task_id is shipped but the team has no completed status" >&2
       failed=$((failed + 1))
     elif [ -n "$DRY" ]; then
+      plan "would move it to the team's Done status"
       touched=1
     elif fml_set_state "$issue_uuid" "$DONE_STATE" "$TMP/state.json"; then
       touched=1
@@ -257,6 +275,7 @@ while IFS= read -r row; do
   if printf '%s\n' "$attached" | grep -Fxq "$pr_url"; then
     :
   elif [ -n "$DRY" ]; then
+    plan "would attach $pr_url as \"Pull request\""
     touched=1
   elif fml_attach_url "$issue_uuid" "$pr_url" "Pull request" "$TMP/attach.json"; then
     touched=1
@@ -268,13 +287,18 @@ while IFS= read -r row; do
   fi
 
   if [ "$verdict" = created ]; then
-    audit "created" "$ident" "$task_id" "$number" "$branch"
+    # "create" while planning, "created" once it actually happened.
+    if [ -n "$DRY" ]; then create_label=create; else create_label=created; fi
+    audit "$create_label" "$ident" "$task_id" "$number" "$branch"
   elif [ "$touched" = 0 ]; then
     audit "unchanged" "$ident" "$task_id" "$number" "$branch"
     unchanged=$((unchanged + 1))
   else
     audit "linked" "$ident" "$task_id" "$number" "$branch"
     linked=$((linked + 1))
+  fi
+  if [ -n "$DRY" ] && [ -s "$TMP/plan" ]; then
+    cat "$TMP/plan"
   fi
 done < "$TMP/prs.tsv"
 

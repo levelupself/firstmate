@@ -156,6 +156,31 @@ the derived task id, the pull request number, and the branch the id came from. A
 created issue repeats that provenance in its description, so the mapping stays
 checkable in Linear long after the run.
 
+**`--dry-run` prints the plan, not just a verdict**, so it can be reviewed before
+anything reaches a real board. Under each audit line it shows what would actually
+be written: the title it would use and whether that came from the backlog and its
+archive or from the pull request subject, the exact description including the
+join line and the provenance, the attachment URL, and whether it would move the
+issue to Done or leave an already-completed one alone. A pull request whose issue
+is already Done and already carries the link plans nothing and is reported as
+`unchanged`. No mutation is issued.
+
+```
+  create    (new)        010-basic-combat-damage   PR #51  branch fm/010-basic-combat-damage
+      would create with title: Add non-targeted area effects
+      title taken from the backlog or its archive
+      description it would write:
+        | `firstmate: 010-basic-combat-damage`
+        | **Delivered:** https://github.com/o/r/pull/51
+        | **Imported from** merged pull request #51 in o/r, branch `fm/010-basic-combat-damage`, ...
+      would move it to the team's Done status
+      would attach https://github.com/o/r/pull/51 as "Pull request"
+```
+
+That dry run is the reviewable half of a split the credential boundary forces:
+the live import runs from the main firstmate home, which holds `LINEAR_API_KEY`,
+while an isolated task worktree can only plan it. [`linear-verification.md`](linear-verification.md) records which parts have been confirmed live and which have not.
+
 Exit codes: `0` imported (or inert because Linear is not configured), `2` usage,
 `3` Linear or GitHub unreachable, `4` some operations failed (including a team
 that cannot be resolved when an issue must be created).

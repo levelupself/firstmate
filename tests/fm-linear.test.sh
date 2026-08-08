@@ -637,7 +637,14 @@ grep -qxF 'pr merge 44 --repo o/r --squash' "$FAKE_DIR/gh-axi.log" \
   || fail "an unconfigured Linear stopped the merge"
 n=$(grep -c '^fmState\|^fmAttach' "$FAKE_DIR/calls.log" || true)
 [ "$n" = 0 ] || fail "an unconfigured Linear issued $n mutations"
-pass "no LINEAR_API_KEY at merge time: the merge proceeds untouched"
+[ ! -s "$FAKE_DIR/calls.log" ] || fail "an unconfigured Linear must not touch the network at all"
+# The absent credential is a first-class path, not an edge case: the operator
+# who reads this output must be able to tell "Linear was not configured, so
+# nothing was recorded" apart from "the outcome was recorded". A silent no-op
+# reads as success and would hide a missing key indefinitely.
+assert_contains "$out" "no LINEAR_API_KEY configured" "an unconfigured merge write does not name the missing credential"
+assert_contains "$out" "nothing recorded" "an unconfigured merge write does not say that nothing was recorded"
+pass "no LINEAR_API_KEY at merge time: the merge proceeds and the skipped write is reported, not silent"
 
 # Re-merging (or a retried merge) must not re-transition a Done issue or stack a
 # second copy of the same attachment.
@@ -761,6 +768,68 @@ assert_contains "$out" "PSY-7" "the dry run still reports the mapping it would m
 n=$(grep -c '^fmState\|^fmAttach\|^fmCreate' "$FAKE_DIR/calls.log" || true)
 [ "$n" = 0 ] || fail "a dry-run import issued $n mutations"
 pass "a dry-run import plans the mapping without writing to Linear"
+
+# The plan has to be REVIEWABLE before anything reaches a real board, so a dry
+# run must show what it would actually write - not just a verdict and an id.
+new_import_home importdryplan
+jq -cn '[
+  {number:38,url:"https://github.com/o/r/pull/38",title:"feat: known thing",
+   headRefName:"fm/010-known",mergedAt:"2026-08-02T00:00:00Z"},
+  {number:51,url:"https://github.com/o/r/pull/51",title:"feat: area effects",
+   headRefName:"fm/010-basic-combat-damage",mergedAt:"2026-08-06T05:49:02Z"}]' > "$FAKE_DIR/pr-list.json"
+# 010-known is mirrored and still open; 010-basic-combat-damage is not mirrored
+# at all, so one row plans a link and the other plans a create.
+jq -cn '{data:{issues:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
+  {id:"uuid-7",identifier:"PSY-7",url:"l/7",title:"Known thing",
+   description:"`firstmate: 010-known`",state:{name:"Backlog",type:"backlog"},
+   team:{id:"team-uuid",key:"PSY"},attachments:{nodes:[]}}]}}}' > "$FAKE_DIR/fmFind.json"
+mkdir -p "$HOME_DIR/data"
+cat > "$HOME_DIR/data/backlog.md" <<'MD'
+# Backlog
+
+## Done
+- [x] 010-basic-combat-damage - Add non-targeted area effects (merged 2026-08-06)
+MD
+: > "$HOME_DIR/data/done-archive.md"
+
+out=$(run_import --repo o/r --dry-run); rc=$?
+expect_code 0 "$rc" "a dry-run plan exits 0"
+[ -z "${FM_TEST_SHOW_PLAN:-}" ] || { echo "--- dry-run plan ---"; printf '%s\n' "$out"; echo "--- end ---"; }
+# What it would CREATE: the title, where that title came from, and the exact
+# description including the join line and the pull-request provenance.
+assert_contains "$out" "Add non-targeted area effects" "the dry run does not name the title it would create"
+assert_contains "$out" "backlog" "the dry run does not say where the title came from"
+assert_contains "$out" "firstmate: 010-basic-combat-damage" "the dry run does not show the join line it would write"
+assert_contains "$out" "pull request #51" "the dry run does not show the provenance it would record"
+# What it would ATTACH, exactly, for both the created and the linked row.
+assert_contains "$out" "https://github.com/o/r/pull/51" "the dry run does not name the URL it would attach to the created issue"
+assert_contains "$out" "https://github.com/o/r/pull/38" "the dry run does not name the URL it would attach to the linked issue"
+# What it would do to STATUS.
+assert_contains "$out" "Done" "the dry run does not say it would move the issue to Done"
+# The verdict must read as a plan, not as something already done.
+assert_contains "$out" "create    " "the dry run does not label the planned issue as a create"
+assert_not_contains "$out" "created   (new)" "a dry run must not report a create as already done"
+# And still nothing written.
+n=$(grep -c '^fmState\|^fmAttach\|^fmAttachCreate\|^fmCreate' "$FAKE_DIR/calls.log" || true)
+[ "$n" = 0 ] || fail "a dry-run plan issued $n mutations"
+pass "a dry run prints the title, join line, provenance, attachment URL, and status change it would write"
+
+# A pull request whose issue is already Done and already carries the link must
+# plan nothing, so a reviewer can see the import has converged.
+new_import_home importdryconverged
+jq -cn '[{number:38,url:"https://github.com/o/r/pull/38",title:"feat: known thing",
+  headRefName:"fm/010-known",mergedAt:"2026-08-02T00:00:00Z"}]' > "$FAKE_DIR/pr-list.json"
+jq -cn '{data:{issues:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
+  {id:"uuid-7",identifier:"PSY-7",url:"l/7",title:"Known thing",
+   description:"`firstmate: 010-known`",state:{name:"Done",type:"completed"},
+   team:{id:"team-uuid",key:"PSY"},
+   attachments:{nodes:[{url:"https://github.com/o/r/pull/38"}]}}]}}}' > "$FAKE_DIR/fmFind.json"
+out=$(run_import --repo o/r --dry-run); rc=$?
+expect_code 0 "$rc" "a converged dry run exits 0"
+assert_contains "$out" "unchanged" "a converged row is not reported as unchanged"
+assert_not_contains "$out" "would attach" "a converged row must not plan an attachment"
+assert_not_contains "$out" "would move" "a converged row must not plan a status change"
+pass "a dry run plans nothing for a pull request already Done and already attached"
 
 # A shipped task id with no mirrored issue is created, carrying the join line
 # and the provenance that makes the mapping auditable after the fact.
