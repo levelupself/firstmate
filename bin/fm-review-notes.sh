@@ -4,7 +4,7 @@
 # Usage: fm-review-notes.sh <task-id> --summary <summary> [--output <path>]
 # Input columns: path<TAB>new-start<TAB>new-end<TAB>summary<TAB>rationale
 # The rationale column is optional. Include only the few places the delivering
-# crewmate is least sure of; every emitted annotation is confidence "low".
+# crewmate is least sure of.
 # This intentionally does not generate one annotation per diff hunk.
 set -euo pipefail
 
@@ -50,7 +50,7 @@ jq -Rn --arg summary "$SUMMARY" '
        files: [$notes | group_by(.path)[] |
          {path: .[0].path,
           annotations: [.[ ] |
-            ({newRange: [.start, .end], summary: .summary, confidence: "low"}
+            ({newRange: [.start, .end], summary: .summary}
              + if .rationale == "" then {} else {rationale: .rationale} end)]}]}
     end
 ' > "$TMP" || fail "invalid note input"
