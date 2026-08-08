@@ -650,6 +650,35 @@ n=$(grep -c '^fmAttach' "$FAKE_DIR/calls.log" || true)
 [ "$n" = 0 ] || fail "an already-attached pull request was attached again ($n times)"
 pass "merge write is idempotent: an already-Done, already-attached issue is left alone"
 
+new_home attachambiguous
+printf 'LINEAR_API_KEY=lin_api_test\n' > "$HOME_DIR/.env"
+if ( . "$ROOT/bin/fm-linear-lib.sh"; FM_HOME="$HOME_DIR" fml_load_config; FAKE_CURL_FAIL=1 \
+  fml_attach_url uuid-42 https://github.com/o/r/pull/46 'Pull request' "$HOME_DIR/attach.json" ); then
+  rc=0
+else
+  rc=$?
+fi
+[ "$rc" -ne 0 ] || fail "an ambiguous attachment failure unexpectedly succeeded"
+n=$(grep -c '^fmAttachCreate' "$FAKE_DIR/calls.log" || true)
+[ "$n" = 0 ] || fail "an ambiguous attachment failure attempted the legacy mutation"
+pass "an ambiguous attachment failure never retries with a non-idempotent mutation"
+
+new_home attachlegacy
+printf 'LINEAR_API_KEY=lin_api_test\n' > "$HOME_DIR/.env"
+jq -cn '{errors:[{message:"Cannot query field \"attachmentLinkURL\" on type \"Mutation\"."}]}' \
+  > "$FAKE_DIR/fmAttach.json"
+jq -cn '{data:{attachmentCreate:{success:true}}}' > "$FAKE_DIR/fmAttachCreate.json"
+if ( . "$ROOT/bin/fm-linear-lib.sh"; FM_HOME="$HOME_DIR" fml_load_config; \
+  fml_attach_url uuid-42 https://github.com/o/r/pull/47 'Pull request' "$HOME_DIR/attach.json" ); then
+  rc=0
+else
+  rc=$?
+fi
+expect_code 0 "$rc" "a definitive missing-field response uses the legacy attachment mutation"
+n=$(grep -c '^fmAttachCreate' "$FAKE_DIR/calls.log" || true)
+[ "$n" = 1 ] || fail "a definitive missing-field response did not attempt the legacy mutation once"
+pass "only a definitive schema rejection enables the legacy attachment mutation"
+
 # --- 12. importing already-merged pull requests ------------------------------
 #
 # GitHub is the only complete record of what shipped. The mapping is derived
@@ -677,7 +706,13 @@ jq -cn '[
   {number:27,url:"https://github.com/o/r/pull/27",title:"fix: legacy thing",
    headRefName:"fm/psychogen-chatentry-v9",mergedAt:"2026-07-23T00:00:00Z"},
   {number:12,url:"https://github.com/o/r/pull/12",title:"chore: hand-made branch",
-   headRefName:"main-patch",mergedAt:"2026-07-01T00:00:00Z"}]' > "$FAKE_DIR/pr-list.json"
+   headRefName:"main-patch",mergedAt:"2026-07-01T00:00:00Z"},
+  {number:52,url:"https://github.com/o/r/pull/52",title:"chore: missing numeric separator",
+   headRefName:"fm/123legacy-task",mergedAt:"2026-08-07T00:00:00Z"},
+  {number:53,url:"https://github.com/o/r/pull/53",title:"chore: empty slug",
+   headRefName:"fm/123-",mergedAt:"2026-08-07T00:00:00Z"},
+  {number:54,url:"https://github.com/o/r/pull/54",title:"chore: bare number",
+   headRefName:"fm/123",mergedAt:"2026-08-07T00:00:00Z"}]' > "$FAKE_DIR/pr-list.json"
 jq -cn '{data:{issues:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
   {id:"uuid-7",identifier:"PSY-7",url:"l/7",title:"Known thing",
    description:"`firstmate: 010-known`",state:{name:"Backlog",type:"backlog"},
@@ -695,6 +730,9 @@ assert_contains "$sent" "https://github.com/o/r/pull/38" "the mapped pull reques
 assert_contains "$out" "unmapped" "unmappable pull requests are reported"
 assert_contains "$out" "fm/psychogen-chatentry-v9" "the legacy branch is named rather than guessed"
 assert_contains "$out" "main-patch" "a non-firstmate branch is named rather than guessed"
+assert_contains "$out" "fm/123legacy-task" "a branch without a numeric-prefix separator is unmapped"
+assert_contains "$out" "fm/123-" "a branch with an empty slug is unmapped"
+assert_contains "$out" "fm/123" "a bare numeric branch is unmapped"
 assert_not_contains "$out" "psychogen-chatentry-v9 -> " "a legacy branch must not be mapped to a task id"
 n=$(grep -c '^fmState\|^fmAttach\|^fmCreate' "$FAKE_DIR/calls.log" || true)
 [ "$n" = 2 ] || fail "expected exactly 2 mutations for 1 mappable PR, got $n"

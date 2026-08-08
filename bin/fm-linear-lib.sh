@@ -185,6 +185,16 @@ fml_mutation_succeeded() {
   jq -e --arg field "$field" '.data[$field].success == true' "$body_file" >/dev/null 2>&1
 }
 
+fml_schema_field_unavailable() {
+  local body_file=$1 field=$2 type=$3
+  jq -e --arg field "$field" --arg type "$type" '
+    any(.errors[]?;
+      (.message // "") == ("Cannot query field \"" + $field + "\" on type \"" + $type + "\".")
+      or (.message // "") == ("Cannot query field \"" + $field + "\" on type \"" + $type + "\"")
+      or (.message // "") == ("Field \"" + $field + "\" is not defined by type \"" + $type + "\"."))
+  ' "$body_file" >/dev/null 2>&1
+}
+
 # fml_marker_id <first-line>: print the task id a mirrored description's first
 # line encodes, or nothing. Strips backticks and whitespace, so both
 # "`firstmate: 010-x`" (what the mirror writes) and "firstmate: 010-x" join.
@@ -290,13 +300,17 @@ fml_set_state() {
 # the same attachment instead of stacking duplicates; attachmentCreate is the
 # fallback for a workspace where the former is unavailable.
 fml_attach_url() {
-  local issue=$1 url=$2 title=$3 scratch=$4 vars
+  local issue=$1 url=$2 title=$3 scratch=$4 vars rc
   vars=$(jq -cn --arg i "$issue" --arg u "$url" --arg t "$title" '{i:$i, u:$u, t:$t}') || return 1
   if fml_graphql 'mutation fmAttach($i: String!, $u: String!, $t: String!) {
     attachmentLinkURL(issueId: $i, url: $u, title: $t) { success }
-  }' "$vars" "$scratch" && fml_mutation_succeeded "$scratch" attachmentLinkURL; then
-    return 0
+  }' "$vars" "$scratch"; then
+    fml_mutation_succeeded "$scratch" attachmentLinkURL
+    return $?
+  else
+    rc=$?
   fi
+  [ "$rc" = 6 ] && fml_schema_field_unavailable "$scratch" attachmentLinkURL Mutation || return 1
   fml_graphql 'mutation fmAttachCreate($i: String!, $u: String!, $t: String!) {
     attachmentCreate(input: { issueId: $i, url: $u, title: $t }) { success }
   }' "$vars" "$scratch" || return 1

@@ -141,13 +141,7 @@ derive_task_id() {
     fm/*) id=${branch#fm/} ;;
     *) return 1 ;;
   esac
-  case "$id" in
-    [0-9][0-9][0-9]*-*) ;;
-    *) return 1 ;;
-  esac
-  case "$id" in
-    *[!A-Za-z0-9._-]*|*/*) return 1 ;;
-  esac
+  [[ "$id" =~ ^[0-9]+-[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
   printf '%s' "$id"
 }
 
