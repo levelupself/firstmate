@@ -144,32 +144,19 @@ linear_n=$(wc -l < "$TMP/linear.tsv" | tr -d '[:space:]')
 TEAM_ID=
 DONE_STATE=
 if [ -n "$TEAM_KEY" ]; then
-  vars=$(jq -cn --arg k "$TEAM_KEY" '{k:$k}')
-  if fml_graphql 'query fmTeam($k: String!) {
-    teams(filter: { key: { eq: $k } }, first: 1) {
-      nodes { id key states(first: 100) { nodes { id name type position } } }
-    }
-  }' "$vars" "$TMP/team.json"; then
-    TEAM_ID=$(jq -r '.data.teams.nodes[0].id // ""' "$TMP/team.json")
-    DONE_STATE=$(jq -r '
-      [.data.teams.nodes[0].states.nodes[]? | select(.type == "completed")]
-      | (map(select(.name == "Done")) + sort_by(.position))[0].id // ""
-    ' "$TMP/team.json")
-  fi
+  set +e
+  team_row=$(fml_team_by_key "$TEAM_KEY" "$TMP/team.json")
+  set -e
+  TEAM_ID=$(printf '%s' "$team_row" | cut -f1)
+  DONE_STATE=$(printf '%s' "$team_row" | cut -f2)
 fi
 if [ -z "$TEAM_ID" ]; then
   TEAM_ID=$(awk -F'\t' 'NR==1 {print $6}' "$TMP/linear.tsv")
 fi
 if [ -z "$DONE_STATE" ] && [ -n "$TEAM_ID" ]; then
-  vars=$(jq -cn --arg id "$TEAM_ID" '{id:$id}')
-  if fml_graphql 'query fmTeamById($id: String!) {
-    team(id: $id) { id key states(first: 100) { nodes { id name type position } } }
-  }' "$vars" "$TMP/team2.json"; then
-    DONE_STATE=$(jq -r '
-      [.data.team.states.nodes[]? | select(.type == "completed")]
-      | (map(select(.name == "Done")) + sort_by(.position))[0].id // ""
-    ' "$TMP/team2.json")
-  fi
+  set +e
+  DONE_STATE=$(fml_done_state_id "$TEAM_ID" "$TMP/team2.json")
+  set -e
 fi
 
 # --- compose one issue's title and description -------------------------------
@@ -316,18 +303,12 @@ while IFS= read -r row; do
       elif [ -n "$DRY" ]; then
         report "->done" "$ident" "$id"
         done_moved=$((done_moved + 1))
+      elif fml_set_state "$issue_uuid" "$DONE_STATE" "$TMP/state.json"; then
+        report "->done" "$ident" "$id"
+        done_moved=$((done_moved + 1))
       else
-        vars=$(jq -cn --arg i "$issue_uuid" --arg s "$DONE_STATE" '{i:$i, s:$s}')
-        if fml_graphql 'mutation fmState($i: String!, $s: String!) {
-          issueUpdate(id: $i, input: { stateId: $s }) { success }
-        }' "$vars" "$TMP/state.json" \
-          && fml_mutation_succeeded "$TMP/state.json" issueUpdate; then
-          report "->done" "$ident" "$id"
-          done_moved=$((done_moved + 1))
-        else
-          report "FAILED" "$ident" "Done transition rejected by Linear"
-          failed=$((failed + 1))
-        fi
+        report "FAILED" "$ident" "Done transition rejected by Linear"
+        failed=$((failed + 1))
       fi
     fi
     case "$link" in
@@ -336,23 +317,11 @@ while IFS= read -r row; do
           item_changed=1
           if [ -n "$DRY" ]; then
             attached=$((attached + 1))
+          elif fml_attach_url "$issue_uuid" "$link" "Pull request" "$TMP/attach.json"; then
+            attached=$((attached + 1))
           else
-            # attachmentLinkURL is keyed on (issue, url), so re-running the refresh
-            # updates the same attachment instead of stacking duplicates.
-            vars=$(jq -cn --arg i "$issue_uuid" --arg u "$link" --arg t "Pull request" '{i:$i, u:$u, t:$t}')
-            if { fml_graphql 'mutation fmAttach($i: String!, $u: String!, $t: String!) {
-              attachmentLinkURL(issueId: $i, url: $u, title: $t) { success }
-            }' "$vars" "$TMP/attach.json" \
-                && fml_mutation_succeeded "$TMP/attach.json" attachmentLinkURL; } \
-              || { fml_graphql 'mutation fmAttachCreate($i: String!, $u: String!, $t: String!) {
-              attachmentCreate(input: { issueId: $i, url: $u, title: $t }) { success }
-            }' "$vars" "$TMP/attach.json" \
-                && fml_mutation_succeeded "$TMP/attach.json" attachmentCreate; }; then
-              attached=$((attached + 1))
-            else
-              report "FAILED" "$ident" "could not attach $link"
-              failed=$((failed + 1))
-            fi
+            report "FAILED" "$ident" "could not attach $link"
+            failed=$((failed + 1))
           fi
         fi
         ;;
