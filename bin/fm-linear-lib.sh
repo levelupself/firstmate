@@ -189,9 +189,8 @@ fml_schema_field_unavailable() {
   local body_file=$1 field=$2 type=$3
   jq -e --arg field "$field" --arg type "$type" '
     any(.errors[]?;
-      (.message // "") == ("Cannot query field \"" + $field + "\" on type \"" + $type + "\".")
-      or (.message // "") == ("Cannot query field \"" + $field + "\" on type \"" + $type + "\"")
-      or (.message // "") == ("Field \"" + $field + "\" is not defined by type \"" + $type + "\"."))
+      ((.message // "") | startswith("Cannot query field \"" + $field + "\" on type \"" + $type + "\""))
+      or ((.message // "") | startswith("Field \"" + $field + "\" is not defined by type \"" + $type + "\"")))
   ' "$body_file" >/dev/null 2>&1
 }
 

@@ -677,6 +677,19 @@ fi
 expect_code 0 "$rc" "a definitive missing-field response uses the legacy attachment mutation"
 n=$(grep -c '^fmAttachCreate' "$FAKE_DIR/calls.log" || true)
 [ "$n" = 1 ] || fail "a definitive missing-field response did not attempt the legacy mutation once"
+
+: > "$FAKE_DIR/calls.log"
+jq -cn '{errors:[{message:"Cannot query field \"attachmentLinkURL\" on type \"Mutation\". Did you mean \"attachmentCreate\"?"}]}' \
+  > "$FAKE_DIR/fmAttach.json"
+if ( . "$ROOT/bin/fm-linear-lib.sh"; FM_HOME="$HOME_DIR" fml_load_config; \
+  fml_attach_url uuid-42 https://github.com/o/r/pull/48 'Pull request' "$HOME_DIR/attach.json" ); then
+  rc=0
+else
+  rc=$?
+fi
+expect_code 0 "$rc" "a suggestion-bearing missing-field response uses the legacy attachment mutation"
+n=$(grep -c '^fmAttachCreate' "$FAKE_DIR/calls.log" || true)
+[ "$n" = 1 ] || fail "a suggestion-bearing missing-field response did not attempt the legacy mutation once"
 pass "only a definitive schema rejection enables the legacy attachment mutation"
 
 # --- 12. importing already-merged pull requests ------------------------------
