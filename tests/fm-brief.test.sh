@@ -220,6 +220,13 @@ test_ship_modes_generate_clean_briefs() {
       "$id: brief did not prevent the sg command collision"
     assert_grep 'hand-check unfamiliar ast-grep patterns' "$brief" \
       "$id: brief did not carry the trial-backed wrong-pattern warning"
+    assert_grep 'silently returns no matches' "$brief" \
+      "$id: brief did not document the silent empty result on a file ast-grep cannot parse"
+    assert_grep 'indistinguishable from a genuine absence' "$brief" \
+      "$id: brief did not name the could-not-run versus found-nothing ambiguity"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'confirm an empty ast-grep result with `rg`' "$brief" \
+      "$id: brief did not tell a worker how to tell the two apart"
     # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
     assert_grep 'then append `captain-held: {why the task is parked}` before going idle and stopping' "$brief" \
       "$id: brief did not tell a decision-blocked worker to declare captain-held before idling"
@@ -240,6 +247,13 @@ test_scout_brief_teaches_optional_structural_search() {
   # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
   assert_grep 'Keep `rg` as the text-search baseline' "$brief" \
     "scout brief did not preserve text search as the baseline"
+  assert_grep 'silently returns no matches' "$brief" \
+    "scout brief did not document the silent empty result on a file ast-grep cannot parse"
+  assert_grep 'indistinguishable from a genuine absence' "$brief" \
+    "scout brief did not name the could-not-run versus found-nothing ambiguity"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'confirm an empty ast-grep result with `rg`' "$brief" \
+    "scout brief did not tell a worker how to tell the two apart"
   pass "fm-brief.sh: scout briefs teach trial-backed optional structural search"
 }
 

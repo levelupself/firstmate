@@ -83,13 +83,45 @@ $ echo $?
 0
 ```
 
+## Unparseable-file probe
+
+A 2026-08-08 probe on ast-grep 0.45.0 checked what a file ast-grep cannot parse looks like to the caller.
+A file whose language ast-grep does not recognize produced no output at all, with no diagnostic naming the skipped file:
+
+```console
+$ printf 'foo(1)\n' > note.txt
+$ ast-grep run -p 'foo($$$A)' note.txt --color never --heading never
+$ echo $?
+1
+```
+
+`--inspect summary` did not separate that case from a genuine absence, because it counted the unmatched file as scanned:
+
+```console
+$ ast-grep run -p 'foo($$$A)' note.txt --inspect summary --color never --heading never
+sg: summary|project: isProject=false
+sg: summary|file: scannedFileCount=1,skippedFileCount=0
+$ echo $?
+1
+```
+
+A text-search baseline over the same path does separate them, because `rg` reports the candidate the structural run never considered:
+
+```console
+$ rg -n 'foo\(' note.txt
+1:foo(1)
+```
+
+Selecting the wrong language with `-l` reproduces the same silent empty result on an otherwise supported file.
+Syntax errors inside a supported language did not reproduce it: tree-sitter error recovery still matched `foo($$$A)` inside a deliberately broken Python file.
+
 The important failure mode is therefore not a crash.
 A wrong pattern can look like a clean empty result, a warning with success status, or a broader match than the pattern author expected.
 An unfamiliar structural query needs a small hand-checked sample or a text-search baseline before its absence or completeness is trusted.
 
 ## Recommendation
 
-Teach ast-grep to crewmates in the brief scaffold as an optional structural layer, while retaining `rg` as the baseline and explicitly requiring unfamiliar patterns to be hand-checked.
+Teach ast-grep to crewmates in the brief scaffold as an optional structural layer, while retaining `rg` as the baseline, explicitly requiring unfamiliar patterns to be hand-checked, and stating in the same guidance that an unparseable file yields a silent empty result that only a text-search baseline or a positive-control pattern can tell apart from a genuine absence.
 The caller tasks removed all false positives and cut the noisy task from 210 returned lexical tokens to 16, while the absolute latency remained interactive.
 The Python task proves that structural output is not automatically smaller, and the wrong-pattern probes rule out making ast-grep mandatory or treating a zero-result exit status as authoritative.
 This is a bounded adoption recommendation, not a mandate: bootstrap remains non-blocking when ast-grep is absent, and briefs direct workers to use it only where text search over-matches.
