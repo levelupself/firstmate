@@ -215,7 +215,7 @@ while IFS= read -r row; do
       plan "title taken from $title_source"
       plan "description it would write:"
       while IFS= read -r desc_line; do
-        [ -n "$desc_line" ] && plan "  | $desc_line"
+        plan "  | $desc_line"
       done < "$TMP/desc"
       ident="(new)"
       verdict=created
@@ -270,6 +270,8 @@ while IFS= read -r row; do
       failed=$((failed + 1))
       continue
     fi
+  elif [ -n "$DRY" ] && ! printf '%s\n' "$attached" | grep -Fxq "$pr_url"; then
+    plan "would leave status unchanged because the issue is already completed"
   fi
 
   if printf '%s\n' "$attached" | grep -Fxq "$pr_url"; then

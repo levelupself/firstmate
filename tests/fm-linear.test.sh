@@ -801,6 +801,16 @@ assert_contains "$out" "Add non-targeted area effects" "the dry run does not nam
 assert_contains "$out" "backlog" "the dry run does not say where the title came from"
 assert_contains "$out" "firstmate: 010-basic-combat-damage" "the dry run does not show the join line it would write"
 assert_contains "$out" "pull request #51" "the dry run does not show the provenance it would record"
+printed_description=$(printf '%s\n' "$out" | awk '
+  /description it would write:/ { capture=1; next }
+  capture && /^        \| / { sub(/^        \| /, ""); print; next }
+  capture { exit }
+')
+expected_description=$(printf '%s\n\n**Delivered:** %s\n\n**Imported from** merged pull request #%s in %s, branch `%s`, merged %s.\n\nThe task id was derived from the branch name, which firstmate created when it dispatched the work.\n' \
+  '`firstmate: 010-basic-combat-damage`' \
+  'https://github.com/o/r/pull/51' \
+  '51' 'o/r' 'fm/010-basic-combat-damage' '2026-08-06T05:49:02Z')
+[ "$printed_description" = "$expected_description" ] || fail "the dry-run description differs from the description it would create"
 # What it would ATTACH, exactly, for both the created and the linked row.
 assert_contains "$out" "https://github.com/o/r/pull/51" "the dry run does not name the URL it would attach to the created issue"
 assert_contains "$out" "https://github.com/o/r/pull/38" "the dry run does not name the URL it would attach to the linked issue"
@@ -830,6 +840,21 @@ assert_contains "$out" "unchanged" "a converged row is not reported as unchanged
 assert_not_contains "$out" "would attach" "a converged row must not plan an attachment"
 assert_not_contains "$out" "would move" "a converged row must not plan a status change"
 pass "a dry run plans nothing for a pull request already Done and already attached"
+
+# A completed issue that is missing only its attachment still names the status
+# decision explicitly, even though that decision does not require a mutation.
+new_import_home importdrycompleted
+jq -cn '[{number:38,url:"https://github.com/o/r/pull/38",title:"feat: known thing",
+  headRefName:"fm/010-known",mergedAt:"2026-08-02T00:00:00Z"}]' > "$FAKE_DIR/pr-list.json"
+jq -cn '{data:{issues:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
+  {id:"uuid-7",identifier:"PSY-7",url:"l/7",title:"Known thing",
+   description:"`firstmate: 010-known`",state:{name:"Done",type:"completed"},
+   team:{id:"team-uuid",key:"PSY"},attachments:{nodes:[]}}]}}}' > "$FAKE_DIR/fmFind.json"
+out=$(run_import --repo o/r --dry-run); rc=$?
+expect_code 0 "$rc" "a completed-but-unattached dry run exits 0"
+assert_contains "$out" "would leave status unchanged because the issue is already completed" "a completed-but-unattached plan omits its unchanged status decision"
+assert_contains "$out" "would attach https://github.com/o/r/pull/38" "a completed-but-unattached plan omits its attachment"
+pass "a completed-but-unattached dry run names its unchanged status"
 
 # A shipped task id with no mirrored issue is created, carrying the join line
 # and the provenance that makes the mapping auditable after the fact.
