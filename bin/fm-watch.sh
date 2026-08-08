@@ -153,8 +153,8 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated.
-# A captain-held or paused crew whose agent has confidently exited uses the same
-# bounded cadence, while a live or ambiguously read agent still surfaces once.
+# A crew parked on a captain decision (captain-held:) uses the same bounded
+# cadence, whether or not its agent is still live - see pause_state_class.
 # These cases re-surface once for a recheck every PAUSE_RESURFACE_SECS - far
 # longer than the wedge threshold, but finite so a forgotten hold cannot rot invisibly.
 PAUSE_RESURFACE_SECS=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
@@ -315,7 +315,7 @@ busy_turn_over_age() {  # <task>
 }
 
 # Absorb a stale pane under a declared external-wait pause (paused:) or a
-# dead-agent captain-held transfer, and re-surface it once every
+# captain-held decision park, and re-surface it once every
 # PAUSE_RESURFACE_SECS for a recheck so it cannot rot invisibly. Called on any
 # stale poll once pause_state_class permits the bounded cadence, so it must be
 # cheap: it NEVER re-reads crew state. The re-surface age is anchored on the
@@ -363,10 +363,21 @@ clear_pause_tracking() {  # <window>
 }
 
 # Reconcile a declared pause or captain-held status with authoritative crew state.
-# Only a confidently dead ordinary crew may recover paused classification after
-# fm-crew-state has fallen back to stopped or unknown.
+# A declared park classifies `paused` whether or not the backend still reports its
+# agent alive. Liveness is what makes an idle park CREDIBLE, not what invalidates
+# it: a crew parked on a captain decision is by definition still running, and a
+# crew whose agent exited under a park left the same claim behind. Gating the
+# bounded cadence on a dead agent made the live case - the common one - re-enter
+# the wedge path as a bare stale surface on every fresh pane hash, which is the
+# supervision-turn-per-cycle loop this reconciliation exists to prevent.
+# The park is never suppressed unboundedly: the declaration itself already
+# surfaced through the status-signal path (an idle park is not provably working,
+# so scan_signals surfaces it), handle_paused_stale re-surfaces it on the
+# status-file-age cadence, and any later non-park status line clears the tracking.
+# Only authoritative crew state showing an actively running pipeline outranks the
+# declaration.
 pause_state_class() {  # <window> <task>
-  local win=$1 task=$2 key last recheck_file class agent_alive
+  local win=$1 task=$2 key last recheck_file class
   key=${win//:/_}
   key=${key//\//_}
   key=${key//./_}
@@ -377,15 +388,9 @@ pause_state_class() {  # <window> <task>
     crew_absorb_class "$task"
     return
   fi
+  # Within one wedge threshold of the last authoritative read, reuse it rather
+  # than paying for another crew-state read on every poll of an idle pane.
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
-    if [ "$(window_kind "$win")" != secondmate ]; then
-      agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
-      if [ "$agent_alive" != dead ]; then
-        rm -f "$recheck_file"
-        printf 'none'
-        return
-      fi
-    fi
     printf 'paused'
     return
   fi
@@ -395,37 +400,20 @@ pause_state_class() {  # <window> <task>
     printf 'working'
     return
   fi
-  if [ "$(window_kind "$win")" != secondmate ]; then
-    agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
-    if [ "$agent_alive" != dead ]; then
-      rm -f "$recheck_file"
-      printf 'none'
-      return
-    fi
-  fi
-  [ "$class" = none ] && [ "${agent_alive:-unknown}" = dead ] && class=paused
-  case "$class" in
-    paused) date +%s > "$recheck_file" ;;
-    *) rm -f "$recheck_file" ;;
-  esac
-  printf '%s' "$class"
+  date +%s > "$recheck_file"
+  printf 'paused'
 }
 
+# Only reached for a window whose status does NOT declare a park (pause_state_class
+# classifies every declared park as working or paused), so the pause cadence
+# markers belong to a superseded park and are cleared with the rest of the
+# per-hash bookkeeping.
 surface_nonterminal_stale() {  # <window> <hash>
-  local win=$1 h=$2 key task last
+  local win=$1 h=$2 key
   key=$(printf '%s' "$win" | tr ':/.' '___')
   fm_wake_append stale "$win" "stale: $win" || exit 1
   printf '%s' "$h" > "$STATE/.stale-$key"
-  rm -f "$STATE/.stale-since-$key"
-  task=$(window_to_task "$win" "$STATE")
-  last=$(last_status_line "$STATE/$task.status")
-  if status_is_paused_or_captain_held "$last"; then
-    : > "$STATE/.paused-$key"
-    date +%s > "$STATE/.paused-rechecked-$key"
-    date +%s > "$STATE/.paused-resurfaced-$key"
-  else
-    rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
-  fi
+  rm -f "$STATE/.stale-since-$key" "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
   wake "stale: $win"
 }
 
@@ -1014,9 +1002,9 @@ EOF
           #   - working: an actively-running pipeline legitimately sits on a static
           #     pane (e.g. waiting on CI), so absorb and start the wedge timer so a
           #     genuinely frozen run still escalates past STALE_ESCALATE_SECS;
-          #   - paused: the crew declared an external wait, or a declared pause or
-          #     captain hold is paired with a confidently dead agent, so absorb on
-          #     the long PAUSE_RESURFACE_SECS cadence instead of wedge-escalating;
+          #   - paused: the crew declared an external wait or a captain-decision
+          #     park, so absorb on the long PAUSE_RESURFACE_SECS cadence instead of
+          #     wedge-escalating;
           #   - none: no running pipeline, no exact busy verdict, no declared pause.
           #     Surface immediately so firstmate inspects the inconclusive state
           #     (it may be done via an interactive menu that wrote no done: status,
