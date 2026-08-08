@@ -81,6 +81,8 @@ CAPTAIN_HELD_VERB=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VER
 IFS= read -r -d '' SEARCH_GUIDANCE <<'EOF' || true
 `ast-grep` is an optional structural-search aid for code questions where text search over-matches; invoke it only as `ast-grep`, never `sg`.
 Keep `rg` as the text-search baseline, and hand-check unfamiliar ast-grep patterns because a plausible wrong pattern can return partial or unexpectedly broad results.
+On a file it cannot parse - an unrecognized language, or the wrong `-l` - ast-grep silently returns no matches, so a search that never ran is indistinguishable from a genuine absence of the construct.
+Never read an empty structural result as proof: confirm an empty ast-grep result with `rg` over the same paths, or with a positive-control pattern you know matches there, before reporting that nothing exists.
 EOF
 SEARCH_GUIDANCE=${SEARCH_GUIDANCE%$'\n'}
 
