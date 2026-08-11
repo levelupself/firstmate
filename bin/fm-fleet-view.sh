@@ -275,8 +275,11 @@ render_once() {
         else
           $in_flight[]
           | (.current_state.state // "unknown") as $state
+          | (.current_state.source // "") as $source
+          | (.current_state.detail // "") as $detail
           | line("• "; ((.id // "unknown")
-                        + (if $state == "working" then ""
+                        + (if $state == "working" and $source == "run-step" and $detail != "" then " · " + $detail
+                           elif $state == "working" then ""
                            elif $state == "unknown" then " · state unavailable"
                            else " · " + $state end)
                         + " · " + task_title(.)))

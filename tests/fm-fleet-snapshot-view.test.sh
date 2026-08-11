@@ -11,6 +11,7 @@ SNAPSHOT="$ROOT/bin/fm-fleet-snapshot.sh"
 VIEW="$ROOT/bin/fm-fleet-view.sh"
 BEARINGS="$ROOT/bin/fm-bearings-snapshot.sh"
 TMP_ROOT=$(fm_test_tmproot fm-fleet-snapshot)
+fm_git_identity fmtest fmtest@example.invalid
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
@@ -19,6 +20,9 @@ make_fakebin() {  # <dir>
   fb=$(fm_fakebin "$1")
   cat > "$fb/no-mistakes" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = axi ] && [ "${2:-}" = status ]; then
+  printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"
+fi
 exit 0
 SH
   cat > "$fb/tmux" <<'SH'
@@ -207,6 +211,57 @@ test_fixture_snapshot_json() {
     | .state == "done" and .pr_url == "https://github.com/kunchenguid/firstmate/pull/7"
   ' >/dev/null || fail "done backlog PR row missing"
   pass "fixture snapshot covers task rows, backlog rows, pointers, and stable ordering"
+}
+
+test_pipeline_owned_validation_step_renders_in_fleet_view() {
+  local home fakebin head out view
+  home=$(make_home pipeline-owned)
+  mkdir -p "$home/projects/pipeline-owned"
+  git -C "$home/projects/pipeline-owned" init -q
+  git -C "$home/projects/pipeline-owned" commit -q --allow-empty -m init
+  git -C "$home/projects/pipeline-owned" checkout -q -b fm/pipeline-owned
+  head=$(git -C "$home/projects/pipeline-owned" rev-parse HEAD)
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] pipeline-owned - Pipeline-owned validation (repo: firstmate) (kind: ship) (since 2026-08-10)
+EOF
+  fm_write_meta "$home/state/pipeline-owned.meta" \
+    "window=firstmate:fm-pipeline-owned" \
+    "worktree=$home/projects/pipeline-owned" \
+    "project=firstmate" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=no-mistakes"
+  fakebin=$(make_fakebin "$home")
+  FM_FAKE_AXI_STATUS=$(cat <<EOF
+run:
+  id: "01PIPELINE"
+  branch: fm/pipeline-owned
+  status: fixing
+  head: "4444444444444444444444444444444444444444"
+  branch_sync:
+    state: pipeline_owned
+    pipeline:
+      submitted_head: "$head"
+      current_head: "4444444444444444444444444444444444444444"
+  steps[2]{step,status,findings,duration_ms}:
+    intent,completed,0,0
+    review,fixing,1,0
+EOF
+)
+  export FM_FAKE_AXI_STATUS
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "pipeline-owned")
+    | .current_state.state == "working"
+      and .current_state.source == "run-step"
+      and .current_state.detail == "validating (fixing)"
+  ' >/dev/null || fail "snapshot discarded the authoritative pipeline-owned run: $out"
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
+  assert_contains "$view" "fixing" "fleet view must render the real validation step"
+  assert_not_contains "$view" "state unavailable" "fleet view must not fall back to unverifiable Codex state"
+  unset FM_FAKE_AXI_STATUS
+  pass "pipeline-owned validation step survives snapshot and fleet rendering"
 }
 
 # R1 owner contract: main_inventory discloses orphan in-flight and unstructured
@@ -1311,6 +1366,7 @@ test_parked_scout_decision_stays_pending() {
 
 test_empty_fleet_json
 test_fixture_snapshot_json
+test_pipeline_owned_validation_step_renders_in_fleet_view
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state
