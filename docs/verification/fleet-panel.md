@@ -91,3 +91,78 @@ A frame sized to exactly fill the pane also requires that painting not terminate
 Newlines therefore separate rows rather than terminating them.
 `ESC[J` erases from the cursor to the end of the display, so text preceding the cursor on the final row survives and the closing erase still clears every row below.
 Twenty consecutive captures of a fixture alternating three-line and one-line frames every 0.05 seconds each showed exactly one complete frame with no residual rows from the longer one.
+
+## Watched-banner ownership inside a cockpit fleet region
+
+Verified on 2026-08-10 against the real herdr 0.8.0 executable, in a guarded
+non-`default` lab session provisioned by `bin/fm-herdr-lab.sh`.
+
+Two facts about herdr 0.8.0 bound this design and are recorded because the fix
+depends on them.
+Closing a fleet pane already retires its banner, so process reaping is not the
+gap; and `pane run` types into the pane's shell, so it cannot start a second
+banner in a pane whose banner is still in the foreground.
+
+```
+=== E2: close a fleet pane; is its watcher reaped? ===
+  second fleet pane=w1:p3 pids=1686877 1687586
+  close: {"type":"ok"}
+  pid=1686877 reaped by pane close
+  pid=1687586 reaped by pane close
+```
+
+The gap is a region rebuild.
+Adoption that finds no readable record builds a fresh region and leaves the
+previous generation's panes untouched, so before this rule every rebuild added
+a live banner rather than replacing one.
+
+```
+=== E4: record lost -> re-adopt builds a SECOND region; old watchers? ===
+  new record fleet ids: w1:p5,w1:p6,w1:p7
+  old first-pane watchers:
+    pid=1686794 STILL PAINTING (unbound)
+```
+
+The same rebuild after the rule strands nothing, and the newly recorded panes
+keep painting.
+
+```
+generation 1 fleet panes: w1:p2,w1:p3,w1:p4
+generation 1 painter pids: 888733 888983 889036
+--- rebuild the region exactly as E4 did (record lost -> re-adopt) ---
+generation 2 fleet panes: w1:p5,w1:p6,w1:p7
+--- generation 1 painters after the rebuild ---
+  pid=888733 retired itself
+  pid=888983 retired itself
+  pid=889036 retired itself
+--- generation 2 painters (must still be painting) ---
+  pane=w1:p5 painting pid(s)=890456
+  pane=w1:p6 painting pid(s)=890516
+  pane=w1:p7 painting pid(s)=890593
+
+RESULT stranded=0 live_bound_panes=3
+```
+
+Retirement stops the banner and nothing else: the emptied panes stay on the tab
+for the operator, which is why the tab still reports seven panes above.
+
+Repaint contention was the first hypothesis and does not survive.
+Two banners painting one pane's terminal at 1-second intervals, with different
+sections and with frames taller than the pane, left exactly one complete board
+in the pane across repeated captures, because each paint homes the cursor and
+erases to the end of the display.
+Contention therefore costs authorship - the visible board silently alternates
+between owners - rather than accumulating rows, which is what makes single
+ownership the guarantee worth enforcing.
+
+```
+=== B2: add a SECOND painter with a DIFFERENT frame on the same tty ===
+  sample1    rows=20   boards=1   decisions_headers=1
+  sample2    rows=20   boards=1   decisions_headers=1
+  verdict: STABLE
+```
+
+Counting banner processes with a bare process match overstates them roughly
+twofold: each redraw forks a command substitution that carries the same argv as
+its parent for the length of one render.
+Only the loop process is a banner.
