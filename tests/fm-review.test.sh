@@ -68,8 +68,24 @@ NOTES="$TMP_ROOT/generated.json"
 printf 'bin/fm-review.sh\t12\t15\tCheck URL normalization\tMerged PR URLs retain their diff endpoint.\n' |
   FM_ROOT_OVERRIDE="$ROOT" FM_DATA_OVERRIDE="$DATA" \
     "$ROOT/bin/fm-review-notes.sh" example --summary "Curated uncertainty" --output "$NOTES" >/dev/null
-jq -e '.version == 1 and .files[0].annotations[0].confidence == "low" and (.files | length) == 1' \
-  "$NOTES" >/dev/null || fail "generator did not emit the curated low-confidence schema"
+jq -e '.version == 1 and (.files | length) == 1 and (.files[0].annotations | length) == 1' \
+  "$NOTES" >/dev/null || fail "generator did not emit the curated note schema"
+jq -e '[.files[].annotations[] | has("confidence")] | any | not' "$NOTES" >/dev/null \
+  || fail "generator still emitted a confidence field that never carried a worker judgement"
+jq -e '.files[0].annotations[0] | .summary == "Check URL normalization" and .newRange == [12, 15]
+  and .rationale == "Merged PR URLs retain their diff endpoint."' "$NOTES" >/dev/null \
+  || fail "generator dropped curated note content along with the confidence field"
+
+RECORDED="$DATA/recorded"
+mkdir -p "$RECORDED"
+cp "$ROOT/docs/examples/083-hunk-review-flow/review-notes.json" "$RECORDED/review-notes.json"
+jq -e '[.. | objects | select(has("newRange")) | has("confidence")] | any | not' \
+  "$RECORDED/review-notes.json" >/dev/null \
+  || fail "a recorded sidecar still carries a confidence field"
+fm_write_meta "$STATE/recorded.meta" "pr=https://github.com/example/project/pull/23"
+run_review recorded >/dev/null
+assert_contains "$(cat "$TMP_ROOT/hunk.args")" "--agent-context $RECORDED/review-notes.json --agent-notes" \
+  "a recorded sidecar without confidence should still be passed through for review"
 
 TWELVE="$TMP_ROOT/twelve.json"
 for n in $(seq 1 12); do

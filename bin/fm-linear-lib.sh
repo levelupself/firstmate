@@ -25,6 +25,10 @@
 #   fml_reference_line <identifier> - the exact magic-word line firstmate appends
 #   fml_body_links <body-file> <identifier> - 0 when the PR body already links it
 #   fml_append_reference <body-file> <identifier> <out-file> - additive body write
+#   fml_team_by_key <team-key> <scratch-file> - "<team-uuid>\t<done-state-id>"
+#   fml_done_state_id <team-uuid> <scratch-file> - the team's completed status id
+#   fml_set_state <issue-uuid> <state-id> <scratch-file> - move one issue
+#   fml_attach_url <issue-uuid> <url> <title> <scratch-file> - attach one link
 # Callers must have FM_HOME set before calling fml_load_config.
 #
 # GraphQL documents below are single-quoted on purpose: $id and friends inside
@@ -100,8 +104,9 @@ fml_load_config() {
 # Why "Part of" and not "Fixes": both are magic words Linear recognizes in a PR
 # body, but a CLOSING word ("fixes", "closes", "resolves", ...) also drives the
 # issue's status on merge. The captain's 2026-08-02 decision makes data/backlog.md
-# authoritative and Linear a regenerated view, and fm-linear-refresh.sh owns the
-# Done transition. A non-closing word links without a second writer competing for
+# authoritative and Linear a regenerated view, and firstmate owns the Done
+# transition (fm-linear-merge-write.sh at merge time, fm-linear-refresh.sh when
+# reconciling). A non-closing word links without a second writer competing for
 # status. Set LINEAR_MAGIC_WORD to a closing word to opt into merge automation.
 fml_reference_line() {
   printf '%s %s' "${FML_MAGIC:-Part of}" "$1"
@@ -180,6 +185,15 @@ fml_mutation_succeeded() {
   jq -e --arg field "$field" '.data[$field].success == true' "$body_file" >/dev/null 2>&1
 }
 
+fml_schema_field_unavailable() {
+  local body_file=$1 field=$2 type=$3
+  jq -e --arg field "$field" --arg type "$type" '
+    any(.errors[]?;
+      ((.message // "") | startswith("Cannot query field \"" + $field + "\" on type \"" + $type + "\""))
+      or ((.message // "") | startswith("Field \"" + $field + "\" is not defined by type \"" + $type + "\"")))
+  ' "$body_file" >/dev/null 2>&1
+}
+
 # fml_marker_id <first-line>: print the task id a mirrored description's first
 # line encodes, or nothing. Strips backticks and whitespace, so both
 # "`firstmate: 010-x`" (what the mirror writes) and "firstmate: 010-x" join.
@@ -204,7 +218,12 @@ fml_marker_id() {
 
 # The jq filter that turns a Linear issues query result into one TSV row per
 # issue whose description's FIRST LINE is exactly the "firstmate: <id>" marker.
-# Columns: task-id, identifier, issue uuid, url, status name, status type.
+# Columns: task-id, identifier, issue uuid, url, status name, status type,
+# team uuid, and the issue's attachment URLs base64-encoded (a URL list can
+# contain no tab, but base64 keeps the row single-line regardless).
+# The team uuid and attachment list are what let a caller that found an issue
+# resolve the team's Done status and skip an attachment it already has, without
+# a second lookup.
 # Backtick stripping and the exact first-line match mirror fml_marker_id, so a
 # description merely MENTIONING a task id elsewhere never counts as a join.
 FML_ROWS_FILTER='
@@ -217,12 +236,90 @@ FML_ROWS_FILTER='
   .data.issues.nodes[]
   | (.description | marker_id) as $id
   | select($id != "")
-  | [$id, .identifier, .id, .url, (.state.name // ""), (.state.type // "")]
+  | [$id, .identifier, .id, .url, (.state.name // ""), (.state.type // ""),
+     (.team.id // ""), (([.attachments.nodes[]?.url] | join("\n")) | @base64)]
   | @tsv
 '
 
+# fml_team_by_key <team-key> <scratch-file>: print "<team-uuid>\t<done-state-id>"
+# for one team key. Either field can be empty when Linear does not know that key
+# or the team has no completed status, so callers must check each rather than
+# assuming a non-empty line means both resolved.
+fml_team_by_key() {
+  local key=$1 scratch=$2 vars
+  [ -n "$key" ] || return 1
+  vars=$(jq -cn --arg k "$key" '{k:$k}') || return 1
+  fml_graphql 'query fmTeam($k: String!) {
+    teams(filter: { key: { eq: $k } }, first: 1) {
+      nodes { id key states(first: 100) { nodes { id name type position } } }
+    }
+  }' "$vars" "$scratch" || return 1
+  jq -r '
+    .data.teams.nodes[0] as $t
+    | [($t.id // ""),
+       ([$t.states.nodes[]? | select(.type == "completed")]
+        | (map(select(.name == "Done")) + sort_by(.position))[0].id // "")]
+    | @tsv
+  ' "$scratch" 2>/dev/null
+}
+
+# fml_done_state_id <team-uuid> <scratch-file>: print the id of the status a
+# completed task moves to. A team can have several completed statuses, so the
+# one literally named "Done" wins and the earliest-positioned completed status
+# is the fallback. Prints nothing when the team has no completed status or
+# Linear could not be asked - callers must treat empty as "do not transition"
+# rather than inventing one.
+fml_done_state_id() {
+  local team=$1 scratch=$2 vars
+  [ -n "$team" ] || return 1
+  vars=$(jq -cn --arg id "$team" '{id:$id}') || return 1
+  fml_graphql 'query fmTeamById($id: String!) {
+    team(id: $id) { id key states(first: 100) { nodes { id name type position } } }
+  }' "$vars" "$scratch" || return 1
+  jq -r '
+    [.data.team.states.nodes[]? | select(.type == "completed")]
+    | (map(select(.name == "Done")) + sort_by(.position))[0].id // ""
+  ' "$scratch" 2>/dev/null
+}
+
+# fml_set_state <issue-uuid> <state-id> <scratch-file>: move one issue to one
+# status. Returns 0 only when Linear answered AND reported success, so a
+# rejected mutation inside a 200 response is a failure, never a silent pass.
+fml_set_state() {
+  local issue=$1 state=$2 scratch=$3 vars
+  vars=$(jq -cn --arg i "$issue" --arg s "$state" '{i:$i, s:$s}') || return 1
+  fml_graphql 'mutation fmState($i: String!, $s: String!) {
+    issueUpdate(id: $i, input: { stateId: $s }) { success }
+  }' "$vars" "$scratch" || return 1
+  fml_mutation_succeeded "$scratch" issueUpdate
+}
+
+# fml_attach_url <issue-uuid> <url> <title> <scratch-file>: attach one link to
+# one issue. attachmentLinkURL is keyed on (issue, url), so re-running updates
+# the same attachment instead of stacking duplicates; attachmentCreate is the
+# fallback for a workspace where the former is unavailable.
+fml_attach_url() {
+  local issue=$1 url=$2 title=$3 scratch=$4 vars rc
+  vars=$(jq -cn --arg i "$issue" --arg u "$url" --arg t "$title" '{i:$i, u:$u, t:$t}') || return 1
+  if fml_graphql 'mutation fmAttach($i: String!, $u: String!, $t: String!) {
+    attachmentLinkURL(issueId: $i, url: $u, title: $t) { success }
+  }' "$vars" "$scratch"; then
+    fml_mutation_succeeded "$scratch" attachmentLinkURL
+    return $?
+  else
+    rc=$?
+  fi
+  [ "$rc" = 6 ] && fml_schema_field_unavailable "$scratch" attachmentLinkURL Mutation || return 1
+  fml_graphql 'mutation fmAttachCreate($i: String!, $u: String!, $t: String!) {
+    attachmentCreate(input: { issueId: $i, url: $u, title: $t }) { success }
+  }' "$vars" "$scratch" || return 1
+  fml_mutation_succeeded "$scratch" attachmentCreate
+}
+
 # fml_find_issue <task-id>: print one TSV row (see FML_ROWS_FILTER, minus the
-# leading task id) for the mirrored issue joined to <task-id>.
+# leading task id) for the mirrored issue joined to <task-id>. Columns:
+# identifier, issue uuid, url, status name, status type, team uuid, and the
+# base64-encoded attachment URL list.
 # Exit 0 with output = found; exit 1 = Linear answered and has no such issue;
 # exit 2 = Linear could not be asked (callers must treat this as "unknown", never
 # as "no issue"). FML_TIMEOUT is one budget for the complete lookup, not a fresh
@@ -247,7 +344,8 @@ fml_find_issue() {
         fml_graphql 'query fmFind($needle: String!, $after: String) {
           issues(filter: { description: { contains: $needle } }, first: 50, after: $after) {
             pageInfo { hasNextPage endCursor }
-            nodes { id identifier url description state { name type } }
+            nodes { id identifier url description state { name type }
+                    team { id key } attachments { nodes { url } } }
           }
         }' "$vars" "$body" "$remaining"
       else
@@ -256,13 +354,14 @@ fml_find_issue() {
         fml_graphql 'query fmFindAll($after: String) {
           issues(first: 100, after: $after, orderBy: updatedAt) {
             pageInfo { hasNextPage endCursor }
-            nodes { id identifier url description state { name type } }
+            nodes { id identifier url description state { name type }
+                    team { id key } attachments { nodes { url } } }
           }
         }' "$vars" "$body" "$remaining"
       fi
       rc=$?
       [ "$rc" = 0 ] || break
-      rows=$(jq -r "$FML_ROWS_FILTER" "$body" 2>/dev/null | awk -F'\t' -v id="$id" '$1 == id {print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6; exit}')
+      rows=$(jq -r "$FML_ROWS_FILTER" "$body" 2>/dev/null | awk -F'\t' -v id="$id" '$1 == id {print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 "\t" $7 "\t" $8; exit}')
       if [ -n "$rows" ]; then
         rm -f "$body"
         printf '%s\n' "$rows"

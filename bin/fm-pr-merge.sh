@@ -82,3 +82,10 @@ if ! caller_has_merge_method "$@"; then
 fi
 
 gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
+
+# The merge has landed. Record that outcome in Linear - Done, plus the pull
+# request as an attachment - because this is the last moment the task id and the
+# pull request are known together; data/backlog.md prunes Done to the recent few.
+# Non-fatal by contract (bin/fm-linear-merge-write.sh always exits 0), and last
+# so a merge that failed above never reaches it.
+"$SCRIPT_DIR/fm-linear-merge-write.sh" "$ID" "$URL" || true

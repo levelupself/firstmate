@@ -96,10 +96,32 @@ case "${1:-} ${2:-}" in
       case "$1" in --body-file) cp "$2" "$FAKE_DIR/pr-body"; shift 2 ;; *) shift ;; esac
     done
     ;;
+  "pr list")
+    [ -z "${FAKE_GH_LIST_FAIL:-}" ] || { echo "gh: pr list refused" >&2; exit 1; }
+    cat "$FAKE_DIR/pr-list.json"
+    ;;
 esac
 exit 0
 SH
   chmod +x "$fakebin/gh"
+}
+
+# A fakebin `gh-axi` recording every invocation, so a merge that must NOT reach
+# Linear is distinguishable from one that must. FAKE_GH_AXI_MERGE_FAIL makes the
+# merge itself fail while leaving the recording steps working.
+make_fake_gh_axi() {
+  local fakebin=$1
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_DIR/gh-axi.log"
+case "${1:-} ${2:-}" in
+  "pr merge")
+    [ -z "${FAKE_GH_AXI_MERGE_FAIL:-}" ] || { echo "gh-axi: pr merge refused" >&2; exit 1; }
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/gh-axi"
 }
 
 # Set up a home with state/, an .env, and a fresh fake-fixture dir, then export
@@ -111,11 +133,13 @@ new_home() {
   mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$HOME_DIR/fake"
   fakebin=$(make_fake_curl "$HOME_DIR")
   make_fake_gh "$fakebin"
+  make_fake_gh_axi "$fakebin"
   export FAKE_DIR="$HOME_DIR/fake"
   : > "$FAKE_DIR/calls.log"
   : > "$FAKE_DIR/gh.log"
+  : > "$FAKE_DIR/gh-axi.log"
   export PATH="$fakebin:$BASE_PATH"
-  unset FAKE_CURL_FAIL FAKE_GH_VIEW_FAIL FAKE_GH_EDIT_FAIL
+  unset FAKE_CURL_FAIL FAKE_GH_VIEW_FAIL FAKE_GH_EDIT_FAIL FAKE_GH_LIST_FAIL FAKE_GH_AXI_MERGE_FAIL
 }
 
 issue_json() {
@@ -540,5 +564,312 @@ out=$(FAKE_CURL_FAIL=1 FM_HOME="$HOME_DIR" "$ROOT/bin/fm-linear-refresh.sh" 2>&1
 expect_code 3 "$rc" "unreachable refresh reports a distinct exit code"
 assert_contains "$out" "refresh did not run" "unreachable refresh says what did not happen"
 pass "refresh degrades quietly when Linear is unconfigured or unreachable"
+
+# --- 11. the merge writes the outcome to Linear ------------------------------
+#
+# THE MERGE is the one moment where the task id, the pull request, and a live
+# backlog entry all exist together, so it is where the shipped outcome is
+# recorded. Everything below still obeys rule 1: Linear never gates a merge.
+
+# A home wired for fm-pr-merge.sh: task meta, a mirrored issue, a team whose
+# states include Done, and successful mutation fixtures.
+new_merge_home() {
+  new_home "$1"
+  printf 'LINEAR_API_KEY=lin_api_test\n' > "$HOME_DIR/.env"
+  printf 'pipeline body\n' > "$FAKE_DIR/pr-body"
+  fm_write_meta "$HOME_DIR/state/t1.meta" "window=fm-t1" "worktree=$HOME_DIR"
+  jq -cn --arg st "${2:-backlog}" --argjson att "${3:-[]}" \
+    '{data:{issues:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
+      {id:"uuid-42",identifier:"PSY-42",url:"https://linear.app/x/issue/PSY-42",
+       title:"t",description:"`firstmate: t1`",
+       state:{name:(if $st=="completed" then "Done" else "Backlog" end),type:$st},
+       team:{id:"team-uuid",key:"PSY"},
+       attachments:{nodes:$att}}]}}}' > "$FAKE_DIR/fmFind.json"
+  jq -cn '{data:{team:{id:"team-uuid",key:"PSY",states:{nodes:[
+    {id:"s-backlog",name:"Backlog",type:"backlog",position:0},
+    {id:"s-done",name:"Done",type:"completed",position:3}]}}}}' > "$FAKE_DIR/fmTeamById.json"
+  jq -cn '{data:{issueUpdate:{success:true}}}' > "$FAKE_DIR/fmState.json"
+  jq -cn '{data:{attachmentLinkURL:{success:true}}}' > "$FAKE_DIR/fmAttach.json"
+}
+
+run_merge() {
+  FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$HOME_DIR/state" \
+    "$ROOT/bin/fm-pr-merge.sh" "$@" 2>&1
+}
+
+new_merge_home mergewrite
+out=$(run_merge t1 https://github.com/o/r/pull/38); rc=$?
+expect_code 0 "$rc" "a merge that writes to Linear still exits 0"
+grep -qxF 'pr merge 38 --repo o/r --squash' "$FAKE_DIR/gh-axi.log" \
+  || fail "the merge itself did not happen"
+grep -q '^fmState' "$FAKE_DIR/calls.log" || fail "the merge did not move the issue to Done"
+sent=$(grep '^fmState' "$FAKE_DIR/calls.log" | cut -f2)
+assert_contains "$sent" '"s-done"' "the Done transition did not target the team's completed status"
+assert_contains "$sent" '"uuid-42"' "the Done transition did not target the mirrored issue"
+grep -q '^fmAttach' "$FAKE_DIR/calls.log" || fail "the merge did not attach the pull request"
+sent=$(grep '^fmAttach' "$FAKE_DIR/calls.log" | cut -f2)
+assert_contains "$sent" 'https://github.com/o/r/pull/38' "the attached URL is not the merged pull request"
+assert_contains "$out" "PSY-42" "the operator is told which issue was recorded"
+pass "a merge records the mirrored issue as Done with its pull request attached"
+
+# Ordering matters: nothing is written to Linear for a merge that did not happen.
+new_merge_home mergewritefails
+out=$(FAKE_GH_AXI_MERGE_FAIL=1 run_merge t1 https://github.com/o/r/pull/39); rc=$?
+[ "$rc" != 0 ] || fail "a failed merge must not report success"
+n=$(grep -c '^fmState\|^fmAttach' "$FAKE_DIR/calls.log" || true)
+[ "$n" = 0 ] || fail "a failed merge wrote $n mutations to Linear"
+pass "a merge that failed writes nothing to Linear"
+
+# Rule 1 again: Linear being down cannot fail a merge.
+new_merge_home mergewritedown
+out=$(FAKE_CURL_FAIL=1 run_merge t1 https://github.com/o/r/pull/40); rc=$?
+expect_code 0 "$rc" "an unreachable Linear must not fail the merge"
+grep -qxF 'pr merge 40 --repo o/r --squash' "$FAKE_DIR/gh-axi.log" \
+  || fail "an unreachable Linear stopped the merge"
+assert_contains "$out" "merge unaffected" "the operator is told the merge was not affected"
+pass "Linear unreachable at merge time: reported, merge unaffected, exit 0"
+
+new_merge_home mergewriteinert
+: > "$HOME_DIR/.env"
+out=$(run_merge t1 https://github.com/o/r/pull/44); rc=$?
+expect_code 0 "$rc" "an unconfigured Linear must not fail the merge"
+grep -qxF 'pr merge 44 --repo o/r --squash' "$FAKE_DIR/gh-axi.log" \
+  || fail "an unconfigured Linear stopped the merge"
+n=$(grep -c '^fmState\|^fmAttach' "$FAKE_DIR/calls.log" || true)
+[ "$n" = 0 ] || fail "an unconfigured Linear issued $n mutations"
+[ ! -s "$FAKE_DIR/calls.log" ] || fail "an unconfigured Linear must not touch the network at all"
+# The absent credential is a first-class path, not an edge case: the operator
+# who reads this output must be able to tell "Linear was not configured, so
+# nothing was recorded" apart from "the outcome was recorded". A silent no-op
+# reads as success and would hide a missing key indefinitely.
+assert_contains "$out" "no LINEAR_API_KEY configured" "an unconfigured merge write does not name the missing credential"
+assert_contains "$out" "nothing recorded" "an unconfigured merge write does not say that nothing was recorded"
+pass "no LINEAR_API_KEY at merge time: the merge proceeds and the skipped write is reported, not silent"
+
+# Re-merging (or a retried merge) must not re-transition a Done issue or stack a
+# second copy of the same attachment.
+new_merge_home mergewriteidem completed '[{"url":"https://github.com/o/r/pull/45"}]'
+out=$(run_merge t1 https://github.com/o/r/pull/45); rc=$?
+expect_code 0 "$rc" "a converged merge write exits 0"
+n=$(grep -c '^fmState' "$FAKE_DIR/calls.log" || true)
+[ "$n" = 0 ] || fail "an already-Done issue was transitioned again ($n times)"
+n=$(grep -c '^fmAttach' "$FAKE_DIR/calls.log" || true)
+[ "$n" = 0 ] || fail "an already-attached pull request was attached again ($n times)"
+pass "merge write is idempotent: an already-Done, already-attached issue is left alone"
+
+new_home attachambiguous
+printf 'LINEAR_API_KEY=lin_api_test\n' > "$HOME_DIR/.env"
+if ( . "$ROOT/bin/fm-linear-lib.sh"; FM_HOME="$HOME_DIR" fml_load_config; FAKE_CURL_FAIL=1 \
+  fml_attach_url uuid-42 https://github.com/o/r/pull/46 'Pull request' "$HOME_DIR/attach.json" ); then
+  rc=0
+else
+  rc=$?
+fi
+[ "$rc" -ne 0 ] || fail "an ambiguous attachment failure unexpectedly succeeded"
+n=$(grep -c '^fmAttachCreate' "$FAKE_DIR/calls.log" || true)
+[ "$n" = 0 ] || fail "an ambiguous attachment failure attempted the legacy mutation"
+pass "an ambiguous attachment failure never retries with a non-idempotent mutation"
+
+new_home attachlegacy
+printf 'LINEAR_API_KEY=lin_api_test\n' > "$HOME_DIR/.env"
+jq -cn '{errors:[{message:"Cannot query field \"attachmentLinkURL\" on type \"Mutation\"."}]}' \
+  > "$FAKE_DIR/fmAttach.json"
+jq -cn '{data:{attachmentCreate:{success:true}}}' > "$FAKE_DIR/fmAttachCreate.json"
+if ( . "$ROOT/bin/fm-linear-lib.sh"; FM_HOME="$HOME_DIR" fml_load_config; \
+  fml_attach_url uuid-42 https://github.com/o/r/pull/47 'Pull request' "$HOME_DIR/attach.json" ); then
+  rc=0
+else
+  rc=$?
+fi
+expect_code 0 "$rc" "a definitive missing-field response uses the legacy attachment mutation"
+n=$(grep -c '^fmAttachCreate' "$FAKE_DIR/calls.log" || true)
+[ "$n" = 1 ] || fail "a definitive missing-field response did not attempt the legacy mutation once"
+
+: > "$FAKE_DIR/calls.log"
+jq -cn '{errors:[{message:"Cannot query field \"attachmentLinkURL\" on type \"Mutation\". Did you mean \"attachmentCreate\"?"}]}' \
+  > "$FAKE_DIR/fmAttach.json"
+if ( . "$ROOT/bin/fm-linear-lib.sh"; FM_HOME="$HOME_DIR" fml_load_config; \
+  fml_attach_url uuid-42 https://github.com/o/r/pull/48 'Pull request' "$HOME_DIR/attach.json" ); then
+  rc=0
+else
+  rc=$?
+fi
+expect_code 0 "$rc" "a suggestion-bearing missing-field response uses the legacy attachment mutation"
+n=$(grep -c '^fmAttachCreate' "$FAKE_DIR/calls.log" || true)
+[ "$n" = 1 ] || fail "a suggestion-bearing missing-field response did not attempt the legacy mutation once"
+pass "only a definitive schema rejection enables the legacy attachment mutation"
+
+# --- 12. importing already-merged pull requests ------------------------------
+#
+# GitHub is the only complete record of what shipped. The mapping is derived
+# from the branch name firstmate itself created (fm/<task-id>), never by
+# proximity in the backlog archive - that approach cross-assigned on 2026-08-03.
+# Anything the branch cannot prove is REPORTED, never guessed.
+
+new_import_home() {
+  new_home "$1"
+  printf 'LINEAR_API_KEY=lin_api_test\nLINEAR_TEAM_KEY=PSY\n' > "$HOME_DIR/.env"
+  jq -cn '{data:{teams:{nodes:[{id:"team-uuid",key:"PSY",states:{nodes:[
+    {id:"s-backlog",name:"Backlog",type:"backlog",position:0},
+    {id:"s-done",name:"Done",type:"completed",position:3}]}}]}}}' > "$FAKE_DIR/fmTeam.json"
+  jq -cn '{data:{issueUpdate:{success:true}}}' > "$FAKE_DIR/fmState.json"
+  jq -cn '{data:{attachmentLinkURL:{success:true}}}' > "$FAKE_DIR/fmAttach.json"
+  jq -cn '{data:{issueCreate:{success:true,issue:{id:"u-new",identifier:"PSY-50"}}}}' > "$FAKE_DIR/fmCreate.json"
+}
+
+run_import() { FM_HOME="$HOME_DIR" "$ROOT/bin/fm-linear-import-prs.sh" "$@" 2>&1; }
+
+new_import_home import
+jq -cn '[
+  {number:38,url:"https://github.com/o/r/pull/38",title:"feat: known thing",
+   headRefName:"fm/010-known",mergedAt:"2026-08-02T00:00:00Z"},
+  {number:27,url:"https://github.com/o/r/pull/27",title:"fix: legacy thing",
+   headRefName:"fm/psychogen-chatentry-v9",mergedAt:"2026-07-23T00:00:00Z"},
+  {number:12,url:"https://github.com/o/r/pull/12",title:"chore: hand-made branch",
+   headRefName:"main-patch",mergedAt:"2026-07-01T00:00:00Z"},
+  {number:52,url:"https://github.com/o/r/pull/52",title:"chore: missing numeric separator",
+   headRefName:"fm/123legacy-task",mergedAt:"2026-08-07T00:00:00Z"},
+  {number:53,url:"https://github.com/o/r/pull/53",title:"chore: empty slug",
+   headRefName:"fm/123-",mergedAt:"2026-08-07T00:00:00Z"},
+  {number:54,url:"https://github.com/o/r/pull/54",title:"chore: bare number",
+   headRefName:"fm/123",mergedAt:"2026-08-07T00:00:00Z"}]' > "$FAKE_DIR/pr-list.json"
+jq -cn '{data:{issues:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
+  {id:"uuid-7",identifier:"PSY-7",url:"l/7",title:"Known thing",
+   description:"`firstmate: 010-known`",state:{name:"Backlog",type:"backlog"},
+   team:{id:"team-uuid",key:"PSY"},attachments:{nodes:[]}}]}}}' > "$FAKE_DIR/fmFind.json"
+
+out=$(run_import --repo o/r); rc=$?
+expect_code 0 "$rc" "an import that mapped what it could exits 0"
+assert_contains "$out" "PSY-7" "the matched issue is named in the audit"
+assert_contains "$out" "38" "the audit records which pull request the issue came from"
+assert_contains "$out" "fm/010-known" "the audit records how the task id was derived"
+grep -q '^fmState' "$FAKE_DIR/calls.log" || fail "the mapped pull request was not recorded as Done"
+sent=$(grep '^fmAttach' "$FAKE_DIR/calls.log" | cut -f2)
+assert_contains "$sent" "https://github.com/o/r/pull/38" "the mapped pull request was not attached"
+# The two unmappable branches must be reported and must not be guessed at.
+assert_contains "$out" "unmapped" "unmappable pull requests are reported"
+assert_contains "$out" "fm/psychogen-chatentry-v9" "the legacy branch is named rather than guessed"
+assert_contains "$out" "main-patch" "a non-firstmate branch is named rather than guessed"
+assert_contains "$out" "fm/123legacy-task" "a branch without a numeric-prefix separator is unmapped"
+assert_contains "$out" "fm/123-" "a branch with an empty slug is unmapped"
+assert_contains "$out" "fm/123" "a bare numeric branch is unmapped"
+assert_not_contains "$out" "psychogen-chatentry-v9 -> " "a legacy branch must not be mapped to a task id"
+n=$(grep -c '^fmState\|^fmAttach\|^fmCreate' "$FAKE_DIR/calls.log" || true)
+[ "$n" = 2 ] || fail "expected exactly 2 mutations for 1 mappable PR, got $n"
+pass "import maps only what the branch proves, and reports the rest instead of guessing"
+
+# A dry run must plan the same thing and change nothing.
+new_import_home importdry
+cp "$TMP_ROOT/import/fake/pr-list.json" "$FAKE_DIR/pr-list.json"
+cp "$TMP_ROOT/import/fake/fmFind.json" "$FAKE_DIR/fmFind.json"
+out=$(run_import --repo o/r --dry-run); rc=$?
+expect_code 0 "$rc" "a dry-run import exits 0"
+assert_contains "$out" "PSY-7" "the dry run still reports the mapping it would make"
+n=$(grep -c '^fmState\|^fmAttach\|^fmCreate' "$FAKE_DIR/calls.log" || true)
+[ "$n" = 0 ] || fail "a dry-run import issued $n mutations"
+pass "a dry-run import plans the mapping without writing to Linear"
+
+# The plan has to be REVIEWABLE before anything reaches a real board, so a dry
+# run must show what it would actually write - not just a verdict and an id.
+new_import_home importdryplan
+jq -cn '[
+  {number:38,url:"https://github.com/o/r/pull/38",title:"feat: known thing",
+   headRefName:"fm/010-known",mergedAt:"2026-08-02T00:00:00Z"},
+  {number:51,url:"https://github.com/o/r/pull/51",title:"feat: area effects",
+   headRefName:"fm/010-basic-combat-damage",mergedAt:"2026-08-06T05:49:02Z"}]' > "$FAKE_DIR/pr-list.json"
+# 010-known is mirrored and still open; 010-basic-combat-damage is not mirrored
+# at all, so one row plans a link and the other plans a create.
+jq -cn '{data:{issues:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
+  {id:"uuid-7",identifier:"PSY-7",url:"l/7",title:"Known thing",
+   description:"`firstmate: 010-known`",state:{name:"Backlog",type:"backlog"},
+   team:{id:"team-uuid",key:"PSY"},attachments:{nodes:[]}}]}}}' > "$FAKE_DIR/fmFind.json"
+mkdir -p "$HOME_DIR/data"
+cat > "$HOME_DIR/data/backlog.md" <<'MD'
+# Backlog
+
+## Done
+- [x] 010-basic-combat-damage - Add non-targeted area effects (merged 2026-08-06)
+MD
+: > "$HOME_DIR/data/done-archive.md"
+
+out=$(run_import --repo o/r --dry-run); rc=$?
+expect_code 0 "$rc" "a dry-run plan exits 0"
+[ -z "${FM_TEST_SHOW_PLAN:-}" ] || { echo "--- dry-run plan ---"; printf '%s\n' "$out"; echo "--- end ---"; }
+# What it would CREATE: the title, where that title came from, and the exact
+# description including the join line and the pull-request provenance.
+assert_contains "$out" "Add non-targeted area effects" "the dry run does not name the title it would create"
+assert_contains "$out" "backlog" "the dry run does not say where the title came from"
+assert_contains "$out" "firstmate: 010-basic-combat-damage" "the dry run does not show the join line it would write"
+assert_contains "$out" "pull request #51" "the dry run does not show the provenance it would record"
+printed_description=$(printf '%s\n' "$out" | awk '
+  /description it would write:/ { capture=1; next }
+  capture && /^        \| / { sub(/^        \| /, ""); print; next }
+  capture { exit }
+')
+expected_description=$(printf '%s\n\n**Delivered:** %s\n\n**Imported from** merged pull request #%s in %s, branch `%s`, merged %s.\n\nThe task id was derived from the branch name, which firstmate created when it dispatched the work.\n' \
+  '`firstmate: 010-basic-combat-damage`' \
+  'https://github.com/o/r/pull/51' \
+  '51' 'o/r' 'fm/010-basic-combat-damage' '2026-08-06T05:49:02Z')
+[ "$printed_description" = "$expected_description" ] || fail "the dry-run description differs from the description it would create"
+# What it would ATTACH, exactly, for both the created and the linked row.
+assert_contains "$out" "https://github.com/o/r/pull/51" "the dry run does not name the URL it would attach to the created issue"
+assert_contains "$out" "https://github.com/o/r/pull/38" "the dry run does not name the URL it would attach to the linked issue"
+# What it would do to STATUS.
+assert_contains "$out" "Done" "the dry run does not say it would move the issue to Done"
+# The verdict must read as a plan, not as something already done.
+assert_contains "$out" "create    " "the dry run does not label the planned issue as a create"
+assert_not_contains "$out" "created   (new)" "a dry run must not report a create as already done"
+# And still nothing written.
+n=$(grep -c '^fmState\|^fmAttach\|^fmAttachCreate\|^fmCreate' "$FAKE_DIR/calls.log" || true)
+[ "$n" = 0 ] || fail "a dry-run plan issued $n mutations"
+pass "a dry run prints the title, join line, provenance, attachment URL, and status change it would write"
+
+# A pull request whose issue is already Done and already carries the link must
+# plan nothing, so a reviewer can see the import has converged.
+new_import_home importdryconverged
+jq -cn '[{number:38,url:"https://github.com/o/r/pull/38",title:"feat: known thing",
+  headRefName:"fm/010-known",mergedAt:"2026-08-02T00:00:00Z"}]' > "$FAKE_DIR/pr-list.json"
+jq -cn '{data:{issues:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
+  {id:"uuid-7",identifier:"PSY-7",url:"l/7",title:"Known thing",
+   description:"`firstmate: 010-known`",state:{name:"Done",type:"completed"},
+   team:{id:"team-uuid",key:"PSY"},
+   attachments:{nodes:[{url:"https://github.com/o/r/pull/38"}]}}]}}}' > "$FAKE_DIR/fmFind.json"
+out=$(run_import --repo o/r --dry-run); rc=$?
+expect_code 0 "$rc" "a converged dry run exits 0"
+assert_contains "$out" "unchanged" "a converged row is not reported as unchanged"
+assert_not_contains "$out" "would attach" "a converged row must not plan an attachment"
+assert_not_contains "$out" "would move" "a converged row must not plan a status change"
+pass "a dry run plans nothing for a pull request already Done and already attached"
+
+# A completed issue that is missing only its attachment still names the status
+# decision explicitly, even though that decision does not require a mutation.
+new_import_home importdrycompleted
+jq -cn '[{number:38,url:"https://github.com/o/r/pull/38",title:"feat: known thing",
+  headRefName:"fm/010-known",mergedAt:"2026-08-02T00:00:00Z"}]' > "$FAKE_DIR/pr-list.json"
+jq -cn '{data:{issues:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
+  {id:"uuid-7",identifier:"PSY-7",url:"l/7",title:"Known thing",
+   description:"`firstmate: 010-known`",state:{name:"Done",type:"completed"},
+   team:{id:"team-uuid",key:"PSY"},attachments:{nodes:[]}}]}}}' > "$FAKE_DIR/fmFind.json"
+out=$(run_import --repo o/r --dry-run); rc=$?
+expect_code 0 "$rc" "a completed-but-unattached dry run exits 0"
+assert_contains "$out" "would leave status unchanged because the issue is already completed" "a completed-but-unattached plan omits its unchanged status decision"
+assert_contains "$out" "would attach https://github.com/o/r/pull/38" "a completed-but-unattached plan omits its attachment"
+pass "a completed-but-unattached dry run names its unchanged status"
+
+# A shipped task id with no mirrored issue is created, carrying the join line
+# and the provenance that makes the mapping auditable after the fact.
+new_import_home importcreate
+jq -cn '[{number:51,url:"https://github.com/o/r/pull/51",title:"feat: area effects",
+  headRefName:"fm/010-basic-combat-damage",mergedAt:"2026-08-06T05:49:02Z"}]' > "$FAKE_DIR/pr-list.json"
+jq -cn '{data:{issues:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[]}}}' > "$FAKE_DIR/fmFind.json"
+out=$(run_import --repo o/r); rc=$?
+expect_code 0 "$rc" "creating a missing issue exits 0"
+grep -q '^fmCreate' "$FAKE_DIR/calls.log" || fail "no issue was created for the shipped pull request"
+sent=$(grep '^fmCreate' "$FAKE_DIR/calls.log" | cut -f2 | jq -r '.d')
+assert_contains "$sent" 'firstmate: 010-basic-combat-damage' "the created issue carries the join line"
+assert_contains "$sent" "https://github.com/o/r/pull/51" "the created issue records the pull request it came from"
+first=$(printf '%s' "$sent" | head -n1)
+assert_contains "$first" "firstmate: 010-basic-combat-damage" "the join must be the FIRST line or it is not a join"
+pass "import creates a missing issue with the join line and its pull-request provenance"
 
 printf '\nall linear tests passed\n'

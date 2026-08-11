@@ -56,7 +56,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-merge-local.sh`      | Fast-forward a `local-only` project's local default branch after approval            |
 | `fm-review-diff.sh`      | Review a crewmate branch or resolved PR head against the authoritative base          |
 | `fm-review.sh`           | Open a ready task's GitHub pull-request diff in local-only Hunk with optional curated notes |
-| `fm-review-notes.sh`     | Generate a curated low-confidence Hunk sidecar from delivering-crewmate input         |
+| `fm-review-notes.sh`     | Generate a curated Hunk sidecar from delivering-crewmate input                        |
 | `fm-review-shell.sh`     | Define the one-word interactive Bash `review` function                               |
 | `fm-marker-lib.sh`       | Compatibility entry point for the from-firstmate carrier owned by `fm-operational-input.sh` |
 | `fm-pending-reply-lib.sh` | Parent-owned secondmate pending-reply expectations, recovery, and one-shot escalation |

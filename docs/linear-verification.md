@@ -189,3 +189,78 @@ exact failure this change exists to prevent. `fml_body_links` now requires a
 documented magic word (including the list form and any configured
 `LINEAR_MAGIC_WORD`) or firstmate's own marker comment, and
 `tests/fm-linear.test.sh` pins all three cases.
+
+## 8. The two facts a merge writes, read back from the real board
+
+Date: 2026-08-08.
+
+Credential boundary, and why this section is split the way it is. `LINEAR_API_KEY`
+is configured in the main firstmate home's private, gitignored `.env`. It is
+deliberately not reachable from an isolated task worktree, and it is not copied
+into one, so work validated in a worktree cannot execute the live API and the
+live runs belong to the main home. That is the intended boundary, not a gap in
+the setup.
+
+What follows is therefore split: the write shape below was confirmed live by
+reading a real board issue back, while the new scripts' own live execution was
+not performed here and is recorded as outstanding at the end of this section.
+
+`bin/fm-linear-merge-write.sh` writes exactly two things: a `stateId` pointing at
+the team's completed "Done" status (`fml_set_state`) and an
+`attachmentLinkURL` titled "Pull request" (`fml_attach_url`). Both are the
+mutations `fm-linear-refresh.sh` has been using, so a live issue produced by
+refresh is direct evidence of how they render.
+
+PSY-121, read back live:
+
+```
+description first line   `firstmate: 063-migration-journal-repair`
+status                   Done          statusType: completed
+stateHistory             Backlog (ended 2026-08-04T09:03:07.412Z) -> Done
+attachments              [{ title: "Pull request",
+                            url: "https://github.com/levelupself/psychogenesis/pull/41" }]
+```
+
+The attachment is a real rendered link with the exact title `fml_attach_url`
+sends, and the completed status is the one `fml_done_state_id` selects: the
+status literally named "Done" whose type is `completed`. The description's first
+line is the join, unchanged.
+
+### Outstanding, and owned by the main home
+
+Not performed here, and not claimed: a run of `fm-linear-merge-write.sh` or
+`fm-linear-import-prs.sh` against the live API, and the read-back of an issue
+those scripts themselves wrote. Both require the credential that stays in the
+main home, so both are main-home work rather than something a task worktree can
+close.
+
+`fm-linear-import-prs.sh --dry-run` exists so the second one can be reviewed
+before it is run: it prints, per pull request, the title it would use and where
+that title came from, the exact description including the join line and the
+pull-request provenance, the attachment URL, and whether it would move the issue
+to Done or leave an already-completed one alone, while issuing no mutations.
+
+## 9. The import mapping, against the real merged pull requests
+
+Date: 2026-08-08. Read-only; nothing was written.
+
+`bin/fm-linear-import-prs.sh` derives the task id from the branch name
+firstmate created, `fm/<numbered-task-id>`, and reports anything else. Applied to
+the real merged pull requests of `levelupself/psychogenesis`:
+
+```
+$ gh pr list --repo levelupself/psychogenesis --state merged --limit 200 \
+    --json number,headRefName
+71 merged pull requests
+45 derivable  fm/<NNN-slug>, e.g. #41 fm/063-migration-journal-repair -> 063-migration-journal-repair
+26 unmapped   fm/psychogen-*, e.g. #1 fm/psychogen-engine-k1
+```
+
+The split is clean rather than ragged: every unmapped branch is a pre-convention
+`fm/psychogen-<word>-<code>` name, and all 26 are pull requests #1 to #27, the
+work that shipped before numbered task ids existed. Nothing ambiguous straddles
+the boundary, so no pull request is mapped on a judgement call.
+
+Those 26 carry no recoverable task id. Attaching them would mean guessing, which
+is the cross-assignment that reading `data/done-archive.md` by proximity
+produced on 2026-08-03, so they are reported and left alone.

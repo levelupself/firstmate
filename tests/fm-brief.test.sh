@@ -220,6 +220,13 @@ test_ship_modes_generate_clean_briefs() {
       "$id: brief did not prevent the sg command collision"
     assert_grep 'hand-check unfamiliar ast-grep patterns' "$brief" \
       "$id: brief did not carry the trial-backed wrong-pattern warning"
+    assert_grep 'silently returns no matches' "$brief" \
+      "$id: brief did not document the silent empty result on a file ast-grep cannot parse"
+    assert_grep 'indistinguishable from a genuine absence' "$brief" \
+      "$id: brief did not name the could-not-run versus found-nothing ambiguity"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'confirm an empty ast-grep result with `rg`' "$brief" \
+      "$id: brief did not tell a worker how to tell the two apart"
     # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
     assert_grep 'then append `captain-held: {why the task is parked}` before going idle and stopping' "$brief" \
       "$id: brief did not tell a decision-blocked worker to declare captain-held before idling"
@@ -240,6 +247,13 @@ test_scout_brief_teaches_optional_structural_search() {
   # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
   assert_grep 'Keep `rg` as the text-search baseline' "$brief" \
     "scout brief did not preserve text search as the baseline"
+  assert_grep 'silently returns no matches' "$brief" \
+    "scout brief did not document the silent empty result on a file ast-grep cannot parse"
+  assert_grep 'indistinguishable from a genuine absence' "$brief" \
+    "scout brief did not name the could-not-run versus found-nothing ambiguity"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'confirm an empty ast-grep result with `rg`' "$brief" \
+    "scout brief did not tell a worker how to tell the two apart"
   pass "fm-brief.sh: scout briefs teach trial-backed optional structural search"
 }
 
@@ -313,6 +327,115 @@ test_no_mistakes_dod_wording() {
   assert_grep "firstmate's authority check" "$brief" \
     "no-mistakes DOD lost the apostrophe prose that the structural fix makes parse-safe"
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose, now parse-safe"
+}
+
+# Seven consecutive workers (measured 2026-08-06, two harnesses, two repos)
+# reported `done:` at their implementation commit and then went idle, because the
+# no-mistakes DOD opened with "The task is complete only when committed on your
+# branch" and named a `done: {summary}` gate there. The fix removes the ambiguity
+# rather than warning about it: every ship mode now states one terminal report
+# whose evidence cannot exist at commit time, and the status protocol ties `done:`
+# to exactly that report. Each mode is pinned here so a rewrite cannot quietly
+# reintroduce a commit-time finish line in one branch while fixing another.
+test_terminal_report_cannot_be_written_at_commit() {
+  local home brief
+  home="$TMP_ROOT/terminal-report-home"
+  write_registry "$home"
+
+  for id_proj in "brief-term-nm:no-registry-proj" "brief-term-dp:direct-proj" "brief-term-lo:local-proj"; do
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "${id_proj%%:*}" "${id_proj##*:}" >/dev/null 2>&1
+    brief="$home/data/${id_proj%%:*}/brief.md"
+    assert_no_grep "The task is complete only when committed" "$brief" \
+      "${id_proj%%:*}: brief still declares the task complete at the implementation commit"
+    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+    assert_grep 'this mode'"'"'s one terminal report under Definition of done, the only `done:` you write' "$brief" \
+      "${id_proj%%:*}: status protocol did not tie done: to the mode's single terminal report"
+    assert_grep "This mode has exactly one terminal report" "$brief" \
+      "${id_proj%%:*}: Definition of done did not name a single terminal report"
+  done
+
+  brief="$home/data/brief-term-nm/brief.md"
+  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+  assert_grep 'only a green CI run can produce it: `done: PR {url} checks green`' "$brief" \
+    "no-mistakes terminal report must require evidence only a green CI run produces"
+  assert_grep "invoke /no-mistakes yourself to validate and ship the PR. Never stop there or wait to be told." "$brief" \
+    "no-mistakes brief must send the worker straight from commit into validation"
+  assert_no_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \
+    "no-mistakes brief still parks the worker for a validation handoff"
+
+  brief="$home/data/brief-term-dp/brief.md"
+  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+  assert_grep 'only an opened PR can produce it: append `done: PR {url}` to the status file and stop.' "$brief" \
+    "direct-PR terminal report must require the opened PR URL"
+  assert_grep "push your branch and open a PR with \`gh-axi\`; never stop there or wait to be told." "$brief" \
+    "direct-PR brief must send the worker straight from commit into pushing the PR"
+
+  brief="$home/data/brief-term-lo/brief.md"
+  assert_grep "Committing is a midpoint, not the finish - after committing, run the local tests and verify branch \`fm/brief-term-lo\` is ready to merge as it stands." "$brief" \
+    "local-only brief must continue from committing into local verification"
+  assert_grep "only once tests pass locally, the tree has no uncommitted changes, and the branch is mergeable exactly as it stands, append \`done: ready in branch fm/brief-term-lo, tests pass, tree clean\`" "$brief" \
+    "local-only terminal report must carry passing-test, clean-tree, and merge-ready evidence"
+  assert_no_grep "unpushed" "$brief" \
+    "local-only brief must not require push evidence when pushing is forbidden"
+  assert_no_grep "/no-mistakes yourself" "$brief" \
+    "local-only brief must not send the worker into the no-mistakes pipeline"
+  pass "fm-brief.sh: every ship mode names one terminal report unreachable at commit time"
+}
+
+# Generated ship briefs said nothing about when a behavioural test is written, so
+# the requirement was carried only by ad-hoc steers, and those asked for the weaker
+# retroactive form: implement, then revert the source to watch the test fail. That
+# form goes stale the moment a later fix round rewrites the source or the test, and
+# an assertion written after the implementation describes what the code does rather
+# than what the product should do. Every ship mode now carries the red-first
+# requirement in the shared rules, with the retroactive check kept only as a
+# disclosed fallback pinned to the shipped head.
+test_behavioral_tests_are_red_first() {
+  local home brief id
+
+  home="$TMP_ROOT/red-first-home"
+  write_registry "$home"
+
+  for id_proj in "brief-red-nm:no-registry-proj" "brief-red-dp:direct-proj" "brief-red-lo:local-proj"; do
+    id=${id_proj%%:*}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "${id_proj##*:}" >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+
+    assert_grep "Write behavioral tests RED-FIRST: run the new test before the implementation exists" "$brief" \
+      "$id: ship brief did not require the failing test before the implementation exists"
+    assert_grep "record the failure message you actually saw" "$brief" \
+      "$id: ship brief accepted an unrecorded red state instead of the observed failure message"
+    assert_grep "then implement and watch it pass" "$brief" \
+      "$id: ship brief did not close the red-first cycle on an observed green"
+    assert_grep "A test with no meaningful red state" "$brief" \
+      "$id: ship brief did not exempt tests that cannot meaningfully fail first"
+    assert_grep "a snapshot of existing output, a type-level assertion, a fixture correction - is exempt" "$brief" \
+      "$id: ship brief did not name the non-behavioural exemptions"
+    assert_grep "Only where red-first is genuinely impractical" "$brief" \
+      "$id: ship brief did not keep the retroactive check as a narrow fallback"
+    assert_grep "confirm the test fails with the implementation reverted AT THE SHIPPED HEAD" "$brief" \
+      "$id: ship brief did not pin the fallback check to the shipped head"
+    assert_grep "that same check is stale at any earlier commit" "$brief" \
+      "$id: ship brief let a fallback check performed at the implementation commit still count"
+  done
+
+  # The rule sits with the work rules, ahead of the long status protocol, and the
+  # no-mistakes escalation pointer must follow the renumbering rather than aiming
+  # at whatever rule now occupies slot 7.
+  brief="$home/data/brief-red-nm/brief.md"
+  assert_grep "escalate to firstmate (rule 8) and stop" "$brief" \
+    "no-mistakes DOD escalation pointer did not follow the renumbered needs-decision rule"
+  assert_no_grep "escalate to firstmate (rule 7)" "$brief" \
+    "no-mistakes DOD still points at the pre-renumbering escalation rule"
+
+  # Scouts produce a report, never a shipped change, so the requirement must not
+  # leak into their contract.
+  id="brief-red-scout"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  assert_no_grep "RED-FIRST" "$home/data/$id/brief.md" \
+    "scout brief carried a ship-only test-discipline rule"
+
+  pass "fm-brief.sh: every ship mode requires red-first behavioural tests"
 }
 
 test_ship_project_memory_wording() {
@@ -679,6 +802,8 @@ test_ship_modes_generate_clean_briefs
 test_scout_brief_teaches_optional_structural_search
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
+test_terminal_report_cannot_be_written_at_commit
+test_behavioral_tests_are_red_first
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path

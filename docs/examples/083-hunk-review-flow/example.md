@@ -15,7 +15,7 @@ printf '%s\t%s\t%s\t%s\t%s\n' \
       --summary 'Three deliberately curated uncertainty stops for the standalone Hunk review flow.'
 ```
 
-The resulting [`review-notes.json`](review-notes.json) has `confidence: "low"` on every annotation and anchors each note to its real new-side line range.
+The resulting [`review-notes.json`](review-notes.json) carries no confidence field and anchors each note to its real new-side line range.
 The notes call out readiness ordering, authenticated diff transport, and the generator's deliberately compact transformation as the three review risks.
 Hunk's live session inspection reported `reviewNoteCount: 3`, `showAgentNotes: true`, and all three expected file/range anchors when this staged patch was opened through the real TUI.
 

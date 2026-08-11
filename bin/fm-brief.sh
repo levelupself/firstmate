@@ -33,9 +33,17 @@
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> captain merge
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                captain approves, firstmate merges to local main
+# Each ship mode names exactly one terminal report and ties the status protocol's
+# "done:" verb to it, so a worker that has committed but not reached that mode's
+# gate has no wording it can honestly read as finished.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # Ship briefs prohibit skip-worktree and assume-unchanged index flags because
 # they conceal tracked changes from ordinary dirty-worktree checks.
+# Ship briefs require behavioral tests red-first - observed failing before the
+# implementation exists - because a retroactive check goes stale on the next fix
+# round and an assertion written last describes the code rather than the product.
+# Tests with no meaningful red state are exempt, and the retroactive check remains
+# only as a disclosed fallback pinned to the shipped head.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
@@ -73,6 +81,8 @@ CAPTAIN_HELD_VERB=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VER
 IFS= read -r -d '' SEARCH_GUIDANCE <<'EOF' || true
 `ast-grep` is an optional structural-search aid for code questions where text search over-matches; invoke it only as `ast-grep`, never `sg`.
 Keep `rg` as the text-search baseline, and hand-check unfamiliar ast-grep patterns because a plausible wrong pattern can return partial or unexpectedly broad results.
+On a file it cannot parse - an unrecognized language, or the wrong `-l` - ast-grep silently returns no matches, so a search that never ran is indistinguishable from a genuine absence of the construct.
+Never read an empty structural result as proof: confirm an empty ast-grep result with `rg` over the same paths, or with a positive-control pattern you know matches there, before reporting that nothing exists.
 EOF
 SEARCH_GUIDANCE=${SEARCH_GUIDANCE%$'\n'}
 
@@ -319,9 +329,8 @@ case "$MODE" in
     RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
-This project ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
-The task is complete only when committed on your branch.
-When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
+This project ships **direct-PR** without the no-mistakes pipeline. Committing is a midpoint, not the finish - keep going in the same turn: push your branch and open a PR with \`gh-axi\`; never stop there or wait to be told.
+This mode has exactly one terminal report, and only an opened PR can produce it: append \`done: PR {url}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
     ;;
@@ -331,9 +340,9 @@ EOF
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 This project ships **local-only**: no remote, no PR, no pipeline.
-The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge.
+Committing is a midpoint, not the finish - after committing, run the local tests and verify branch \`fm/$ID\` is ready to merge as it stands. Do NOT push, do NOT open a PR, do NOT merge.
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
-When it is implemented and committed, append \`done: ready in branch fm/$ID\` to the status file and stop.
+This mode has exactly one terminal report: only once tests pass locally, the tree has no uncommitted changes, and the branch is mergeable exactly as it stands, append \`done: ready in branch fm/$ID, tests pass, tree clean\` to the status file and stop.
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
 EOF
     ;;
@@ -343,9 +352,9 @@ EOF
     RULE1='1. Never push to the default branch. Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
-The task is complete only when committed on your branch.
-When you believe it is complete, append \`done: {summary}\` to the status file and stop.
-Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
+This project ships **no-mistakes**: the deliverable is a PR whose checks are green.
+Committing is a midpoint, not the finish - once the implementation is committed, keep going in the same turn and invoke /no-mistakes yourself to validate and ship the PR. Never stop there or wait to be told.
+This mode has exactly one terminal report, and only a green CI run can produce it: \`done: PR {url} checks green\`.
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
@@ -354,7 +363,7 @@ Include this artifact-style constraint in \`--intent\`: pipeline-authored risk r
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 
 Two firstmate-specific rules layer on top of that guidance:
-- ask-user findings are never yours to answer: escalate to firstmate (rule 7) and stop.
+- ask-user findings are never yours to answer: escalate to firstmate (rule 8) and stop.
   Firstmate applies the authority contract in its \`AGENTS.md\` and obtains any required captain decision.
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
@@ -393,24 +402,29 @@ $RULE1
 2. Stay inside this worktree; modify nothing outside it.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Never set Git's \`skip-worktree\` or \`assume-unchanged\` index flags; they conceal tracked changes from safety checks.
-5. Report status by appending one line:
+5. Write behavioral tests RED-FIRST: run the new test before the implementation exists,
+   record the failure message you actually saw, then implement and watch it pass.
+   A test with no meaningful red state - a snapshot of existing output, a type-level assertion, a fixture correction - is exempt.
+   Only where red-first is genuinely impractical, say why in the PR body (or the commit message when this mode opens no PR)
+   and instead confirm the test fails with the implementation reverted AT THE SHIPPED HEAD; that same check is stale at any earlier commit.
+6. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, $CAPTAIN_HELD_VERB, blocked, $PAUSED_VERB, done, failed.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
    would act on (setup done, bug reproduced, fix implemented, validation passed) and the
    needs-decision/blocked/paused/done/failed states. No step-by-step FYI progress lines;
    firstmate reads your pane for that.
-   A mid-task \`working:\` line (including setup complete) is nonterminal: do not end the
-   turn after it; continue the same stage until a defined \`done:\` gate under Definition of done.
+   A mid-task \`working:\` line (including setup complete) is nonterminal: do not end the turn
+   after it; continue until this mode's one terminal report under Definition of done, the only \`done:\` you write.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
    a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long
    cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
-6. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
-7. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
+7. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
+8. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\`, then append \`$CAPTAIN_HELD_VERB: {why the task is parked}\` before going idle and stopping. Firstmate will apply the configured authority and reply with the decision.
    When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
-8. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
+9. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
