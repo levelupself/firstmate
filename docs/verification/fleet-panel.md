@@ -118,14 +118,10 @@ Twenty consecutive captures of a fixture alternating three-line and one-line fra
 
 ## Watched-banner ownership inside a cockpit fleet region
 
-Verified on 2026-08-10 against the real herdr 0.8.0 executable, in a guarded
-non-`default` lab session provisioned by `bin/fm-herdr-lab.sh`.
+Verified on 2026-08-10 against the real herdr 0.8.0 executable, in a guarded non-`default` lab session provisioned by `bin/fm-herdr-lab.sh`.
 
-Two facts about herdr 0.8.0 bound this design and are recorded because the fix
-depends on them.
-Closing a fleet pane already retires its banner, so process reaping is not the
-gap; and `pane run` types into the pane's shell, so it cannot start a second
-banner in a pane whose banner is still in the foreground.
+Two facts about herdr 0.8.0 bound this design and are recorded because the fix depends on them.
+Closing a fleet pane already retires its banner, so process reaping is not the gap; and `pane run` types into the pane's shell, so it cannot start a second banner in a pane whose banner is still in the foreground.
 
 ```
 === E2: close a fleet pane; is its watcher reaped? ===
@@ -136,9 +132,7 @@ banner in a pane whose banner is still in the foreground.
 ```
 
 The gap is a region rebuild.
-Adoption that finds no readable record builds a fresh region and leaves the
-previous generation's panes untouched, so before this rule every rebuild added
-a live banner rather than replacing one.
+Adoption that finds no readable record builds a fresh region and leaves the previous generation's panes untouched, so before this rule every rebuild added a live banner rather than replacing one.
 
 ```
 === E4: record lost -> re-adopt builds a SECOND region; old watchers? ===
@@ -147,8 +141,7 @@ a live banner rather than replacing one.
     pid=1686794 STILL PAINTING (unbound)
 ```
 
-The same rebuild after the rule strands nothing, and the newly recorded panes
-keep painting.
+The same rebuild after the rule strands nothing, and the newly recorded panes keep painting.
 
 ```
 generation 1 fleet panes: w1:p2,w1:p3,w1:p4
@@ -167,17 +160,11 @@ generation 2 fleet panes: w1:p5,w1:p6,w1:p7
 RESULT stranded=0 live_bound_panes=3
 ```
 
-Retirement stops the banner and nothing else: the emptied panes stay on the tab
-for the operator, which is why the tab still reports seven panes above.
+Retirement stops the banner and nothing else: the emptied panes stay on the tab for the operator, which is why the tab still reports seven panes above.
 
 Repaint contention was the first hypothesis and does not survive.
-Two banners painting one pane's terminal at 1-second intervals, with different
-sections and with frames taller than the pane, left exactly one complete board
-in the pane across repeated captures, because each paint homes the cursor and
-erases to the end of the display.
-Contention therefore costs authorship - the visible board silently alternates
-between owners - rather than accumulating rows, which is what makes single
-ownership the guarantee worth enforcing.
+Two banners painting one pane's terminal at 1-second intervals, with different sections and with frames taller than the pane, left exactly one complete board in the pane across repeated captures, because each paint homes the cursor and erases to the end of the display.
+Contention therefore costs authorship - the visible board silently alternates between owners - rather than accumulating rows, which is what makes single ownership the guarantee worth enforcing.
 
 ```
 === B2: add a SECOND painter with a DIFFERENT frame on the same tty ===
@@ -186,7 +173,5 @@ ownership the guarantee worth enforcing.
   verdict: STABLE
 ```
 
-Counting banner processes with a bare process match overstates them roughly
-twofold: each redraw forks a command substitution that carries the same argv as
-its parent for the length of one render.
+Counting banner processes with a bare process match overstates them roughly twofold: each redraw forks a command substitution that carries the same argv as its parent for the length of one render.
 Only the loop process is a banner.
