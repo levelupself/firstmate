@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# fm-test-requires: herdr
 # tests/fm-backend-herdr-eventwait-smoke.test.sh - REAL-herdr smoke test for the
 # native pane.agent_status_changed push escalation (fm_backend_herdr_wait_transition,
 # bin/backends/herdr.sh, and its raw-socket reader bin/backends/herdr-eventwait.py).

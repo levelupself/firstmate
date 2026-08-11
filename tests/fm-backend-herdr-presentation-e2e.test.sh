@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# fm-test-requires: herdr
 # Isolated real-Herdr E2E coverage for the default-off disposable single-task
 # presentation projection and its best-effort owning-parent ordering across
 # primary and secondmate homes.

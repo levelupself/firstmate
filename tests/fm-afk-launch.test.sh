@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# fm-test-requires: herdr
 # tests/fm-afk-launch.test.sh - the script-owned, backend-aware away-daemon
 # launch (bin/fm-afk-launch.sh) and the away-mode stale-artifact lifecycle fixes
 # (bin/fm-afk-start.sh). Two layers:

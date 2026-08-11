@@ -61,6 +61,9 @@
 # live in this script only (one owner). The proven-isolated candidate set remains
 # owned by bin/fm-test-isolation-proof.sh; portable parallel shards are a
 # duration-balanced partition of that exact set (see docs/fm-test-portable-shards.md).
+# Tests that need a live Herdr declare `# fm-test-requires: herdr` in their
+# leading comment header; --check-coverage validates that metadata against the
+# real-herdr-gated family in both directions.
 #
 # portable-serial stays strictly serial. Its CI shards (portable-serial-<k>of<n>)
 # split it across separate runners, so two of its stateful scripts still never
@@ -660,23 +663,40 @@ run_coverage_guard() {
     return 1
   fi
 
-  # A script that refuses to run without a live Herdr belongs in the one lane
-  # that installs Herdr and hard-fails on its skip token. Anywhere else its own
-  # gate exits 0 on every runner, which is indistinguishable from passing: the
-  # partition checks above still see it covered. Derived from each script's own
-  # gate rather than a maintained name list, so a newly added Herdr test cannot
-  # be classified into silence.
-  : >"$tmp/herdr_gated"
+  # Declarative requirements are authoritative. The Herdr family and scripts
+  # declaring Herdr must correspond exactly, so neither a declaration nor a
+  # classification can drift into a lane that silently skips the test.
+  : >"$tmp/herdr_required"
   while IFS= read -r script; do
     [ -n "$script" ] || continue
-    grep -q 'command -v herdr' "$script" 2>/dev/null || continue
-    printf '%s\n' "$script" >>"$tmp/herdr_gated"
+    if test_header_requires "$script" herdr; then
+      printf '%s\n' "$script" >>"$tmp/herdr_required"
+    fi
   done <"$tmp/all"
-  LC_ALL=C sort -u -o "$tmp/herdr_gated" "$tmp/herdr_gated"
-  missing=$(comm -23 "$tmp/herdr_gated" "$tmp/herdr" || true)
-  if [ -n "$missing" ]; then
-    log "coverage guard: these scripts gate on a live Herdr but are not in the real-herdr-gated lane, so they exit 0 unrun wherever they are:"
-    printf '%s\n' "$missing" >&2
+  LC_ALL=C sort -u -o "$tmp/herdr_required" "$tmp/herdr_required"
+  missing=$(comm -23 "$tmp/herdr_required" "$tmp/herdr" || true)
+  extra=$(comm -13 "$tmp/herdr_required" "$tmp/herdr" || true)
+  if [ -n "$missing" ] || [ -n "$extra" ]; then
+    log "coverage guard: fm-test-requires herdr declarations must exactly match the real-herdr-gated lane"
+    [ -z "$missing" ] || { log "declared but not classified real-herdr-gated:"; printf '%s\n' "$missing" >&2; }
+    [ -z "$extra" ] || { log "classified real-herdr-gated but missing the declaration:"; printf '%s\n' "$extra" >&2; }
+    rm -rf "$tmp"
+    return 1
+  fi
+
+  # Secondary undeclared-requirement warning: catch the conventional live gate
+  # if a new test omits its authoritative declaration. This is intentionally a
+  # fail-closed safety net, not the classification mechanism.
+  : >"$tmp/undeclared_herdr_gates"
+  while IFS= read -r script; do
+    [ -n "$script" ] || continue
+    test_header_requires "$script" herdr && continue
+    grep -Eq '^[[:space:]]*command -v herdr([[:space:]]|$)' "$script" 2>/dev/null || continue
+    printf '%s\n' "$script" >>"$tmp/undeclared_herdr_gates"
+  done <"$tmp/all"
+  if [ -s "$tmp/undeclared_herdr_gates" ]; then
+    log "coverage guard: undeclared-requirement warning: live Herdr gates without '# fm-test-requires: herdr':"
+    cat "$tmp/undeclared_herdr_gates" >&2
     rm -rf "$tmp"
     return 1
   fi
@@ -768,6 +788,20 @@ all_repo_tests() {
     [ -f "$f" ] || continue
     printf '%s\n' "$f"
   done | LC_ALL=C sort
+}
+
+test_header_requires() {
+  local script=$1 requirement=$2
+  awk -v wanted="$requirement" '
+    NR == 1 && /^#!/ { next }
+    /^[[:space:]]*$/ { next }
+    /^#/ {
+      if ($0 == "# fm-test-requires: " wanted) found = 1
+      next
+    }
+    { exit }
+    END { exit(found ? 0 : 1) }
+  ' "$script"
 }
 
 normalize_script_path() {

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# fm-test-requires: herdr
 # Real-Herdr executable-path test for cockpit placement and restart adoption.
 set -u
 

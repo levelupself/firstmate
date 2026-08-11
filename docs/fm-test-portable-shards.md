@@ -54,9 +54,11 @@ It keeps watcher, lock, AFK, real tmux, daemon, secondmate lifecycle, bootstrap,
 Membership is derived rather than enumerated, so a newly added test lands here by default.
 
 That default is safe for a test that can run anywhere and unsafe for one that cannot.
-A script gated on a live Herdr exits 0 through its own `command -v herdr` guard on any runner without Herdr, and the portable lanes install none, so landing there makes it indistinguishable from a passing test while the partition checks still count it as covered.
+A test that needs a live Herdr must put the exact declaration `# fm-test-requires: herdr` in its leading comment header and must be classified `real-herdr-gated`.
+A script gated on a live Herdr exits 0 through its own guard on any runner without Herdr, and the portable lanes install none, so landing there makes it indistinguishable from a passing test while the partition checks still count it as covered.
 Only `tests-herdr` installs Herdr and passes `--fail-on-gate-skip 'herdr not found'`, and it selects `--family real-herdr-gated`.
-`--check-coverage` therefore requires every script carrying that guard to be classified `real-herdr-gated`, derived from the script's own gate rather than a maintained name list, and names any script that is not.
+`--check-coverage` therefore requires the declarations and `real-herdr-gated` classification to match in both directions and names every mismatch.
+A secondary fail-closed undeclared-requirement warning reports a conventional live-Herdr gate that lacks the declaration, but that heuristic does not classify the script.
 A test excluded from the portable lanes for a live dependency is an exclusion someone chose; the guard is what keeps it from becoming one nobody noticed.
 
 ## Portable serial CI shards

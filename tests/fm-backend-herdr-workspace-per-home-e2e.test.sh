@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# fm-test-requires: herdr
 # tests/fm-backend-herdr-workspace-per-home-e2e.test.sh - mandatory ISOLATED
 # end-to-end real-herdr test for the P3 "workspace-per-home" pass (AGENTS.md
 # task herdr-sm-spaces-k4). Drives the REAL bin/fm-spawn.sh and

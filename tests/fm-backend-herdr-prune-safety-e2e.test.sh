@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# fm-test-requires: herdr
 # tests/fm-backend-herdr-prune-safety-e2e.test.sh - isolated real-herdr
 # regression test for the 2026-07-02 self-kill incident and its fix
 # (bin/backends/herdr.sh's created-vs-adopted default-tab-prune gate; see
