@@ -44,6 +44,11 @@
 # round and an assertion written last describes the code rather than the product.
 # Tests with no meaningful red state are exempt, and the retroactive check remains
 # only as a disclosed fallback pinned to the shipped head.
+# Every task report also binds each verification observation to one full commit
+# SHA and the narrow proof-file set defined below. That set follows what the
+# observation actually exercised, never every path the worker happened to edit,
+# so firstmate can target post-pipeline re-verification without recreating the
+# broad trigger the captain rejected.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
@@ -85,6 +90,18 @@ On a file it cannot parse - an unrecognized language, or the wrong `-l` - ast-gr
 Never read an empty structural result as proof: confirm an empty ast-grep result with `rg` over the same paths, or with a positive-control pattern you know matches there, before reporting that nothing exists.
 EOF
 SEARCH_GUIDANCE=${SEARCH_GUIDANCE%$'\n'}
+
+IFS= read -r -d '' PROOF_GUIDANCE <<'EOF' || true
+Every reported verification observation must name the exact full commit SHA of the checked-out tree it covered and list its proof files.
+Use the full output of `git rev-parse HEAD`; an observation against uncommitted proof-file content is not commit-bound evidence until you repeat it on a clean commit.
+A proof file is a repository file whose contents supplied either the behavior or content under observation or the assertion, fixture, snapshot, schema, or configuration that decided the result.
+Include an indirect dependency only when that observation actually exercised it.
+Do not include a path merely because you edited it.
+For example, if an observation runs `tests/widget.test.ts` against `src/widget.ts`, a later pipeline fix touching either `src/widget.ts` or `tests/widget.test.ts` triggers re-verification, while touching only a worker-written `README.md` does not.
+The boundary is file-granular: the same proof file triggers even when the changed hunk looks unrelated; a different file counts only when the observation actually exercised it as an indirect dependency.
+For a ship task, carry this provenance in the terminal handoff for each observation relied on for delivery.
+EOF
+PROOF_GUIDANCE=${PROOF_GUIDANCE%$'\n'}
 
 resolve_directory_input() {
   local name=$1 path=$2 resolved
@@ -308,6 +325,7 @@ $SEARCH_GUIDANCE
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
+$PROOF_GUIDANCE
 Before reporting done, read and follow \`$FM_ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.
 When the report is complete, append \`done: {one-line conclusion}\` to the status file and stop.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
@@ -407,6 +425,7 @@ $RULE1
    A test with no meaningful red state - a snapshot of existing output, a type-level assertion, a fixture correction - is exempt.
    Only where red-first is genuinely impractical, say why in the PR body (or the commit message when this mode opens no PR)
    and instead confirm the test fails with the implementation reverted AT THE SHIPPED HEAD; that same check is stale at any earlier commit.
+$PROOF_GUIDANCE
 6. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, $CAPTAIN_HELD_VERB, blocked, $PAUSED_VERB, done, failed.
