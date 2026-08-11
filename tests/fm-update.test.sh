@@ -104,11 +104,12 @@ add_upstream() {
 }
 
 bump_upstream() {
-  local w=$1 label=${2:-capability}
+  local w=$1 label=${2:-capability} branch
   printf 'template %s\n' "$label" > "$w/upstream-seed/TEMPLATE.md"
   git -C "$w/upstream-seed" add -A
   git -C "$w/upstream-seed" commit -qm "feat: add template $label"
-  git -C "$w/upstream-seed" push -q origin main
+  branch=$(git -C "$w/upstream-seed" branch --show-current)
+  git -C "$w/upstream-seed" push -q origin "$branch"
 }
 
 run_update() {
@@ -396,6 +397,30 @@ test_hostile_upstream_refspec_cannot_move_local_branches() {
   pass "T15 upstream observation ignores refspecs targeting local branches"
 }
 
+test_observes_renamed_upstream_default_branch() {
+  local w out main_before
+  w=$(new_world t16)
+  add_upstream "$w"
+  git -C "$w/upstream-seed" branch -m trunk
+  git -C "$w/upstream-seed" push -q origin trunk
+  git -C "$w/upstream.git" symbolic-ref HEAD refs/heads/trunk
+  git -C "$w/upstream-seed" push -q origin --delete main
+  bump_upstream "$w" renamed-default
+  main_before=$(git -C "$w/main" rev-parse refs/heads/main)
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "upstream-template: pending 1 commit from upstream/trunk" \
+    "renamed upstream default branch remains observable"
+  assert_contains "$out" "review-upstream: yes" \
+    "pending work on the renamed default branch requests review"
+  [ "$(git -C "$w/main" rev-parse refs/heads/main)" = "$main_before" ] \
+    || fail "renamed upstream observation moved the fork default branch"
+  git -C "$w/main" show-ref --verify --quiet refs/remotes/upstream/main \
+    && fail "deleted upstream default branch was not pruned"
+  pass "T16 renamed upstream default branch remains observable"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_dirty_secondmate_skipped
@@ -409,5 +434,6 @@ test_observes_pending_upstream_without_merging_it
 test_discloses_missing_upstream_coverage
 test_reports_last_upstream_catchup_date
 test_hostile_upstream_refspec_cannot_move_local_branches
+test_observes_renamed_upstream_default_branch
 
 echo "# all fm-update tests passed"

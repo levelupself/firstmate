@@ -73,6 +73,12 @@ upstream_default_branch() {
   return 1
 }
 
+upstream_remote_default_branch() {
+  local dir=$1
+  git -C "$dir" ls-remote --symref upstream HEAD 2>/dev/null \
+    | awk '$1 == "ref:" && $3 == "HEAD" && sub(/^refs\/heads\//, "", $2) { print $2; exit }'
+}
+
 plural() {
   local count=$1 singular=$2
   if [ "$count" -eq 1 ]; then
@@ -116,6 +122,13 @@ observe_upstream_template() {
       "refs/remotes/upstream/$old_default^{commit}" 2>/dev/null || true)
   fi
 
+  default=$(upstream_remote_default_branch "$FM_ROOT" || true)
+  if [ -z "$default" ]; then
+    echo "upstream-template: unavailable: cannot determine upstream default branch"
+    echo "review-upstream: no"
+    return 0
+  fi
+
   if ! git -C "$FM_ROOT" fetch upstream --prune --quiet --refmap= \
     '+refs/heads/*:refs/remotes/upstream/*' 2>/dev/null; then
     echo "upstream-template: unavailable: fetch failed"
@@ -123,12 +136,6 @@ observe_upstream_template() {
     return 0
   fi
 
-  default=$(upstream_default_branch "$FM_ROOT" || true)
-  if [ -z "$default" ]; then
-    echo "upstream-template: unavailable: cannot determine upstream default branch"
-    echo "review-upstream: no"
-    return 0
-  fi
   upstream_ref="refs/remotes/upstream/$default"
   new_rev=$(git -C "$FM_ROOT" rev-parse --verify --quiet "$upstream_ref^{commit}" 2>/dev/null || true)
   if [ -z "$new_rev" ]; then
