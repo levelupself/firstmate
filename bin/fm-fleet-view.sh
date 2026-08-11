@@ -602,11 +602,14 @@ render_once() {
                             state_rank:1,priority:(.priority // 999999),order:(.order // 999999)}]) as $ready_rows
     | ([$in_flight[]
         | (.current_state.state // "unknown") as $state
+        | (.current_state.source // "") as $source
+        | (.current_state.detail // "") as $detail
         | {id:(.id // "unknown"),marker:"• ",project:task_project(.),
            project_sort:(task_project(.) | ascii_downcase),
            state_rank:(if $state == "working" then 0 elif $state == "unknown" then 2 else 1 end),
            priority:(.backlog.priority // 999999),order:(.backlog.order // 999999),
-           detail:((if $state == "working" then ""
+           detail:((if $state == "working" and $source == "run-step" and $detail != "" then $detail + " · "
+                    elif $state == "working" then ""
                     elif $state == "unknown" then "state unavailable · "
                     else $state + " · " end) + task_title(.))}]) as $in_flight_rows
     | ([$blocked[]

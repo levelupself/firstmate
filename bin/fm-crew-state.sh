@@ -184,6 +184,31 @@ RUN_OUT=""
 nm_field() {  # <key>
   fm_nm_field "$RUN_OUT" "$1"
 }
+# Scalar value nested anywhere under the run's branch_sync block. The block is
+# bounded by indentation so a top-level run field with the same name cannot be
+# mistaken for branch-sync evidence.
+nm_branch_sync_field() {  # <key>
+  local key=$1
+  printf '%s\n' "$RUN_OUT" | awk -v key="$key" '
+    /^[[:space:]]*branch_sync:[[:space:]]*$/ {
+      active = 1
+      base = match($0, /[^[:space:]]/) - 1
+      next
+    }
+    active {
+      if ($0 !~ /[^[:space:]]/) next
+      indent = match($0, /[^[:space:]]/) - 1
+      if (indent <= base) exit
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      if (index(line, key ":") == 1) {
+        sub("^" key ":[[:space:]]*", "", line)
+        print line
+        exit
+      }
+    }
+  '
+}
 # Finding count from a findings[N]{...} table header; empty when none.
 nm_findings_count() {
   printf '%s\n' "$RUN_OUT" | grep -oE 'findings\[[0-9]+\]' | head -1 | grep -oE '[0-9]+'
@@ -365,11 +390,16 @@ nm_runs_status_for_branch() {  # <branch>
 # scratch worktree); with no branch there is no run to attribute to this crew.
 CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
 
-# 0 if the active axi-status run's head field matches this worktree's code
-# identity. Branch match is a precondition (caller). Rule owned by
+# Match published pipeline ownership before the legacy head rule owned by
 # fm_nm_head_matches_worktree in bin/fm-nm-run-lib.sh.
 nm_run_head_matches_worktree() {
-  local run_head
+  local run_head local_full branch_sync_state submitted_head
+  local_full=$(git -C "$WT" rev-parse HEAD 2>/dev/null) || return 1
+  branch_sync_state=$(strip_quotes "$(nm_branch_sync_field state)")
+  submitted_head=$(strip_quotes "$(nm_branch_sync_field submitted_head)")
+  if [ "$branch_sync_state" = pipeline_owned ] && [ "$submitted_head" = "$local_full" ]; then
+    return 0
+  fi
   run_head=$(strip_quotes "$(nm_field head)")
   fm_nm_head_matches_worktree "$WT" "$run_head"
 }
