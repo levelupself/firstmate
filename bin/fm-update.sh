@@ -57,22 +57,6 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
 fi
 [ $# -eq 0 ] || { usage; exit 1; }
 
-upstream_default_branch() {
-  local dir=$1 ref branch
-  ref=$(git -C "$dir" symbolic-ref --quiet --short refs/remotes/upstream/HEAD 2>/dev/null || true)
-  if [ -n "$ref" ]; then
-    echo "${ref#upstream/}"
-    return 0
-  fi
-  for branch in main master; do
-    if git -C "$dir" show-ref --verify --quiet "refs/remotes/upstream/$branch"; then
-      echo "$branch"
-      return 0
-    fi
-  done
-  return 1
-}
-
 upstream_remote_default_branch() {
   local dir=$1
   git -C "$dir" ls-remote --symref upstream HEAD 2>/dev/null \
@@ -106,7 +90,7 @@ latest_upstream_catchup_date() {
 }
 
 observe_upstream_template() {
-  local old_default old_rev default new_rev changed fork_default fork_ref upstream_ref
+  local old_rev default new_rev changed fork_default fork_ref upstream_ref
   local pending merge_base changed_files latest catchup_date
 
   if ! git -C "$FM_ROOT" remote get-url upstream >/dev/null 2>&1; then
@@ -115,19 +99,14 @@ observe_upstream_template() {
     return 0
   fi
 
-  old_default=$(upstream_default_branch "$FM_ROOT" || true)
-  old_rev=""
-  if [ -n "$old_default" ]; then
-    old_rev=$(git -C "$FM_ROOT" rev-parse --verify --quiet \
-      "refs/remotes/upstream/$old_default^{commit}" 2>/dev/null || true)
-  fi
-
   default=$(upstream_remote_default_branch "$FM_ROOT" || true)
   if [ -z "$default" ]; then
     echo "upstream-template: unavailable: cannot determine upstream default branch"
     echo "review-upstream: no"
     return 0
   fi
+  old_rev=$(git -C "$FM_ROOT" rev-parse --verify --quiet \
+    "refs/remotes/upstream/$default^{commit}" 2>/dev/null || true)
 
   if ! git -C "$FM_ROOT" fetch upstream --prune --quiet --refmap= \
     '+refs/heads/*:refs/remotes/upstream/*' 2>/dev/null; then

@@ -418,6 +418,15 @@ test_observes_renamed_upstream_default_branch() {
     || fail "renamed upstream observation moved the fork default branch"
   git -C "$w/main" show-ref --verify --quiet refs/remotes/upstream/main \
     && fail "deleted upstream default branch was not pruned"
+  bump_upstream "$w" later-movement
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" \
+    "upstream-template: pending 2 commits from upstream/trunk (1 changed file); changed-since-last-fetch: yes" \
+    "later movement on the renamed default branch remains observable"
+  [ "$(git -C "$w/main" rev-parse refs/heads/main)" = "$main_before" ] \
+    || fail "later renamed upstream observation moved the fork default branch"
   pass "T16 renamed upstream default branch remains observable"
 }
 
