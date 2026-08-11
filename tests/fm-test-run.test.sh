@@ -386,6 +386,68 @@ test_portable_shard_union_and_coverage_guard() {
   pass "portable shard union, disjointness, and coverage guard hold"
 }
 
+init_coverage_guard_fixture() {
+  local repo=$1 script
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/bin/fm-test-isolation-proof.sh" "$repo/bin/fm-test-isolation-proof.sh"
+  chmod +x "$repo/bin/fm-test-run.sh" "$repo/bin/fm-test-isolation-proof.sh"
+  while IFS= read -r script; do
+    [ -n "$script" ] || continue
+    cp "$ROOT/$script" "$repo/$script"
+  done < <("$RUNNER" --list --all)
+}
+
+assert_coverage_guard_result() {
+  local repo=$1 expected_rc=$2 offender=$3 label=$4 rc out
+  set +e
+  out=$(cd "$repo" && ./bin/fm-test-run.sh --check-coverage 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -eq "$expected_rc" ] \
+    || fail "$label expected exit $expected_rc, got $rc: $out"
+  if [ -n "$offender" ]; then
+    assert_contains "$out" "$offender" "$label must name the offending script"
+  else
+    assert_contains "$out" "FM_TEST_COVERAGE ok" "$label must pass a valid inventory"
+  fi
+}
+
+test_herdr_requirement_coverage_controls() {
+  local tmp repo target
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-herdr-requirements.XXXXXX")
+  repo="$tmp/repo"
+  init_coverage_guard_fixture "$repo"
+
+  target="$repo/tests/fm-brief.test.sh"
+  sed -i '1a # fm-test-requires: herdr' "$target"
+  assert_coverage_guard_result "$repo" 1 tests/fm-brief.test.sh \
+    "declared Herdr requirement outside the Herdr family"
+  cp "$ROOT/tests/fm-brief.test.sh" "$target"
+
+  target="$repo/tests/fm-cockpit-herdr-e2e.test.sh"
+  sed -i '/^# fm-test-requires: herdr$/d' "$target"
+  assert_coverage_guard_result "$repo" 1 tests/fm-cockpit-herdr-e2e.test.sh \
+    "Herdr-family script without a declaration"
+  cp "$ROOT/tests/fm-cockpit-herdr-e2e.test.sh" "$target"
+
+  target="$repo/tests/fm-brief.test.sh"
+  sed -i '2i command -v herdr >/dev/null 2>\&1 || { echo "skip: herdr not found"; exit 0; }' "$target"
+  assert_coverage_guard_result "$repo" 1 tests/fm-brief.test.sh \
+    "undeclared live Herdr gate"
+  cp "$ROOT/tests/fm-brief.test.sh" "$target"
+
+  printf '%s\n' \
+    "cat >generated.test.sh <<'SH'" \
+    'echo "skip: herdr not found"' \
+    'SH' >>"$target"
+  assert_coverage_guard_result "$repo" 0 "" \
+    "valid inventory with generated Herdr skip text"
+
+  rm -rf "$tmp"
+  pass "Herdr requirement coverage controls fail closed without misreading fixture text"
+}
+
 test_portable_serial_shards_partition_the_serial_lane() {
   local lanes count serial shard listed union dups shard_lane total cap
   lanes=$("$RUNNER" --list-lanes)
@@ -682,6 +744,7 @@ test_gate_skip_accounting
 test_fail_on_gate_skip_token
 test_exclude_family
 test_portable_shard_union_and_coverage_guard
+test_herdr_requirement_coverage_controls
 test_portable_serial_shards_partition_the_serial_lane
 test_portable_serial_shard_lane_refusals
 test_jobs_requires_proven_isolated
