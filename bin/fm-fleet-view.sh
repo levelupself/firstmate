@@ -19,7 +19,7 @@
 # dispatch_clear rows plainly and the rest with a "?" marker and the snapshot's
 # reason, and its heading counts the two apart whenever any row needs a check.
 # No dependency-ready row is dropped: the captain sees the whole queue and the
-# count never claims more dispatchable work than exists.
+# count never claims the backlog confirmed more clear work than it did.
 # Watch mode uses only bash, jq, terminal control sequences, and sleep; a failed
 # snapshot or render prints an explicit degraded panel and retries next redraw.
 set -u

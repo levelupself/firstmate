@@ -29,9 +29,9 @@
 #     from, and unlisted_dependency when the row still names blocked-by ids the
 #     backlog no longer carries, which tasks-axi resolves away silently once Done
 #     retention prunes the referenced row. dispatch_clear is dispatchable with an
-#     empty dispatch_review, and is the only field that means "hand this to a
-#     worker now". Reasons stay structured here; captain-facing wording belongs
-#     to the renderer.
+#     empty dispatch_review, and is the only field that means the backlog can
+#     confirm "hand this to a worker now". Reasons stay structured here;
+#     captain-facing wording belongs to the renderer.
 #   tasks[]: one row per state/<id>.meta, sorted by id.
 #     current_state is parsed from bin/fm-crew-state.sh <id> and preserves
 #     state, source, detail, and raw line separately.
