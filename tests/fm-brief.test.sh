@@ -466,8 +466,10 @@ test_reports_disclose_commit_and_proof_files() {
       "$id: proof-file definition omitted the deciding oracle"
     assert_grep "Do not include a path merely because you edited it" "$brief" \
       "$id: proof-file definition degraded to all worker-written files"
+    # shellcheck disable=SC2016
     assert_grep 'touching either `src/widget.ts` or `tests/widget.test.ts` triggers re-verification' "$brief" \
       "$id: ship brief did not show a proof-file overlap that triggers re-verification"
+    # shellcheck disable=SC2016
     assert_grep 'touching only a worker-written `README.md` does not' "$brief" \
       "$id: ship brief did not show an unrelated worker-written file that skips re-verification"
     assert_grep "same proof file triggers even when the changed hunk looks unrelated" "$brief" \
