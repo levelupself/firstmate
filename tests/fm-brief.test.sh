@@ -438,6 +438,55 @@ test_behavioral_tests_are_red_first() {
   pass "fm-brief.sh: every ship mode requires red-first behavioural tests"
 }
 
+# Observation provenance is the worker-side input to the merge-time stale-proof
+# decision. The definition deliberately follows what the observation exercised,
+# not the broader set of files the worker happened to edit: a later pipeline fix
+# to either the asserted behavior or its oracle requires a re-check, while a fix
+# to an unrelated worker-written file does not. The same-file boundary stays at
+# file granularity so a different hunk cannot quietly evade the rule.
+test_reports_disclose_commit_and_proof_files() {
+  local home brief id
+
+  home="$TMP_ROOT/proof-provenance-home"
+  write_registry "$home"
+
+  for id_proj in \
+    "brief-proof-nm:no-registry-proj" \
+    "brief-proof-dp:direct-proj" \
+    "brief-proof-lo:local-proj"; do
+    id=${id_proj%%:*}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "${id_proj##*:}" >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+
+    assert_grep "Every reported verification observation must name the exact full commit SHA" "$brief" \
+      "$id: ship brief did not require commit-bound observation disclosure"
+    assert_grep "behavior or content under observation" "$brief" \
+      "$id: proof-file definition omitted the observed subject"
+    assert_grep "assertion, fixture, snapshot, schema, or configuration that decided the result" "$brief" \
+      "$id: proof-file definition omitted the deciding oracle"
+    assert_grep "Do not include a path merely because you edited it" "$brief" \
+      "$id: proof-file definition degraded to all worker-written files"
+    assert_grep 'touching either `src/widget.ts` or `tests/widget.test.ts` triggers re-verification' "$brief" \
+      "$id: ship brief did not show a proof-file overlap that triggers re-verification"
+    assert_grep 'touching only a worker-written `README.md` does not' "$brief" \
+      "$id: ship brief did not show an unrelated worker-written file that skips re-verification"
+    assert_grep "same proof file triggers even when the changed hunk looks unrelated" "$brief" \
+      "$id: ship brief did not state the file-granularity boundary"
+    assert_grep "different file counts only when the observation actually exercised it as an indirect dependency" "$brief" \
+      "$id: ship brief did not state what lies between the trigger examples"
+  done
+
+  id="brief-proof-scout"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep "Every reported verification observation must name the exact full commit SHA" "$brief" \
+    "scout report contract did not require commit-bound observation disclosure"
+  assert_grep "proof files" "$brief" \
+    "scout report contract did not require the proof-file disclosure"
+
+  pass "fm-brief.sh: reports disclose exact commits and narrowly defined proof files"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -804,6 +853,7 @@ test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_terminal_report_cannot_be_written_at_commit
 test_behavioral_tests_are_red_first
+test_reports_disclose_commit_and_proof_files
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path

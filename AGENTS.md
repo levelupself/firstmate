@@ -314,6 +314,13 @@ The task worker that starts a no-mistakes run drives the pipeline and owns every
 Firstmate never invokes `no-mistakes axi respond` for a crew-owned run.
 Once validation starts, prefer routing new requirements to follow-up work rather than expanding the current task, unless a new requirement completely invalidates the work being validated; however, the smallest downstream changes needed to keep already accepted product or engineering behavior correct, add behavioral tests where an executable contract exists, or keep documentation accurate remain within the current task even when they touch files not named at intake, and corrections required to satisfy already accepted intent are not new requirements.
 
+Every reported verification observation must carry the exact full commit SHA and proof-file list required by `bin/fm-brief.sh`; that generated rule is the single owner of the proof-file definition, and a ready report missing either field is incomplete.
+At the merge decision for a no-mistakes PR, inspect pipeline fix rounds after the reported commit and re-verify an observation only when one of those rounds touched a file in that observation's proof-file list.
+An overlap sends the same worker back to repeat only the affected observation against the current PR head and report updated provenance before merge; no overlap means no stale-proof re-verification.
+For example, a pipeline fix to a reported `src/widget.ts` or `tests/widget.test.ts` proof file triggers, while a fix only to a worker-written `README.md` outside the proof list does not.
+The boundary is file-granular: any hunk in the same proof file triggers, while a different file counts only when the observation actually exercised it as an indirect dependency and therefore reported it as proof.
+Never broaden this to every file the worker wrote, every pipeline commit, or any movement of the PR head; direct-PR and local-only tasks still disclose provenance but have no pipeline-fix trigger.
+
 Only a current, explicit captain instruction that completely invalidates the work being validated keeps the task with the same worker instead of routing it to follow-up work or handing it to a replacement.
 That worker cancels the active run through no-mistakes axi's supported abort command and confirms through axi status that the run has stopped before changing any code.
 The worker then follows `branch_sync.next_action` from structured axi status: use axi sync's supported guarded recovery only when its code is `recover_custody`, and otherwise proceed only when structured status confirms that branch ownership is already returned and no recovery is required.
