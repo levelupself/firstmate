@@ -503,7 +503,7 @@ The scaffold is a safety contract, not a suggestion.
 Firstmate's shared instruction surface reaches running homes only after it lands on the default branch and those homes fast-forward.
 Only `AGENTS.md`, `bin/`, and `.agents/skills/` are loaded by a running firstmate; public `skills/` is an installer-facing surface.
 When the captain invokes `/updatefirstmate` or asks to update firstmate, load the `/updatefirstmate` skill.
-It performs guarded fast-forward updates of firstmate and registered secondmate homes, refreshes instructions, and never touches anything under `projects/`.
+It performs guarded fast-forward updates of firstmate and registered secondmate homes from `origin`, observes pending commits from an optional `upstream` template remote without merging them, refreshes instructions, and never touches anything under `projects/`.
 
 ## 13. Agent-only reference skills
 

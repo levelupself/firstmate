@@ -17,6 +17,9 @@
 #   - Secondmate homes resolve from both state/<id>.meta and the
 #     data/secondmates.md registry, deduped, and the firstmate repo is never
 #     re-processed as one of its own secondmates.
+#   - A configured upstream template remote is fetched and reported separately
+#     from origin updates; pending template commits never move a home or create
+#     a catch-up merge.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -85,6 +88,27 @@ bump_origin() {
   git -C "$w/seed" add -A
   git -C "$w/seed" commit -qm "bump-$mode"
   git -C "$w/seed" push -q origin main
+}
+
+# Add a parent-template remote at the world's initial commit, with its own
+# writer clone. The main checkout fetches it once so the updater can distinguish
+# a later remote advance from the first observation.
+add_upstream() {
+  local w=$1
+  git clone -q --bare "$w/origin.git" "$w/upstream.git"
+  git -C "$w/upstream.git" symbolic-ref HEAD refs/heads/main
+  git clone -q "$w/upstream.git" "$w/upstream-seed"
+  git -C "$w/main" remote add upstream "$w/upstream.git"
+  git -C "$w/main" fetch -q upstream
+  git -C "$w/main" remote set-head upstream main
+}
+
+bump_upstream() {
+  local w=$1 label=${2:-capability}
+  printf 'template %s\n' "$label" > "$w/upstream-seed/TEMPLATE.md"
+  git -C "$w/upstream-seed" add -A
+  git -C "$w/upstream-seed" commit -qm "feat: add template $label"
+  git -C "$w/upstream-seed" push -q origin main
 }
 
 run_update() {
@@ -291,6 +315,64 @@ test_unsafe_secondmate_home_skipped_before_git_update() {
   pass "T11 unsafe secondmate home is not fast-forwarded"
 }
 
+test_observes_pending_upstream_without_merging_it() {
+  local w out before
+  w=$(new_world t12)
+  add_sm "$w" sm1
+  add_upstream "$w"
+  bump_upstream "$w"
+  before=$(git -C "$w/main" rev-parse HEAD)
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" \
+    "upstream-template: pending 1 commit from upstream/main (1 changed file); changed-since-last-fetch: yes" \
+    "pending upstream template work is observable"
+  assert_contains "$out" "upstream-template-latest: " "latest upstream event is surfaced"
+  assert_contains "$out" "feat: add template capability" "latest upstream event names the change"
+  assert_contains "$out" "upstream-catchup: merge-required" "upstream work cannot enter through a fast-forward"
+  assert_contains "$out" "review-upstream: yes" "pending upstream work requests review"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$before" ] \
+    || fail "upstream observation moved the firstmate HEAD"
+  [ "$(git -C "$w/sm1" rev-parse HEAD)" = "$before" ] \
+    || fail "upstream observation moved the secondmate HEAD"
+  [ "$(git -C "$w/main" rev-list --count HEAD..upstream/main)" -eq 1 ] \
+    || fail "upstream commit was merged during observation"
+  pass "T12 upstream advances are observable without a catch-up merge or home update"
+}
+
+test_discloses_missing_upstream_coverage() {
+  local w out
+  w=$(new_world t13)
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" \
+    "upstream-template: unavailable: no upstream remote; only origin updates are observable" \
+    "missing upstream coverage is explicit"
+  assert_contains "$out" "review-upstream: no" "unobservable upstream does not request review"
+  pass "T13 a missing upstream remote discloses the observation gap"
+}
+
+test_reports_last_upstream_catchup_date() {
+  local w out
+  w=$(new_world t14)
+  add_upstream "$w"
+  bump_upstream "$w" first
+  git -C "$w/main" fetch -q upstream
+  GIT_AUTHOR_DATE='2026-07-01T12:00:00Z' GIT_COMMITTER_DATE='2026-07-01T12:00:00Z' \
+    git -C "$w/main" merge -q --no-ff upstream/main -m 'Merge upstream/main into fork main'
+  git -C "$w/main" push -q origin main
+  bump_upstream "$w" second
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "upstream-catchup-last: 2026-07-01" \
+    "calendar catch-up trigger has an observable date"
+  assert_contains "$out" "review-upstream: yes" "post-catch-up upstream work requests review"
+  pass "T14 pending upstream work reports the prior catch-up date"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_dirty_secondmate_skipped
@@ -300,5 +382,8 @@ test_registry_backstop_dedup_and_self_exclusion
 test_firstmate_wrong_branch_skipped
 test_firstmate_detached_head_skipped
 test_unsafe_secondmate_home_skipped_before_git_update
+test_observes_pending_upstream_without_merging_it
+test_discloses_missing_upstream_coverage
+test_reports_last_upstream_catchup_date
 
 echo "# all fm-update tests passed"

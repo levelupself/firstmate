@@ -18,7 +18,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-bearings-snapshot.sh` | Project the fleet snapshot to the compact TOON bearings view; local-only unless `--include-prs` |
 | `fm-task-usage.sh`       | Baseline, snapshot, or report live codeburn usage for one crewmate/scout cycle (docs/task-usage.md) |
 | `fm-effort-store.sh`     | Rebuild, annotate, and fingerprint the derived per-task effort store (docs/effort-store.md) |
-| `fm-update.sh`           | Fast-forward-only self-update of firstmate and secondmate homes from origin          |
+| `fm-update.sh`           | Fast-forward homes from origin and observe an optional upstream template remote without merging it |
 | `fm-backlog-handoff.sh`  | Validate and delegate queued backlog-item moves into a secondmate home               |
 | `fm-decision-hold.sh`    | Create, verify, complete, and resolve durable captain-held decisions                 |
 | `fm-brief.sh`            | Scaffold ship, scout, secondmate-charter, and Herdr-lab briefs                       |
