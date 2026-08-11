@@ -14,6 +14,12 @@
 # so a caller cannot demote decisions by listing them last.
 # Queued readiness, dependency blockers, and active holds come from the snapshot's
 # tasks-axi projection; the renderer does not derive backlog state itself.
+# READY answers "hand this to a worker now", which is a narrower question than the
+# dependency readiness tasks-axi measures. It therefore renders the snapshot's
+# dispatch_clear rows plainly and the rest with a "?" marker and the snapshot's
+# reason, and its heading counts the two apart whenever any row needs a check.
+# No dependency-ready row is dropped: the captain sees the whole queue and the
+# count never claims more dispatchable work than exists.
 # Watch mode uses only bash, jq, terminal control sequences, and sleep; a failed
 # snapshot or render prints an explicit degraded panel and retries next redraw.
 set -u
@@ -36,6 +42,11 @@ finished, failed. The flag may be repeated and accepts a comma-separated list;
 the sections are always rendered in that priority order, whatever order they
 were asked for. Without --section the panel renders its default banner:
 a heading followed by waiting, ready, in-flight, and blocked.
+
+READY holds every queued task with no open dependency and no active hold. Rows
+that can be handed to a worker now are listed with a bullet; rows the backlog
+cannot confirm are listed with a "?" and the reason, and the heading counts the
+two apart.
 EOF
 }
 
@@ -189,6 +200,17 @@ render_once() {
        | if $detail != "" then $detail else ($t.hints.last_event_text // "unknown") end)
       | sub("^[a-z-]+( \\[[^]]+\\])?:[[:space:]]*"; "")
       | if . == "" then "unknown" else . end;
+    # The snapshot decides which rows it cannot confirm and why; this turns each
+    # structured reason into plain captain-facing wording. An unknown reason
+    # still renders, so a newer snapshot never silently presents unconfirmed
+    # work as dispatchable.
+    def review_text:
+      (.dispatch_review // [])
+      | map(if .reason == "no_instructions" then "needs instructions"
+            elif .reason == "unlisted_dependency" then
+              "needs " + ((.ids // []) | join(",")) + ", not on the backlog"
+            else "needs a check" end)
+      | join("; ");
     def task_artifact($t):
       ($t.pr.url // $t.backlog.pr_url // (if $t.paths.report.present then $t.paths.report.path else null end));
     def waiting_on_merge($t):
@@ -240,6 +262,8 @@ render_once() {
         | select(.id as $id | $waiting_ids | index($id) | not)] | sort_by(.id)) as $in_flight
     | ([.backlog.records[]?
         | select(.state == "queued" and .structured == true and .dispatchable == true)]) as $ready
+    | ([$ready[] | select(.dispatch_clear == true)]) as $ready_clear
+    | ([$ready[] | select(.dispatch_clear != true)]) as $ready_review
     | ([.backlog.records[]?
         | select(.state == "queued" and .structured == true and .blocked == true)]) as $blocked
     | (if $banner then
@@ -260,11 +284,17 @@ render_once() {
       gap("waiting")
        else empty end),
       (if wanted("ready") then
-       ("READY (\($ready | length))" | clip($width)),
+       ("READY (\(if ($ready_review | length) == 0 then ($ready_clear | length | tostring)
+                  else "\($ready_clear | length) clear, \($ready_review | length) need a check"
+                  end))" | clip($width)),
        (if ($ready | length) == 0 then
           "  None."
         else
-          $ready[] | line("• "; ((.id // "unknown") + " · " + (.title // "unknown")))
+          ($ready_clear[] | line("• "; ((.id // "unknown") + " · " + (.title // "unknown")))),
+          # The reason replaces the title rather than following it: on a narrow
+          # pane the title would push the reason out of the row, which is the
+          # one thing this line exists to say. Firstmate ids read as titles.
+          ($ready_review[] | line("? "; ((.id // "unknown") + " · " + review_text)))
         end),
        gap("ready")
        else empty end),

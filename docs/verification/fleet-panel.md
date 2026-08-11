@@ -9,6 +9,7 @@ The implementation is shared by `bin/fm-fleet-view.sh` and `bin/fm-cockpit.sh`, 
 The read-only snapshot calls `tasks-axi list` and `tasks-axi ready` once each for the primary home and once each for every readable registered secondmate home during a redraw.
 The two primary-home calls measured about 92 ms together locally, so the redraw cost scales as `2 * (1 + readable secondmate homes)` tasks-axi invocations.
 The focused regression compares both the snapshot and rendered READY identities directly with `tasks-axi ready`, checks that only open queued dependency blockers enter BLOCKED, and verifies that the displayed counts describe the complete represented lists even when pane-height truncation hides rows.
+It also covers the narrower dispatch question READY answers on top of that set: a queued row recording no body, and a queued row still naming a `blocked-by` id the backlog no longer carries, each render with their reason and stay out of the dispatchable count, while both remain present in the rendered READY set.
 
 Verified on 2026-08-05 in an isolated tmux 3.4 pane on Linux.
 
