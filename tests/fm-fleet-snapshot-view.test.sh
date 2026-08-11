@@ -563,7 +563,8 @@ EOF
       and .paths.report.path == ($data + "/bold-task/report.md")
       and .paths.report.present == true
   ' >/dev/null || fail "bold task did not join to override-backed backlog and report"
-  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" "$VIEW")
+  view=$(PATH="$fakebin:$PATH" COLUMNS=100 FM_HOME="$home" FM_DATA_OVERRIDE="$data" \
+    FM_PROJECTS_OVERRIDE="$projects" "$VIEW")
   assert_not_contains "$view" "bold-task" \
     "finished work should not crowd the default utilization view"
   # Every queued row here records a title and no body, so tasks-axi calls all
