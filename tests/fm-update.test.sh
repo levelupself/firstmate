@@ -373,6 +373,29 @@ test_reports_last_upstream_catchup_date() {
   pass "T14 pending upstream work reports the prior catch-up date"
 }
 
+test_hostile_upstream_refspec_cannot_move_local_branches() {
+  local w out main_before home_before
+  w=$(new_world t15)
+  add_sm "$w" sm1
+  add_upstream "$w"
+  bump_upstream "$w"
+  git -C "$w/main" switch -qc observation
+  git -C "$w/main" config --replace-all remote.upstream.fetch \
+    '+refs/heads/*:refs/heads/*'
+  main_before=$(git -C "$w/main" rev-parse refs/heads/main)
+  home_before=$(git -C "$w/sm1" rev-parse HEAD)
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "upstream-template: pending 1 commit" \
+    "upstream remains observable with a hostile configured refspec"
+  [ "$(git -C "$w/main" rev-parse refs/heads/main)" = "$main_before" ] \
+    || fail "upstream observation moved the fork default branch"
+  [ "$(git -C "$w/sm1" rev-parse HEAD)" = "$home_before" ] \
+    || fail "upstream observation moved a secondmate home"
+  pass "T15 upstream observation ignores refspecs targeting local branches"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_dirty_secondmate_skipped
@@ -385,5 +408,6 @@ test_unsafe_secondmate_home_skipped_before_git_update
 test_observes_pending_upstream_without_merging_it
 test_discloses_missing_upstream_coverage
 test_reports_last_upstream_catchup_date
+test_hostile_upstream_refspec_cannot_move_local_branches
 
 echo "# all fm-update tests passed"

@@ -116,7 +116,8 @@ observe_upstream_template() {
       "refs/remotes/upstream/$old_default^{commit}" 2>/dev/null || true)
   fi
 
-  if ! git -C "$FM_ROOT" fetch upstream --prune --quiet 2>/dev/null; then
+  if ! git -C "$FM_ROOT" fetch upstream --prune --quiet --refmap= \
+    '+refs/heads/*:refs/remotes/upstream/*' 2>/dev/null; then
     echo "upstream-template: unavailable: fetch failed"
     echo "review-upstream: no"
     return 0
