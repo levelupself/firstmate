@@ -20,8 +20,16 @@ HOME_DIR="$TMP_ROOT/home"
 SOCKET=fm-pane-fit-$$
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$HOME_DIR/projects" "$HOME_DIR/config"
 
-kill_server() { tmux -L "$SOCKET" kill-server 2>/dev/null || true; }
-fm_test_cleanup kill_server
+kill_server() { tmux -L "$1" kill-server 2>/dev/null || true; }
+pane_fit_cleanup() {
+  kill_server "$SOCKET-fleet-12"
+  kill_server "$SOCKET-fleet-30"
+  kill_server "$SOCKET-cockpit-12"
+  fm_test_cleanup
+}
+trap pane_fit_cleanup EXIT
+trap 'pane_fit_cleanup; exit 130' INT
+trap 'pane_fit_cleanup; exit 143' TERM
 
 cat > "$HOME_DIR/data/backlog.md" <<'EOF'
 ## In flight
@@ -40,20 +48,22 @@ for n in 1 2 3 4 5 6 7 8; do
 done
 
 pane_rows() {  # <command> <rows> -> the pane's visible non-blank rows
-  local command=$1 rows=$2
-  kill_server
-  tmux -L "$SOCKET" new-session -d -s fit -x 60 -y "$rows" "$command" \
+  local command=$1 rows=$2 kind=fleet pane_socket
+  case "$command" in *fm-cockpit.sh*) kind=cockpit ;; esac
+  pane_socket="$SOCKET-$kind-$rows"
+  kill_server "$pane_socket"
+  tmux -L "$pane_socket" new-session -d -s fit -x 60 -y "$rows" "$command" \
     || fail "could not start a ${rows}-row pane"
   local waited=0 out=
   while [ "$waited" -lt 60 ]; do
-    out=$(tmux -L "$SOCKET" capture-pane -p -t fit:0.0 2>/dev/null \
+    out=$(tmux -L "$pane_socket" capture-pane -p -t fit:0.0 2>/dev/null \
       | sed 's/[[:space:]]*$//')
     case "$out" in *[![:space:]]*) break ;; esac
     sleep 0.1
     waited=$((waited + 1))
   done
   printf '%s\n' "$out"
-  kill_server
+  kill_server "$pane_socket"
 }
 
 test_fleet_panel_fits_a_short_pane_without_scrolling_its_head() {
