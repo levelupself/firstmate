@@ -582,7 +582,22 @@ if (rowsAtPrompt !== 2) throw new Error(`wake arrived after an overlapping retry
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("unready successor arm did not exit within 1000ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-await new Promise((resolve) => setTimeout(resolve, 80));
+const successorPid = Number(rows[1].split("=")[1]);
+for (let i = 0; i < 500; i += 1) {
+  try {
+    process.kill(successorPid, 0);
+  } catch (error) {
+    if (error?.code === "ESRCH") break;
+    throw error;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+try {
+  process.kill(successorPid, 0);
+  throw new Error(`released successor ${successorPid} was not reaped`);
+} catch (error) {
+  if (error?.code !== "ESRCH") throw error;
+}
 EOF
 )
   status=$?
