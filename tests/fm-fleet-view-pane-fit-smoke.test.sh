@@ -21,7 +21,7 @@ SOCKET=fm-pane-fit-$$
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$HOME_DIR/projects" "$HOME_DIR/config"
 
 kill_server() { tmux -L "$SOCKET" kill-server 2>/dev/null || true; }
-trap 'kill_server; fm_test_cleanup' EXIT
+fm_test_cleanup kill_server
 
 cat > "$HOME_DIR/data/backlog.md" <<'EOF'
 ## In flight
@@ -45,7 +45,7 @@ pane_rows() {  # <command> <rows> -> the pane's visible non-blank rows
   tmux -L "$SOCKET" new-session -d -s fit -x 60 -y "$rows" "$command" \
     || fail "could not start a ${rows}-row pane"
   local waited=0 out=
-  while [ "$waited" -lt 120 ]; do
+  while [ "$waited" -lt 60 ]; do
     out=$(tmux -L "$SOCKET" capture-pane -p -t fit:0.0 2>/dev/null \
       | sed 's/[[:space:]]*$//')
     case "$out" in *[![:space:]]*) break ;; esac

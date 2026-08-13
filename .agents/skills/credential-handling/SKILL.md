@@ -43,3 +43,4 @@ Shred it afterwards rather than deleting it.
 
 Treat every grant as request-specific rather than standing authority.
 Name which values move from where to where, and use a transcript-safe mechanism that keeps each value out of command arguments and output.
+If no transcript-safe path exists, stop the action and bring it to the captain rather than falling back to a visible transfer.
