@@ -1061,6 +1061,10 @@ test_default_layout_warns_before_it_changes_the_screen() {
     "the third pane did not take an equal share of what was left"
   assert_contains "$body" "pane run $first env FM_HOME=$LAYOUT_HOME" \
     "the first pane was not launched for this home"
+  assert_contains "$body" "pane run $first env FM_HOME=$LAYOUT_HOME bin/fm-fleet-view.sh" \
+    "the fleet pane command did not resolve through the durable home"
+  assert_not_contains "$body" "$ROOT/bin/fm-fleet-view.sh" \
+    "the fleet pane command captured the launcher's disposable checkout"
   assert_contains "$body" "--watch --section waiting" \
     "the decisions pane was not launched as its own section"
   assert_contains "$body" "--watch --section ready" \

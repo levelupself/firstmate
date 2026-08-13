@@ -2737,9 +2737,11 @@ fm_backend_herdr_cockpit_create_fleet_panes() {  # <session> <workspace> <tab> <
     [ -n "$spec" ] || continue
     index=$((index + 1))
     pane=$(printf '%s' "$created" | cut -d, -f"$index")
+    # Each split above fixes its cwd at the durable home. Keep the watcher
+    # relative to that cwd so a disposable launcher checkout is never captured.
     if ! fm_backend_herdr_cli "$session" pane rename "$pane" "firstmate-fleet-$spec" >/dev/null 2>&1 \
        || ! fm_backend_herdr_cli "$session" pane run "$pane" \
-         env "FM_HOME=$home" "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" \
+         env "FM_HOME=$home" bin/fm-fleet-view.sh \
          --watch --section "$spec" >/dev/null 2>&1; then
       fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$created" \
         "could not launch the fleet banner" || true
