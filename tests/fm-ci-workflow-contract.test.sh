@@ -5,29 +5,28 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-workflow_job_timeout() {
-  local workflow=$1 job=$2
-  awk -v wanted="$job" '
-    /^[^ ]/ { top = $0 }
-    top == "jobs:" && /^  [A-Za-z0-9_-]+:$/ {
-      current = $0
-      sub(/^  /, "", current)
-      sub(/:$/, "", current)
-    }
-    top == "jobs:" && current == wanted && /^    timeout-minutes: [0-9]+$/ {
-      value = $0
-      sub(/^    timeout-minutes: /, "", value)
-      print value
-      found++
-    }
-    END {
-      if (found != 1) exit 1
-    }
-  ' "$workflow"
-}
+command -v python3 >/dev/null 2>&1 || fail "python3 is required"
+python3 -c 'import yaml' 2>/dev/null || fail "Python PyYAML is required"
 
-timeout=$(workflow_job_timeout "$ROOT/.github/workflows/ci.yml" macos-stock-bash) \
-  || fail "CI workflow must define exactly one numeric timeout for macos-stock-bash"
+timeout=$(python3 - "$ROOT/.github/workflows/ci.yml" <<'PY'
+import sys
+
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as workflow_file:
+    workflow = yaml.safe_load(workflow_file)
+
+try:
+    timeout = workflow["jobs"]["macos-stock-bash"]["timeout-minutes"]
+except (KeyError, TypeError):
+    raise SystemExit(1)
+
+if isinstance(timeout, bool) or not isinstance(timeout, int):
+    raise SystemExit(1)
+
+print(timeout)
+PY
+) || fail "CI workflow must define a numeric timeout for macos-stock-bash"
 
 [ "$timeout" -eq 20 ] \
   || fail "macos-stock-bash job timeout must be 20 minutes, got $timeout"
