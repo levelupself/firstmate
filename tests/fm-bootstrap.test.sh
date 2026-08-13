@@ -1046,8 +1046,10 @@ test_detect_only_reports_agents_md_over_budget_without_mutation() {
 
   assert_contains "$out" "AGENTS_MD_BUDGET: over budget - estimated_tokens=5 budget_tokens=1; trim AGENTS.md or raise config/agents-md-budget" \
     "detect-only bootstrap should report an over-budget AGENTS.md"
-  assert_file_eq "$home/config/agents-md-budget" "1" "detect-only bootstrap must not rewrite the budget"
-  assert_file_eq "$root/AGENTS.md" "instructions" "detect-only bootstrap must not rewrite AGENTS.md"
+  [ "$(cat "$home/config/agents-md-budget")" = "1" ] ||
+    fail "detect-only bootstrap must not rewrite the budget"
+  [ "$(cat "$root/AGENTS.md")" = "instructions" ] ||
+    fail "detect-only bootstrap must not rewrite AGENTS.md"
   pass "bootstrap reports the AGENTS.md budget during detect-only validation"
 }
 
