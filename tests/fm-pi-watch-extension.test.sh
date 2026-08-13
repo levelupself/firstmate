@@ -550,8 +550,8 @@ fi
 printf 'waiting\n' > "${FM_STARTUP_FILE:?}"
 IFS= read -r _ < "${FM_ACTIVATE_FILE:?}"
 trap 'printf "%s\n" "$$" > "${FM_RETIRED_FILE:?}"' TERM INT
-printf '%s\n' "$$" > "${FM_UNRETIRED_FILE:?}"
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+printf '%s\n' "$$" > "${FM_UNRETIRED_FILE:?}"
 while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.1; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
@@ -670,8 +670,8 @@ if [ "$count" -eq 1 ]; then
   printf 'waiting\n' > "${FM_STARTUP_FILE:?}"
   while [ ! -e "$FM_ACTIVATE_FILE" ]; do sleep 0.02; done
   trap 'printf "retired\\n" > "${FM_UNRETIRED_RETIRE_FILE:?}"' TERM INT
-  printf '%s\n' "$$" > "${FM_UNRETIRED_READY_FILE:?}"
   printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+  printf '%s\n' "$$" > "${FM_UNRETIRED_READY_FILE:?}"
   while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.02; done
   [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
   exit 0
@@ -1820,8 +1820,8 @@ fi
 printf 'waiting\n' > "${FM_STARTUP_FILE:?}"
 while [ ! -e "$FM_ACTIVATE_FILE" ]; do sleep 0.02; done
 trap 'printf "%s\n" "$$" > "${FM_RETIRED_FILE:?}"' TERM INT
-printf '%s\n' "$$" > "${FM_UNRETIRED_FILE:?}"
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+printf '%s\n' "$$" > "${FM_UNRETIRED_FILE:?}"
 while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.1; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
@@ -1946,8 +1946,8 @@ if [ "$count" -eq 1 ]; then
   printf 'waiting\n' > "${FM_STARTUP_FILE:?}"
   while [ ! -e "$FM_ACTIVATE_FILE" ]; do sleep 0.02; done
   trap 'printf "retired\\n" > "${FM_UNRETIRED_RETIRE_FILE:?}"' TERM INT
-  printf '%s\n' "$$" > "${FM_UNRETIRED_READY_FILE:?}"
   printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+  printf '%s\n' "$$" > "${FM_UNRETIRED_READY_FILE:?}"
   while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.02; done
   [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
   exit 0
