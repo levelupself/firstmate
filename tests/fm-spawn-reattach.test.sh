@@ -59,11 +59,23 @@ case "${1:-}" in
     ;;
   send-keys)
     [ -z "${FM_FAKE_SEND_FAIL:-}" ] || exit 1
+    if [ "${*: -1}" = Enter ] && [ -f "$D/launch-staged" ]; then
+      if [ -n "${FM_FAKE_REQUIRE_COMMIT:-}" ] \
+         && ! grep -qxF "worktree=$FM_FAKE_RETAINED" "$FM_HOME/state/$FM_FAKE_TASK_ID.meta"; then
+        printf 'agent activated before commit\n' > "$FM_FAKE_RETAINED/agent-ran-before-commit.txt"
+      fi
+      [ -z "${FM_FAKE_ENTER_FAIL:-}" ] || exit 1
+    fi
     shift
     while [ $# -gt 0 ]; do
       case "$1" in
         -t) shift 2 ;;
-        -l) shift; printf '%s\n' "${1:-}" >> "$D/literal"; exit 0 ;;
+        -l)
+          shift
+          printf '%s\n' "${1:-}" >> "$D/literal"
+          case "${1:-}" in *claude*) : > "$D/launch-staged" ;; esac
+          exit 0
+          ;;
         *) shift ;;
       esac
     done
@@ -140,6 +152,8 @@ run_reattach() {  # <dir> <id> <worktree>
     FM_FAKE_RETAINED="$retained" \
     FM_FAKE_TREEHOUSE_PROCESSES="${FM_FAKE_TREEHOUSE_PROCESSES:-[]}" \
     FM_FAKE_SEND_FAIL="${FM_FAKE_SEND_FAIL:-}" \
+    FM_FAKE_ENTER_FAIL="${FM_FAKE_ENTER_FAIL:-}" \
+    FM_FAKE_REQUIRE_COMMIT="${FM_FAKE_REQUIRE_COMMIT:-}" \
     "$SPAWN" "$id" --reattach-worktree "$retained" 2>&1
 }
 
@@ -296,6 +310,25 @@ test_lifecycle_lock_refuses_without_changes() {
   pass "fm-spawn reattach: lifecycle contention refuses before changing state"
 }
 
+test_final_submit_failure_rolls_back_before_agent_runs() {
+  local dir id=rt-final-submit retained out rc before wiring
+  dir=$(new_case final-submit "$id")
+  retained="$dir/pool/7/project"
+  printf 'must remain exact\n' > "$retained/final-submit.txt"
+  before="$dir/meta.before"
+  cp "$dir/home/state/$id.meta" "$before"
+  wiring="$dir/home/state/$id.claude-turnend-token"
+  printf 'prior-token\n' > "$wiring"
+  out=$(FM_FAKE_ENTER_FAIL=1 FM_FAKE_REQUIRE_COMMIT=1 run_reattach "$dir" "$id" "$retained"); rc=$?
+  expect_code 1 "$rc" "final activation failure must roll back"$'\n'"$out"
+  cmp -s "$before" "$dir/home/state/$id.meta" || fail "final-submit failure did not restore prior metadata"
+  [ ! -e "$dir/fake/window-live" ] || fail "final-submit failure left the staged endpoint behind"
+  [ "$(cat "$wiring")" = prior-token ] || fail "final-submit failure did not restore prior wiring"
+  [ "$(cat "$retained/final-submit.txt")" = 'must remain exact' ] || fail "final-submit failure changed retained content"
+  [ ! -e "$retained/agent-ran-before-commit.txt" ] || fail "agent activated before metadata commit"
+  pass "fm-spawn reattach: final activation failure rolls back before the agent runs"
+}
+
 test_wrong_branch_refuses
 test_live_agent_refuses
 test_task_identity_mismatch_refuses
@@ -304,5 +337,6 @@ test_uncommitted_content_survives_success
 test_launch_failure_rolls_back_the_binding
 test_recovery_axes_cannot_be_overridden
 test_lifecycle_lock_refuses_without_changes
+test_final_submit_failure_rolls_back_before_agent_runs
 
 echo "# all fm-spawn-reattach tests passed"

@@ -3136,6 +3136,13 @@ if [ "${HERDR_PROJECTED:-0}" -eq 1 ] || [ "${HERDR_COCKPIT:-0}" -eq 1 ]; then
   HERDR_PROJECTION_ABORT_CLEANUP=0
   spawn_herdr_presentation_order_lock_release
 fi
+if [ "$REATTACH" -eq 1 ]; then
+  retire_prior_reattach_harness_wiring || {
+    echo "error: could not retire prior harness wiring for task $ID after staging the replacement launch" >&2
+    exit 1
+  }
+  publish_recovery_meta
+fi
 spawn_send_key "$T" Enter
 if [ "$HARNESS" = kimi ]; then
   if ! kimi_wait_for_ready; then
@@ -3169,14 +3176,6 @@ if [ "$KIND" = secondmate ] && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then
       echo "CONFIG_REREAD: secondmate $ID: cleanup failed; pre-relaunch generations were force-cleared where possible (destination=$PROJ_ABS source=$FM_HOME)" >&2
     fi
   fi
-fi
-
-if [ "$REATTACH" -eq 1 ]; then
-  retire_prior_reattach_harness_wiring || {
-    echo "error: could not retire prior harness wiring for task $ID after replacement launch" >&2
-    exit 1
-  }
-  publish_recovery_meta
 fi
 
 SPAWN_DELIVERY=
