@@ -451,7 +451,7 @@ render_once() {
 # unrecorded pane is judged only against the frame it actually sits in.
 PAINTER_BINDING=standalone
 painter_binding() {
-  local recorded index=0 pane
+  local recorded fleet_state index=0 pane
   PAINTER_BINDING=standalone
   [ -n "${HERDR_PANE_ID:-}" ] || return 0
   if ! declare -F fm_backend_herdr_cockpit_record_snapshot >/dev/null 2>&1; then
@@ -471,12 +471,16 @@ painter_binding() {
     # No recorded argument is the version-2 shape: one pane, launched before the
     # flag existed, so there is no section to disagree with.
     if [ -z "$recorded" ]; then
-      PAINTER_BINDING=bound
+      fleet_state=$(fm_backend_herdr_cockpit_fleet_state \
+        "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$HERDR_PANE_ID" "$PAINTER_HOME")
     elif normalize_sections "$recorded" && [ "$NORMALIZED_SECTIONS" = "$SECTIONS" ]; then
-      PAINTER_BINDING=bound
+      fleet_state=$(fm_backend_herdr_cockpit_fleet_state \
+        "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$HERDR_PANE_ID" "$PAINTER_HOME" "$recorded")
     else
       PAINTER_BINDING=unbound
+      return 0
     fi
+    [ "$fleet_state" = live ] && PAINTER_BINDING=bound || PAINTER_BINDING=unbound
     return 0
   done <<EOF
 $(printf '%s' "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_IDS" | tr ',' '\n')
