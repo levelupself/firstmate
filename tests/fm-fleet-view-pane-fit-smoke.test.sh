@@ -55,8 +55,8 @@ for n in 1 2 3 4 5 6 7 8; do
   printf 'working: step %s\n' "$n" > "$HOME_DIR/state/demo$n.status"
 done
 
-pane_rows() {  # <command> <rows> -> the pane's visible non-blank rows
-  local command=$1 rows=$2
+pane_rows() {  # <command> <rows> <frame-marker> -> the pane's visible rows
+  local command=$1 rows=$2 frame_marker=$3
   kill_server
   tmux -L "$SOCKET" new-session -d -s fit -x 60 -y "$rows" "$command" \
     || fail "could not start a ${rows}-row pane"
@@ -64,7 +64,7 @@ pane_rows() {  # <command> <rows> -> the pane's visible non-blank rows
   while [ "$waited" -lt 60 ]; do
     out=$(tmux -L "$SOCKET" capture-pane -p -t fit:0.0 2>/dev/null \
       | sed 's/[[:space:]]*$//')
-    case "$out" in *[![:space:]]*) break ;; esac
+    case "$out" in *"$frame_marker"*) break ;; esac
     sleep 0.1
     waited=$((waited + 1))
   done
@@ -74,7 +74,7 @@ pane_rows() {  # <command> <rows> -> the pane's visible non-blank rows
 
 test_fleet_panel_fits_a_short_pane_without_scrolling_its_head() {
   local out visible
-  out=$(pane_rows "FM_CODEBURN_BIN=$FAKE_CODEBURN FM_HOME=$HOME_DIR $ROOT/bin/fm-fleet-view.sh --watch 1" 12)
+  out=$(pane_rows "FM_CODEBURN_BIN=$FAKE_CODEBURN FM_HOME=$HOME_DIR $ROOT/bin/fm-fleet-view.sh --watch 1" 12 "FLEET STATUS")
   # The head is the panel's whole point: the first physical row must still be
   # the top of the frame, not whatever survived a scroll.
   [ "$(printf '%s\n' "$out" | head -1)" = "$(printf '=%.0s' $(seq 1 60))" ] \
@@ -90,7 +90,7 @@ test_fleet_panel_fits_a_short_pane_without_scrolling_its_head() {
 
 test_fleet_panel_uses_the_whole_pane_when_it_fits() {
   local out
-  out=$(pane_rows "FM_CODEBURN_BIN=$FAKE_CODEBURN FM_HOME=$HOME_DIR $ROOT/bin/fm-fleet-view.sh --watch 1" 30)
+  out=$(pane_rows "FM_CODEBURN_BIN=$FAKE_CODEBURN FM_HOME=$HOME_DIR $ROOT/bin/fm-fleet-view.sh --watch 1" 30 "FLEET STATUS")
   assert_contains "$out" "FLEET STATUS" "a tall pane lost the panel title"
   assert_contains "$out" "IN FLIGHT (8)" "a tall pane lost the in-flight section"
   assert_contains "$out" "demo8" "a tall pane truncated work it had room for"
@@ -101,7 +101,7 @@ test_fleet_panel_uses_the_whole_pane_when_it_fits() {
 
 test_cockpit_panel_fits_a_short_pane_as_one_frame() {
   local out visible
-  out=$(pane_rows "FM_CODEBURN_BIN=$FAKE_CODEBURN FM_HOME=$HOME_DIR $ROOT/bin/fm-cockpit.sh panel --watch 1" 12)
+  out=$(pane_rows "FM_CODEBURN_BIN=$FAKE_CODEBURN FM_HOME=$HOME_DIR $ROOT/bin/fm-cockpit.sh panel --watch 1" 12 "ORCHESTRATION COCKPIT")
   # The cockpit header and the fleet view are one frame: budgeting them
   # separately fits each and overflows their sum, which scrolls the header off.
   [ "$(printf '%s\n' "$out" | head -1)" = "ORCHESTRATION COCKPIT" ] \
