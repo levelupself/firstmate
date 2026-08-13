@@ -984,6 +984,8 @@ test_live_captain_held_park_resurfaces_on_the_long_cadence() {
   grep -F "possible wedge" "$out" >/dev/null && fail "a declared park was mislabeled a possible wedge"
   [ -e "$state/.paused-resurfaced-$key" ] || fail "the long-cadence recheck did not record its throttle marker"
   [ ! -e "$state/.stale-since-$key" ] || fail "a long-cadence recheck must not use the wedge timer"
+  wakes=$(count_window_stale_wakes "$state" "$window")
+  [ "$wakes" -eq 1 ] || fail "a long-quiet live captain-held park surfaced $wakes times instead of once per window"
   ack_stopped_cycle "$state" || fail "could not acknowledge the long-cadence captain-held recheck"
 
   # Still inside the same recheck window: the throttle marker keeps the next
@@ -1002,8 +1004,6 @@ test_live_captain_held_park_resurfaces_on_the_long_cadence() {
     reap "$pid"; fail "the live captain-held park re-surfaced again inside the same recheck window: $(cat "$out")"
   fi
   reap "$pid"
-  wakes=$(count_window_stale_wakes "$state" "$window")
-  [ "$wakes" -eq 1 ] || fail "a long-quiet live captain-held park surfaced $wakes times instead of once per window"
   pass "a live captain-held park still re-surfaces once past the long cadence, with declared-park wording"
 }
 
