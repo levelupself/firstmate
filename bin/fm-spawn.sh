@@ -752,7 +752,7 @@ spawn_abort_cleanup() {
     fi
   fi
   if [ -n "$REATTACH_TREEHOUSE_LOCK_PID" ]; then
-    printf '\n' >&"$REATTACH_TREEHOUSE_LOCK_IN" 2>/dev/null || true
+    { printf '\n' >&"$REATTACH_TREEHOUSE_LOCK_IN"; } 2>/dev/null || true
     wait "$REATTACH_TREEHOUSE_LOCK_PID" 2>/dev/null || true
     REATTACH_TREEHOUSE_LOCK_PID=
   fi
@@ -1953,7 +1953,6 @@ acquire_reattach_treehouse_lock() {
       <STDIN>;
     ' "$lock"
   }
-  REATTACH_TREEHOUSE_LOCK_PID=$REATTACH_TREEHOUSE_LOCK_PID
   REATTACH_TREEHOUSE_LOCK_OUT=${REATTACH_TREEHOUSE_LOCK[0]}
   REATTACH_TREEHOUSE_LOCK_IN=${REATTACH_TREEHOUSE_LOCK[1]}
   IFS= read -r ready <&"$REATTACH_TREEHOUSE_LOCK_OUT" || ready=
