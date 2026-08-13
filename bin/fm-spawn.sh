@@ -1010,7 +1010,7 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
 fi
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
-if [ "$RELAUNCH" -eq 1 ]; then
+if [ "$RELAUNCH" -eq 1 ] || [ "$REATTACH" -eq 1 ]; then
   SPAWN_CONTROL_LOCK="$STATE/.control-$ID.lock"
   control_owner=$(cat "$SPAWN_CONTROL_LOCK/pid" 2>/dev/null || true)
   if [ "$control_owner" = "$PPID" ] && fm_pid_alive "$control_owner"; then

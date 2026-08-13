@@ -275,6 +275,27 @@ test_recovery_axes_cannot_be_overridden() {
   pass "fm-spawn reattach: recorded delivery axes cannot be overridden"
 }
 
+test_lifecycle_lock_refuses_without_changes() {
+  local dir id=rt-control-lock retained out rc before wiring lock
+  dir=$(new_case control-lock "$id")
+  retained="$dir/pool/7/project"
+  printf 'held-lock content\n' > "$retained/held-lock.txt"
+  before="$dir/meta.before"
+  cp "$dir/home/state/$id.meta" "$before"
+  wiring="$dir/home/state/$id.claude-turnend-token"
+  printf 'prior-token\n' > "$wiring"
+  lock="$dir/home/state/.control-$id.lock"
+  mkdir "$lock"
+  printf '%s\n' "$$" > "$lock/pid"
+  out=$(run_reattach "$dir" "$id" "$retained"); rc=$?
+  expect_code 1 "$rc" "held lifecycle lock must refuse reattach"$'\n'"$out"
+  assert_contains "$out" "another lifecycle action is already running" "contention refusal must name the lifecycle action"
+  assert_unchanged_refusal "$dir" "$id" "$before"
+  [ "$(cat "$wiring")" = prior-token ] || fail "control-lock refusal changed prior wiring"
+  [ "$(cat "$retained/held-lock.txt")" = 'held-lock content' ] || fail "control-lock refusal changed retained work"
+  pass "fm-spawn reattach: lifecycle contention refuses before changing state"
+}
+
 test_wrong_branch_refuses
 test_live_agent_refuses
 test_task_identity_mismatch_refuses
@@ -282,5 +303,6 @@ test_missing_copy_refuses
 test_uncommitted_content_survives_success
 test_launch_failure_rolls_back_the_binding
 test_recovery_axes_cannot_be_overridden
+test_lifecycle_lock_refuses_without_changes
 
 echo "# all fm-spawn-reattach tests passed"
