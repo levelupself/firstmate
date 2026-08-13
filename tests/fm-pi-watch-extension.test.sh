@@ -676,6 +676,20 @@ SH
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+const nativeSetTimeout = globalThis.setTimeout;
+const nativeClearTimeout = globalThis.clearTimeout;
+const readinessTimer = { unref() {} };
+let fireReadinessTimeout = null;
+globalThis.setTimeout = (callback, delay, ...args) => {
+  if (delay === Number(process.env.FM_PI_ARM_READY_TIMEOUT_MS) && fireReadinessTimeout === null) {
+    fireReadinessTimeout = () => callback(...args);
+    return readinessTimer;
+  }
+  return nativeSetTimeout(callback, delay, ...args);
+};
+globalThis.clearTimeout = (timer) => {
+  if (timer !== readinessTimer) nativeClearTimeout(timer);
+};
 let tool = null;
 const prompts = [];
 const pi = {
@@ -706,6 +720,8 @@ await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_READY_FILE),
   "unretired successor did not enter its retirement wait",
 );
+if (!fireReadinessTimeout) throw new Error("successor readiness timeout was not captured");
+fireReadinessTimeout();
 await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
 await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_RETIRE_FILE),
