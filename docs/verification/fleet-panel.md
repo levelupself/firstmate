@@ -64,7 +64,7 @@ The observed pane changed directly between complete frames without a visible bla
 
 ## Stable generated watcher command
 
-Verified on 2026-08-13 through the isolated Herdr cockpit command path.
+Verified on 2026-08-13 through both the isolated Herdr cockpit command path and the affected real Herdr frame.
 
 ```sh
 bash tests/fm-cockpit.test.sh
@@ -72,9 +72,10 @@ bash tests/fm-cockpit.test.sh
 
 The executable regression created the default three-pane region from a launcher checkout distinct from the durable home, captured the commands accepted by the fake Herdr CLI, and observed a home-relative watcher for every configured section with no launcher-checkout path.
 The result repeated on every isolated run with the same home and launcher inputs.
-Deleting the disposable launcher checkout was the initiating trigger, while its continued presence had masked the captured-path defect; affected panes then returned to empty shell prompts instead of repainting their assigned sections.
-Running `bin/fm-fleet-view.sh --watch --section <names>` from the durable home restored the decisions, ready, and running/blocked panes without changing layout or focus.
-Replacing only the captured executable path with that home-relative command was the smallest counterfactual, and clearing shell command-cache state before repeating the restoration disconfirmed cached resolution as the cause.
+In the real frame, panes `w5:p3B` (`waiting`), `w5:p3C` (`ready`), and `w5:p3D` (`in-flight,blocked`) reached bash prompts after restart because `/home/fungiman/.treehouse/firstmate-5ccb57/4/firstmate/.lab/tools/uvbin/env` no longer existed.
+That retained lab still contained `uvcache` but no `uvbin`, tying the failure to the captured disposable-checkout executable path rather than loss of the entire lab.
+From the durable home, running `hash -r` followed by `bin/fm-fleet-view.sh --watch --section <names>` in those same panes restored all three immediately without changing layout or focus.
+Replacing only the unavailable captured path with the durable home-relative command supplied the counterfactual, while clearing the shell command cache before the restoration disconfirmed cached resolution as the cause.
 
 ```text
 ok - the default region is three equal decisions-first panes announced once before they are applied
@@ -82,7 +83,6 @@ ok - config/cockpit-sections chooses how many fleet panes there are and what eac
 ```
 
 Observed on 2026-08-13: both assertions printed exactly as shown and the command exited with status 0.
-The CI recovery preserves this evidence while the pipeline-owned PR publication path supplies the required deterministic no-mistakes signature for the verified head.
 
 ## Pane measurement and the head-preserving fit
 
