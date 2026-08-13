@@ -1597,6 +1597,35 @@ test_watch_refuses_a_second_painter_for_one_bound_pane() {
   pass "one bound cockpit pane admits exactly one painter at a time"
 }
 
+test_watch_claims_ownership_when_the_frame_is_published_after_launch() {
+  local home dir first out rc waited=0
+  home=$(make_home painter-late-binding)
+  dir=$(painter_bin "$home")
+  first=$(start_painter "$home" "$dir" w9:p2 early waiting)
+  wait_for_paint "$home/early.out" 'YOUR DECISIONS' \
+    || { reap_painter "$first"; fail "the pre-publication banner painted nothing: $(cat "$home/early.err")"; }
+  write_cockpit_record "$home" 'w9:p2' 'waiting'
+  while [ ! -e "$home/state/.fleet-painter-w9:p2.lock" ] && [ "$waited" -lt 300 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  [ -e "$home/state/.fleet-painter-w9:p2.lock" ] \
+    || { reap_painter "$first"; fail "the pre-publication banner did not claim its published binding"; }
+
+  out=$(FM_HOME="$home" COLUMNS=45 LINES=20 \
+    HERDR_SESSION=lab-session HERDR_PANE_ID=w9:p2 HERDR_TAB_ID=w9:t1 \
+    PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" \
+    PAINTER_REPORTED_SECTIONS=waiting PATH="$home/fakebin:$PATH" \
+    timeout 30 "$dir/fm-fleet-view.sh" --watch 0.1 --section waiting 2>&1) && rc=0 || rc=$?
+  expect_code 1 "$rc" "a later painter must refuse the ownership claimed after publication"
+  assert_contains "$out" 'already painting' \
+    "the later painter must report the post-publication owner"
+  kill -0 "$first" 2>/dev/null \
+    || fail "the post-publication owner must remain live"
+  reap_painter "$first"
+  pass "a banner launched before publication claims ownership when bound"
+}
+
 test_watch_refuses_a_recorded_pane_with_wrong_process_identity() {
   local home dir mode out rc
   home=$(make_home painter-process-identity)
@@ -1647,5 +1676,6 @@ test_watch_outside_an_adopted_frame_keeps_painting
 test_watch_refuses_to_paint_inside_a_bound_frame_it_is_not_recorded_for
 test_watch_retires_when_its_pane_leaves_the_binding
 test_watch_refuses_a_second_painter_for_one_bound_pane
+test_watch_claims_ownership_when_the_frame_is_published_after_launch
 test_watch_refuses_a_recorded_pane_with_wrong_process_identity
 test_non_watch_outputs_remain_byte_exact

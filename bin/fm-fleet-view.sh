@@ -497,27 +497,31 @@ painter_retire() {  # <reason>
     "$HERDR_PANE_ID" "$1" >&2
 }
 
+PAINTER_LOCK=
+painter_claim() {
+  [ "$PAINTER_BINDING" = bound ] || return 0
+  [ -z "$PAINTER_LOCK" ] || return 0
+  if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-wake-lib.sh
+    . "$SCRIPT_DIR/fm-wake-lib.sh"
+  fi
+  PAINTER_LOCK="$PAINTER_STATE/.fleet-painter-$HERDR_PANE_ID.lock"
+  if ! fm_lock_try_acquire "$PAINTER_LOCK"; then
+    printf 'fm-fleet-view: another fleet banner (pid %s) is already painting %s; refusing to paint over it.\n' \
+      "${FM_LOCK_HELD_PID:-unknown}" "$HERDR_PANE_ID" >&2
+    PAINTER_LOCK=
+    return 1
+  fi
+  trap 'fm_lock_release "$PAINTER_LOCK" || true' EXIT
+}
+
 if [ "$WATCH" = 1 ]; then
   painter_binding
   if [ "$PAINTER_BINDING" = unbound ]; then
     painter_retire 'leaving the frame to the panes it records'
     exit 0
   fi
-  PAINTER_LOCK=
-  if [ "$PAINTER_BINDING" = bound ]; then
-    # One painter per bound pane. fm_lock_try_acquire owns the staleness and
-    # PID-reuse rules: a recorded owner that is merely gone is reclaimed, and
-    # anything it cannot prove dead keeps the lock and refuses this launch.
-    # shellcheck source=bin/fm-wake-lib.sh
-    . "$SCRIPT_DIR/fm-wake-lib.sh"
-    PAINTER_LOCK="$PAINTER_STATE/.fleet-painter-$HERDR_PANE_ID.lock"
-    if ! fm_lock_try_acquire "$PAINTER_LOCK"; then
-      printf 'fm-fleet-view: another fleet banner (pid %s) is already painting %s; refusing to paint over it.\n' \
-        "${FM_LOCK_HELD_PID:-unknown}" "$HERDR_PANE_ID" >&2
-      exit 1
-    fi
-    trap 'fm_lock_release "$PAINTER_LOCK" || true' EXIT
-  fi
+  painter_claim || exit 1
   trap 'fm_terminal_watch_reset; exit 0' INT TERM HUP
   while :; do
     # Re-read the binding every redraw, so a banner whose pane the frame stops
@@ -527,6 +531,7 @@ if [ "$WATCH" = 1 ]; then
       painter_retire 'retiring rather than painting beside its replacement'
       exit 0
     fi
+    painter_claim || exit 1
     frame=$(render_once) || true
     # A write that fails is a pane that has gone away underneath this loop:
     # stop rather than spin forever against a terminal nobody can read.
