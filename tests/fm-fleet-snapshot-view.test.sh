@@ -563,10 +563,13 @@ EOF
       and .paths.report.path == ($data + "/bold-task/report.md")
       and .paths.report.present == true
   ' >/dev/null || fail "bold task did not join to override-backed backlog and report"
-  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" "$VIEW")
+  view=$(PATH="$fakebin:$PATH" COLUMNS=100 FM_HOME="$home" FM_DATA_OVERRIDE="$data" \
+    FM_PROJECTS_OVERRIDE="$projects" "$VIEW")
   assert_not_contains "$view" "bold-task" \
     "finished work should not crowd the default utilization view"
-  assert_contains "$view" "READY (3)" \
+  # Every queued row here records a title and no body, so tasks-axi calls all
+  # three dependency-ready while none can be handed to a worker as written.
+  assert_contains "$view" "READY (0 clear, 3 need a check)" \
     "view should classify dispatchable tasks through tasks-axi"
   assert_contains "$view" "BLOCKED (1)" \
     "view should count only genuinely open blockers"
@@ -574,6 +577,8 @@ EOF
     "view should render a blocked reason without title metadata"
   assert_not_contains "$view" "mixed-blockers ←" \
     "a stale or missing dependency edge must not render as an open blocker"
+  assert_contains "$view" "? mixed-blockers · needs instructions; needs missing, not on the backlog" \
+    "a missing dependency edge must surface in ready rather than vanish entirely"
   pass "snapshot parses tasks-axi rows and respects operational overrides"
 }
 
@@ -586,6 +591,7 @@ test_ready_set_agrees_with_tasks_axi() {
 
 ## Queued
 - [ ] ready-a - Ready task (repo: firstmate) (kind: ship)
+  Instructions the worker can act on.
 - [ ] blocked-open - Blocked task (repo: firstmate) (kind: ship) blocked-by: running - waits for running
 - [ ] stale-edge - Stale edge task (repo: firstmate) (kind: ship) blocked-by: closed - historical edge
 - [ ] captain-choice - Choose a route (repo: firstmate) (kind: captain) (hold: choose blue or green) (hold-kind: captain)
@@ -604,10 +610,18 @@ EOF
   [ "$snapshot_ids" = "$authoritative" ] \
     || fail "snapshot ready set disagreed with tasks-axi: snapshot=$snapshot_ids tasks-axi=$authoritative"
   view=$(FM_HOME="$home" "$VIEW" --section ready)
-  view_ids=$(printf '%s\n' "$view" | sed -n 's/^• \([^ ]*\).*/\1/p' | LC_ALL=C sort)
+  # Separating dispatchable work from work the backlog cannot confirm must not
+  # drop a row: the two markers together still carry the whole tasks-axi set.
+  view_ids=$(printf '%s\n' "$view" | sed -n -e 's/^• \([^ ]*\).*/\1/p' -e 's/^? \([^ ]*\).*/\1/p' \
+    | LC_ALL=C sort)
   [ "$view_ids" = "$authoritative" ] \
     || fail "panel ready set disagreed with tasks-axi: panel=$view_ids tasks-axi=$authoritative"
-  assert_contains "$view" "READY (2)" "ready heading count must equal the rendered tasks-axi set"
+  assert_contains "$view" "READY (1 clear, 1 need a check)" \
+    "ready heading count must describe the rendered tasks-axi set"
+  assert_contains "$view" "• ready-a · Ready task" \
+    "a queued row with instructions must render as dispatchable"
+  assert_contains "$view" "? stale-edge · needs instructions" \
+    "a queued row with no instructions must render its reason"
   view=$(FM_HOME="$home" "$VIEW" --section blocked)
   assert_contains "$view" "BLOCKED (1)" "only one dependency is genuinely open"
   assert_contains "$view" "blocked-open ← running" "open dependency missing from blocked panel"
@@ -618,6 +632,80 @@ EOF
   assert_contains "$view" "choose blue or green" "captain-held row omitted the answerable question"
   assert_not_contains "$view" "do-not-build" "an external hold leaked into the captain decision queue"
   pass "fleet snapshot and panel ready sets agree exactly with tasks-axi"
+}
+
+test_ready_separates_dispatchable_from_unconfirmed() {
+  local home out view ready_section
+  home=$(make_home ready-dispatch-truth)
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] clear-one - Straightforward queued work (repo: firstmate) (kind: ship)
+  Implement the thing, with acceptance criteria.
+- [ ] clear-dep-landed - Queued behind a dependency the backlog still lists blocked-by: landed (repo: firstmate) (kind: ship)
+  Implement the follow-up once the dependency is in.
+- [ ] no-body - Queued with no instructions recorded (repo: firstmate) (kind: ship)
+- [ ] dep-unlisted - Queued behind a dependency the backlog no longer lists blocked-by: vanished (repo: firstmate) (kind: ship)
+  Implement the follow-up.
+- [ ] both-reasons - Queued with neither instructions nor a listed dependency blocked-by: vanished (repo: firstmate) (kind: ship)
+
+## Done
+- [x] landed - Landed dependency (repo: firstmate) (kind: ship) (done 2026-08-09)
+EOF
+  out=$(FM_HOME="$home" "$SNAPSHOT" --json)
+  # tasks-axi still owns dependency readiness: every one of these is unblocked
+  # and unheld, so the producer's own answer must not change.
+  printf '%s' "$out" | jq -e '
+    [.backlog.records[] | select(.dispatchable == true) | .id] | sort
+    == ["both-reasons","clear-dep-landed","clear-one","dep-unlisted","no-body"]
+  ' >/dev/null || fail "tasks-axi dependency readiness changed: $out"
+  printf '%s' "$out" | jq -e '
+    [.backlog.records[] | select(.dispatch_clear == true) | .id] | sort
+    == ["clear-dep-landed","clear-one"]
+  ' >/dev/null || fail "snapshot did not separate dispatchable work from unconfirmed work: $out"
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "no-body")
+    | [.dispatch_review[].reason] == ["no_instructions"]
+  ' >/dev/null || fail "a queued row with no instructions carried no dispatch reason: $out"
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "dep-unlisted")
+    | .dispatch_review == [{reason:"unlisted_dependency",ids:["vanished"]}]
+  ' >/dev/null || fail "an unlisted dependency carried no dispatch reason: $out"
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "both-reasons")
+    | [.dispatch_review[].reason] == ["no_instructions","unlisted_dependency"]
+  ' >/dev/null || fail "a row failing both checks lost one reason: $out"
+
+  view=$(COLUMNS=100 FM_HOME="$home" "$VIEW" --section ready)
+  assert_contains "$view" "READY (2 clear, 3 need a check)" \
+    "the ready heading must count dispatchable work apart from unconfirmed work"
+  assert_contains "$view" "• clear-one · Straightforward queued work" \
+    "dispatchable work must render unmarked"
+  assert_contains "$view" "? no-body · needs instructions" \
+    "a row with no instructions must render its reason"
+  assert_contains "$view" "? dep-unlisted · needs vanished, not on the backlog" \
+    "a row with an unlisted dependency must render its reason"
+  assert_not_contains "$view" "• no-body" \
+    "unconfirmed work must not render as plain dispatchable work"
+  ready_section=$(printf '%s\n' "$view" | sed -n '/^READY/,$p')
+  [ "$(printf '%s\n' "$ready_section" | grep -cE '^(• |\? )')" -eq 5 ] \
+    || fail "ready section lost a dependency-ready row: $view"
+  pass "ready separates dispatchable work from work the backlog cannot confirm"
+}
+
+test_ready_counts_stay_plain_without_unconfirmed_work() {
+  local home view
+  home=$(make_home ready-all-clear)
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] clear-one - Straightforward queued work (repo: firstmate) (kind: ship)
+  Implement the thing.
+EOF
+  view=$(COLUMNS=100 FM_HOME="$home" "$VIEW" --section ready)
+  assert_contains "$view" "READY (1)" \
+    "a fully dispatchable queue must keep the plain ready count"
+  assert_not_contains "$view" "need a check" \
+    "a fully dispatchable queue must not mention unconfirmed work"
+  pass "ready keeps its plain count when every queued row is dispatchable"
 }
 
 test_backlog_projection_uses_one_source_image() {
@@ -658,8 +746,8 @@ test_view_respects_terminal_height() {
   printf '## Queued\n' > "$home/data/backlog.md"
   i=1
   while [ "$i" -le 20 ]; do
-    printf -- '- [ ] ready-%02d - Ready task %02d (repo: firstmate) (kind: ship)\n' "$i" "$i" \
-      >> "$home/data/backlog.md"
+    printf -- '- [ ] ready-%02d - Ready task %02d (repo: firstmate) (kind: ship)\n  Instructions %02d.\n' \
+      "$i" "$i" "$i" >> "$home/data/backlog.md"
     i=$((i + 1))
   done
   view=$(LINES=12 COLUMNS=60 FM_HOME="$home" "$VIEW")
@@ -1323,6 +1411,8 @@ test_parked_scout_decision_stays_pending
 test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
 test_ready_set_agrees_with_tasks_axi
+test_ready_separates_dispatchable_from_unconfirmed
+test_ready_counts_stay_plain_without_unconfirmed_work
 test_backlog_projection_uses_one_source_image
 test_view_respects_terminal_height
 test_view_renders_snapshot

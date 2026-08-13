@@ -20,6 +20,18 @@
 #     unresolved blockers. They also carry normalized current_role,
 #     requires_child_metadata, dispatchable, blocked_by_ids,
 #     unresolved_blocker_ids, and captain_actionable fields.
+#     dispatchable is tasks-axi's dependency answer alone: queued, unblocked,
+#     unheld. It is not the same question as whether the row can actually be
+#     handed to a worker, so two further fields separate the two, and both are
+#     asked only of rows dispatchable already accepted. dispatch_review lists
+#     structured reasons this row's own durable contract stops the backlog from
+#     confirming dispatch - no_instructions when the row records no body to brief
+#     from, and unlisted_dependency when the row still names blocked-by ids the
+#     backlog no longer carries, which tasks-axi resolves away silently once Done
+#     retention prunes the referenced row. dispatch_clear is dispatchable with an
+#     empty dispatch_review, and is the only field that means the backlog can
+#     confirm "hand this to a worker now". Reasons stay structured here;
+#     captain-facing wording belongs to the renderer.
 #   tasks[]: one row per state/<id>.meta, sorted by id.
 #     current_state is parsed from bin/fm-crew-state.sh <id> and preserves
 #     state, source, detail, and raw line separately.
@@ -543,6 +555,10 @@ apply_backlog_semantics() {  # stdin: <markdown-json> <tasks-axi-json>
     | .[1] as $semantics
     | ($semantics | map({key:.id,value:.}) | from_entries) as $by_id
     | $backlog
+    # Every id the coherent backlog image can account for. A blocked-by edge
+    # pointing outside this set is one tasks-axi silently drops, so the row
+    # reads as dependency-ready on a dependency nobody can see.
+    | ([.records[] | select(.structured == true) | .id]) as $known_ids
     | .records |= map(
         if .structured then
           . as $record
@@ -567,6 +583,20 @@ apply_backlog_semantics() {  # stdin: <markdown-json> <tasks-axi-json>
               | .captain_actionable = ($semantic.state == "queued" and $semantic.held
                                        and $semantic.hold_kind == "captain"
                                        and ($semantic.blocked | not))
+              # Only rows tasks-axi already calls dependency-ready are asked the
+              # narrower question, so a done or blocked row never carries a
+              # vacuous dispatch reason.
+              | .dispatch_review =
+                  (if ($semantic.dispatchable | not) then []
+                   else
+                     (if (.body_lines | length) == 0
+                      then [{reason:"no_instructions"}] else [] end)
+                     + (((.blocked_by_ids // [])
+                         | map(select(. as $edge | ($known_ids | index($edge)) == null)))
+                        | if length == 0 then []
+                          else [{reason:"unlisted_dependency",ids:.}] end)
+                   end)
+              | .dispatch_clear = ($semantic.dispatchable and ((.dispatch_review | length) == 0))
             end
         else . end)
   '
