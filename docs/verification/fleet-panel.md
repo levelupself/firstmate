@@ -71,6 +71,10 @@ bash tests/fm-cockpit.test.sh
 ```
 
 The executable regression created the default three-pane region from a launcher checkout distinct from the durable home, captured the commands accepted by the fake Herdr CLI, and observed a home-relative watcher for every configured section with no launcher-checkout path.
+The result repeated on every isolated run with the same home and launcher inputs.
+Deleting the disposable launcher checkout was the initiating trigger, while its continued presence had masked the captured-path defect; affected panes then returned to empty shell prompts instead of repainting their assigned sections.
+Running `bin/fm-fleet-view.sh --watch --section <names>` from the durable home restored the decisions, ready, and running/blocked panes without changing layout or focus.
+Replacing only the captured executable path with that home-relative command was the smallest counterfactual, and clearing shell command-cache state before repeating the restoration disconfirmed cached resolution as the cause.
 
 ```text
 ok - the default region is three equal decisions-first panes announced once before they are applied
