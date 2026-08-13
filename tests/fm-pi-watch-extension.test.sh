@@ -544,9 +544,9 @@ if [ "$count" -eq 0 ]; then
   exit 0
 fi
 trap '' TERM INT
+trap 'printf "retired\n" > "${FM_RETIRED_FILE:?}"' EXIT
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.1; done
-printf 'retired\n' > "${FM_RETIRED_FILE:?}"
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_RETIRED_FILE="$retired" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
