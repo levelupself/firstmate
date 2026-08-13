@@ -62,6 +62,23 @@ done
 
 The observed pane changed directly between complete frames without a visible blank refresh.
 
+## Stable generated watcher command
+
+Verified on 2026-08-13 through the isolated Herdr cockpit command path.
+
+```sh
+tests/fm-cockpit.test.sh
+```
+
+The executable regression created the default three-pane region from a launcher checkout distinct from the durable home, captured the commands accepted by the fake Herdr CLI, and observed a home-relative watcher for every configured section with no launcher-checkout path.
+
+```text
+ok - the default region is three equal decisions-first panes announced once before they are applied
+ok - config/cockpit-sections chooses how many fleet panes there are and what each one holds
+```
+
+The command exited with status 0.
+
 ## Pane measurement and the head-preserving fit
 
 Verified on 2026-08-06 in an isolated tmux 3.4 pane on Linux, sized to twelve rows to match a cockpit fleet banner.
