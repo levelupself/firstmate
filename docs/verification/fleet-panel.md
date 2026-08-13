@@ -5,6 +5,7 @@ Audience: maintainer verification.
 This record holds reusable evidence for the fleet panel projection and watch-mode repaint guarantees.
 The implementation is shared by `bin/fm-fleet-view.sh` and `bin/fm-cockpit.sh`, while `tests/fm-fleet-snapshot-view.test.sh` owns automated readiness agreement, section ordering, height truncation, independent section rendering, and residual-line coverage.
 `tests/fm-fleet-view-pane-fit-smoke.test.sh` owns the real-pane fit that a `LINES`-driven fixture cannot reach, because supplying `LINES` takes the explicit-override branch and never measures anything.
+`tests/fm-cockpit.test.sh` owns the generated Herdr pane-command guarantee that every section watcher resolves through the durable Firstmate home rather than the launcher's checkout.
 
 The read-only snapshot calls `tasks-axi list` and `tasks-axi ready` once each for the primary home and once each for every readable registered secondmate home during a redraw.
 The two primary-home calls measured about 92 ms together locally, so the redraw cost scales as `2 * (1 + readable secondmate homes)` tasks-axi invocations.
