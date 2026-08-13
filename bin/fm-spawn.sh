@@ -752,10 +752,12 @@ spawn_abort_cleanup() {
     fi
   fi
   if [ -n "$REATTACH_TREEHOUSE_LOCK_PID" ]; then
-    { printf '\n' >&"$REATTACH_TREEHOUSE_LOCK_IN"; } 2>/dev/null || true
+    { printf '\n' >"$REATTACH_TREEHOUSE_LOCK_IN"; } 2>/dev/null || true
     wait "$REATTACH_TREEHOUSE_LOCK_PID" 2>/dev/null || true
     REATTACH_TREEHOUSE_LOCK_PID=
   fi
+  [ -z "$REATTACH_TREEHOUSE_LOCK_IN" ] || rm -f "$REATTACH_TREEHOUSE_LOCK_IN"
+  [ -z "$REATTACH_TREEHOUSE_LOCK_OUT" ] || rm -f "$REATTACH_TREEHOUSE_LOCK_OUT"
   if [ "$RELAUNCH_REPLACEMENT_PENDING" = 1 ] \
      && [ "$SPAWN_META_PUBLISH_STARTED" = 1 ] \
      && [ -n "$SPAWN_META_TMP" ] \
@@ -1935,7 +1937,7 @@ verify_reattach_treehouse_owner_free() {
 }
 
 acquire_reattach_treehouse_lock() {
-  local pool state lock ready owner_pid owner_started leased path_count
+  local pool state lock ready owner_pid owner_started leased path_count pipe_base
   pool=$(dirname "$(dirname "$WT")")
   state="$pool/treehouse-state.json"
   lock="$pool/treehouse-state.lock"
@@ -1943,19 +1945,27 @@ acquire_reattach_treehouse_lock() {
     echo "error: retained worktree '$WT' has no inspectable Treehouse pool state; refusing to guess ownership" >&2
     return 1
   }
-  coproc REATTACH_TREEHOUSE_LOCK {
-    perl -e '
+  pipe_base="$STATE/.${ID}.reattach-treehouse-lock.${BASHPID:-$$}"
+  REATTACH_TREEHOUSE_LOCK_IN="$pipe_base.in"
+  REATTACH_TREEHOUSE_LOCK_OUT="$pipe_base.out"
+  rm -f "$REATTACH_TREEHOUSE_LOCK_IN" "$REATTACH_TREEHOUSE_LOCK_OUT"
+  mkfifo "$REATTACH_TREEHOUSE_LOCK_IN" "$REATTACH_TREEHOUSE_LOCK_OUT" || {
+    echo "error: could not prepare Treehouse ownership reservation for retained worktree '$WT'" >&2
+    return 1
+  }
+  perl -e '
       use Fcntl qw(:flock);
       $| = 1;
       open(my $fh, "+>>", $ARGV[0]) or exit 1;
       flock($fh, LOCK_EX) or exit 1;
-      print "locked\n";
-      <STDIN>;
-    ' "$lock"
-  }
-  REATTACH_TREEHOUSE_LOCK_OUT=${REATTACH_TREEHOUSE_LOCK[0]}
-  REATTACH_TREEHOUSE_LOCK_IN=${REATTACH_TREEHOUSE_LOCK[1]}
-  IFS= read -r ready <&"$REATTACH_TREEHOUSE_LOCK_OUT" || ready=
+      open(my $ready, ">", $ARGV[1]) or exit 1;
+      print {$ready} "locked\n";
+      close($ready);
+      open(my $hold, "<", $ARGV[2]) or exit 1;
+      <$hold>;
+    ' "$lock" "$REATTACH_TREEHOUSE_LOCK_OUT" "$REATTACH_TREEHOUSE_LOCK_IN" &
+  REATTACH_TREEHOUSE_LOCK_PID=$!
+  IFS= read -r ready <"$REATTACH_TREEHOUSE_LOCK_OUT" || ready=
   [ "$ready" = locked ] || {
     echo "error: could not reserve Treehouse ownership inspection for retained worktree '$WT'" >&2
     return 1
@@ -2966,7 +2976,9 @@ preserve_relaunch_meta() {
   echo "effort=${EFFORT:-default}"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   echo "spawn_gen=$SPAWN_GEN"
-  [ -z "$SPAWN_TRACEPARENT" ] || echo "traceparent=$SPAWN_TRACEPARENT"
+  if [ "$REATTACH" -eq 1 ] && [ -n "$SPAWN_TRACEPARENT" ]; then
+    echo "traceparent=$SPAWN_TRACEPARENT"
+  fi
   # Default-off writes no traceparent= line.
   # backend= is written only for a non-default (non-tmux) backend, so the
   # default path's meta stays byte-identical (absent backend= means tmux;
@@ -3188,9 +3200,12 @@ if [ "$REATTACH" -eq 1 ]; then
   rm -rf "$REATTACH_WIRING_BACKUP"
   REATTACH_WIRING_BACKUP=
   if [ -n "$REATTACH_TREEHOUSE_LOCK_PID" ]; then
-    printf '\n' >&"$REATTACH_TREEHOUSE_LOCK_IN"
+    printf '\n' >"$REATTACH_TREEHOUSE_LOCK_IN"
     wait "$REATTACH_TREEHOUSE_LOCK_PID"
     REATTACH_TREEHOUSE_LOCK_PID=
   fi
+  rm -f "$REATTACH_TREEHOUSE_LOCK_IN" "$REATTACH_TREEHOUSE_LOCK_OUT"
+  REATTACH_TREEHOUSE_LOCK_IN=
+  REATTACH_TREEHOUSE_LOCK_OUT=
 fi
 echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"
