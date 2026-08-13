@@ -415,6 +415,10 @@
     {
       "path": "skills/stow/SKILL.md",
       "audience": "public-product"
+    },
+    {
+      "path": "tests/requirements.txt",
+      "audience": "maintainer-architecture"
     }
   ]
 }
