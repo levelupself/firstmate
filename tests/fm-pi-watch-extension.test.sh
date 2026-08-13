@@ -591,6 +591,7 @@ function pidAlive(pid) {
 let tool = null;
 let prompt = "";
 let rowsAtPrompt = 0;
+let successorPidAtPrompt = "";
 let successorAliveAtPrompt = false;
 const pi = {
   on() {},
@@ -603,8 +604,8 @@ const pi = {
     rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
       ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
       : 0;
-    const successorPid = readFileSync(process.env.FM_UNRETIRED_FILE, "utf8").trim();
-    successorAliveAtPrompt = pidAlive(successorPid);
+    successorPidAtPrompt = readFileSync(process.env.FM_UNRETIRED_FILE, "utf8").trim();
+    successorAliveAtPrompt = pidAlive(successorPidAtPrompt);
   },
 };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
@@ -627,6 +628,7 @@ const rows = existsSync(process.env.FM_ARM_LOG)
   : [];
 if (rows.length !== 2) throw new Error(`expected the initial arm and one established unretired successor, got: ${rows.join(" | ")}`);
 if (rowsAtPrompt !== 2) throw new Error(`wake arrived after an overlapping retry (${rowsAtPrompt} arm rows)`);
+if (successorPidAtPrompt !== successorPid) throw new Error(`fallback observed successor ${successorPidAtPrompt}, expected ${successorPid}`);
 if (!successorAliveAtPrompt || !pidAlive(successorPid)) throw new Error(`successor ${successorPid} was not genuinely unretired at fallback`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
@@ -712,6 +714,7 @@ function pidAlive(pid) {
 }
 let tool = null;
 const prompts = [];
+let successorPidAtFallback = "";
 let successorAliveAtFallback = false;
 const pi = {
   on() {},
@@ -722,8 +725,8 @@ const pi = {
   sendUserMessage: async (message) => {
     prompts.push(message);
     if (prompts.length === 1) {
-      const successorPid = readFileSync(process.env.FM_UNRETIRED_READY_FILE, "utf8").trim();
-      successorAliveAtFallback = pidAlive(successorPid);
+      successorPidAtFallback = readFileSync(process.env.FM_UNRETIRED_READY_FILE, "utf8").trim();
+      successorAliveAtFallback = pidAlive(successorPidAtFallback);
     }
   },
 };
@@ -762,6 +765,7 @@ await waitFor(
 const retiredPid = readFileSync(process.env.FM_UNRETIRED_RETIRE_FILE, "utf8").trim();
 if (retiredPid !== successorPid) throw new Error(`retirement evidence named ${retiredPid}, expected successor ${successorPid}`);
 if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
+if (successorPidAtFallback !== successorPid) throw new Error(`fallback observed successor ${successorPidAtFallback}, expected ${successorPid}`);
 if (!successorAliveAtFallback || !pidAlive(successorPid)) throw new Error(`successor ${successorPid} was not genuinely unretired at fallback`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
@@ -1869,6 +1873,7 @@ function pidAlive(pid) {
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 let prompt = "";
 let rowsAtPrompt = 0;
+let successorPidAtPrompt = "";
 let successorAliveAtPrompt = false;
 const client = {
   session: {
@@ -1877,8 +1882,8 @@ const client = {
       rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
         ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
         : 0;
-      const successorPid = readFileSync(process.env.FM_UNRETIRED_FILE, "utf8").trim();
-      successorAliveAtPrompt = pidAlive(successorPid);
+      successorPidAtPrompt = readFileSync(process.env.FM_UNRETIRED_FILE, "utf8").trim();
+      successorAliveAtPrompt = pidAlive(successorPidAtPrompt);
     },
   },
 };
@@ -1905,6 +1910,7 @@ const rows = existsSync(process.env.FM_ARM_LOG)
   : [];
 if (rows.length !== 2) throw new Error(`expected the initial arm and one established unretired successor, got: ${rows.join(" | ")}`);
 if (rowsAtPrompt !== 2) throw new Error(`wake arrived after an overlapping retry (${rowsAtPrompt} arm rows)`);
+if (successorPidAtPrompt !== successorPid) throw new Error(`fallback observed successor ${successorPidAtPrompt}, expected ${successorPid}`);
 if (!successorAliveAtPrompt || !pidAlive(successorPid)) throw new Error(`successor ${successorPid} was not genuinely unretired at fallback`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
@@ -1996,14 +2002,15 @@ function pidAlive(pid) {
 }
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const prompts = [];
+let successorPidAtFallback = "";
 let successorAliveAtFallback = false;
 const client = {
   session: {
     promptAsync: async (request) => {
       prompts.push(request.body.parts[0].text);
       if (prompts.length === 1) {
-        const successorPid = readFileSync(process.env.FM_UNRETIRED_READY_FILE, "utf8").trim();
-        successorAliveAtFallback = pidAlive(successorPid);
+        successorPidAtFallback = readFileSync(process.env.FM_UNRETIRED_READY_FILE, "utf8").trim();
+        successorAliveAtFallback = pidAlive(successorPidAtFallback);
       }
     },
   },
@@ -2046,6 +2053,7 @@ await waitFor(
 const retiredPid = readFileSync(process.env.FM_UNRETIRED_RETIRE_FILE, "utf8").trim();
 if (retiredPid !== successorPid) throw new Error(`retirement evidence named ${retiredPid}, expected successor ${successorPid}`);
 if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
+if (successorPidAtFallback !== successorPid) throw new Error(`fallback observed successor ${successorPidAtFallback}, expected ${successorPid}`);
 if (!successorAliveAtFallback || !pidAlive(successorPid)) throw new Error(`successor ${successorPid} was not genuinely unretired at fallback`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
