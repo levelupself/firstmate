@@ -50,6 +50,8 @@
 # observation actually exercised, never every path the worker happened to edit,
 # so firstmate can target post-pipeline re-verification without recreating the
 # broad trigger the captain rejected.
+# A ship's terminal report also binds any relied-on full-suite run to the exact
+# clean commit it tested and states its observed pass and fail counts.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
 # the three concrete modes at intake before calling this script.
@@ -114,6 +116,12 @@ The boundary is file-granular: the same proof file triggers even when the change
 For a ship task, carry this provenance in the terminal handoff for each observation relied on for delivery.
 EOF
 PROOF_GUIDANCE=${PROOF_GUIDANCE%$'\n'}
+
+IFS= read -r -d '' SUITE_GUIDANCE <<'EOF' || true
+For any full-suite run the terminal report relies on, report the exact full commit SHA from `git rev-parse HEAD`, confirm that the working tree was clean at that commit, and state the observed pass and fail counts.
+A terminal report that names a full-suite run without all three fields is incomplete.
+EOF
+SUITE_GUIDANCE=${SUITE_GUIDANCE%$'\n'}
 
 resolve_directory_input() {
   local name=$1 path=$2 resolved
@@ -480,6 +488,7 @@ $RULE1
    Only where red-first is genuinely impractical, say why in the PR body (or the commit message when this mode opens no PR)
    and instead confirm the test fails with the implementation reverted AT THE SHIPPED HEAD; that same check is stale at any earlier commit.
 $PROOF_GUIDANCE
+$SUITE_GUIDANCE
 6. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, $CAPTAIN_HELD_VERB, blocked, $PAUSED_VERB, done, failed.

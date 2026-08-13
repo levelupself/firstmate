@@ -580,6 +580,41 @@ test_reports_disclose_commit_and_proof_files() {
   pass "fm-brief.sh: reports disclose exact commits and narrowly defined proof files"
 }
 
+# A ship's terminal handoff can rely on a full-suite run only when that run is
+# bound to the reported commit and clean tree, with its observed outcome stated.
+# Scouts do not ship a ready commit, so their report contract must stay free of
+# this delivery-only requirement.
+test_ship_reports_bind_full_suite_to_clean_commit() {
+  local home brief id mode
+
+  home="$TMP_ROOT/full-suite-provenance-home"
+  mkdir -p "$home/data"
+
+  for mode in no-mistakes direct-PR local-only; do
+    id="brief-suite-${mode}"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+
+    # shellcheck disable=SC2016
+    assert_grep 'full commit SHA from `git rev-parse HEAD`' "$brief" \
+      "$mode ship brief did not bind the full-suite run to the exact commit"
+    assert_grep "working tree was clean at that commit" "$brief" \
+      "$mode ship brief did not require a clean tree for full-suite evidence"
+    assert_grep "observed pass and fail counts" "$brief" \
+      "$mode ship brief did not require the full-suite outcome counts"
+    assert_grep "full-suite run without all three fields is incomplete" "$brief" \
+      "$mode ship brief did not make incomplete full-suite evidence fail readiness"
+  done
+
+  id="brief-suite-scout"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_no_grep "full-suite run" "$brief" \
+    "scout brief carried the ship-only full-suite evidence requirement"
+
+  pass "fm-brief.sh: ship reports bind full-suite evidence to a clean exact commit"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -952,6 +987,7 @@ test_no_mistakes_dod_wording
 test_terminal_report_cannot_be_written_at_commit
 test_behavioral_tests_are_red_first
 test_reports_disclose_commit_and_proof_files
+test_ship_reports_bind_full_suite_to_clean_commit
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
