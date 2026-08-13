@@ -6,7 +6,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 command -v python3 >/dev/null 2>&1 || fail "python3 is required"
-python3 -c 'import yaml' 2>/dev/null || fail "Python PyYAML is required"
+python3 -c 'import yaml' 2>/dev/null \
+  || fail "PyYAML from tests/requirements.txt is required"
 
 timeout=$(python3 - "$ROOT/.github/workflows/ci.yml" <<'PY'
 import sys

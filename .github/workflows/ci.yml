@@ -130,6 +130,8 @@ jobs:
           set -eu
           bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install Python test dependencies
+        run: python3 -m pip install --requirement tests/requirements.txt
       - name: Require tmux for e2e tests
         run: |
           set -eu
