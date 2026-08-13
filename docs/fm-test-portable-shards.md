@@ -110,5 +110,9 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | portable parallel 1/2 | 10 | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
 | portable serial 1-4 | 15 | Each balanced shard is about five minutes, leaving roughly 3x hang-tripwire margin. |
 | Herdr | 40 | The real-Herdr lane keeps its dedicated timeout. |
+| stock macOS Bash snapshot compatibility | 20 | The measured suite step takes 9m48s, so 20 minutes leaves about 2x variance while remaining a bounded hang tripwire. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
+
+The stock macOS Bash measurement was refreshed on 2026-08-13 from GitHub Actions run `31717109901`, job `94504498084`, using `gh-axi api /repos/levelupself/firstmate/actions/jobs/94504498084`.
+The snapshot-consumer step ran successfully from `2026-08-13T15:45:33Z` through `2026-08-13T15:55:21Z`, while the job crossed its former 10-minute ceiling after setup and was classified cancelled.
