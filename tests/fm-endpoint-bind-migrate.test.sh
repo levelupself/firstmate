@@ -207,8 +207,8 @@ test_concurrent_stale_reclaim_keeps_one_owner() {
   local dir inventory first_rc second_rc successes
   dir=$(make_case stale-reclaim)
   inventory=$(inventory_for "$dir/worktree")
-  mkdir "$dir/home/state/$TASK_ID.meta.mutation-lock"
-  printf '999999999\n' > "$dir/home/state/$TASK_ID.meta.mutation-lock/pid"
+  mkdir "$dir/home/state/.meta-$TASK_ID.lock"
+  printf '999999999\n' > "$dir/home/state/.meta-$TASK_ID.lock/pid"
   (
     run_migrate "$dir" "$inventory" > "$dir/first.stdout" 2> "$dir/first.stderr"
     printf '%s\n' "$?" > "$dir/first.rc"
@@ -222,7 +222,7 @@ test_concurrent_stale_reclaim_keeps_one_owner() {
   second_rc=$(cat "$dir/second.rc")
   successes=$(( (1 - first_rc) + (1 - second_rc) ))
   [ "$successes" -eq 1 ] || fail "concurrent stale reclaim admitted more than one migration owner"
-  assert_absent "$dir/home/state/$TASK_ID.meta.mutation-lock" \
+  assert_absent "$dir/home/state/.meta-$TASK_ID.lock" \
     "concurrent stale reclaim left the metadata lock behind"
   pass "endpoint binding migration: concurrent stale reclaim preserves one metadata owner"
 }
@@ -246,7 +246,8 @@ SH
   migration_pid=$!
   while [ ! -f "$dir/date-entered" ]; do sleep 0.01; done
   FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$PATH" \
-    "$ROOT/bin/fm-promote.sh" "$TASK_ID" > "$dir/promote.stdout" 2> "$dir/promote.stderr" &
+    "$ROOT/bin/fm-promote.sh" "$TASK_ID" --mode direct-PR --yolo off \
+      > "$dir/promote.stdout" 2> "$dir/promote.stderr" &
   promote_pid=$!
   sleep 0.1
   kill -0 "$promote_pid" 2>/dev/null \

@@ -2756,11 +2756,6 @@ if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
   fm_lock_release "$SPAWN_TASK_SET_LOCK"
 fi
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
-if [ "$KIND" != secondmate ]; then
-  "$FM_ROOT/bin/fm-task-usage.sh" "$ID" --baseline \
-    || echo "fm-spawn: warning: could not capture codeburn baseline for $ID" >&2
-fi
-
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
 sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
@@ -2857,6 +2852,10 @@ if [ -n "$SPAWN_TRACEPARENT" ]; then
     fi
     LAUNCH="unset TRACEPARENT; $LAUNCH"
   fi
+fi
+if [ "$KIND" != secondmate ]; then
+  "$FM_ROOT/bin/fm-task-usage.sh" "$ID" --baseline \
+    || echo "fm-spawn: warning: could not capture codeburn baseline for $ID" >&2
 fi
 sleep 0.3
 spawn_send_literal "$T" "$LAUNCH"

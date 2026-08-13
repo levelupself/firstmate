@@ -8,7 +8,7 @@ fm_task_meta_lock_acquire() {  # <meta-file>
     # shellcheck source=bin/fm-wake-lib.sh
     . "$FM_TASK_META_LOCK_LIB_DIR/fm-wake-lib.sh"
   fi
-  FM_TASK_META_LOCK_DIR="${meta}.mutation-lock"
+  FM_TASK_META_LOCK_DIR=$(fm_meta_lock_path "$meta") || return 1
   while [ "$attempt" -lt 200 ]; do
     fm_lock_try_acquire "$FM_TASK_META_LOCK_DIR" && return 0
     attempt=$((attempt + 1))
