@@ -110,8 +110,10 @@ new_case() {  # <name> <id>
   dir="$TMP_ROOT/$name-$RANDOM"
   mkdir -p "$dir/home/state" "$dir/home/data/$id" "$dir/fake"
   project="$dir/project"
-  retained="$dir/retained"
+  retained="$dir/pool/7/project"
   fm_git_worktree "$project" "$retained" "fm/$id"
+  jq -n --arg path "$retained" '{worktrees:[{name:"7",path:$path,created_at:"2026-01-01T00:00:00Z"}]}' \
+    > "$dir/pool/treehouse-state.json"
   printf '# brief\n\nDelivery contract: mode=no-mistakes\n' > "$dir/home/data/$id/brief.md"
   {
     echo "window=firstmate:fm-$id"
@@ -138,7 +140,7 @@ run_reattach() {  # <dir> <id> <worktree>
     FM_FAKE_RETAINED="$retained" \
     FM_FAKE_TREEHOUSE_PROCESSES="${FM_FAKE_TREEHOUSE_PROCESSES:-[]}" \
     FM_FAKE_SEND_FAIL="${FM_FAKE_SEND_FAIL:-}" \
-    "$SPAWN" "$id" --reattach-worktree "$retained" 2>&1
+    "$SPAWN" "$id" --mode no-mistakes --yolo off --reattach-worktree "$retained" 2>&1
 }
 
 assert_unchanged_refusal() {  # <dir> <id> <before-meta>
@@ -152,7 +154,7 @@ assert_unchanged_refusal() {  # <dir> <id> <before-meta>
 test_wrong_branch_refuses() {
   local dir id=rt-wrong-branch retained out rc before
   dir=$(new_case wrong-branch "$id")
-  retained="$dir/retained"
+  retained="$dir/pool/7/project"
   git -C "$retained" branch -m fm/some-other-task
   before="$dir/meta.before"
   cp "$dir/home/state/$id.meta" "$before"
@@ -166,7 +168,7 @@ test_wrong_branch_refuses() {
 test_live_agent_refuses() {
   local dir id=rt-live retained out rc before
   dir=$(new_case live "$id")
-  retained="$dir/retained"
+  retained="$dir/pool/7/project"
   before="$dir/meta.before"
   cp "$dir/home/state/$id.meta" "$before"
   out=$(FM_FAKE_TREEHOUSE_PROCESSES='[{"pid":42,"name":"codex"}]' \
@@ -180,7 +182,7 @@ test_live_agent_refuses() {
 test_task_identity_mismatch_refuses() {
   local dir id=rt-identity retained out rc before meta
   dir=$(new_case identity "$id")
-  retained="$dir/retained"
+  retained="$dir/pool/7/project"
   meta="$dir/home/state/$id.meta"
   sed 's/^endpoint_task_id=.*/endpoint_task_id=another-task/' "$meta" > "$meta.tmp"
   mv "$meta.tmp" "$meta"
@@ -196,7 +198,7 @@ test_task_identity_mismatch_refuses() {
 test_missing_copy_refuses() {
   local dir id=rt-missing retained missing out rc before
   dir=$(new_case missing "$id")
-  retained="$dir/retained"
+  retained="$dir/pool/7/project"
   missing="$dir/no-such-copy"
   before="$dir/meta.before"
   cp "$dir/home/state/$id.meta" "$before"
@@ -211,7 +213,7 @@ test_missing_copy_refuses() {
 test_uncommitted_content_survives_success() {
   local dir id=rt-dirty retained out rc meta
   dir=$(new_case dirty "$id")
-  retained="$dir/retained"
+  retained="$dir/pool/7/project"
   printf 'uncommitted recovery content\n' > "$retained/recovery.txt"
   out=$(run_reattach "$dir" "$id" "$retained"); rc=$?
   expect_code 0 "$rc" "dirty retained copy should reattach"$'\n'"$out"
@@ -230,12 +232,14 @@ test_uncommitted_content_survives_success() {
 }
 
 test_launch_failure_rolls_back_the_binding() {
-  local dir id=rt-rollback retained out rc before
+  local dir id=rt-rollback retained out rc before wiring
   dir=$(new_case rollback "$id")
-  retained="$dir/retained"
+  retained="$dir/pool/7/project"
   printf 'must survive rollback\n' > "$retained/rollback.txt"
   before="$dir/meta.before"
   cp "$dir/home/state/$id.meta" "$before"
+  wiring="$dir/home/state/$id.claude-turnend-token"
+  printf 'prior-token\n' > "$wiring"
   out=$(FM_FAKE_SEND_FAIL=1 run_reattach "$dir" "$id" "$retained"); rc=$?
   expect_code 1 "$rc" "launch transport failure must roll back"$'\n'"$out"
   cmp -s "$before" "$dir/home/state/$id.meta" \
@@ -244,7 +248,9 @@ test_launch_failure_rolls_back_the_binding() {
     || fail "failed reattach left the replacement endpoint behind"
   [ "$(cat "$retained/rollback.txt")" = 'must survive rollback' ] \
     || fail "failed reattach changed uncommitted content"
-  pass "fm-spawn reattach: a post-publication launch failure restores the old binding and preserves work"
+  [ "$(cat "$wiring")" = prior-token ] \
+    || fail "failed reattach did not restore prior harness wiring"
+  pass "fm-spawn reattach: a launch failure preserves the old binding, wiring, and retained work"
 }
 
 test_wrong_branch_refuses
