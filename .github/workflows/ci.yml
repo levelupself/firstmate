@@ -322,9 +322,19 @@ jobs:
           if-no-files-found: warn
 
   macos-stock-bash:
-    name: Stock macOS Bash snapshot compatibility
+    name: Stock macOS Bash snapshot compatibility (${{ matrix.name }})
     runs-on: macos-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: fleet snapshot
+            script: fm-fleet-snapshot-view.test.sh
+            expected: 26
+          - name: Bearings
+            script: fm-bearings-snapshot.test.sh
+            expected: 43
     steps:
       - uses: actions/checkout@v6
       - name: Install tasks-axi
@@ -354,37 +364,12 @@ jobs:
           done < "$shell_inventory"
           [ "$parse_fail" -eq 0 ] || { echo "::error::stock macOS Bash 3.2 parse sweep failed"; exit 1; }
 
-          snapshot_output="$RUNNER_TEMP/fm-fleet-snapshot-view.out"
-          bearings_output="$RUNNER_TEMP/fm-bearings-snapshot.out"
-          /bin/bash tests/fm-fleet-snapshot-view.test.sh > "$snapshot_output" 2>&1 &
-          snapshot_pid=$!
-          /bin/bash tests/fm-bearings-snapshot.test.sh > "$bearings_output" 2>&1 &
-          bearings_pid=$!
-
-          snapshot_status=0
-          wait "$snapshot_pid" || snapshot_status=$?
-          bearings_status=0
-          wait "$bearings_pid" || bearings_status=$?
-
-          cat "$snapshot_output"
-          [ "$snapshot_status" -eq 0 ] || {
-            echo "::error::fleet snapshot tests failed with status $snapshot_status"
-            exit "$snapshot_status"
-          }
-          snapshot_count=$(grep -c '^ok - ' "$snapshot_output")
-          [ "$snapshot_count" -eq 26 ] || {
-            echo "::error::expected 26 snapshot/fleet-view tests, got $snapshot_count"
-            exit 1
-          }
-
-          cat "$bearings_output"
-          [ "$bearings_status" -eq 0 ] || {
-            echo "::error::Bearings tests failed with status $bearings_status"
-            exit "$bearings_status"
-          }
-          bearings_count=$(grep -c '^ok - ' "$bearings_output")
-          [ "$bearings_count" -eq 43 ] || {
-            echo "::error::expected 43 Bearings tests, got $bearings_count"
+          suite_output="$RUNNER_TEMP/${{ matrix.script }}.out"
+          /bin/bash "tests/${{ matrix.script }}" > "$suite_output" 2>&1
+          cat "$suite_output"
+          suite_count=$(grep -c '^ok - ' "$suite_output")
+          [ "$suite_count" -eq '${{ matrix.expected }}' ] || {
+            echo "::error::expected ${{ matrix.expected }} ${{ matrix.name }} tests, got $suite_count"
             exit 1
           }
 
