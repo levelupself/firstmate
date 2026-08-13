@@ -472,10 +472,10 @@ painter_binding() {
     # flag existed, so there is no section to disagree with.
     if [ -z "$recorded" ]; then
       fleet_state=$(fm_backend_herdr_cockpit_fleet_state \
-        "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$HERDR_PANE_ID" "$PAINTER_HOME")
+        "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$HERDR_PANE_ID" "$PAINTER_HOME" '' strict)
     elif normalize_sections "$recorded" && [ "$NORMALIZED_SECTIONS" = "$SECTIONS" ]; then
       fleet_state=$(fm_backend_herdr_cockpit_fleet_state \
-        "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$HERDR_PANE_ID" "$PAINTER_HOME" "$recorded")
+        "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$HERDR_PANE_ID" "$PAINTER_HOME" "$recorded" strict)
     else
       PAINTER_BINDING=unbound
       return 0

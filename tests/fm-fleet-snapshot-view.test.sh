@@ -1418,10 +1418,15 @@ script=${PAINTER_VIEW:?}
 home=${PAINTER_HOME:?}
 case "$mode" in
   executable) script=/wrong/checkout/bin/not-fleet-view.sh ;;
+  basename) script=/wrong/checkout/bin/fm-fleet-view.sh ;;
   home) home=/wrong/home ;;
 esac
 if [ "$mode" = watch ]; then
   argv=$(jq -cn --arg script "$script" --arg home "$home" '["bash",$script,"FM_HOME="+$home]')
+elif [ "$mode" = missing-home ]; then
+  argv=$(jq -cn --arg script "$script" --arg sections "${PAINTER_REPORTED_SECTIONS:-}" '
+    ["bash",$script,"--watch","0.1"]
+    + (if $sections == "" then [] else ["--section",$sections] end)')
 else
   argv=$(jq -cn --arg script "$script" --arg home "$home" --arg sections "${PAINTER_REPORTED_SECTIONS:-}" '
     ["bash",$script,"--watch","0.1","FM_HOME="+$home]
@@ -1631,7 +1636,7 @@ test_watch_refuses_a_recorded_pane_with_wrong_process_identity() {
   home=$(make_home painter-process-identity)
   dir=$(painter_bin "$home")
   write_cockpit_record "$home" 'w9:p2' 'waiting'
-  for mode in executable watch home; do
+  for mode in executable basename watch home missing-home; do
     out=$(FM_HOME="$home" COLUMNS=45 LINES=20 \
       HERDR_SESSION=lab-session HERDR_PANE_ID=w9:p2 HERDR_TAB_ID=w9:t1 \
       PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" \
