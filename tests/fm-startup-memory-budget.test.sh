@@ -112,6 +112,8 @@ test_primary_bootstrap_materializes_visible_default() {
   [ -z "$out" ] || fail "default materialization should stay quiet, got: $out"
   [ "$(<"$home/config/startup-memory-budget")" = 7500 ] \
     || fail "bootstrap did not materialize the visible 7500 default"
+  [ "$(<"$home/config/agents-md-budget")" = 25000 ] \
+    || fail "bootstrap did not materialize the visible 25000 AGENTS.md default"
   [ "$(FM_HOME="$home" "$BUDGET" read)" = 7500 ] \
     || fail "read command did not expose the generated default"
 
@@ -127,6 +129,29 @@ test_primary_bootstrap_materializes_visible_default() {
   [ ! -e "$second/config/startup-memory-budget" ] \
     || fail "secondmate bootstrap created an independent budget instead of awaiting inheritance"
   pass "primary bootstrap materializes only the visible default and preserves valid captain choices"
+}
+
+test_bootstrap_reports_agents_md_budget_diagnostics() {
+  local rec root home fakebin out
+  rec=$(new_bootstrap_world agents-md-invalid)
+  root=${rec%%|*}
+  home=${rec#*|}
+  fakebin=$(make_fake_toolchain "$TMP_ROOT/agents-md-invalid")
+  printf 'broken\n' > "$home/config/agents-md-budget"
+
+  out=$(run_bootstrap "$root" "$home" "$fakebin")
+  assert_contains "$out" \
+    'AGENTS_MD_BUDGET: invalid config/agents-md-budget - value must be one positive decimal integer' \
+    "bootstrap did not surface the malformed AGENTS.md budget"
+
+  printf '1\n' > "$home/config/agents-md-budget"
+  out=$(run_bootstrap "$root" "$home" "$fakebin")
+  assert_contains "$out" 'AGENTS_MD_BUDGET: over budget - estimated_tokens=' \
+    "bootstrap did not surface the over-budget AGENTS.md total"
+  assert_contains "$out" \
+    'budget_tokens=1; trim AGENTS.md or raise config/agents-md-budget' \
+    "bootstrap over-budget diagnostic did not include its action"
+  pass "bootstrap surfaces malformed and over-budget AGENTS.md diagnostics"
 }
 
 expect_rejected_read() {
@@ -327,6 +352,7 @@ test_primary_budget_converges_with_exact_reread_and_safe_failures() {
 }
 
 test_primary_bootstrap_materializes_visible_default
+test_bootstrap_reports_agents_md_budget_diagnostics
 test_safe_parser_rejects_ambiguous_and_unsafe_values
 test_budget_accounting_reports_all_three_files_and_safe_failure
 test_primary_budget_converges_with_exact_reread_and_safe_failures

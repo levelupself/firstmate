@@ -7,7 +7,8 @@
 # spawn on codex too, primary config/backlog-backend=manual makes that home
 # hand-edit backlog files too, primary config/backend pins that home's local
 # runtime-backend default for future spawns, primary config/startup-memory-budget
-# bounds that home's startup-memory curation, and primary
+# bounds that home's startup-memory curation, primary config/agents-md-budget
+# bounds the always-loaded instruction surface, and primary
 # config/herdr-presentation-spaces carries the same Herdr presentation-projection
 # preference - an absent primary file and an absent destination file both mean
 # the same unconfigured default, so the generic absence mirror below converges
@@ -53,6 +54,8 @@
 #
 # shellcheck source=bin/fm-startup-memory-budget-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-startup-memory-budget-lib.sh"
+# shellcheck source=bin/fm-agents-md-budget-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-agents-md-budget-lib.sh"
 
 # The one shared data file in this inheritance contract. There is deliberately
 # no shared learnings file.
@@ -63,7 +66,7 @@ FM_SHARED_CAPTAIN_MODE="444"
 # The declared inheritable set (space-separated, config-dir-relative item paths).
 # Extend here to inherit more of the primary's local config; override via the
 # environment only in tests. Items must not contain whitespace.
-FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json crew-harness backlog-backend backend herdr-presentation-spaces startup-memory-budget trace-context}"
+FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json crew-harness backlog-backend backend herdr-presentation-spaces startup-memory-budget agents-md-budget trace-context}"
 
 # Items whose value is a home-SESSION enablement decision rather than durable
 # local configuration. They are inherited at the launch convergence point, where
@@ -454,10 +457,11 @@ propagate_inheritable_config() {
     fi
     src="$src_config/$item"
     dest="$dest_config/$item"
-    # This one scalar config is consumed as a local safety boundary, so reject
+    # These scalar configs are consumed as local safety boundaries, so reject
     # every unsafe or malformed source/destination artifact before the generic
     # byte-copy behavior below can treat it as ordinary inherited material.
-    if [ "$item" = "$FM_STARTUP_MEMORY_BUDGET_FILE" ]; then
+    if [ "$item" = "$FM_STARTUP_MEMORY_BUDGET_FILE" ] \
+      || [ "$item" = "$FM_AGENTS_MD_BUDGET_FILE" ]; then
       if [ -e "$src_config" ] || [ -L "$src_config" ]; then
         if ! fm_startup_memory_budget_config_dir_safe "$src_config"; then
           reason="unsafe primary config directory: $FM_STARTUP_MEMORY_BUDGET_ERROR"

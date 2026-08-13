@@ -119,7 +119,7 @@ fm_startup_memory_budget_materialize() {
     return 0
   fi
 
-  tmp=$(umask 077; mktemp "$config_dir/.startup-memory-budget.XXXXXX" 2>/dev/null) || {
+  tmp=$(umask 077; mktemp "$config_dir/.$FM_STARTUP_MEMORY_BUDGET_FILE.XXXXXX" 2>/dev/null) || {
     fm_startup_memory_budget_fail "could not create default temporary file"
     return 1
   }

@@ -175,7 +175,7 @@ family_for_basename() {
     fm-send-secondmate-marker.test.sh|fm-shared-captain-inheritance.test.sh)
       printf '%s\n' secondmate
       ;;
-    fm-bootstrap.test.sh|fm-fleet-sync.test.sh|fm-gate-refuse.test.sh|fm-gotmp.test.sh|\
+    fm-agents-md-budget.test.sh|fm-bootstrap.test.sh|fm-fleet-sync.test.sh|fm-gate-refuse.test.sh|fm-gotmp.test.sh|\
     fm-session-start.test.sh|fm-sessionstart-nudge.test.sh|fm-startup-network.test.sh|\
     fm-tangle-guard.test.sh|fm-update.test.sh)
       printf '%s\n' session-bootstrap
@@ -377,6 +377,7 @@ portable_serial_weight_hints() {
 tests/fm-afk-inject-e2e.test.sh 34019
 tests/fm-afk-pi-herdr-return-e2e.test.sh 42
 tests/fm-afk-return.test.sh 1105
+tests/fm-agents-md-budget.test.sh 1000
 tests/fm-ask-user-authority.test.sh 68
 tests/fm-backend-cmux-smoke.test.sh 29
 tests/fm-backend-cmux.test.sh 2349
@@ -893,6 +894,7 @@ families_for_changed_path() {
       printf '%s\n' live-harness-optin
       printf '%s\n' afk
       ;;
+    bin/fm-agents-md-budget.sh|bin/fm-agents-md-budget-lib.sh|\
     bin/fm-startup-memory-budget.sh|bin/fm-startup-memory-budget-lib.sh)
       printf '%s\n' secondmate
       printf '%s\n' session-bootstrap

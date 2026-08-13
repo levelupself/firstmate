@@ -13,6 +13,8 @@
 #                 "NEEDS_OPTIONAL_AUTH: @infisical/cli (optional: <disabled feature>; interactive: infisical login)",
 #                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
+#                 "AGENTS_MD_BUDGET: invalid config/agents-md-budget - <reason>",
+#                 "AGENTS_MD_BUDGET: over budget - estimated_tokens=<total> budget_tokens=<budget>; trim AGENTS.md or raise config/agents-md-budget",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
 #                 "PR_CHECK_MIGRATION: <private remediation>",
@@ -81,6 +83,9 @@
 #          guesses at malformed or unsafe existing files, and secondmate homes
 #          await the primary-authoritative inherited value instead of creating
 #          their own.
+#          The same path materializes config/agents-md-budget=25000, measures
+#          AGENTS.md with the startup-memory estimator, and reports invalid or
+#          over-budget state without changing the instruction file.
 #          X mode is OPTIONAL and inert unless FM_HOME/.env has a non-empty
 #          FMX_PAIRING_TOKEN. When opted in, bootstrap requires curl+jq, writes
 #          the relay poll shim and 30s cadence config, and prints an FMX line.
@@ -160,6 +165,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
 # shellcheck source=bin/fm-startup-memory-budget-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-startup-memory-budget-lib.sh"
+# shellcheck source=bin/fm-agents-md-budget-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-agents-md-budget-lib.sh"
 # shellcheck source=bin/fm-x-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-x-lib.sh"
 # shellcheck source=bin/fm-backend.sh disable=SC1091
@@ -1142,6 +1149,29 @@ startup_memory_budget_setup() {
   fi
 }
 
+agents_md_budget_setup() {
+  local budget tokens
+  if [ ! -e "$FM_HOME/.fm-secondmate-home" ] && [ ! -L "$FM_HOME/.fm-secondmate-home" ]; then
+    if ! fm_agents_md_budget_materialize "$CONFIG"; then
+      echo "AGENTS_MD_BUDGET: invalid config/$FM_AGENTS_MD_BUDGET_FILE - $FM_AGENTS_MD_BUDGET_ERROR"
+      return 0
+    fi
+  fi
+  if ! fm_agents_md_budget_read "$CONFIG" >/dev/null; then
+    echo "AGENTS_MD_BUDGET: invalid config/$FM_AGENTS_MD_BUDGET_FILE - $FM_AGENTS_MD_BUDGET_ERROR"
+    return 0
+  fi
+  budget=$FM_AGENTS_MD_BUDGET_VALUE
+  if ! fm_startup_memory_measure_file "$FM_ROOT/AGENTS.md" >/dev/null; then
+    echo "AGENTS_MD_BUDGET: could not measure AGENTS.md - $FM_STARTUP_MEMORY_BUDGET_ERROR"
+    return 0
+  fi
+  tokens=$FM_STARTUP_MEMORY_MEASURE_TOKENS
+  if ! fm_startup_memory_decimal_le "$tokens" "$budget"; then
+    echo "AGENTS_MD_BUDGET: over budget - estimated_tokens=$tokens budget_tokens=$budget; trim AGENTS.md or raise config/$FM_AGENTS_MD_BUDGET_FILE"
+  fi
+}
+
 if [ "${1:-}" = "install" ]; then
   shift
   [ $# -gt 0 ] || { echo "usage: fm-bootstrap.sh install <tool>..." >&2; exit 1; }
@@ -1166,6 +1196,7 @@ fi
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
   "$SCRIPT_DIR/fm-pr-check-migrate.sh" || true
   startup_memory_budget_setup
+  agents_md_budget_setup
 fi
 
 # Local detection: presence, version floors, and configuration. Nothing here
