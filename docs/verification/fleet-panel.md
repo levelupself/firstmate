@@ -67,7 +67,7 @@ The observed pane changed directly between complete frames without a visible bla
 Verified on 2026-08-13 through the isolated Herdr cockpit command path.
 
 ```sh
-tests/fm-cockpit.test.sh
+bash tests/fm-cockpit.test.sh
 ```
 
 The executable regression created the default three-pane region from a launcher checkout distinct from the durable home, captured the commands accepted by the fake Herdr CLI, and observed a home-relative watcher for every configured section with no launcher-checkout path.
@@ -77,7 +77,7 @@ ok - the default region is three equal decisions-first panes announced once befo
 ok - config/cockpit-sections chooses how many fleet panes there are and what each one holds
 ```
 
-The command exited with status 0.
+Observed on 2026-08-13: both assertions printed exactly as shown and the command exited with status 0.
 
 ## Pane measurement and the head-preserving fit
 
