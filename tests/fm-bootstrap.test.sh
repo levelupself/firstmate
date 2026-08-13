@@ -1030,6 +1030,27 @@ test_routine_bootstrap_contract_runs_under_system_bash() {
   pass "bootstrap routine contract runs under system /bin/bash"
 }
 
+test_detect_only_reports_agents_md_over_budget_without_mutation() {
+  local case_dir fixture root home fakebin out
+  case_dir="$TMP_ROOT/agents-budget-detect-only"
+  fixture=$(make_routine_bootstrap_fixture "$case_dir")
+  root=${fixture%%|*}
+  fixture=${fixture#*|}
+  home=${fixture%%|*}
+  fakebin=${fixture#*|}
+  printf '%s\n' 1 > "$home/config/agents-md-budget"
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_BACKEND=tmux FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
+    FM_BOOTSTRAP_DETECT_ONLY=1 FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh")
+
+  assert_contains "$out" "AGENTS_MD_BUDGET: over budget - estimated_tokens=5 budget_tokens=1; trim AGENTS.md or raise config/agents-md-budget" \
+    "detect-only bootstrap should report an over-budget AGENTS.md"
+  assert_file_eq "$home/config/agents-md-budget" "1" "detect-only bootstrap must not rewrite the budget"
+  assert_file_eq "$root/AGENTS.md" "instructions" "detect-only bootstrap must not rewrite AGENTS.md"
+  pass "bootstrap reports the AGENTS.md budget during detect-only validation"
+}
+
 # FM_BOOTSTRAP_NETWORK splits one bootstrap run into its local and network
 # halves so a session start can compose its digest from the local half alone and
 # run the network half concurrently. The property that has to hold is that the
@@ -1329,6 +1350,7 @@ test_fleet_sync_timeout_empty_override_uses_default
 test_fleet_sync_timeout_is_computed_before_launch
 test_routine_bootstrap_confirmations_are_silent
 test_routine_bootstrap_contract_runs_under_system_bash
+test_detect_only_reports_agents_md_over_budget_without_mutation
 test_network_phase_partitions_the_run
 test_network_sweeps_recheck_lock_ownership
 test_network_phases_record_per_step_elapsed_times

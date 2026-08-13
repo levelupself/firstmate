@@ -1150,13 +1150,14 @@ startup_memory_budget_setup() {
 }
 
 agents_md_budget_setup() {
-  local budget tokens
-  if [ ! -e "$FM_HOME/.fm-secondmate-home" ] && [ ! -L "$FM_HOME/.fm-secondmate-home" ]; then
-    if ! fm_agents_md_budget_materialize "$CONFIG"; then
-      echo "AGENTS_MD_BUDGET: invalid config/$FM_AGENTS_MD_BUDGET_FILE - $FM_AGENTS_MD_BUDGET_ERROR"
-      return 0
-    fi
+  if ! fm_agents_md_budget_materialize "$CONFIG"; then
+    echo "AGENTS_MD_BUDGET: invalid config/$FM_AGENTS_MD_BUDGET_FILE - $FM_AGENTS_MD_BUDGET_ERROR"
+    return 1
   fi
+}
+
+agents_md_budget_validate() {
+  local budget tokens
   if ! fm_agents_md_budget_read "$CONFIG" >/dev/null; then
     echo "AGENTS_MD_BUDGET: invalid config/$FM_AGENTS_MD_BUDGET_FILE - $FM_AGENTS_MD_BUDGET_ERROR"
     return 0
@@ -1196,7 +1197,13 @@ fi
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
   "$SCRIPT_DIR/fm-pr-check-migrate.sh" || true
   startup_memory_budget_setup
-  agents_md_budget_setup
+  if [ ! -e "$FM_HOME/.fm-secondmate-home" ] && [ ! -L "$FM_HOME/.fm-secondmate-home" ]; then
+    agents_md_budget_setup || FM_AGENTS_MD_BUDGET_SETUP_FAILED=1
+  fi
+fi
+
+if local_phase && [ "${FM_AGENTS_MD_BUDGET_SETUP_FAILED:-0}" != 1 ]; then
+  agents_md_budget_validate
 fi
 
 # Local detection: presence, version floors, and configuration. Nothing here
