@@ -619,6 +619,8 @@ if (!pidAlive(successorPid)) throw new Error(`successor ${successorPid} retired 
 fireReadinessTimeout();
 await waitFor(() => prompt, "original fallback was not delivered");
 await waitFor(() => existsSync(process.env.FM_RETIRED_FILE), "successor was not asked to retire before fallback");
+const retiredPid = readFileSync(process.env.FM_RETIRED_FILE, "utf8").trim();
+if (retiredPid !== successorPid) throw new Error(`retirement evidence named ${retiredPid}, expected successor ${successorPid}`);
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
@@ -668,7 +670,7 @@ fi
 if [ "$count" -eq 1 ]; then
   printf 'waiting\n' > "${FM_STARTUP_FILE:?}"
   while [ ! -e "$FM_ACTIVATE_FILE" ]; do sleep 0.02; done
-  trap 'printf "retired\\n" > "${FM_UNRETIRED_RETIRE_FILE:?}"' TERM INT
+  trap 'printf "%s\\n" "$$" > "${FM_UNRETIRED_RETIRE_FILE:?}"' TERM INT
   printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
   printf '%s\n' "$$" > "${FM_UNRETIRED_READY_FILE:?}"
   while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.02; done
@@ -756,6 +758,8 @@ await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_RETIRE_FILE),
   "unretired successor was not asked to retire before fallback",
 );
+const retiredPid = readFileSync(process.env.FM_UNRETIRED_RETIRE_FILE, "utf8").trim();
+if (retiredPid !== successorPid) throw new Error(`retirement evidence named ${retiredPid}, expected successor ${successorPid}`);
 if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
 if (!successorAliveAtFallback || !pidAlive(successorPid)) throw new Error(`successor ${successorPid} was not genuinely unretired at fallback`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
@@ -1893,6 +1897,8 @@ if (!pidAlive(successorPid)) throw new Error(`successor ${successorPid} retired 
 fireReadinessTimeout();
 await waitFor(() => prompt, "original fallback was not delivered");
 await waitFor(() => existsSync(process.env.FM_RETIRED_FILE), "successor was not asked to retire before fallback");
+const retiredPid = readFileSync(process.env.FM_RETIRED_FILE, "utf8").trim();
+if (retiredPid !== successorPid) throw new Error(`retirement evidence named ${retiredPid}, expected successor ${successorPid}`);
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
@@ -1944,7 +1950,7 @@ fi
 if [ "$count" -eq 1 ]; then
   printf 'waiting\n' > "${FM_STARTUP_FILE:?}"
   while [ ! -e "$FM_ACTIVATE_FILE" ]; do sleep 0.02; done
-  trap 'printf "retired\\n" > "${FM_UNRETIRED_RETIRE_FILE:?}"' TERM INT
+  trap 'printf "%s\\n" "$$" > "${FM_UNRETIRED_RETIRE_FILE:?}"' TERM INT
   printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
   printf '%s\n' "$$" > "${FM_UNRETIRED_READY_FILE:?}"
   while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.02; done
@@ -2036,6 +2042,8 @@ await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_RETIRE_FILE),
   "unretired successor was not asked to retire before fallback",
 );
+const retiredPid = readFileSync(process.env.FM_UNRETIRED_RETIRE_FILE, "utf8").trim();
+if (retiredPid !== successorPid) throw new Error(`retirement evidence named ${retiredPid}, expected successor ${successorPid}`);
 if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
 if (!successorAliveAtFallback || !pidAlive(successorPid)) throw new Error(`successor ${successorPid} was not genuinely unretired at fallback`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
