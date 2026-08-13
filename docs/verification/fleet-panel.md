@@ -82,6 +82,7 @@ ok - config/cockpit-sections chooses how many fleet panes there are and what eac
 ```
 
 Observed on 2026-08-13: both assertions printed exactly as shown and the command exited with status 0.
+The CI recovery preserves this evidence while the pipeline-owned PR publication path supplies the required deterministic no-mistakes signature for the verified head.
 
 ## Pane measurement and the head-preserving fit
 
