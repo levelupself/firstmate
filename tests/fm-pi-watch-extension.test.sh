@@ -521,12 +521,11 @@ EOF
 }
 
 test_pi_unretired_successor_falls_back_without_retry() {
-  local repo home plugin log release retired out status
+  local repo home plugin log release out status
   repo="$TMP_ROOT/pi-unretired-successor-root"
   home="$TMP_ROOT/pi-unretired-successor-home"
   log="$TMP_ROOT/pi-unretired-successor.log"
   release="$TMP_ROOT/pi-unretired-successor.release"
-  retired="$TMP_ROOT/pi-unretired-successor.retired"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   install_pi_watch_extension_fixture "$repo"
   plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
@@ -544,12 +543,11 @@ if [ "$count" -eq 0 ]; then
   exit 0
 fi
 trap '' TERM INT
-trap 'printf "retired\n" > "${FM_RETIRED_FILE:?}"' EXIT
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.1; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_RETIRED_FILE="$retired" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -584,10 +582,19 @@ if (rowsAtPrompt !== 2) throw new Error(`wake arrived after an overlapping retry
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-for (let i = 0; i < 500 && !existsSync(process.env.FM_RETIRED_FILE); i += 1) {
+const successorPid = Number(rows[1].split("=")[1]);
+const successorIsLive = () => {
+  try {
+    process.kill(successorPid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+for (let i = 0; i < 500 && successorIsLive(); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
-if (!existsSync(process.env.FM_RETIRED_FILE)) throw new Error("released successor did not retire");
+if (successorIsLive()) throw new Error(`released successor ${successorPid} did not retire`);
 EOF
 )
   status=$?
