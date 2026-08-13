@@ -895,8 +895,6 @@ fmx_post_json() (
 )
 
 # --- task <-> X-request link (state/<id>.meta backed) -----------------------
-# shellcheck source=bin/fm-task-meta-lock-lib.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-task-meta-lock-lib.sh"
 #
 # When an X/Discord mention spawns real work, the task is linked to its
 # originating mention by state/<id>.meta lines:
@@ -930,6 +928,14 @@ fmx_meta_tmp() {
   mktemp "$dir/.${base}.fm-x.XXXXXX"
 }
 
+fmx_meta_lock_path() {  # <meta>
+  if ! command -v fm_meta_lock_path >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-wake-lib.sh
+    . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-wake-lib.sh"
+  fi
+  fm_meta_lock_path "$1"
+}
+
 # fmx_meta_link_set <meta> <request_id> <epoch> [followups] [platform] [max]:
 # atomically (re)write the x_request/x_request_ts/x_followups lines plus optional
 # reply-platform context, dropping any prior link and preserving every other meta
@@ -938,41 +944,45 @@ fmx_meta_tmp() {
 # budget against a binding the relay already knows about. Returns non-zero if
 # <meta> is missing or the rewrite fails.
 fmx_meta_link_set() {
-  local meta=$1 rid=$2 ts=$3 followups=${4:-0} platform=${5:-} reply_max=${6:-} tmp
+  local meta=$1 rid=$2 ts=$3 followups=${4:-0} platform=${5:-} reply_max=${6:-} tmp lock
   [ -f "$meta" ] || return 1
-  fm_task_meta_lock_acquire "$meta" || return 1
-  tmp=$(fmx_meta_tmp "$meta") || { fm_task_meta_lock_release; return 1; }
+  lock=$(fmx_meta_lock_path "$meta") || return 1
+  fm_lock_acquire_wait "$lock"
+  [ -f "$meta" ] || { fm_lock_release "$lock"; return 1; }
+  tmp=$(fmx_meta_tmp "$meta") || { fm_lock_release "$lock"; return 1; }
   if ! { grep -vE '^x_request=|^x_request_ts=|^x_followups=|^x_platform=|^x_reply_max_chars=' "$meta" || true; } > "$tmp"; then
-    rm -f "$tmp"; fm_task_meta_lock_release; return 1
+    rm -f "$tmp"; fm_lock_release "$lock"; return 1
   fi
-  printf 'x_request=%s\n' "$rid" >> "$tmp" || { rm -f "$tmp"; fm_task_meta_lock_release; return 1; }
-  printf 'x_request_ts=%s\n' "$ts" >> "$tmp" || { rm -f "$tmp"; fm_task_meta_lock_release; return 1; }
-  printf 'x_followups=%s\n' "$followups" >> "$tmp" || { rm -f "$tmp"; fm_task_meta_lock_release; return 1; }
+  printf 'x_request=%s\n' "$rid" >> "$tmp" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
+  printf 'x_request_ts=%s\n' "$ts" >> "$tmp" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
+  printf 'x_followups=%s\n' "$followups" >> "$tmp" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
   if [ -n "$platform" ]; then
-    printf 'x_platform=%s\n' "$platform" >> "$tmp" || { rm -f "$tmp"; fm_task_meta_lock_release; return 1; }
+    printf 'x_platform=%s\n' "$platform" >> "$tmp" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
   fi
   case "$reply_max" in
     ''|*[!0-9]*) ;;
-    *) printf 'x_reply_max_chars=%s\n' "$reply_max" >> "$tmp" || { rm -f "$tmp"; fm_task_meta_lock_release; return 1; } ;;
+    *) printf 'x_reply_max_chars=%s\n' "$reply_max" >> "$tmp" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; } ;;
   esac
-  mv -f "$tmp" "$meta" || { rm -f "$tmp"; fm_task_meta_lock_release; return 1; }
-  fm_task_meta_lock_release
+  mv -f "$tmp" "$meta" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
+  fm_lock_release "$lock"
 }
 
 # fmx_meta_followups_set <meta> <n>: atomically rewrite just the x_followups
 # line, preserving every other meta line including link and reply context.
 # Returns non-zero if <meta> is missing or the rewrite fails.
 fmx_meta_followups_set() {
-  local meta=$1 n=$2 tmp
+  local meta=$1 n=$2 tmp lock
   [ -f "$meta" ] || return 1
-  fm_task_meta_lock_acquire "$meta" || return 1
-  tmp=$(fmx_meta_tmp "$meta") || { fm_task_meta_lock_release; return 1; }
+  lock=$(fmx_meta_lock_path "$meta") || return 1
+  fm_lock_acquire_wait "$lock"
+  [ -f "$meta" ] || { fm_lock_release "$lock"; return 1; }
+  tmp=$(fmx_meta_tmp "$meta") || { fm_lock_release "$lock"; return 1; }
   if ! { grep -vE '^x_followups=' "$meta" || true; } > "$tmp"; then
-    rm -f "$tmp"; fm_task_meta_lock_release; return 1
+    rm -f "$tmp"; fm_lock_release "$lock"; return 1
   fi
-  printf 'x_followups=%s\n' "$n" >> "$tmp" || { rm -f "$tmp"; fm_task_meta_lock_release; return 1; }
-  mv -f "$tmp" "$meta" || { rm -f "$tmp"; fm_task_meta_lock_release; return 1; }
-  fm_task_meta_lock_release
+  printf 'x_followups=%s\n' "$n" >> "$tmp" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
+  mv -f "$tmp" "$meta" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
+  fm_lock_release "$lock"
 }
 
 # fmx_meta_link_clear <meta>: atomically remove the x_request/x_request_ts/
@@ -980,13 +990,15 @@ fmx_meta_followups_set() {
 # succeeds whether or not a link is present, and is a no-op when <meta> is
 # missing.
 fmx_meta_link_clear() {
-  local meta=$1 tmp
+  local meta=$1 tmp lock
   [ -f "$meta" ] || return 0
-  fm_task_meta_lock_acquire "$meta" || return 1
-  tmp=$(fmx_meta_tmp "$meta") || { fm_task_meta_lock_release; return 1; }
+  lock=$(fmx_meta_lock_path "$meta") || return 1
+  fm_lock_acquire_wait "$lock"
+  [ -f "$meta" ] || { fm_lock_release "$lock"; return 0; }
+  tmp=$(fmx_meta_tmp "$meta") || { fm_lock_release "$lock"; return 1; }
   if ! { grep -vE '^x_request=|^x_request_ts=|^x_followups=|^x_platform=|^x_reply_max_chars=' "$meta" || true; } > "$tmp"; then
-    rm -f "$tmp"; fm_task_meta_lock_release; return 1
+    rm -f "$tmp"; fm_lock_release "$lock"; return 1
   fi
-  mv -f "$tmp" "$meta" || { rm -f "$tmp"; fm_task_meta_lock_release; return 1; }
-  fm_task_meta_lock_release
+  mv -f "$tmp" "$meta" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
+  fm_lock_release "$lock"
 }
