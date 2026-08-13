@@ -44,4 +44,4 @@ A tool that links or downloads may write a live credential to disk as a side eff
 Shred it afterwards rather than deleting it.
 
 Every captain grant is per-request, never standing.
-Lay out which values move, from where to where, and prefer a mechanism that moves a value without it entering a transcript.
+Lay out which values move, from where to where, and use a mechanism that moves a value without it entering a transcript.
