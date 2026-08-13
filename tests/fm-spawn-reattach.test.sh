@@ -140,7 +140,16 @@ run_reattach() {  # <dir> <id> <worktree>
     FM_FAKE_RETAINED="$retained" \
     FM_FAKE_TREEHOUSE_PROCESSES="${FM_FAKE_TREEHOUSE_PROCESSES:-[]}" \
     FM_FAKE_SEND_FAIL="${FM_FAKE_SEND_FAIL:-}" \
-    "$SPAWN" "$id" --mode no-mistakes --yolo off --reattach-worktree "$retained" 2>&1
+    "$SPAWN" "$id" --reattach-worktree "$retained" 2>&1
+}
+
+run_reattach_with_axes() {  # <dir> <id> <worktree>
+  local dir=$1 id=$2 retained=$3
+  env PATH="$dir/fakebin:$PATH" \
+    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_SPAWN_NO_GUARD=1 \
+    FM_FAKE_DIR="$dir/fake" FM_FAKE_TASK_ID="$id" \
+    FM_FAKE_RETAINED="$retained" \
+    "$SPAWN" "$id" --mode direct-PR --yolo on --reattach-worktree "$retained" 2>&1
 }
 
 assert_unchanged_refusal() {  # <dir> <id> <before-meta>
@@ -253,11 +262,25 @@ test_launch_failure_rolls_back_the_binding() {
   pass "fm-spawn reattach: a launch failure preserves the old binding, wiring, and retained work"
 }
 
+test_recovery_axes_cannot_be_overridden() {
+  local dir id=rt-axes retained out rc before
+  dir=$(new_case axes "$id")
+  retained="$dir/pool/7/project"
+  before="$dir/meta.before"
+  cp "$dir/home/state/$id.meta" "$before"
+  out=$(run_reattach_with_axes "$dir" "$id" "$retained"); rc=$?
+  expect_code 1 "$rc" "reattach axis overrides must refuse"$'\n'"$out"
+  assert_contains "$out" "--mode cannot override it" "reattach must adopt its recorded delivery axes"
+  assert_unchanged_refusal "$dir" "$id" "$before"
+  pass "fm-spawn reattach: recorded delivery axes cannot be overridden"
+}
+
 test_wrong_branch_refuses
 test_live_agent_refuses
 test_task_identity_mismatch_refuses
 test_missing_copy_refuses
 test_uncommitted_content_survives_success
 test_launch_failure_rolls_back_the_binding
+test_recovery_axes_cannot_be_overridden
 
 echo "# all fm-spawn-reattach tests passed"
