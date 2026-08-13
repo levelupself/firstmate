@@ -650,7 +650,11 @@ const rows = () => existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
 async function waitFor(predicate, message) {
-  for (let i = 0; i < 1500; i += 1) {
+  // This fixture exercises several real bash children while the portable
+  // serial shards compete for CPU. Keep the assertion event-driven, but give
+  // process close, synchronous ownership probes, and successor spawn one
+  // bounded minute to become observable on a loaded runner.
+  for (let i = 0; i < 6000; i += 1) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
