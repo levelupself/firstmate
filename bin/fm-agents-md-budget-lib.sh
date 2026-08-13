@@ -20,7 +20,9 @@ fm_agents_md_budget_call_shared() {
   else
     rc=$?
   fi
+  # shellcheck disable=SC2034 # Public result consumed by callers after sourcing.
   FM_AGENTS_MD_BUDGET_ERROR=$FM_STARTUP_MEMORY_BUDGET_ERROR
+  # shellcheck disable=SC2034 # Public result consumed by callers after sourcing.
   FM_AGENTS_MD_BUDGET_VALUE=$FM_STARTUP_MEMORY_BUDGET_VALUE
   FM_STARTUP_MEMORY_BUDGET_FILE=$saved_file
   FM_STARTUP_MEMORY_BUDGET_DEFAULT=$saved_default
