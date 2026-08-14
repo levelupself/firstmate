@@ -1485,13 +1485,21 @@ const hooks = await mod.FmPrimaryWatchArm({
 const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
 await hooks.event(event);
-await new Promise((resolve) => setTimeout(resolve, 120));
+const readOnlyStatus = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (readOnlyStatus !== "read-only") {
+  console.error(`expected read-only without lock ownership, got ${readOnlyStatus}`);
+  process.exit(1);
+}
 if (existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm ran without owning the session lock");
   process.exit(1);
 }
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
-await hooks.event(event);
+const ownedStatus = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (ownedStatus !== "external") {
+  console.error(`expected external watcher confirmation with lock ownership, got ${ownedStatus}`);
+  process.exit(1);
+}
 for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
@@ -1502,8 +1510,8 @@ if (!existsSync(process.env.FM_ARM_LOG)) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock"
   [ -z "$out" ] || fail "OpenCode session-lock test printed output: $out"
+  expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock"
   pass "OpenCode watcher plugin requires session lock ownership"
 }
 
