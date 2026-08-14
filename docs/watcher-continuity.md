@@ -26,6 +26,7 @@ It waits at most one readiness timeout per attempt, then sends TERM and waits a 
 If the unready arm does not retire within that bound, the adapter keeps ownership, starts no overlapping retry, and delivers the typed fallback immediately.
 When that retained arm later closes, its actual close is classified as a new supervised event without replaying the earlier fallback.
 After the configured retry bound is exhausted, it delivers the original wake with a typed continuity-restoration failure even if every successor arm hung without reporting readiness.
+Only a settled verdict ends restoration early: OpenCode stops on a genuine `not-primary`, `read-only`, or `skipped` result, while a primacy probe that could not complete reports `primacy-undetermined` and spends the ordinary retry budget instead, so one failed `git` spawn under process pressure cannot end watcher continuity for the session.
 This is deliberate Option B ordering: the fleet is protected before the model handles the wake whenever restoration succeeds, but the model is never left blind when it does not.
 
 Claude's Stop hook starts the successor arm at the next Stop after the handling turn, rather than before notification as Pi and OpenCode do.

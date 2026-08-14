@@ -90,15 +90,20 @@ function effectivePaths(root) {
   return { root: fmRoot, home: fmHome, state, config };
 }
 
-async function isPrimaryRoot(root, home) {
-  if (!root) return false;
-  if (!existsSync(`${root}/AGENTS.md`) || !existsSync(`${root}/bin`)) return false;
-  if (existsSync(`${root}/.fm-secondmate-home`)) return false;
-  if (home && home !== root && existsSync(`${home}/.fm-secondmate-home`)) return false;
+// Three-valued on purpose. "This is not a primary checkout" is a permanent
+// answer that must end restoration, but "primacy could not be determined right
+// now" is transient: a fork-pressured box fails to spawn git, runProcess maps
+// that to a non-zero code, and collapsing the two would abandon watcher
+// continuity for the rest of the session over one unlucky spawn.
+async function classifyPrimaryRoot(root, home) {
+  if (!root) return "not-primary";
+  if (!existsSync(`${root}/AGENTS.md`) || !existsSync(`${root}/bin`)) return "not-primary";
+  if (existsSync(`${root}/.fm-secondmate-home`)) return "not-primary";
+  if (home && home !== root && existsSync(`${home}/.fm-secondmate-home`)) return "not-primary";
   const gitDir = await runProcess("git", ["-C", root, "rev-parse", "--git-dir"]);
   const commonDir = await runProcess("git", ["-C", root, "rev-parse", "--git-common-dir"]);
-  if (gitDir.code !== 0 || commonDir.code !== 0) return false;
-  return gitDir.stdout.trim() === commonDir.stdout.trim();
+  if (gitDir.code !== 0 || commonDir.code !== 0) return "primacy-undetermined";
+  return gitDir.stdout.trim() === commonDir.stdout.trim() ? "primary" : "not-primary";
 }
 
 function shouldArm(paths) {
@@ -260,6 +265,8 @@ async function restoreAfterActionableClose(paths, sessionID, client, predecessor
       setArmStatus("failed");
       return { failure: `${failure}\nwatcher: FAILED - OpenCode could not restore watcher continuity because the unready successor arm did not exit within ${ARM_RETIRE_TIMEOUT_MS}ms` };
     }
+    // Settled verdicts only. "primacy-undetermined" is deliberately absent:
+    // retrying is the whole point of distinguishing it from "not-primary".
     if (status === "read-only" || status === "not-primary" || status === "skipped") break;
     if (attempt === REARM_RETRY_LIMIT) break;
     await waitForRetry(attempt + 1);
@@ -397,7 +404,8 @@ function spawnArm(paths, sessionID, client, predecessorArmPid = "") {
 
 async function beginArm(paths, sessionID, client, predecessorArmPid) {
   if (!sessionID) return { status: "skipped", armChild: null };
-  if (!(await isPrimaryRoot(paths.root, paths.home))) return { status: "not-primary", armChild: null };
+  const primacy = await classifyPrimaryRoot(paths.root, paths.home);
+  if (primacy !== "primary") return { status: primacy, armChild: null };
   if (!(await sessionOwnsLock(paths))) return { status: "read-only", armChild: null };
   if (child) return { status: "existing", armChild: child };
   if (retryTimer) return { status: "retrying", armChild: null };
