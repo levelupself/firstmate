@@ -686,6 +686,30 @@ fm_remote_job_worker_ready_path() { printf '%s\n' "$FM_REMOTE_JOB_STATE/worker.r
 fm_remote_job_worker_identity_path() { printf '%s\n' "$FM_REMOTE_JOB_STATE/worker.identity"; }
 fm_remote_job_worker_lock_path() { printf '%s\n' "$FM_REMOTE_JOB_STATE/worker.lock"; }
 
+# Complete a quarantine publication interrupted between mktemp and rename.
+# Callers must first prove that the recorded worker no longer owns the lock.
+fm_remote_job_recover_orphaned_quarantine_publications() { # <worker-lock>
+  local lock=$1 orphan found=0
+  [ -d "$lock" ] && [ ! -L "$lock" ] || return 1
+  for orphan in "$lock"/.quarantine.*; do
+    [ -e "$orphan" ] || [ -L "$orphan" ] || continue
+    fm_remote_job_regular_bounded "$orphan" 256 || return 1
+    found=1
+  done
+  [ "$found" -eq 1 ] || return 0
+  if [ ! -e "$lock/quarantine" ] && [ ! -L "$lock/quarantine" ]; then
+    for orphan in "$lock"/.quarantine.*; do
+      [ -e "$orphan" ] || [ -L "$orphan" ] || continue
+      mv -f -- "$orphan" "$lock/quarantine" || return 1
+      break
+    done
+  fi
+  for orphan in "$lock"/.quarantine.*; do
+    [ -e "$orphan" ] || [ -L "$orphan" ] || continue
+    rm -f -- "$orphan" || return 1
+  done
+}
+
 fm_remote_job_process_start() {
   local pid=$1 ps_bin value
   if [ -x /bin/ps ]; then ps_bin=/bin/ps; elif [ -x /usr/bin/ps ]; then ps_bin=/usr/bin/ps; else return 1; fi

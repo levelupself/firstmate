@@ -660,7 +660,8 @@ test_pi_late_unretired_close_resumes_supervision() {
     cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 if [ -f "$FM_ARM_LOG" ]; then
-  count=$(wc -l < "$FM_ARM_LOG" | tr -d '[:space:]')
+  count=0
+  while IFS= read -r _; do count=$((count + 1)); done < "$FM_ARM_LOG"
 else
   count=0
 fi
@@ -1732,6 +1733,104 @@ EOF
   pass "OpenCode pre-ready actionable close preserves its successor"
 }
 
+test_opencode_undetermined_primacy_probe_retries_instead_of_abandoning() {
+  local plugin repo home log shim marker stop out status
+  plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
+  repo="$TMP_ROOT/opencode-primacy-undetermined-root"
+  home="$TMP_ROOT/opencode-primacy-undetermined-home"
+  log="$TMP_ROOT/opencode-primacy-undetermined.log"
+  shim="$TMP_ROOT/opencode-primacy-undetermined-shim"
+  marker="$shim/fired"
+  stop="$TMP_ROOT/opencode-primacy-undetermined.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config" "$shim"
+  git init -q "$repo"
+  : > "$repo/AGENTS.md"
+  : > "$home/state/task.meta"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+count=$(wc -l < "$FM_ARM_LOG" | tr -d '[:space:]')
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'signal: original wake\n'
+  exit 0
+fi
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+trap 'exit 0' TERM INT
+while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  # A real git that fails --git-dir exactly once, and only once the first arm
+  # has run, so the failure lands on the restoration's primacy probe rather
+  # than on the initial arm. A fork-pressured box fails any spawn this way, and
+  # the coordinator must not read "could not determine primacy" as the
+  # permanent "this is not a primary checkout".
+  cat > "$shim/git" <<SH
+#!/usr/bin/env bash
+if [ -n "\${FM_ARM_LOG:-}" ] && [ -e "\$FM_ARM_LOG" ] && [ ! -e "$marker" ]; then
+  case " \$* " in
+    *" --git-dir "*)
+      : > "$marker"
+      echo 'fatal: cannot exec: Resource temporarily unavailable' >&2
+      exit 128
+      ;;
+  esac
+fi
+exec $(command -v git) "\$@"
+SH
+  chmod +x "$shim/git"
+  out=$(PATH="$shim:$PATH" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_PRIMACY_FAULT_MARKER="$marker" FM_STOP_FILE="$stop" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const prompts = [];
+const client = {
+  session: {
+    promptAsync: async (request) => {
+      prompts.push(request.body.parts[0].text);
+    },
+  },
+};
+const hooks = await mod.FmPrimaryWatchArm({
+  client,
+  directory: process.env.WORKTREE,
+  worktree: process.env.WORKTREE,
+});
+const rows = () => (existsSync(process.env.FM_ARM_LOG)
+  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
+  : []);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
+// Wait on the completed transition, not on the arm row alone: the successor
+// row lands before restoration returns, so gating on the row count would race
+// the delivery that follows it.
+for (let i = 0; i < 500; i += 1) {
+  if (rows().length >= 2 && prompts.some((message) => message.includes("signal: original wake"))) break;
+  if (prompts.some((message) => message.includes("could not restore watcher continuity"))) break;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (!existsSync(process.env.FM_PRIMACY_FAULT_MARKER)) {
+  throw new Error("the transient primacy-probe failure never fired, so this case proved nothing");
+}
+const armRows = rows();
+if (armRows.length !== 2) {
+  throw new Error(`restoration abandoned its successor after an undetermined primacy probe: ${armRows.join(" | ")}`);
+}
+if (!prompts.some((message) => message.includes("signal: original wake"))) {
+  throw new Error(`original wake was lost: ${prompts.join(" | ")}`);
+}
+const abandoned = prompts.find((message) => message.includes("could not verify a ready successor watcher"));
+if (abandoned) throw new Error(`restoration reported failure instead of spending its retries: ${abandoned}`);
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "OpenCode must retry a primacy probe it could not complete, not abandon continuity"
+  [ -z "$out" ] || fail "OpenCode undetermined-primacy test printed output: $out"
+  pass "OpenCode undetermined primacy probe retries instead of abandoning continuity"
+}
+
 test_opencode_hung_successor_falls_back_to_typed_wake() {
   local plugin repo home log out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
@@ -2017,21 +2116,18 @@ import { pathToFileURL } from "node:url";
 
 const nativeSetTimeout = globalThis.setTimeout;
 const nativeClearTimeout = globalThis.clearTimeout;
-const readinessTimer = { unref() {} };
-let readinessAttempts = 0;
-let fireReadinessTimeout = null;
+const readinessTimers = [];
 globalThis.setTimeout = (callback, delay, ...args) => {
   if (delay === Number(process.env.FM_OPENCODE_ARM_READY_TIMEOUT_MS)) {
-    readinessAttempts += 1;
-    if (readinessAttempts === 2) {
-      fireReadinessTimeout = () => callback(...args);
-      return readinessTimer;
-    }
+    const timer = { active: true, fire: () => callback(...args), unref() {} };
+    readinessTimers.push(timer);
+    return timer;
   }
   return nativeSetTimeout(callback, delay, ...args);
 };
 globalThis.clearTimeout = (timer) => {
-  if (timer !== readinessTimer) nativeClearTimeout(timer);
+  if (readinessTimers.includes(timer)) timer.active = false;
+  else nativeClearTimeout(timer);
 };
 function pidAlive(pid) {
   try {
@@ -2077,15 +2173,16 @@ await waitFor(
   () => existsSync(process.env.FM_STARTUP_FILE),
   "successor did not reach the controlled startup gate",
 );
-if (!fireReadinessTimeout) throw new Error("successor readiness timeout was not captured");
 writeFileSync(process.env.FM_ACTIVATE_FILE, "activate\n");
 await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_READY_FILE),
   "unretired successor did not install its retirement trap",
 );
+const readinessTimer = readinessTimers.findLast((timer) => timer.active);
+if (!readinessTimer) throw new Error("successor readiness timeout was not captured");
 const successorPid = readFileSync(process.env.FM_UNRETIRED_READY_FILE, "utf8").trim();
 if (!pidAlive(successorPid)) throw new Error(`successor ${successorPid} retired before the readiness deadline`);
-fireReadinessTimeout();
+readinessTimer.fire();
 await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
 await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_RETIRE_FILE),
@@ -2471,6 +2568,7 @@ test_opencode_primary_watch_plugin_requires_session_lock
 test_opencode_watch_arm_coordinator_respects_primary_scope
 test_opencode_primary_watch_plugin_rearms_after_wake
 test_opencode_pre_ready_actionable_close_preserves_its_successor
+test_opencode_undetermined_primacy_probe_retries_instead_of_abandoning
 test_opencode_hung_successor_falls_back_to_typed_wake
 test_opencode_unretired_successor_falls_back_without_retry
 test_opencode_late_unretired_close_resumes_supervision
