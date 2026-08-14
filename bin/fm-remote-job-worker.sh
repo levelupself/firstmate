@@ -157,6 +157,10 @@ worker_acquire_lock() {
       continue
     fi
     if fm_remote_job_lock_owner_matches_process "$account_home"; then return 2; fi
+    fm_remote_job_recover_orphaned_quarantine_publications "$WORKER_LOCK" || return 1
+    if [ -e "$WORKER_LOCK/quarantine" ] || [ -L "$WORKER_LOCK/quarantine" ]; then
+      continue
+    fi
     if fm_remote_job_probe "$account_home" || worker_lock_recent; then
       attempt=$((attempt + 1))
       sleep 0.1
@@ -292,11 +296,11 @@ worker_stop_active_execution() {
 }
 
 worker_shutdown() {
-  trap - HUP INT TERM
+  trap '' HUP INT TERM
   worker_publish_quarantine || {
     worker_error "cannot guard worker ownership for shutdown"
-    trap worker_shutdown HUP INT TERM
-    return 0
+    WORKER_RELEASE_OWNERSHIP=0
+    exit 125
   }
   worker_stop_active_execution || {
     worker_error "could not stop the active command tree"
@@ -314,6 +318,7 @@ worker_shutdown() {
 worker_exit_cleanup() {
   if [ "$WORKER_RELEASE_OWNERSHIP" -eq 1 ] && ! worker_stop_active_execution; then
     worker_error "could not stop the active command tree during exit"
+    trap '' HUP INT TERM
     worker_publish_quarantine || worker_error "could not quarantine failed exit ownership"
     WORKER_RELEASE_OWNERSHIP=0
   fi
@@ -709,9 +714,10 @@ worker_supervisor_cleanup_dead_child() { # <account-home> <pid>
   fm_remote_job_prepare_state "$account_home" || return 1
   lock=$(fm_remote_job_worker_lock_path)
   [ -d "$lock" ] && [ ! -L "$lock" ] || return 1
-  [ ! -e "$lock/quarantine" ] && [ ! -L "$lock/quarantine" ] || return 1
   recorded=$(fm_remote_job_read_single_line "$lock/pid" 64) || return 1
   [ "$recorded" = "$pid" ] || return 1
+  fm_remote_job_recover_orphaned_quarantine_publications "$lock" || return 1
+  [ ! -e "$lock/quarantine" ] && [ ! -L "$lock/quarantine" ] || return 1
   pid_file=$(fm_remote_job_worker_pid_path)
   ready=$(fm_remote_job_worker_ready_path)
   identity=$(fm_remote_job_worker_identity_path)

@@ -16,6 +16,8 @@ STATE_ROOT="$TMP_ROOT/remote-jobs"
 RUNTIME_BIN="$TMP_ROOT/runtime-bin"
 FAKE_PERL_LOG="$TMP_ROOT/perl.log"
 REAL_GIT=$(command -v git)
+REAL_MKTEMP=$(command -v mktemp)
+ORIGINAL_PATH=$PATH
 OTHER_PID=
 RECOVERY_WORKER_PID=
 mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
@@ -163,7 +165,12 @@ case ":$FM_REMOTE_JOB_OPERATOR_PATH:" in
 esac
 pass "operator PATH resolves the authorized Nix profile bin link"
 
-HOME="$ACCOUNT_HOME" PATH="$RUNTIME_BIN:/usr/bin:/bin:/usr/sbin:/sbin" FM_FAKE_PERL_LOG="$FAKE_PERL_LOG" \
+export PATH="$RUNTIME_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+export FM_TEST_REAL_MKTEMP="$REAL_MKTEMP"
+export FM_TEST_QUARANTINE_ARM="$TMP_ROOT/quarantine-arm"
+export FM_TEST_QUARANTINE_STARTED="$TMP_ROOT/quarantine-publication-started"
+export FM_TEST_QUARANTINE_RELEASE="$TMP_ROOT/quarantine-publication-release"
+HOME="$ACCOUNT_HOME" FM_FAKE_PERL_LOG="$FAKE_PERL_LOG" \
   FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT" \
   FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux FM_REMOTE_JOB_TIMEOUT=5 \
   "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" > "$TMP_ROOT/worker.out" 2> "$TMP_ROOT/worker.err" &
@@ -537,6 +544,21 @@ pass "the worker refuses symlinked job fields before command execution"
 
 QUARANTINE_STARTED="$TMP_ROOT/quarantine-started"
 QUARANTINE_SIDE_EFFECT="$TMP_ROOT/quarantine-side-effect"
+cat > "$RUNTIME_BIN/mktemp" <<'SH'
+#!/bin/bash
+set -u
+tmp=$("$FM_TEST_REAL_MKTEMP" "$@") || exit 1
+case "${1:-}" in
+  */.quarantine.XXXXXX)
+    if [ -e "$FM_TEST_QUARANTINE_ARM" ]; then
+      printf 'started\n' > "$FM_TEST_QUARANTINE_STARTED"
+      IFS= read -r _ < "$FM_TEST_QUARANTINE_RELEASE"
+    fi
+    ;;
+esac
+printf '%s\n' "$tmp"
+SH
+chmod +x "$RUNTIME_BIN/mktemp"
 FM_REMOTE_JOB_TIMEOUT=5
 fm_remote_job_stage "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" \
   fm-shutdown-job.sh "$QUARANTINE_STARTED" "$QUARANTINE_SIDE_EFFECT" < /dev/null > /dev/null
@@ -550,13 +572,24 @@ assert_present "$QUARANTINE_STARTED" "the quarantine fixture did not begin execu
 GROUP_PID=$(cat "$JOB_DIR/.claim/group")
 printf 'invalid\n' > "$JOB_DIR/.claim/group"
 WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
+mkfifo "$TMP_ROOT/quarantine-publication-started" "$TMP_ROOT/quarantine-publication-release"
+touch "$TMP_ROOT/quarantine-arm"
 kill -TERM "$WORKER_PID"
+IFS= read -r QUARANTINE_PUBLICATION_STATE < "$TMP_ROOT/quarantine-publication-started"
+[ "$QUARANTINE_PUBLICATION_STATE" = started ] \
+  || fail "the quarantine publication did not reach its post-mktemp window"
+kill -TERM "$WORKER_PID"
+printf 'continue\n' > "$TMP_ROOT/quarantine-publication-release"
 wait "$WORKER_PID" 2>/dev/null || true
 for _ in $(seq 1 100); do
   [ -f "$STATE_ROOT/worker.lock/quarantine" ] && break
   sleep 0.05
 done
 assert_present "$STATE_ROOT/worker.lock/quarantine" "failed shutdown released worker ownership"
+for orphan in "$STATE_ROOT/worker.lock"/.quarantine.*; do
+  [ ! -e "$orphan" ] && [ ! -L "$orphan" ] \
+    || fail "a second TERM orphaned an incomplete quarantine publication"
+done
 fm_remote_job_probe "$ACCOUNT_HOME" && fail "quarantined worker ownership still reported ready"
 set +e
 HOME="$ACCOUNT_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT" \
@@ -570,6 +603,8 @@ kill -KILL -- "-$GROUP_PID" 2>/dev/null || true
 sleep 3
 assert_absent "$QUARANTINE_SIDE_EFFECT" "the quarantined command mutated after explicit termination"
 pass "failed shutdown quarantines ownership against replacement workers"
+rm -f -- "$TMP_ROOT/quarantine-arm"
+export PATH="$ORIGINAL_PATH"
 
 RECOVERY_HOME="$TMP_ROOT/recovery-account"
 RECOVERY_STATE="$TMP_ROOT/recovery-jobs"
@@ -586,7 +621,8 @@ wait "$QUARANTINE_OWNER_PID" 2>/dev/null || true
 printf '%s\n' "$QUARANTINE_OWNER_PID" > "$RECOVERY_STATE/worker.lock/pid"
 printf 'stale\n' > "$RECOVERY_STATE/worker.lock/start"
 printf 'stale\n' > "$RECOVERY_STATE/worker.lock/command"
-printf 'active execution could not be confirmed stopped\n' > "$RECOVERY_STATE/worker.lock/quarantine"
+printf 'active execution could not be confirmed stopped\n' \
+  > "$RECOVERY_STATE/worker.lock/.quarantine.interrupted"
 printf 'running\n' > "$RECOVERY_JOB/state"
 printf '%s\n' "$QUARANTINE_OWNER_PID" > "$RECOVERY_JOB/.claim/owner"
 printf '%s\n' "$QUARANTINED_PROCESS_PID" > "$RECOVERY_JOB/.claim/supervisor"
@@ -603,6 +639,8 @@ RECOVERY_REFUSED_RC=$?
 set -e
 [ "$RECOVERY_REFUSED_RC" -ne 0 ] || fail "quarantine recovery ignored a recorded live process"
 assert_present "$RECOVERY_STATE/worker.lock/quarantine" "a live recorded process lost quarantine protection"
+assert_absent "$RECOVERY_STATE/worker.lock/.quarantine.interrupted" \
+  "recovery retained an interrupted quarantine publication"
 kill "$QUARANTINED_PROCESS_PID" 2>/dev/null || true
 wait "$QUARANTINED_PROCESS_PID" 2>/dev/null || true
 HOME="$RECOVERY_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$RECOVERY_STATE" \
@@ -618,6 +656,6 @@ assert_absent "$RECOVERY_STATE/worker.lock/quarantine" "recovered worker retaine
 kill -TERM "$RECOVERY_WORKER_PID"
 wait "$RECOVERY_WORKER_PID" 2>/dev/null || true
 RECOVERY_WORKER_PID=
-pass "quarantine clears only after recorded execution has stopped"
+pass "interrupted quarantine publication recovers and clears only after recorded execution has stopped"
 
 echo "ALL TESTS PASSED"
