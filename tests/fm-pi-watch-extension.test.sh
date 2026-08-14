@@ -531,6 +531,7 @@ test_pi_unretired_successor_falls_back_without_retry() {
   retired="$TMP_ROOT/pi-unretired-successor.retired"
   release="$TMP_ROOT/pi-unretired-successor.release"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
+  mkfifo "$activate"
   install_pi_watch_extension_fixture "$repo"
   plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
@@ -625,7 +626,7 @@ if (retiredPid !== successorPid) throw new Error(`retirement evidence named ${re
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
-if (rows.length !== 2) throw new Error(`unretired arm overlapped a retry: ${rows.join(" | ")}`);
+if (rows.length !== 2) throw new Error(`expected the initial arm and one established unretired successor, got: ${rows.join(" | ")}`);
 if (rowsAtPrompt !== 2) throw new Error(`wake arrived after an overlapping retry (${rowsAtPrompt} arm rows)`);
 if (successorPidAtPrompt !== successorPid) throw new Error(`fallback observed successor ${successorPidAtPrompt}, expected ${successorPid}`);
 if (!successorAliveAtPrompt || !pidAlive(successorPid)) throw new Error(`successor ${successorPid} was not genuinely unretired at fallback`);
@@ -634,7 +635,7 @@ if (!prompt.includes("unready successor arm did not exit within 20ms")) throw ne
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
 await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
-)
+  )
   status=$?
   [ -z "$out" ] || fail "Pi unretired-successor test printed output: $out"
   expect_code 0 "$status" "Pi must fall back without overlapping an unretired successor"
@@ -679,6 +680,20 @@ SH
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+const nativeSetTimeout = globalThis.setTimeout;
+const nativeClearTimeout = globalThis.clearTimeout;
+const readinessTimer = { unref() {} };
+let fireReadinessTimeout = null;
+globalThis.setTimeout = (callback, delay, ...args) => {
+  if (delay === Number(process.env.FM_PI_ARM_READY_TIMEOUT_MS) && fireReadinessTimeout === null) {
+    fireReadinessTimeout = () => callback(...args);
+    return readinessTimer;
+  }
+  return nativeSetTimeout(callback, delay, ...args);
+};
+globalThis.clearTimeout = (timer) => {
+  if (timer !== readinessTimer) nativeClearTimeout(timer);
+};
 let tool = null;
 const prompts = [];
 const pi = {
@@ -709,6 +724,8 @@ await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_READY_FILE),
   "unretired successor did not enter its retirement wait",
 );
+if (!fireReadinessTimeout) throw new Error("successor readiness timeout was not captured");
+fireReadinessTimeout();
 await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
 await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_RETIRE_FILE),
