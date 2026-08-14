@@ -660,7 +660,8 @@ test_pi_late_unretired_close_resumes_supervision() {
     cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 if [ -f "$FM_ARM_LOG" ]; then
-  count=$(wc -l < "$FM_ARM_LOG" | tr -d '[:space:]')
+  count=0
+  while IFS= read -r _; do count=$((count + 1)); done < "$FM_ARM_LOG"
 else
   count=0
 fi
