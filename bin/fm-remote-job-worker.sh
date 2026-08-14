@@ -157,13 +157,13 @@ worker_acquire_lock() {
       continue
     fi
     if fm_remote_job_lock_owner_matches_process "$account_home"; then return 2; fi
+    fm_remote_job_recover_orphaned_quarantine_publications "$WORKER_LOCK" || return 1
+    if [ -e "$WORKER_LOCK/quarantine" ] || [ -L "$WORKER_LOCK/quarantine" ]; then
+      continue
+    fi
     if fm_remote_job_probe "$account_home" || worker_lock_recent; then
       attempt=$((attempt + 1))
       sleep 0.1
-      continue
-    fi
-    fm_remote_job_recover_orphaned_quarantine_publications "$WORKER_LOCK" || return 1
-    if [ -e "$WORKER_LOCK/quarantine" ] || [ -L "$WORKER_LOCK/quarantine" ]; then
       continue
     fi
     [ ! -L "$WORKER_LOCK/pid" ] && [ ! -L "$WORKER_LOCK/start" ] && [ ! -L "$WORKER_LOCK/command" ] || return 1
