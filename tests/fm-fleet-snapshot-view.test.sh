@@ -1569,6 +1569,32 @@ test_watch_retires_when_its_pane_leaves_the_binding() {
   pass "a watched banner retires once the frame stops recording its pane"
 }
 
+test_watch_retires_when_its_bound_frame_record_disappears() {
+  local home dir pid waited=0
+  home=$(make_home painter-record-loss)
+  dir=$(painter_bin "$home")
+  write_cockpit_record "$home" 'w9:p2' 'waiting'
+  pid=$(start_painter "$home" "$dir" w9:p2 bound waiting)
+  wait_for_paint "$home/bound.out" 'YOUR DECISIONS' \
+    || { reap_painter "$pid"; fail "the recorded banner painted nothing: $(cat "$home/bound.err")"; }
+  [ -e "$home/state/.fleet-painter-w9:p2.lock" ] \
+    || { reap_painter "$pid"; fail "the recorded banner did not claim its pane"; }
+
+  rm "$home/state/.herdr-cockpit"
+  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 300 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  kill -0 "$pid" 2>/dev/null \
+    && { reap_painter "$pid"; fail "a bound banner survived loss of its frame record"; }
+  wait "$pid" 2>/dev/null || true
+  [ ! -e "$home/state/.fleet-painter-w9:p2.lock" ] \
+    || fail "a banner retired after record loss without releasing its pane"
+  assert_contains "$(cat "$home/bound.err")" 'not this frame' \
+    "a banner retired after record loss must report why it stopped"
+  pass "a bound banner retires when its frame record disappears"
+}
+
 test_watch_refuses_a_second_painter_for_one_bound_pane() {
   local home dir first second out rc
   home=$(make_home painter-single-owner)
@@ -1680,6 +1706,7 @@ test_watch_computes_before_paint_and_erases_shorter_frames
 test_watch_outside_an_adopted_frame_keeps_painting
 test_watch_refuses_to_paint_inside_a_bound_frame_it_is_not_recorded_for
 test_watch_retires_when_its_pane_leaves_the_binding
+test_watch_retires_when_its_bound_frame_record_disappears
 test_watch_refuses_a_second_painter_for_one_bound_pane
 test_watch_claims_ownership_when_the_frame_is_published_after_launch
 test_watch_refuses_a_recorded_pane_with_wrong_process_identity

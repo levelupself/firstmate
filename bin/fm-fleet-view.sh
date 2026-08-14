@@ -450,9 +450,14 @@ render_once() {
 # recorded fleet pane is bound whatever tab the record claims, and an
 # unrecorded pane is judged only against the frame it actually sits in.
 PAINTER_BINDING=standalone
+PAINTER_BOUND_ONCE=0
 painter_binding() {
   local recorded fleet_state index=0 pane
-  PAINTER_BINDING=standalone
+  if [ "$PAINTER_BOUND_ONCE" = 1 ]; then
+    PAINTER_BINDING=unbound
+  else
+    PAINTER_BINDING=standalone
+  fi
   [ -n "${HERDR_PANE_ID:-}" ] || return 0
   if ! declare -F fm_backend_herdr_cockpit_record_snapshot >/dev/null 2>&1; then
     # shellcheck source=bin/fm-backend.sh
@@ -480,7 +485,12 @@ painter_binding() {
       PAINTER_BINDING=unbound
       return 0
     fi
-    [ "$fleet_state" = live ] && PAINTER_BINDING=bound || PAINTER_BINDING=unbound
+    if [ "$fleet_state" = live ]; then
+      PAINTER_BINDING=bound
+      PAINTER_BOUND_ONCE=1
+    else
+      PAINTER_BINDING=unbound
+    fi
     return 0
   done <<EOF
 $(printf '%s' "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_IDS" | tr ',' '\n')
