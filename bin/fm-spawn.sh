@@ -1944,8 +1944,35 @@ verify_reattach_treehouse_owner_free() {
     }
 }
 
+verify_reattach_worktree_process_free_locked() {
+  local root out pid path line
+  command -v lsof >/dev/null 2>&1 || return 2
+  root=$(cd "$WT" 2>/dev/null && pwd -P) || return 2
+  out=$(lsof -a -d cwd -Fpn 2>/dev/null) || return 2
+  [ -n "$out" ] || return 2
+  pid=
+  while IFS= read -r line; do
+    case "$line" in
+      p*)
+        pid=${line#p}
+        case "$pid" in ''|*[!0-9]*) return 2 ;; esac
+        ;;
+      fcwd) [ -n "$pid" ] || return 2 ;;
+      n*)
+        [ -n "$pid" ] || return 2
+        path=${line#n}
+        case "$path" in "$root"|"$root"/*) return 1 ;; esac
+        ;;
+      '') ;;
+      *) return 2 ;;
+    esac
+  done <<EOF
+$out
+EOF
+}
+
 acquire_reattach_treehouse_lock() {
-  local pool state lock ready owner_pid owner_started leased path_count pipe_base
+  local pool state lock ready owner_pid owner_started leased path_count pipe_base process_status
   pool=$(dirname "$(dirname "$WT")")
   state="$pool/treehouse-state.json"
   lock="$pool/treehouse-state.lock"
@@ -1990,6 +2017,19 @@ acquire_reattach_treehouse_lock() {
     echo "error: retained worktree '$WT' gained a Treehouse owner before it could be reserved; refusing to attach a second agent" >&2
     return 1
   }
+  process_status=0
+  verify_reattach_worktree_process_free_locked || process_status=$?
+  case "$process_status" in
+    0) ;;
+    1)
+      echo "error: retained worktree '$WT' gained a live process before it could be reserved; refusing to attach a second agent" >&2
+      return 1
+      ;;
+    *)
+      echo "error: retained worktree '$WT' process inventory could not be proved while reserved; refusing to guess ownership" >&2
+      return 1
+      ;;
+  esac
 }
 
 freshen_spawn_worktree_base() {  # <worktree>
@@ -2112,8 +2152,8 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
 
 if [ "$REATTACH" -eq 1 ]; then
   verify_reattach_copy_identity || exit 1
-  acquire_reattach_treehouse_lock || exit 1
   verify_reattach_treehouse_owner_free || exit 1
+  acquire_reattach_treehouse_lock || exit 1
 fi
 
 W="fm-$ID"

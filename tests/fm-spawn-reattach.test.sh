@@ -109,9 +109,10 @@ if [ -n "${FM_FAKE_TREEHOUSE_MALFORMED:-}" ]; then
   printf 'not-json\n'
   exit 0
 fi
-if [ -n "${FM_FAKE_REQUIRE_STATUS_LOCK:-}" ] \
-   && flock -n "$FM_FAKE_RETAINED/../../treehouse-state.lock" true 2>/dev/null; then
-  FM_FAKE_TREEHOUSE_PROCESSES='[{"pid":42,"name":"codex"}]'
+if [ -n "${FM_FAKE_REFUSE_LOCKED_STATUS:-}" ] \
+   && ! flock -n "$FM_FAKE_RETAINED/../../treehouse-state.lock" true 2>/dev/null; then
+  echo "error: recursive Treehouse lock" >&2
+  exit 88
 fi
 jq -cn \
   --arg path "$FM_FAKE_RETAINED" \
@@ -159,7 +160,7 @@ run_reattach() {  # <dir> <id> <worktree>
     FM_FAKE_ENTER_FAIL="${FM_FAKE_ENTER_FAIL:-}" \
     FM_FAKE_REQUIRE_COMMIT="${FM_FAKE_REQUIRE_COMMIT:-}" \
     FM_FAKE_KILL_FAIL="${FM_FAKE_KILL_FAIL:-}" \
-    FM_FAKE_REQUIRE_STATUS_LOCK="${FM_FAKE_REQUIRE_STATUS_LOCK:-}" \
+    FM_FAKE_REFUSE_LOCKED_STATUS="${FM_FAKE_REFUSE_LOCKED_STATUS:-}" \
     "$SPAWN" "$id" --reattach-worktree "$retained" 2>&1
 }
 
@@ -335,15 +336,33 @@ test_final_submit_failure_rolls_back_before_agent_runs() {
   pass "fm-spawn reattach: final activation failure rolls back before the agent runs"
 }
 
-test_owner_proof_runs_under_treehouse_lock() {
+test_status_does_not_reacquire_held_treehouse_lock() {
   local dir id=rt-owner-lock retained out rc
   dir=$(new_case owner-lock "$id")
   retained="$dir/pool/7/project"
-  out=$(FM_FAKE_REQUIRE_STATUS_LOCK=1 run_reattach "$dir" "$id" "$retained"); rc=$?
-  expect_code 0 "$rc" "ownership proof must run under the Treehouse lock"$'\n'"$out"
+  out=$(FM_FAKE_REFUSE_LOCKED_STATUS=1 run_reattach "$dir" "$id" "$retained"); rc=$?
+  expect_code 0 "$rc" "reattach must not recursively lock Treehouse through status"$'\n'"$out"
   assert_grep "worktree=$retained" "$dir/home/state/$id.meta" \
-    "locked ownership proof must publish the retained binding"
-  pass "fm-spawn reattach: ownership is proved while the Treehouse lock is held"
+    "nonrecursive ownership proof must publish the retained binding"
+  pass "fm-spawn reattach: the locked owner proof does not recursively call Treehouse status"
+}
+
+test_process_arriving_before_lock_refuses() {
+  local dir id=rt-process-race retained out rc before process_pid
+  dir=$(new_case process-race "$id")
+  retained="$dir/pool/7/project"
+  before="$dir/meta.before"
+  cp "$dir/home/state/$id.meta" "$before"
+  (cd "$retained" && /bin/sleep 30) &
+  process_pid=$!
+  out=$(run_reattach "$dir" "$id" "$retained"); rc=$?
+  kill "$process_pid" 2>/dev/null || true
+  wait "$process_pid" 2>/dev/null || true
+  expect_code 1 "$rc" "a process present at locked recheck must refuse"$'\n'"$out"
+  assert_contains "$out" "gained a live process" \
+    "locked process refusal must name the ownership race"
+  assert_unchanged_refusal "$dir" "$id" "$before"
+  pass "fm-spawn reattach: the locked recheck catches a process ownership race"
 }
 
 test_failed_endpoint_removal_preserves_published_binding() {
@@ -369,7 +388,8 @@ test_launch_failure_rolls_back_the_binding
 test_recovery_axes_cannot_be_overridden
 test_lifecycle_lock_refuses_without_changes
 test_final_submit_failure_rolls_back_before_agent_runs
-test_owner_proof_runs_under_treehouse_lock
+test_status_does_not_reacquire_held_treehouse_lock
+test_process_arriving_before_lock_refuses
 test_failed_endpoint_removal_preserves_published_binding
 
 echo "# all fm-spawn-reattach tests passed"
