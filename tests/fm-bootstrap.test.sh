@@ -966,6 +966,7 @@ make_routine_bootstrap_fixture() {
     printf '%s\n' 'config/crew-harness'
     printf '%s\n' 'config/crew-dispatch.json'
     printf '%s\n' 'config/startup-memory-budget'
+    printf '%s\n' 'config/agents-md-budget'
   } > "$root/.gitignore"
   printf '%s\n' 'instructions' > "$root/AGENTS.md"
   mkdir -p "$root/bin" "$root/.agents/skills"
@@ -1027,6 +1028,29 @@ test_routine_bootstrap_contract_runs_under_system_bash() {
   out=$(run_routine_bootstrap_fixture /bin/bash "$TMP_ROOT/routine-bash")
   [ -z "$out" ] || fail "routine bootstrap contract should be silent under /bin/bash, got: $out"
   pass "bootstrap routine contract runs under system /bin/bash"
+}
+
+test_detect_only_reports_agents_md_over_budget_without_mutation() {
+  local case_dir fixture root home fakebin out
+  case_dir="$TMP_ROOT/agents-budget-detect-only"
+  fixture=$(make_routine_bootstrap_fixture "$case_dir")
+  root=${fixture%%|*}
+  fixture=${fixture#*|}
+  home=${fixture%%|*}
+  fakebin=${fixture#*|}
+  printf '%s\n' 1 > "$home/config/agents-md-budget"
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_BACKEND=tmux FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
+    FM_BOOTSTRAP_DETECT_ONLY=1 FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh")
+
+  assert_contains "$out" "AGENTS_MD_BUDGET: over budget - estimated_tokens=5 budget_tokens=1; trim AGENTS.md or raise config/agents-md-budget" \
+    "detect-only bootstrap should report an over-budget AGENTS.md"
+  [ "$(cat "$home/config/agents-md-budget")" = "1" ] ||
+    fail "detect-only bootstrap must not rewrite the budget"
+  [ "$(cat "$root/AGENTS.md")" = "instructions" ] ||
+    fail "detect-only bootstrap must not rewrite AGENTS.md"
+  pass "bootstrap reports the AGENTS.md budget during detect-only validation"
 }
 
 # FM_BOOTSTRAP_NETWORK splits one bootstrap run into its local and network
@@ -1328,6 +1352,7 @@ test_fleet_sync_timeout_empty_override_uses_default
 test_fleet_sync_timeout_is_computed_before_launch
 test_routine_bootstrap_confirmations_are_silent
 test_routine_bootstrap_contract_runs_under_system_bash
+test_detect_only_reports_agents_md_over_budget_without_mutation
 test_network_phase_partitions_the_run
 test_network_sweeps_recheck_lock_ownership
 test_network_phases_record_per_step_elapsed_times

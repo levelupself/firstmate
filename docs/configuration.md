@@ -188,6 +188,19 @@ An inherited `data/captain-shared.md` counts in a secondmate's total but remains
 The internal [`/stow` skill](../.agents/skills/stow/SKILL.md) owns curation and its automatic secondmate cascade, which accounts every home against this same per-home allowance separately rather than against a fleet total.
 The helper's header owns exact parsing, publication, and report output mechanics.
 
+## AGENTS.md budget (config/agents-md-budget)
+
+`config/agents-md-budget` is the primary-authoritative allowance for the tracked `AGENTS.md` file that is loaded into every fleet session.
+The locked mutable bootstrap path materializes its visible default of `25000` estimated tokens in a primary home when the file is absent.
+The default is the smallest round 5,000-token boundary above the measured 23,476-token pre-instrument baseline, leaving a narrow and visible growth margin before bootstrap warns.
+To select another allowance, replace the primary home's file with one positive base-10 integer followed by exactly one newline in a regular, single-linked file beneath a non-symlinked `config/` directory.
+Malformed, missing, multi-line, symlinked, hardlinked, special, or otherwise unsafe values are rejected rather than inferred by the reporting command.
+The next locked bootstrap convergence or `bin/fm-config-push.sh` propagates a valid primary value to registered secondmates.
+Use `bin/fm-agents-md-budget.sh read` to validate and print the effective value, or `bin/fm-agents-md-budget.sh report` to measure `AGENTS.md` and compare it with the budget.
+The report reuses the startup-memory estimator, `ceil(UTF-8 bytes / 3)`, so both prompt-surface measurements remain directly comparable.
+Bootstrap prints an actionable `AGENTS_MD_BUDGET:` diagnostic when the setting is invalid or the measured file exceeds it, but it never trims or rewrites `AGENTS.md`.
+The helper's header owns exact parsing, publication, and report output mechanics.
+
 ## Secondmate routes (data/secondmates.md)
 
 Persistent secondmate routes live locally in `data/secondmates.md`.
@@ -366,7 +379,7 @@ When a running home advances and its loaded instruction surface (`AGENTS.md`, `b
 If that send fails, bootstrap keeps an idempotent retry marker and emits `NUDGE_SECONDMATES:` with the failure reason.
 The same bootstrap run emits `SECONDMATE_LIVENESS:` only when a registered secondmate is skipped or its relaunch fails; already-live and successfully relaunched secondmates are handled silently.
 For a mid-session inherited local-material edit where tracked-file sync is not needed, run `bin/fm-config-push.sh`.
-It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `backlog-backend`, `backend`, `herdr-presentation-spaces`, `startup-memory-budget`, `trace-context`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero for real propagation errors or config-reread send failures.
+It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `backlog-backend`, `backend`, `herdr-presentation-spaces`, `startup-memory-budget`, `agents-md-budget`, `trace-context`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero for real propagation errors or config-reread send failures.
 When an allowlisted config item changes for an already-running local home, it sends the literal-content reread pointer described in [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md); unchanged allowlisted config sends no pointer unless a previous delivery is pending.
 A changed remote home instead receives one durably recorded marked re-read instruction after the allowlisted bytes have transferred because primary-local generation paths are not meaningful on another host.
 The locked bootstrap inheritance pass uses the same placement-specific behavior; see `secondmate-provisioning` for the single contract owner.
