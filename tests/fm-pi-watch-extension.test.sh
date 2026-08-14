@@ -1446,15 +1446,21 @@ const hooks = await mod.FmPrimaryWatchArm({
 const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
 await hooks.event(event);
-await new Promise((resolve) => setTimeout(resolve, 120));
+const denied = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (denied !== "read-only") {
+  console.error(`unexpected non-owner arm result: ${denied}`);
+  process.exit(1);
+}
 if (existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm ran without owning the session lock");
   process.exit(1);
 }
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event(event);
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 20));
+const armed = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (armed !== "external") {
+  console.error(`unexpected owner arm result: ${armed}`);
+  process.exit(1);
 }
 if (!existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm did not run after the session lock matched");
