@@ -162,6 +162,10 @@ worker_acquire_lock() {
       sleep 0.1
       continue
     fi
+    fm_remote_job_recover_orphaned_quarantine_publications "$WORKER_LOCK" || return 1
+    if [ -e "$WORKER_LOCK/quarantine" ] || [ -L "$WORKER_LOCK/quarantine" ]; then
+      continue
+    fi
     [ ! -L "$WORKER_LOCK/pid" ] && [ ! -L "$WORKER_LOCK/start" ] && [ ! -L "$WORKER_LOCK/command" ] || return 1
     rm -f -- "$WORKER_LOCK/pid" "$WORKER_LOCK/start" "$WORKER_LOCK/command" || return 1
     rmdir "$WORKER_LOCK" || return 1
@@ -292,7 +296,7 @@ worker_stop_active_execution() {
 }
 
 worker_shutdown() {
-  trap - HUP INT TERM
+  trap '' HUP INT TERM
   worker_publish_quarantine || {
     worker_error "cannot guard worker ownership for shutdown"
     trap worker_shutdown HUP INT TERM
@@ -709,9 +713,10 @@ worker_supervisor_cleanup_dead_child() { # <account-home> <pid>
   fm_remote_job_prepare_state "$account_home" || return 1
   lock=$(fm_remote_job_worker_lock_path)
   [ -d "$lock" ] && [ ! -L "$lock" ] || return 1
-  [ ! -e "$lock/quarantine" ] && [ ! -L "$lock/quarantine" ] || return 1
   recorded=$(fm_remote_job_read_single_line "$lock/pid" 64) || return 1
   [ "$recorded" = "$pid" ] || return 1
+  fm_remote_job_recover_orphaned_quarantine_publications "$lock" || return 1
+  [ ! -e "$lock/quarantine" ] && [ ! -L "$lock/quarantine" ] || return 1
   pid_file=$(fm_remote_job_worker_pid_path)
   ready=$(fm_remote_job_worker_ready_path)
   identity=$(fm_remote_job_worker_identity_path)
