@@ -318,6 +318,7 @@ worker_shutdown() {
 worker_exit_cleanup() {
   if [ "$WORKER_RELEASE_OWNERSHIP" -eq 1 ] && ! worker_stop_active_execution; then
     worker_error "could not stop the active command tree during exit"
+    trap '' HUP INT TERM
     worker_publish_quarantine || worker_error "could not quarantine failed exit ownership"
     WORKER_RELEASE_OWNERSHIP=0
   fi
