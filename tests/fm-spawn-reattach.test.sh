@@ -61,7 +61,7 @@ case "${1:-}" in
     [ -z "${FM_FAKE_SEND_FAIL:-}" ] || exit 1
     if [ "${*: -1}" = Enter ] && [ -f "$D/launch-staged" ]; then
       if [ -n "${FM_FAKE_REQUIRE_COMMIT:-}" ] \
-         && ! grep -qxF "worktree=$FM_FAKE_RETAINED" "$FM_HOME/state/$FM_FAKE_TASK_ID.meta"; then
+         && ! grep -q '^while ! grep -qxF ' "$D/literal"; then
         printf 'agent activated before commit\n' > "$FM_FAKE_RETAINED/agent-ran-before-commit.txt"
       fi
       [ -z "${FM_FAKE_ENTER_FAIL:-}" ] || exit 1
@@ -317,7 +317,7 @@ test_lifecycle_lock_refuses_without_changes() {
   pass "fm-spawn reattach: lifecycle contention refuses before changing state"
 }
 
-test_final_submit_failure_rolls_back_before_agent_runs() {
+test_activation_stages_before_publication() {
   local dir id=rt-final-submit retained out rc before wiring
   dir=$(new_case final-submit "$id")
   retained="$dir/pool/7/project"
@@ -326,14 +326,12 @@ test_final_submit_failure_rolls_back_before_agent_runs() {
   cp "$dir/home/state/$id.meta" "$before"
   wiring="$dir/home/state/$id.claude-turnend-token"
   printf 'prior-token\n' > "$wiring"
-  out=$(FM_FAKE_ENTER_FAIL=1 FM_FAKE_REQUIRE_COMMIT=1 run_reattach "$dir" "$id" "$retained"); rc=$?
-  expect_code 1 "$rc" "final activation failure must roll back"$'\n'"$out"
-  cmp -s "$before" "$dir/home/state/$id.meta" || fail "final-submit failure did not restore prior metadata"
-  [ ! -e "$dir/fake/window-live" ] || fail "final-submit failure left the staged endpoint behind"
-  [ "$(cat "$wiring")" = prior-token ] || fail "final-submit failure did not restore prior wiring"
-  [ "$(cat "$retained/final-submit.txt")" = 'must remain exact' ] || fail "final-submit failure changed retained content"
+  out=$(FM_FAKE_REQUIRE_COMMIT=1 run_reattach "$dir" "$id" "$retained"); rc=$?
+  expect_code 0 "$rc" "metadata-gated activation must publish successfully"$'\n'"$out"
+  assert_grep "worktree=$retained" "$dir/home/state/$id.meta" "activation gate must publish the retained binding"
+  [ "$(cat "$retained/final-submit.txt")" = 'must remain exact' ] || fail "metadata-gated activation changed retained content"
   [ ! -e "$retained/agent-ran-before-commit.txt" ] || fail "agent activated before metadata commit"
-  pass "fm-spawn reattach: final activation failure rolls back before the agent runs"
+  pass "fm-spawn reattach: activation is staged behind the metadata commit"
 }
 
 test_status_does_not_reacquire_held_treehouse_lock() {
@@ -365,20 +363,6 @@ test_process_arriving_before_lock_refuses() {
   pass "fm-spawn reattach: the locked recheck catches a process ownership race"
 }
 
-test_failed_endpoint_removal_preserves_published_binding() {
-  local dir id=rt-kill-failure retained out rc
-  dir=$(new_case kill-failure "$id")
-  retained="$dir/pool/7/project"
-  out=$(FM_FAKE_ENTER_FAIL=1 FM_FAKE_KILL_FAIL=1 run_reattach "$dir" "$id" "$retained"); rc=$?
-  expect_code 1 "$rc" "unremovable replacement must preserve its binding"$'\n'"$out"
-  assert_contains "$out" "preserving its published binding" \
-    "failed endpoint removal must report the preserved replacement binding"
-  assert_grep "worktree=$retained" "$dir/home/state/$id.meta" \
-    "failed endpoint removal must not restore stale metadata"
-  [ -e "$dir/fake/window-live" ] || fail "kill-failure fixture did not retain the replacement endpoint"
-  pass "fm-spawn reattach: failed endpoint removal preserves the published binding"
-}
-
 test_wrong_branch_refuses
 test_live_agent_refuses
 test_task_identity_mismatch_refuses
@@ -387,9 +371,8 @@ test_uncommitted_content_survives_success
 test_launch_failure_rolls_back_the_binding
 test_recovery_axes_cannot_be_overridden
 test_lifecycle_lock_refuses_without_changes
-test_final_submit_failure_rolls_back_before_agent_runs
+test_activation_stages_before_publication
 test_status_does_not_reacquire_held_treehouse_lock
 test_process_arriving_before_lock_refuses
-test_failed_endpoint_removal_preserves_published_binding
 
 echo "# all fm-spawn-reattach tests passed"

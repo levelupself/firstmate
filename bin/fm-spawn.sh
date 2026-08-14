@@ -746,9 +746,7 @@ spawn_abort_cleanup() {
       window=${T#*:}
       remaining_windows=$(tmux list-windows -t "=$session" -F '#{window_name}' 2>/dev/null) || remaining_windows=__unreadable__
       if [ "$remaining_windows" = __unreadable__ ] || printf '%s\n' "$remaining_windows" | grep -qxF "$window"; then
-        echo "warning: could not prove removal of retained-copy replacement endpoint for $ID; preserving its published binding" >&2
-        RELAUNCH_REPLACEMENT_PENDING=0
-        REATTACH_META_PUBLISHED=0
+        echo "warning: could not prove removal of retained-copy replacement endpoint for $ID" >&2
       fi
     fi
     if [ "$REATTACH_META_PUBLISHED" = 1 ] && [ -f "$REATTACH_META_PRIOR" ]; then
@@ -3143,6 +3141,11 @@ if [ -z "$SPAWN_TRACEPARENT" ] \
    && { [ "$RELAUNCH" -eq 1 ] || [ "$REATTACH" -eq 1 ]; }; then
   LAUNCH="unset TRACEPARENT; $LAUNCH"
 fi
+if [ "$REATTACH" -eq 1 ]; then
+  reattach_meta_gate=$(shell_quote "$STATE/$ID.meta")
+  reattach_gen_gate=$(shell_quote "spawn_gen=$SPAWN_GEN")
+  LAUNCH="while ! grep -qxF $reattach_gen_gate $reattach_meta_gate 2>/dev/null; do sleep 0.05; done; exec $LAUNCH"
+fi
 
 spawn_record_traceparent() {
   local meta="$STATE/$ID.meta" tmp status=0
@@ -3191,6 +3194,9 @@ fi
 sleep 0.3
 spawn_send_literal "$T" "$LAUNCH"
 sleep 0.3
+if [ "$REATTACH" -eq 1 ]; then
+  spawn_send_key "$T" Enter
+fi
 if [ "${HERDR_PROJECTED:-0}" -eq 1 ] || [ "${HERDR_COCKPIT:-0}" -eq 1 ]; then
   HERDR_PROJECTION_ABORT_CLEANUP=0
   spawn_herdr_presentation_order_lock_release
@@ -3202,7 +3208,7 @@ if [ "$REATTACH" -eq 1 ]; then
   }
   publish_recovery_meta
 fi
-spawn_send_key "$T" Enter
+[ "$REATTACH" -eq 1 ] || spawn_send_key "$T" Enter
 if [ "$HARNESS" = kimi ]; then
   if ! kimi_wait_for_ready; then
     kimi_spawn_fail "kimi did not show a verified ready signal before brief delivery"
