@@ -621,8 +621,8 @@ if (!pidAlive(successorPid)) throw new Error(`successor ${successorPid} retired 
 fireReadinessTimeout();
 await waitFor(() => prompt, "original fallback was not delivered");
 await waitFor(() => existsSync(process.env.FM_RETIRED_FILE), "successor was not asked to retire before fallback");
-const retiredPid = readFileSync(process.env.FM_RETIRED_FILE, "utf8").trim();
-if (retiredPid !== successorPid) throw new Error(`retirement evidence named ${retiredPid}, expected successor ${successorPid}`);
+const retiredPidAfterFallback = readFileSync(process.env.FM_RETIRED_FILE, "utf8").trim();
+if (retiredPidAfterFallback !== successorPid) throw new Error(`post-fallback retirement evidence named ${retiredPidAfterFallback}, expected successor ${successorPid}`);
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
@@ -762,8 +762,8 @@ await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_RETIRE_FILE),
   "unretired successor was not asked to retire before fallback",
 );
-const retiredPid = readFileSync(process.env.FM_UNRETIRED_RETIRE_FILE, "utf8").trim();
-if (retiredPid !== successorPid) throw new Error(`retirement evidence named ${retiredPid}, expected successor ${successorPid}`);
+const retiredPidAfterFallback = readFileSync(process.env.FM_UNRETIRED_RETIRE_FILE, "utf8").trim();
+if (retiredPidAfterFallback !== successorPid) throw new Error(`post-fallback retirement evidence named ${retiredPidAfterFallback}, expected successor ${successorPid}`);
 if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
 if (successorPidAtFallback !== successorPid) throw new Error(`fallback observed successor ${successorPidAtFallback}, expected ${successorPid}`);
 if (!successorAliveAtFallback || !pidAlive(successorPid)) throw new Error(`successor ${successorPid} was not genuinely unretired at fallback`);
@@ -1903,8 +1903,8 @@ if (!pidAlive(successorPid)) throw new Error(`successor ${successorPid} retired 
 fireReadinessTimeout();
 await waitFor(() => prompt, "original fallback was not delivered");
 await waitFor(() => existsSync(process.env.FM_RETIRED_FILE), "successor was not asked to retire before fallback");
-const retiredPid = readFileSync(process.env.FM_RETIRED_FILE, "utf8").trim();
-if (retiredPid !== successorPid) throw new Error(`retirement evidence named ${retiredPid}, expected successor ${successorPid}`);
+const retiredPidAfterFallback = readFileSync(process.env.FM_RETIRED_FILE, "utf8").trim();
+if (retiredPidAfterFallback !== successorPid) throw new Error(`post-fallback retirement evidence named ${retiredPidAfterFallback}, expected successor ${successorPid}`);
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
@@ -2050,8 +2050,8 @@ await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_RETIRE_FILE),
   "unretired successor was not asked to retire before fallback",
 );
-const retiredPid = readFileSync(process.env.FM_UNRETIRED_RETIRE_FILE, "utf8").trim();
-if (retiredPid !== successorPid) throw new Error(`retirement evidence named ${retiredPid}, expected successor ${successorPid}`);
+const retiredPidAfterFallback = readFileSync(process.env.FM_UNRETIRED_RETIRE_FILE, "utf8").trim();
+if (retiredPidAfterFallback !== successorPid) throw new Error(`post-fallback retirement evidence named ${retiredPidAfterFallback}, expected successor ${successorPid}`);
 if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
 if (successorPidAtFallback !== successorPid) throw new Error(`fallback observed successor ${successorPidAtFallback}, expected ${successorPid}`);
 if (!successorAliveAtFallback || !pidAlive(successorPid)) throw new Error(`successor ${successorPid} was not genuinely unretired at fallback`);
