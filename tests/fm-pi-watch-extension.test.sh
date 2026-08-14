@@ -2115,21 +2115,18 @@ import { pathToFileURL } from "node:url";
 
 const nativeSetTimeout = globalThis.setTimeout;
 const nativeClearTimeout = globalThis.clearTimeout;
-const readinessTimer = { unref() {} };
-let readinessAttempts = 0;
-let fireReadinessTimeout = null;
+const readinessTimers = [];
 globalThis.setTimeout = (callback, delay, ...args) => {
   if (delay === Number(process.env.FM_OPENCODE_ARM_READY_TIMEOUT_MS)) {
-    readinessAttempts += 1;
-    if (readinessAttempts === 2) {
-      fireReadinessTimeout = () => callback(...args);
-      return readinessTimer;
-    }
+    const timer = { active: true, fire: () => callback(...args), unref() {} };
+    readinessTimers.push(timer);
+    return timer;
   }
   return nativeSetTimeout(callback, delay, ...args);
 };
 globalThis.clearTimeout = (timer) => {
-  if (timer !== readinessTimer) nativeClearTimeout(timer);
+  if (readinessTimers.includes(timer)) timer.active = false;
+  else nativeClearTimeout(timer);
 };
 function pidAlive(pid) {
   try {
@@ -2175,15 +2172,16 @@ await waitFor(
   () => existsSync(process.env.FM_STARTUP_FILE),
   "successor did not reach the controlled startup gate",
 );
-if (!fireReadinessTimeout) throw new Error("successor readiness timeout was not captured");
 writeFileSync(process.env.FM_ACTIVATE_FILE, "activate\n");
 await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_READY_FILE),
   "unretired successor did not install its retirement trap",
 );
+const readinessTimer = readinessTimers.findLast((timer) => timer.active);
+if (!readinessTimer) throw new Error("successor readiness timeout was not captured");
 const successorPid = readFileSync(process.env.FM_UNRETIRED_READY_FILE, "utf8").trim();
 if (!pidAlive(successorPid)) throw new Error(`successor ${successorPid} retired before the readiness deadline`);
-fireReadinessTimeout();
+readinessTimer.fire();
 await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
 await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_RETIRE_FILE),
