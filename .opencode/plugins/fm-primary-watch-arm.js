@@ -441,7 +441,7 @@ export const FmPrimaryWatchArm = async ({ client, directory, worktree }) => {
       if (event.type !== "session.idle") return;
       const sessionID = event.properties?.sessionID;
       if (!sessionID) return;
-      await ensureArm(paths, sessionID, client);
+      void ensureArm(paths, sessionID, client);
     },
   };
 };
