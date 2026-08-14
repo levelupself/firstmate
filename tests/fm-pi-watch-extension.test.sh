@@ -1744,14 +1744,19 @@ test_opencode_hung_successor_falls_back_to_typed_wake() {
   : > "$home/state/task.meta"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
-printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
-count=$(wc -l < "$FM_ARM_LOG" | tr -d '[:space:]')
-if [ "$count" -eq 1 ]; then
+if [ -f "$FM_ARM_LOG" ]; then
+  count=$(wc -l < "$FM_ARM_LOG" | tr -d '[:space:]')
+else
+  count=0
+fi
+if [ "$count" -eq 0 ]; then
+  printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
   printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
   printf 'signal: synthetic wake\n'
   exit 0
 fi
 trap 'exit 0' TERM INT
+printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 while :; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
@@ -1759,6 +1764,34 @@ SH
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+const nativeSetTimeout = globalThis.setTimeout;
+const nativeClearTimeout = globalThis.clearTimeout;
+const readinessTimer = { unref() {} };
+const fireReadinessTimeouts = [];
+let readinessAttempts = 0;
+globalThis.setTimeout = (callback, delay, ...args) => {
+  if (delay === Number(process.env.FM_OPENCODE_ARM_READY_TIMEOUT_MS)) {
+    readinessAttempts += 1;
+    if (readinessAttempts >= 2) {
+      fireReadinessTimeouts.push(() => callback(...args));
+      return readinessTimer;
+    }
+  }
+  return nativeSetTimeout(callback, delay, ...args);
+};
+globalThis.clearTimeout = (timer) => {
+  if (timer !== readinessTimer) nativeClearTimeout(timer);
+};
+const rows = () => existsSync(process.env.FM_ARM_LOG)
+  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
+  : [];
+async function waitFor(predicate, message) {
+  for (let i = 0; i < 500; i += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => nativeSetTimeout(resolve, 10));
+  }
+  throw new Error(message);
+}
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 let prompt = "";
 let rowsAtPrompt = 0;
@@ -1779,13 +1812,18 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 500 && !prompt; i += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 10));
+for (let successor = 0; successor < 3; successor += 1) {
+  const expectedRows = successor + 2;
+  const expectedTimeouts = successor + 1;
+  await waitFor(
+    () => rows().length >= expectedRows && fireReadinessTimeouts.length >= expectedTimeouts,
+    `successor ${successor + 1} did not reach its arm-log and retirement-trap checkpoint`,
+  );
+  fireReadinessTimeouts[successor]();
 }
-const rows = existsSync(process.env.FM_ARM_LOG)
-  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-  : [];
-if (rows.length !== 4) throw new Error(`expected one successor plus two retries, got ${rows.length}: ${rows.join(" | ")}`);
+await waitFor(() => prompt, "original fallback was not delivered");
+const finalRows = rows();
+if (finalRows.length !== 4) throw new Error(`expected one successor plus two retries, got ${finalRows.length}: ${finalRows.join(" | ")}`);
 if (rowsAtPrompt !== 4) throw new Error(`wake arrived before restoration exhausted (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("could not restore watcher continuity after 2 retries")) throw new Error(`missing typed restoration failure: ${prompt}`);
@@ -1795,8 +1833,8 @@ if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode must deliver the actionable wake after bounded hung-successor recovery"
   [ -z "$out" ] || fail "OpenCode hung-successor test printed output: $out"
+  expect_code 0 "$status" "OpenCode must deliver the actionable wake after bounded hung-successor recovery"
   pass "OpenCode hung successor falls back to one typed actionable wake"
 }
 
