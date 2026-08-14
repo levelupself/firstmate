@@ -81,7 +81,7 @@ case "${1:-}" in
     done
     ;;
   kill-window)
-    rm -f "$D/window-live"
+    [ -n "${FM_FAKE_KILL_FAIL:-}" ] || rm -f "$D/window-live"
     ;;
   capture-pane) printf 'ready\n' ;;
 esac
@@ -108,6 +108,10 @@ printf '%s\n' "$*" >> "$FM_FAKE_DIR/treehouse.log"
 if [ -n "${FM_FAKE_TREEHOUSE_MALFORMED:-}" ]; then
   printf 'not-json\n'
   exit 0
+fi
+if [ -n "${FM_FAKE_REQUIRE_STATUS_LOCK:-}" ] \
+   && flock -n "$FM_FAKE_RETAINED/../../treehouse-state.lock" true 2>/dev/null; then
+  FM_FAKE_TREEHOUSE_PROCESSES='[{"pid":42,"name":"codex"}]'
 fi
 jq -cn \
   --arg path "$FM_FAKE_RETAINED" \
@@ -154,6 +158,8 @@ run_reattach() {  # <dir> <id> <worktree>
     FM_FAKE_SEND_FAIL="${FM_FAKE_SEND_FAIL:-}" \
     FM_FAKE_ENTER_FAIL="${FM_FAKE_ENTER_FAIL:-}" \
     FM_FAKE_REQUIRE_COMMIT="${FM_FAKE_REQUIRE_COMMIT:-}" \
+    FM_FAKE_KILL_FAIL="${FM_FAKE_KILL_FAIL:-}" \
+    FM_FAKE_REQUIRE_STATUS_LOCK="${FM_FAKE_REQUIRE_STATUS_LOCK:-}" \
     "$SPAWN" "$id" --reattach-worktree "$retained" 2>&1
 }
 
@@ -329,6 +335,31 @@ test_final_submit_failure_rolls_back_before_agent_runs() {
   pass "fm-spawn reattach: final activation failure rolls back before the agent runs"
 }
 
+test_owner_proof_runs_under_treehouse_lock() {
+  local dir id=rt-owner-lock retained out rc
+  dir=$(new_case owner-lock "$id")
+  retained="$dir/pool/7/project"
+  out=$(FM_FAKE_REQUIRE_STATUS_LOCK=1 run_reattach "$dir" "$id" "$retained"); rc=$?
+  expect_code 0 "$rc" "ownership proof must run under the Treehouse lock"$'\n'"$out"
+  assert_grep "worktree=$retained" "$dir/home/state/$id.meta" \
+    "locked ownership proof must publish the retained binding"
+  pass "fm-spawn reattach: ownership is proved while the Treehouse lock is held"
+}
+
+test_failed_endpoint_removal_preserves_published_binding() {
+  local dir id=rt-kill-failure retained out rc
+  dir=$(new_case kill-failure "$id")
+  retained="$dir/pool/7/project"
+  out=$(FM_FAKE_ENTER_FAIL=1 FM_FAKE_KILL_FAIL=1 run_reattach "$dir" "$id" "$retained"); rc=$?
+  expect_code 1 "$rc" "unremovable replacement must preserve its binding"$'\n'"$out"
+  assert_contains "$out" "preserving its published binding" \
+    "failed endpoint removal must report the preserved replacement binding"
+  assert_grep "worktree=$retained" "$dir/home/state/$id.meta" \
+    "failed endpoint removal must not restore stale metadata"
+  [ -e "$dir/fake/window-live" ] || fail "kill-failure fixture did not retain the replacement endpoint"
+  pass "fm-spawn reattach: failed endpoint removal preserves the published binding"
+}
+
 test_wrong_branch_refuses
 test_live_agent_refuses
 test_task_identity_mismatch_refuses
@@ -338,5 +369,7 @@ test_launch_failure_rolls_back_the_binding
 test_recovery_axes_cannot_be_overridden
 test_lifecycle_lock_refuses_without_changes
 test_final_submit_failure_rolls_back_before_agent_runs
+test_owner_proof_runs_under_treehouse_lock
+test_failed_endpoint_removal_preserves_published_binding
 
 echo "# all fm-spawn-reattach tests passed"

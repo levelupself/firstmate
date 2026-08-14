@@ -737,11 +737,19 @@ parse_orca_worktree_result() {
 }
 
 spawn_abort_cleanup() {
-  local status=$?
+  local status=$? remaining_windows session window
   if [ "$REATTACH_ABORT_CLEANUP" = 1 ]; then
     REATTACH_ABORT_CLEANUP=0
     if [ -n "${T:-}" ]; then
       fm_backend_kill "$BACKEND" "$T" "${ZELLIJ_TAB_ID:-}" "${W:-}" 2>/dev/null || true
+      session=${T%%:*}
+      window=${T#*:}
+      remaining_windows=$(tmux list-windows -t "=$session" -F '#{window_name}' 2>/dev/null) || remaining_windows=__unreadable__
+      if [ "$remaining_windows" = __unreadable__ ] || printf '%s\n' "$remaining_windows" | grep -qxF "$window"; then
+        echo "warning: could not prove removal of retained-copy replacement endpoint for $ID; preserving its published binding" >&2
+        RELAUNCH_REPLACEMENT_PENDING=0
+        REATTACH_META_PUBLISHED=0
+      fi
     fi
     if [ "$REATTACH_META_PUBLISHED" = 1 ] && [ -f "$REATTACH_META_PRIOR" ]; then
       if mv -f "$REATTACH_META_PRIOR" "$STATE/$ID.meta"; then
@@ -2104,8 +2112,8 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
 
 if [ "$REATTACH" -eq 1 ]; then
   verify_reattach_copy_identity || exit 1
-  verify_reattach_treehouse_owner_free || exit 1
   acquire_reattach_treehouse_lock || exit 1
+  verify_reattach_treehouse_owner_free || exit 1
 fi
 
 W="fm-$ID"
