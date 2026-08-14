@@ -1442,15 +1442,17 @@ import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = { session: { promptAsync: async () => {} } };
-await mod.FmPrimaryWatchArm({
+const hooks = await mod.FmPrimaryWatchArm({
   client,
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
+const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
-const rejectedStatus = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
-if (rejectedStatus !== "read-only") {
-  console.error(`expected read-only without lock ownership, got ${rejectedStatus}`);
+await hooks.event(event);
+const denied = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (denied !== "read-only") {
+  console.error(`unexpected non-owner arm result: ${denied}`);
   process.exit(1);
 }
 if (existsSync(process.env.FM_ARM_LOG)) {
@@ -1458,9 +1460,11 @@ if (existsSync(process.env.FM_ARM_LOG)) {
   process.exit(1);
 }
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
-await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 20));
+await hooks.event(event);
+const armed = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (armed !== "external") {
+  console.error(`unexpected owner arm result: ${armed}`);
+  process.exit(1);
 }
 if (!existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm did not run after the session lock matched");
