@@ -521,12 +521,17 @@ EOF
 }
 
 test_pi_unretired_successor_falls_back_without_retry() {
-  local repo home plugin log release out status
+  local repo home plugin log startup activate unretired retired release out status
   repo="$TMP_ROOT/pi-unretired-successor-root"
   home="$TMP_ROOT/pi-unretired-successor-home"
   log="$TMP_ROOT/pi-unretired-successor.log"
+  startup="$TMP_ROOT/pi-unretired-successor.startup"
+  activate="$TMP_ROOT/pi-unretired-successor.activate"
+  unretired="$TMP_ROOT/pi-unretired-successor.unretired"
+  retired="$TMP_ROOT/pi-unretired-successor.retired"
   release="$TMP_ROOT/pi-unretired-successor.release"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
+  mkfifo "$activate"
   install_pi_watch_extension_fixture "$repo"
   plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
@@ -542,18 +547,51 @@ if [ "$count" -eq 0 ]; then
   printf 'signal: synthetic wake\n'
   exit 0
 fi
-trap '' TERM INT
+printf 'waiting\n' > "${FM_STARTUP_FILE:?}"
+IFS= read -r _ < "${FM_ACTIVATE_FILE:?}"
+trap 'printf "%s\n" "$$" > "${FM_RETIRED_FILE:?}"' TERM INT
+printf '%s\n' "$$" > "${FM_UNRETIRED_FILE:?}"
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
-while [ ! -e "$FM_RELEASE_FILE" ]; do :; done
+while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.1; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=1000 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STARTUP_FILE="$startup" FM_ACTIVATE_FILE="$activate" FM_UNRETIRED_FILE="$unretired" FM_RETIRED_FILE="$retired" FM_RELEASE_FILE="$release" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+const nativeSetTimeout = globalThis.setTimeout;
+const nativeClearTimeout = globalThis.clearTimeout;
+const readinessTimer = { unref() {} };
+let fireReadinessTimeout = null;
+globalThis.setTimeout = (callback, delay, ...args) => {
+  if (delay === Number(process.env.FM_PI_ARM_READY_TIMEOUT_MS) && fireReadinessTimeout === null) {
+    fireReadinessTimeout = () => callback(...args);
+    return readinessTimer;
+  }
+  return nativeSetTimeout(callback, delay, ...args);
+};
+globalThis.clearTimeout = (timer) => {
+  if (timer !== readinessTimer) nativeClearTimeout(timer);
+};
+async function waitFor(predicate, message) {
+  for (let i = 0; i < 500; i += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => nativeSetTimeout(resolve, 10));
+  }
+  throw new Error(message);
+}
+function pidAlive(pid) {
+  try {
+    process.kill(Number(pid), 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 let tool = null;
 let prompt = "";
 let rowsAtPrompt = 0;
+let successorAliveAtPrompt = false;
 const pi = {
   on() {},
   registerCommand() {},
@@ -565,44 +603,38 @@ const pi = {
     rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
       ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
       : 0;
+    const successorPid = readFileSync(process.env.FM_UNRETIRED_FILE, "utf8").trim();
+    successorAliveAtPrompt = pidAlive(successorPid);
   },
 };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-unretired-successor", {}, undefined, undefined, {});
-for (let i = 0; i < 500 && !prompt; i += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 10));
-}
+await waitFor(() => existsSync(process.env.FM_STARTUP_FILE), "successor did not reach the controlled startup gate");
+if (!fireReadinessTimeout) throw new Error("successor readiness timeout was not captured");
+writeFileSync(process.env.FM_ACTIVATE_FILE, "activate\n");
+await waitFor(() => existsSync(process.env.FM_UNRETIRED_FILE), "successor did not install its retirement trap");
+const successorPid = readFileSync(process.env.FM_UNRETIRED_FILE, "utf8").trim();
+if (!pidAlive(successorPid)) throw new Error(`successor ${successorPid} retired before the readiness deadline`);
+fireReadinessTimeout();
+await waitFor(() => prompt, "original fallback was not delivered");
+await waitFor(() => existsSync(process.env.FM_RETIRED_FILE), "successor was not asked to retire before fallback");
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
-if (rows.length !== 2) throw new Error(`unretired arm overlapped a retry: ${rows.join(" | ")}`);
+if (rows.length !== 2) throw new Error(`expected the initial arm and one established unretired successor, got: ${rows.join(" | ")}`);
 if (rowsAtPrompt !== 2) throw new Error(`wake arrived after an overlapping retry (${rowsAtPrompt} arm rows)`);
+if (!successorAliveAtPrompt || !pidAlive(successorPid)) throw new Error(`successor ${successorPid} was not genuinely unretired at fallback`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
-if (!prompt.includes("unready successor arm did not exit within 1000ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
+if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-const successorPid = Number(rows[1].split("=")[1]);
-for (let i = 0; i < 500; i += 1) {
-  try {
-    process.kill(successorPid, 0);
-  } catch (error) {
-    if (error?.code === "ESRCH") break;
-    throw error;
-  }
-  await new Promise((resolve) => setTimeout(resolve, 10));
-}
-try {
-  process.kill(successorPid, 0);
-  throw new Error(`released successor ${successorPid} was not reaped`);
-} catch (error) {
-  if (error?.code !== "ESRCH") throw error;
-}
+await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
-)
+  )
   status=$?
-  expect_code 0 "$status" "Pi must fall back without overlapping an unretired successor"
   [ -z "$out" ] || fail "Pi unretired-successor test printed output: $out"
+  expect_code 0 "$status" "Pi must fall back without overlapping an unretired successor"
   pass "Pi unretired successor falls back without an overlapping retry"
 }
 
@@ -640,10 +672,24 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
-    out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=1000 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+    out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+const nativeSetTimeout = globalThis.setTimeout;
+const nativeClearTimeout = globalThis.clearTimeout;
+const readinessTimer = { unref() {} };
+let fireReadinessTimeout = null;
+globalThis.setTimeout = (callback, delay, ...args) => {
+  if (delay === Number(process.env.FM_PI_ARM_READY_TIMEOUT_MS) && fireReadinessTimeout === null) {
+    fireReadinessTimeout = () => callback(...args);
+    return readinessTimer;
+  }
+  return nativeSetTimeout(callback, delay, ...args);
+};
+globalThis.clearTimeout = (timer) => {
+  if (timer !== readinessTimer) nativeClearTimeout(timer);
+};
 let tool = null;
 const prompts = [];
 const pi = {
@@ -674,6 +720,8 @@ await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_READY_FILE),
   "unretired successor did not enter its retirement wait",
 );
+if (!fireReadinessTimeout) throw new Error("successor readiness timeout was not captured");
+fireReadinessTimeout();
 await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
 await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_RETIRE_FILE),
@@ -1390,15 +1438,17 @@ import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = { session: { promptAsync: async () => {} } };
-await mod.FmPrimaryWatchArm({
+const hooks = await mod.FmPrimaryWatchArm({
   client,
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
+const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
-const readOnlyStatus = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
-if (readOnlyStatus !== "read-only") {
-  console.error(`expected read-only without lock ownership, got ${readOnlyStatus}`);
+await hooks.event(event);
+const denied = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (denied !== "read-only") {
+  console.error(`unexpected non-owner arm result: ${denied}`);
   process.exit(1);
 }
 if (existsSync(process.env.FM_ARM_LOG)) {
@@ -1406,9 +1456,10 @@ if (existsSync(process.env.FM_ARM_LOG)) {
   process.exit(1);
 }
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
-const ownerStatus = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
-if (ownerStatus !== "external") {
-  console.error(`expected external after lock ownership, got ${ownerStatus}`);
+await hooks.event(event);
+const armed = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (armed !== "external") {
+  console.error(`unexpected owner arm result: ${armed}`);
   process.exit(1);
 }
 if (!existsSync(process.env.FM_ARM_LOG)) {
