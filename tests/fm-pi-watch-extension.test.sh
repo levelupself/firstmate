@@ -2691,7 +2691,7 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 // The guard hook awaits its whole path - the arm coordination, the guard
 // script, and the blind-turn prompt - so awaiting the hook already covers
 // everything asserted about the guard. The old loop instead polled for the
-// guard's log file and then immediately asserted on a prompt that is sent
+// guard log file and then immediately asserted on a prompt that is sent
 // after it, which is a race the poll length cannot fix.
 await guardHooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 // The arm child is the one thing still running outside that awaited path, so
