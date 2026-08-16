@@ -332,7 +332,7 @@ jobs:
         include:
           - name: fleet snapshot
             script: fm-fleet-snapshot-view.test.sh
-            expected: 33
+            expected: 34
           - name: Bearings
             script: fm-bearings-snapshot.test.sh
             expected: 43

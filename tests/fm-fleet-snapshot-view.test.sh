@@ -6,6 +6,9 @@ set -u
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$ROOT/bin/fm-timeout-lib.sh"
+
 # shellcheck disable=SC2153  # ROOT is assigned by tests/lib.sh.
 SNAPSHOT="$ROOT/bin/fm-fleet-snapshot.sh"
 VIEW="$ROOT/bin/fm-fleet-view.sh"
@@ -1527,7 +1530,7 @@ test_watch_refuses_to_paint_inside_a_bound_frame_it_is_not_recorded_for() {
   out=$(FM_HOME="$home" COLUMNS=45 LINES=20 \
     HERDR_SESSION=lab-session HERDR_PANE_ID=w9:p5 HERDR_TAB_ID=w9:t1 \
     PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" PATH="$home/fakebin:$PATH" \
-    timeout 30 "$dir/fm-fleet-view.sh" --watch 0.1 2>&1) && rc=0 || rc=$?
+    fm_run_timed 30 "$dir/fm-fleet-view.sh" --watch 0.1 2>&1) && rc=0 || rc=$?
   expect_code 0 "$rc" "an unrecorded banner should retire cleanly, not error out"
   assert_contains "$out" 'not this frame' \
     "an unrecorded banner must say why it stopped"
@@ -1539,7 +1542,7 @@ test_watch_refuses_to_paint_inside_a_bound_frame_it_is_not_recorded_for() {
     HERDR_SESSION=lab-session HERDR_PANE_ID=w9:p2 HERDR_TAB_ID=w9:t1 \
     PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" \
     PAINTER_REPORTED_SECTIONS=waiting PATH="$home/fakebin:$PATH" \
-    timeout 30 "$dir/fm-fleet-view.sh" --watch 0.1 --section ready 2>&1) && rc=0 || rc=$?
+    fm_run_timed 30 "$dir/fm-fleet-view.sh" --watch 0.1 --section ready 2>&1) && rc=0 || rc=$?
   expect_code 0 "$rc" "a mismatched-section banner should retire cleanly"
   assert_not_contains "$out" 'FLEET STATUS' \
     "a banner showing sections the frame records for another pane must not paint"
@@ -1643,7 +1646,7 @@ test_watch_refuses_a_second_painter_for_one_bound_pane() {
     HERDR_SESSION=lab-session HERDR_PANE_ID=w9:p2 HERDR_TAB_ID=w9:t1 \
     PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" \
     PAINTER_REPORTED_SECTIONS=waiting PATH="$home/fakebin:$PATH" \
-    timeout 30 "$dir/fm-fleet-view.sh" --watch 0.1 --section waiting 2>&1) && rc=0 || rc=$?
+    fm_run_timed 30 "$dir/fm-fleet-view.sh" --watch 0.1 --section waiting 2>&1) && rc=0 || rc=$?
   expect_code 1 "$rc" "a second painter for one bound pane must refuse"
   assert_contains "$out" 'already painting' \
     "the refusal must name the conflict"
@@ -1683,7 +1686,7 @@ test_watch_claims_ownership_when_the_frame_is_published_after_launch() {
     HERDR_SESSION=lab-session HERDR_PANE_ID=w9:p2 HERDR_TAB_ID=w9:t1 \
     PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" \
     PAINTER_REPORTED_SECTIONS=waiting PATH="$home/fakebin:$PATH" \
-    timeout 30 "$dir/fm-fleet-view.sh" --watch 0.1 --section waiting 2>&1) && rc=0 || rc=$?
+    fm_run_timed 30 "$dir/fm-fleet-view.sh" --watch 0.1 --section waiting 2>&1) && rc=0 || rc=$?
   expect_code 1 "$rc" "a later painter must refuse the ownership claimed after publication"
   assert_contains "$out" 'already painting' \
     "the later painter must report the post-publication owner"
@@ -1704,7 +1707,7 @@ test_watch_refuses_a_recorded_pane_with_wrong_process_identity() {
       PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" \
       PAINTER_REPORTED_MODE="$mode" PAINTER_REPORTED_SECTIONS=waiting \
       PATH="$home/fakebin:$PATH" \
-      timeout 30 "$dir/fm-fleet-view.sh" --watch 0.1 --section waiting 2>&1) && rc=0 || rc=$?
+      fm_run_timed 30 "$dir/fm-fleet-view.sh" --watch 0.1 --section waiting 2>&1) && rc=0 || rc=$?
     expect_code 0 "$rc" "a recorded pane with wrong $mode identity should retire cleanly"
     assert_contains "$out" 'not this frame' \
       "a recorded pane with wrong $mode identity must say why it stopped"
