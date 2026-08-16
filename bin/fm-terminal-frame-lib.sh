@@ -33,8 +33,8 @@ fm_terminal_dimension() {  # <lines|cols>
 # The head is what the panel orders first on purpose, so overflow has to cost
 # the tail. Letting the terminal scroll instead would cost the head, which is
 # the opposite of the ordering the panel exists to provide.
-fm_terminal_fit_height() {  # <height> <frame>
-  local height=$1 frame=$2 total hidden
+fm_terminal_fit_height() {  # <height> <frame> [width]
+  local height=$1 frame=$2 width=${3:-} total hidden summary
   total=$(printf '%s\n' "$frame" | awk 'END {print NR}')
   if [ "$total" -le "$height" ]; then
     printf '%s\n' "$frame"
@@ -42,7 +42,16 @@ fm_terminal_fit_height() {  # <height> <frame>
   fi
   hidden=$((total - height + 1))
   printf '%s\n' "$frame" | head -n $((height - 1))
-  printf '… %s more rows not shown\n' "$hidden"
+  summary="… $hidden more rows not shown"
+  if [ -n "$width" ]; then
+    printf '%s\n' "$summary" | jq -Rr --argjson width "$width" '
+      if length <= $width then .
+      elif $width <= 1 then .[:$width]
+      else .[:($width - 1)] + "…" end
+    '
+  else
+    printf '%s\n' "$summary"
+  fi
 }
 
 # Newlines separate rows rather than terminating them. A trailing newline after

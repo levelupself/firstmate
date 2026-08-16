@@ -33,10 +33,14 @@ SNAPSHOT_CMD="$SCRIPT_DIR/fm-fleet-snapshot.sh"
 usage() {
   cat <<'EOF'
 usage: fm-fleet-view.sh [--json] [--watch [interval]] [--section <names>]...
+                        [--geometry-command <executable>]
 
 Render a narrow, prioritized fleet side panel from fm-fleet-snapshot.sh.
 Use --json to print the complete underlying snapshot.
 Use --watch to redraw every 5 seconds, or provide a positive interval in seconds.
+Use --geometry-command to read "<columns> <lines>" from an executable before
+every redraw when an embedding surface has geometry more authoritative than
+the pane pty.
 Use --section to render a subset of: waiting, ready, in-flight, blocked,
 finished, failed. The flag may be repeated and accepts a comma-separated list;
 the sections are always rendered in that priority order, whatever order they
@@ -60,6 +64,7 @@ WATCH=0
 INTERVAL=5
 REQUESTED=
 SECTION_SET=0
+GEOMETRY_COMMAND=
 while [ $# -gt 0 ]; do
   case "$1" in
     --json) FORMAT=json ;;
@@ -81,6 +86,11 @@ while [ $# -gt 0 ]; do
       fi
       ;;
     --watch=*) WATCH=1; INTERVAL=${1#--watch=} ;;
+    --geometry-command)
+      [ $# -gt 1 ] || { usage >&2; exit 2; }
+      shift
+      GEOMETRY_COMMAND=$1
+      ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -171,10 +181,36 @@ terminal_height() {
   printf '%s\n' "$height"
 }
 
+authoritative_geometry() {
+  local geometry width height extra
+  [ -n "$GEOMETRY_COMMAND" ] || return 1
+  [ -x "$GEOMETRY_COMMAND" ] || return 1
+  geometry=$("$GEOMETRY_COMMAND") || return 1
+  read -r width height extra <<EOF
+$geometry
+EOF
+  [ -z "${extra:-}" ] || return 1
+  case "$width:$height" in
+    *[!0-9:]*|:*|*:) return 1 ;;
+  esac
+  [ "$width" -gt 0 ] && [ "$height" -gt 0 ] || return 1
+  printf '%s %s\n' "$width" "$height"
+}
+
 render_once() {
-  local width height snapshot rendered
-  width=$(terminal_width)
-  height=$(terminal_height)
+  local width height snapshot rendered geometry
+  if [ -n "$GEOMETRY_COMMAND" ]; then
+    if ! geometry=$(authoritative_geometry); then
+      printf '%s\n' "FLEET VIEW DEGRADED" \
+        "Drawn pane geometry unavailable; retrying on the next redraw."
+      return 1
+    fi
+    width=${geometry%% *}
+    height=${geometry#* }
+  else
+    width=$(terminal_width)
+    height=$(terminal_height)
+  fi
   if ! snapshot=$("$SNAPSHOT_CMD" --json); then
     printf '%s\n' "FLEET VIEW DEGRADED" "Snapshot unavailable; retrying on the next redraw."
     return 1
@@ -353,7 +389,7 @@ render_once() {
     echo "Snapshot data could not be rendered; retrying on the next redraw."
     return 1
   fi
-  fm_terminal_fit_height "$height" "$rendered"
+  fm_terminal_fit_height "$height" "$rendered" "$width"
 }
 
 if [ "$WATCH" = 1 ]; then
