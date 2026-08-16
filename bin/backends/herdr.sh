@@ -184,6 +184,7 @@ FM_BACKEND_HERDR_COCKPIT_SECTIONS_MAX_PANES=6
 # The fleet view's own executable identity, matched by basename so a fleet
 # banner an operator started through a relative path is still recognized.
 FM_BACKEND_HERDR_COCKPIT_FLEET_SCRIPT="fm-fleet-view.sh"
+FM_BACKEND_HERDR_COCKPIT_GEOMETRY_SCRIPT="fm-herdr-pane-geometry.sh"
 # The display-only metadata source used to publish pane names. Herdr's
 # sidebar otherwise names agents by space and tab, so co-located workers are
 # indistinguishable; this names each one by its task and is never an identity.
@@ -2741,7 +2742,11 @@ fm_backend_herdr_cockpit_create_fleet_panes() {  # <session> <workspace> <tab> <
     # relative to that cwd so a disposable launcher checkout is never captured.
     if ! fm_backend_herdr_cli "$session" pane rename "$pane" "firstmate-fleet-$spec" >/dev/null 2>&1 \
        || ! fm_backend_herdr_cli "$session" pane run "$pane" \
-         env "FM_HOME=$home" bin/fm-fleet-view.sh \
+         env "FM_HOME=$home" \
+         "FM_HERDR_LAB_HELPER=${FM_COCKPIT_LAB_HELPER:-}" \
+         "FM_HERDR_LAB_SESSION=${FM_COCKPIT_LAB_SESSION:-}" \
+         bin/fm-fleet-view.sh \
+         --geometry-command "bin/$FM_BACKEND_HERDR_COCKPIT_GEOMETRY_SCRIPT" \
          --watch --section "$spec" >/dev/null 2>&1; then
       fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$created" \
         "could not launch the fleet banner" || true

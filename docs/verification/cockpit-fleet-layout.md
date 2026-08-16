@@ -57,6 +57,22 @@ The three fleet panes took 18 columns each of the 54-column band and kept the ba
 Creation order is also screen order left to right, and the later splits are nested inside the band rather than against the supervisor, so dividing the band never resizes or rebuilds the pane holding the supervisor.
 At the supported maximum of six panes, the smallest share is 1/6 = 0.1667, still above the 0.1 floor Herdr silently clamps to.
 
+## Drawn geometry remains authoritative when the pty diverges
+
+Verified on 2026-08-15 against Herdr 0.7.3 in a guarded lab session.
+`pane layout` returned each pane's current drawn rectangle, including an 18-column by 6-line fleet pane, while the process pty could independently retain a larger winsize.
+The cockpit passes `bin/fm-herdr-pane-geometry.sh` to every fleet painter, and the painter invokes it before every redraw rather than caching creation-time geometry.
+
+The portable visual-path counterfactual is executable without relying on `herdr pane read`, whose logical-line output masks physical wrapping:
+
+```sh
+bash tests/fm-fleet-view-pane-fit-smoke.test.sh
+```
+
+It places the public fleet-view interface in a real terminal rectangle, deliberately changes that pane's pty to 54 columns by 17 lines while retaining an 18-column by 6-line drawn budget, and verifies that no rendered physical row or frame exceeds the drawn geometry.
+The same suite verifies that the overflow-summary row is width-clipped and cannot wrap and scroll a correctly height-budgeted frame.
+The Herdr integration path remains covered by `tests/fm-cockpit.test.sh`; the other supported runtime backends do not create or paint a native cockpit fleet region and retain their existing plain-panel fallback.
+
 ## Swapping preserves pane identity and a registered agent
 
 `w1:p1` held a registered agent before the swap.
