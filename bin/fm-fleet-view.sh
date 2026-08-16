@@ -472,6 +472,12 @@ painter_binding() {
     [ -n "$pane" ] || continue
     index=$((index + 1))
     [ "$pane" = "$HERDR_PANE_ID" ] || continue
+    if ! fm_backend_herdr_cockpit_pane_matches \
+      "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$HERDR_PANE_ID" \
+      "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" "$FM_BACKEND_HERDR_COCKPIT_TAB_ID"; then
+      PAINTER_BINDING=unbound
+      return 0
+    fi
     recorded=$(fm_backend_herdr_cockpit_fleet_pane_section "$index")
     # No recorded argument is the version-2 shape: one pane, launched before the
     # flag existed, so there is no section to disagree with.
