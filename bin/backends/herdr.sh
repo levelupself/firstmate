@@ -2275,14 +2275,12 @@ fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane> [<home>] [<sections
   fi
   if [ "$identity" = strict ]; then
     if printf '%s' "$info" | jq -e \
-      --arg script "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" \
-      --arg home "$home" \
+      --arg script "$home/bin/fm-fleet-view.sh" \
       --arg sections "$sections" '
       def words: (.argv // (if (.argv0 // "") == "" then [] else [.argv0] end));
       any(.result.process_info.foreground_processes[]?;
         (words | index($script)) != null
         and (words | index("--watch")) != null
-        and (words | index("FM_HOME=" + $home)) != null
         and ($sections == ""
              or ((words | index("--section")) as $at
                  | $at != null and words[$at + 1] == $sections)))
