@@ -466,9 +466,9 @@ test_terminal_report_cannot_be_written_at_commit() {
 # A checks-based ready signal is only meaningful when the repository can
 # demonstrate that GitHub Actions is enabled and that its default-branch head
 # produced at least one test-oriented Actions check run. Disabled Actions, an
-# empty check-run set, and a failed probe all select the stricter local-suite handoff. The same
-# arbitrary repository fixture is driven through positive and negative probe
-# results so the decision cannot be keyed to a project name.
+# empty check-run set, and a failed probe all select the stricter local-suite handoff.
+# The same arbitrary repository fixture is driven through positive and negative
+# probe results so the decision cannot be keyed to a project name.
 test_no_mistakes_ready_signal_requires_working_ci() {
   local home fakebin repo brief log
   home="$TMP_ROOT/ci-readiness-home"
@@ -492,15 +492,24 @@ case "$*" in
       *) printf 'true\n' ;;
     esac
     ;;
-  *'/commits/main/check-runs'*)
+  *'/commits/release/check-runs'*)
     case "${FM_FAKE_CI_STATE:?}" in
       working) printf '2\n' ;;
-      empty) printf '0\n' ;;
       *) exit 97 ;;
     esac
     ;;
   *'/repos/example/arbitrary-service'*)
-    printf 'main\n'
+    case "${FM_FAKE_CI_STATE:?}" in
+      api-unreachable) exit 1 ;;
+      working) printf 'release\n' ;;
+      *) printf 'main\n' ;;
+    esac
+    ;;
+  *'/commits/main/check-runs'*)
+    case "${FM_FAKE_CI_STATE:?}" in
+      empty) printf '0\n' ;;
+      *) exit 97 ;;
+    esac
     ;;
   *) exit 98 ;;
 esac
@@ -516,8 +525,12 @@ SH
     "a repository with observed GitHub Actions checks lost the checks-green ready signal"
   assert_no_grep "full local suite is the merge gate" "$brief" \
     "a repository with observed GitHub Actions checks was assigned the fallback gate"
+  assert_grep "/repos/example/arbitrary-service/commits/release/check-runs" "$log" \
+    "CI readiness detection did not use the authoritative default branch"
+  assert_no_grep "/repos/example/arbitrary-service/commits/main/check-runs" "$log" \
+    "CI readiness detection trusted stale local origin/HEAD metadata"
 
-  for state in disabled empty unknown; do
+  for state in disabled empty unknown api-unreachable; do
     FM_HOME="$home" PATH="$fakebin:$PATH" FM_FAKE_GH_LOG="$log" FM_FAKE_CI_STATE="$state" \
       "$ROOT/bin/fm-brief.sh" "ci-$state" arbitrary-service --mode no-mistakes >/dev/null 2>&1
     brief="$home/data/ci-$state/brief.md"
@@ -542,8 +555,8 @@ SH
 
   assert_grep "/repos/example/arbitrary-service/actions/permissions" "$log" \
     "CI readiness detection did not inspect the repository Actions setting"
-  assert_grep "/repos/example/arbitrary-service/commits/main/check-runs" "$log" \
-    "CI readiness detection did not inspect default-head Actions check runs"
+  assert_grep "api /repos/example/arbitrary-service --jq .default_branch" "$log" \
+    "CI readiness detection did not request authoritative repository metadata"
   assert_grep "test(" "$log" \
     "CI readiness detection accepted Actions checks without recognizing test-oriented names"
   pass "fm-brief.sh: no-mistakes readiness fails closed when working CI is not observed"

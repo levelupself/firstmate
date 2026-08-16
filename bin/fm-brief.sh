@@ -266,9 +266,11 @@ repo_has_working_test_checks() {
   slug=$(github_slug_from_checkout "$checkout") || return 1
   enabled=$(gh-axi api "/repos/$slug/actions/permissions" --jq '.enabled' 2>/dev/null) || return 1
   [ "$enabled" = true ] || return 1
-  default_branch=$(git -C "$checkout" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null) || return 1
-  default_branch=${default_branch#origin/}
-  [ -n "$default_branch" ] || return 1
+  default_branch=$(gh-axi api "/repos/$slug" --jq '.default_branch' 2>/dev/null) || return 1
+  case "$default_branch" in
+    ''|*$'\n'*) return 1 ;;
+  esac
+  git check-ref-format --branch "$default_branch" >/dev/null 2>&1 || return 1
   check_count=$(gh-axi api "/repos/$slug/commits/$default_branch/check-runs" \
     --jq '[.check_runs[] | select(.app.slug == "github-actions") | select(.name | test("(^|[^[:alnum:]])(test(s|ing)?|lint|type[ -]?check|verify|verification|coverage|unit|integration|e2e|behavior)([^[:alnum:]]|$)"; "i"))] | length' 2>/dev/null) || return 1
   case "$check_count" in
