@@ -2712,7 +2712,7 @@ if (!existsSync(process.env.FM_GUARD_LOG)) {
 }
 if (!promptBodies.some((body) => body.includes("TURN WOULD END BLIND"))) {
   const promptSeparator = "\n---\n";
-  console.error(`missing blind-turn prompt: ${promptBodies.join(promptSeparator)}`);
+  console.error("missing blind-turn prompt: " + promptBodies.join(promptSeparator));
   process.exit(1);
 }
 EOF
