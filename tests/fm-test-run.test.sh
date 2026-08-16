@@ -286,7 +286,7 @@ SH
 test_undeclared_gate_skip_fails() {
   local tmp skip_f out json rc
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-skip.XXXXXX")
-  skip_f="$tmp/skip.test.sh"
+  skip_f="$tmp/fm-operational-input.test.sh"
   out="$tmp/out.txt"
   json="$tmp/timing.json"
   cat >"$skip_f" <<'SH'
@@ -300,6 +300,8 @@ SH
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "undeclared gate skip must fail when its family declares expected_gate_skip=none"
+  grep -Eq '^FM_TEST_BEGIN .+ family=pure-contract-unit expected_gate_skip=none$' "$out" \
+    || fail "BEGIN must record the existing pure-contract-unit no-skip declaration"
   grep -Eq '^FM_TEST_END .+ exit=1 duration_ms=[0-9]+ gate_skip=true$' "$out" \
     || fail "END must retain gate_skip=true and report exit=1: $(grep '^FM_TEST_END' "$out")"
   grep -q 'FM_TEST_SUMMARY total=1 failed=1 skipped_gate=1' "$out" \
