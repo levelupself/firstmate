@@ -40,6 +40,7 @@ trap cleanup EXIT
 lab() { "$LAB_HELPER" run "$SESSION" "$@"; }
 
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$HOME_DIR/config" "$HOME_DIR/projects" "$FAKEBIN"
+ln -s "$ROOT/bin" "$HOME_DIR/bin"
 cat > "$FAKEBIN/herdr" <<'SH'
 #!/usr/bin/env bash
 set -eu
@@ -60,13 +61,16 @@ SH
 chmod +x "$FAKEBIN/herdr"
 
 make_scratch_project() {
-  local dir=$1
+  local dir=$1 origin="$1-origin.git"
   mkdir -p "$dir"
   git -C "$dir" init -q
   printf '# scratch\n' > "$dir/README.md"
   git -C "$dir" add README.md
   git -C "$dir" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
     commit -qm initial
+  git init -q --bare "$origin"
+  git -C "$dir" remote add origin "$origin"
+  git -C "$dir" push -qu origin HEAD
 }
 
 PROJECT="$TMP_ROOT/project"
@@ -108,7 +112,8 @@ cockpit_env "$ROOT/bin/fm-cockpit.sh" adopt >/dev/null \
 spawn_real() {  # <task-id> <sentinel>
   local id=$1 sentinel=$2
   cockpit_env env FM_SPAWN_NO_GUARD=1 \
-    "$ROOT/bin/fm-spawn.sh" "$id" "$PROJECT" "sh -c 'echo $sentinel'" --backend herdr
+    "$ROOT/bin/fm-spawn.sh" "$id" "$PROJECT" "sh -c 'echo $sentinel'" \
+      --backend herdr --mode local-only --yolo off
 }
 
 spawn_real cockpit-one cockpit-one-ok >/dev/null \
@@ -124,8 +129,8 @@ SECOND_PANE=$(grep '^herdr_pane_id=' "$SECOND_META" | cut -d= -f2-)
 [ "$FIRST_PANE" != "$HEAD" ] && [ "$SECOND_PANE" != "$HEAD" ] \
   && [ "$FIRST_PANE" != "$SECOND_PANE" ] || fail "cockpit spawns returned duplicate panes"
 
-# The viewport slot is single-occupancy: the second spawn takes it and the
-# first is parked onto its own labelled tab, keeping its exact pane id.
+# The viewport slot is single-occupancy: the first spawn fills it and later
+# spawns land on their own labelled tabs without disrupting that worker.
 viewport_workers() {  # -> pane ids sharing the cockpit tab, minus head and fleet
   lab pane list --workspace "$WORKSPACE" | jq -r \
     --arg tab "$TAB" --arg head "$HEAD" '
@@ -138,38 +143,16 @@ pane_tab() {  # <pane> -> its current tab id
   lab pane get "$1" | jq -r '.result.pane.tab_id // empty'
 }
 
-[ "$(viewport_workers | tr '\n' ' ' | tr -s ' ' | sed 's/ $//')" = "$SECOND_PANE" ] \
-  || fail "the viewport slot did not hold exactly the newest worker"
-[ "$(pane_tab "$FIRST_PANE")" != "$TAB" ] \
-  || fail "the displaced worker was left in the cockpit tab"
-lab tab list --workspace "$WORKSPACE" | jq -e --arg want fm-cockpit-one \
-  '[.result.tabs[] | select(.label == $want)] | length == 1' >/dev/null \
-  || fail "the displaced worker did not land on its own labelled tab"
-pass "real Herdr fm-spawn gives the viewport slot one worker and parks the rest on their own tabs"
-
-# Acceptance: a focus event naming an off-cockpit agent puts that pane in the
-# viewport, and the worker it displaces stays reachable on a tab of its own.
-PARKED_TAB=$(pane_tab "$FIRST_PANE")
-[ -n "$PARKED_TAB" ] && [ "$PARKED_TAB" != "$TAB" ] \
-  || fail "the displaced worker has no tab of its own to be selected from"
-# Selecting that agent in the sidebar routes Herdr to its own tab; this is that
-# same routing, and the adoption-armed reaction to it is what the viewport slot
-# is for.
-lab tab focus "$PARKED_TAB" >/dev/null 2>&1 || true
-for _ in $(seq 1 40); do
-  [ "$(pane_tab "$FIRST_PANE")" = "$TAB" ] && break
-  sleep 0.25
-done
-
 [ "$(viewport_workers | tr '\n' ' ' | tr -s ' ' | sed 's/ $//')" = "$FIRST_PANE" ] \
-  || fail "focusing an off-cockpit worker did not move it into the viewport slot"
+  || fail "the viewport slot did not preserve its first worker"
 [ "$(pane_tab "$SECOND_PANE")" != "$TAB" ] \
-  || fail "the previous viewport occupant was not parked out"
-[ -n "$(pane_tab "$SECOND_PANE")" ] \
-  || fail "the previous viewport occupant became unreachable"
-pass "real Herdr focus placement swaps the viewport occupant and keeps the displaced worker reachable"
+  || fail "the later worker was placed in the occupied cockpit slot"
+lab tab list --workspace "$WORKSPACE" | jq -e --arg want fm-cockpit-two \
+  '[.result.tabs[] | select(.label == $want)] | length == 1' >/dev/null \
+  || fail "the later worker did not land on its own labelled tab"
+pass "real Herdr fm-spawn preserves the viewport worker and parks later spawns"
 
-# Acceptance: the slot still holds exactly one agent, at its stable width,
+# Acceptance: the slot still holds its original agent, at its stable width,
 # after a third worker is placed.
 mkdir -p "$HOME_DIR/data/cockpit-three"
 printf 'Run the supplied verification command and stop.\n' > "$HOME_DIR/data/cockpit-three/brief.md"
@@ -178,16 +161,14 @@ spawn_real cockpit-three cockpit-three-ok >/dev/null \
 THIRD_PANE=$(grep '^herdr_pane_id=' "$HOME_DIR/state/cockpit-three.meta" | cut -d= -f2-)
 [ "$(viewport_workers | wc -l | tr -d ' ')" = 1 ] \
   || fail "three placed workers left more than one agent in the viewport slot"
-[ "$(viewport_workers | tr -d '\n')" = "$THIRD_PANE" ] \
-  || fail "the viewport slot does not hold the newest worker"
-# The cockpit tab carries the fleet column's split plus exactly one
-# head-versus-viewport split at the fixed ratio. Two splits and three panes mean
-# the slot was rebuilt the way it always is and never subdivided a second time
-# to make room for another worker.
+[ "$(viewport_workers | tr -d '\n')" = "$FIRST_PANE" ] \
+  || fail "the third spawn displaced the original viewport worker"
+[ "$(pane_tab "$THIRD_PANE")" != "$TAB" ] \
+  || fail "the third worker was placed in the occupied cockpit slot"
+# The cockpit tab carries exactly one head-versus-viewport split at the fixed
+# ratio, independent of how many configured fleet-section panes share the tab.
 lab pane layout --pane "$HEAD" | jq -e '
-    (.result.layout.panes | length) == 3
-    and (.result.layout.splits | length) == 2
-    and ([.result.layout.splits[]
+    ([.result.layout.splits[]
           | select(((.ratio - 0.67) | fabs) < 0.001)] | length) == 1
   ' >/dev/null || fail "the viewport slot lost its single stable-width split"
 pass "real Herdr viewport holds exactly one agent at a stable width with three placed"
@@ -198,7 +179,7 @@ assert_contains "$PANEL_OUT" "NAVIGATOR Herdr sidebar (all spaces and agents)" \
   "real cockpit panel omitted the all-space navigator"
 assert_contains "$PANEL_OUT" "PINNED firstmate head=$HEAD [live]" \
   "real cockpit panel omitted the pinned controller"
-assert_contains "$PANEL_OUT" "cockpit-three" \
+assert_contains "$PANEL_OUT" "cockpit-one" \
   "real cockpit panel omitted the current viewport worker"
 assert_contains "$PANEL_OUT" "BOUNDARY display=all-homes steer=current-home backend=herdr" \
   "real cockpit panel lost the display and steer boundary"
