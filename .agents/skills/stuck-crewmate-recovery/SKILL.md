@@ -34,7 +34,9 @@ Do not sweep another home's endpoints or infer ownership from a matching window 
 Before relaunch, prove that no live agent still owns the recorded task and that the existing worktree remains available.
 Preserve its uncommitted changes and commits, keep the same task identity, and resume or relaunch the recorded harness in that existing worktree with the same brief plus a concise progress note.
 Do not use a fresh generic spawn while the recorded worktree is unaccounted for, because allocating another worktree can split one task across two copies.
-If the worktree or ownership cannot be reconciled safely, leave all state intact and report the task failed or blocked with the conflicting evidence.
+When the recorded tmux endpoint is missing but the task's retained Treehouse copy is known, load `harness-adapters`, inspect the retained path and expected `fm/<task-id>` branch, then use `FM_HOME=<this-firstmate-home> bin/fm-spawn.sh <task-id> --reattach-worktree <retained-worktree>` instead of restoring old metadata or creating an endpoint by hand.
+The reattach operation owns the exact identity, branch, Treehouse ownership, worktree-preservation, endpoint-creation, rollback, and atomic metadata-publication checks; its header and `--help` own the mechanics and current backend limit.
+If the retained copy, branch, task identity, or ownership cannot be reconciled safely, leave all state intact and report the task failed or blocked with the conflicting evidence.
 
 ## Live-endpoint escalation
 
