@@ -498,10 +498,17 @@ case "$*" in
       *) exit 97 ;;
     esac
     ;;
+  *'/commits/main%23release/check-runs'*)
+    case "${FM_FAKE_CI_STATE:?}" in
+      delimiter) printf '1\n' ;;
+      *) exit 97 ;;
+    esac
+    ;;
   *'/repos/example/arbitrary-service'*)
     case "${FM_FAKE_CI_STATE:?}" in
       api-unreachable) exit 1 ;;
       working) printf 'release\n' ;;
+      delimiter) printf 'main#release\n' ;;
       *) printf 'main\n' ;;
     esac
     ;;
@@ -529,6 +536,17 @@ SH
     "CI readiness detection did not use the authoritative default branch"
   assert_no_grep "/repos/example/arbitrary-service/commits/main/check-runs" "$log" \
     "CI readiness detection trusted stale local origin/HEAD metadata"
+
+  FM_HOME="$home" PATH="$fakebin:$PATH" FM_FAKE_GH_LOG="$log" FM_FAKE_CI_STATE=delimiter \
+    "$ROOT/bin/fm-brief.sh" ci-delimiter arbitrary-service --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/ci-delimiter/brief.md"
+  # shellcheck disable=SC2016
+  assert_grep 'only a green CI run can produce it: `done: PR {url} checks green`' "$brief" \
+    "a valid delimiter-bearing default branch lost its observed checks-green signal"
+  assert_grep "/repos/example/arbitrary-service/commits/main%23release/check-runs" "$log" \
+    "CI readiness detection did not encode the default branch as one path segment"
+  assert_no_grep "/repos/example/arbitrary-service/commits/main#release/check-runs" "$log" \
+    "CI readiness detection sent an unencoded default branch delimiter"
 
   for state in disabled empty unknown api-unreachable; do
     FM_HOME="$home" PATH="$fakebin:$PATH" FM_FAKE_GH_LOG="$log" FM_FAKE_CI_STATE="$state" \

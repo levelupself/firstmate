@@ -260,8 +260,12 @@ repo_checkout_for_ci_probe() {
   printf '%s\n' "$FM_ROOT"
 }
 
+urlencode_path_segment() {
+  jq -rn --arg value "$1" '$value | @uri'
+}
+
 repo_has_working_test_checks() {
-  local repo=$1 checkout slug enabled default_branch check_count
+  local repo=$1 checkout slug enabled default_branch encoded_branch check_count
   checkout=$(repo_checkout_for_ci_probe "$repo") || return 1
   slug=$(github_slug_from_checkout "$checkout") || return 1
   enabled=$(gh-axi api "/repos/$slug/actions/permissions" --jq '.enabled' 2>/dev/null) || return 1
@@ -271,7 +275,11 @@ repo_has_working_test_checks() {
     ''|*$'\n'*) return 1 ;;
   esac
   git check-ref-format --branch "$default_branch" >/dev/null 2>&1 || return 1
-  check_count=$(gh-axi api "/repos/$slug/commits/$default_branch/check-runs" \
+  encoded_branch=$(urlencode_path_segment "$default_branch" 2>/dev/null) || return 1
+  case "$encoded_branch" in
+    ''|*$'\n'*) return 1 ;;
+  esac
+  check_count=$(gh-axi api "/repos/$slug/commits/$encoded_branch/check-runs" \
     --jq '[.check_runs[] | select(.app.slug == "github-actions") | select(.name | test("(^|[^[:alnum:]])(test(s|ing)?|lint|type[ -]?check|verify|verification|coverage|unit|integration|e2e|behavior)([^[:alnum:]]|$)"; "i"))] | length' 2>/dev/null) || return 1
   case "$check_count" in
     ''|*[!0-9]*) return 1 ;;
