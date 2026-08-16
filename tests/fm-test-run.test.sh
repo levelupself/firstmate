@@ -461,6 +461,23 @@ test_portable_shard_union_and_coverage_guard() {
   pass "portable shard union, disjointness, and coverage guard hold"
 }
 
+test_real_cockpit_e2e_is_owned_by_required_herdr_lane() {
+  local portable herdr
+  portable=$(
+    {
+      "$RUNNER" --list --lane portable-parallel-1
+      "$RUNNER" --list --lane portable-parallel-2
+      "$RUNNER" --list --lane portable-serial
+    } | LC_ALL=C sort -u
+  )
+  herdr=$("$RUNNER" --list --lane real-herdr-gated)
+  printf '%s\n' "$portable" | grep -Fxq 'tests/fm-cockpit-herdr-e2e.test.sh' \
+    && fail "real cockpit end-to-end test must not run in a portable lane that can skip Herdr"
+  printf '%s\n' "$herdr" | grep -Fxq 'tests/fm-cockpit-herdr-e2e.test.sh' \
+    || fail "required Herdr lane does not own the real cockpit end-to-end test"
+  pass "required Herdr lane exclusively owns the real cockpit end-to-end test"
+}
+
 test_portable_serial_shards_partition_the_serial_lane() {
   local lanes count serial shard listed union dups shard_lane total cap
   lanes=$("$RUNNER" --list-lanes)
@@ -800,6 +817,7 @@ test_declared_gate_skip_stays_successful
 test_fail_on_gate_skip_token
 test_exclude_family
 test_portable_shard_union_and_coverage_guard
+test_real_cockpit_e2e_is_owned_by_required_herdr_lane
 test_portable_serial_shards_partition_the_serial_lane
 test_portable_serial_shard_lane_refusals
 test_jobs_requires_proven_isolated
