@@ -72,6 +72,34 @@ pane_rows() {  # <command> <rows> <frame-marker> -> the pane's visible rows
   kill_server
 }
 
+pane_rows_with_drawn_geometry() {  # <command> <pty-cols> <drawn-cols> <drawn-rows>
+  local command=$1 pty_cols=$2 drawn_cols=$3 drawn_rows=$4 pane out waited=0 window_cols
+  window_cols=$pty_cols
+  [ "$window_cols" -gt "$drawn_cols" ] || window_cols=$((drawn_cols * 2))
+  kill_server
+  tmux -L "$SOCKET" new-session -d -s fit -x "$window_cols" -y "$drawn_rows" "sleep 30" \
+    || fail "could not start the geometry-mismatch window"
+  pane=$(tmux -L "$SOCKET" split-window -d -h -l "$drawn_cols" -P -F '#{pane_id}' \
+    -t fit:0 "bash") || fail "could not create the drawn fleet rectangle"
+  # Deliberately put the new pane's pty back at the wider parent size. This is
+  # the Herdr defect's real counterfactual: only the authoritative drawn budget
+  # changes while the lying pty stays wide.
+  tmux -L "$SOCKET" send-keys -t "$pane" "stty cols $pty_cols rows 17; $command" Enter
+  while [ "$waited" -lt 60 ]; do
+    out=$(tmux -L "$SOCKET" capture-pane -p -t "$pane" 2>/dev/null \
+      | sed 's/[[:space:]]*$//')
+    case "$out" in *"IN FLIGHT"*) break ;; esac
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  # Watch mode must consult geometry again rather than caching the first frame.
+  sleep 7
+  out=$(tmux -L "$SOCKET" capture-pane -p -t "$pane" 2>/dev/null \
+    | sed 's/[[:space:]]*$//')
+  printf '%s\n' "$out"
+  kill_server
+}
+
 test_fleet_panel_fits_a_short_pane_without_scrolling_its_head() {
   local out visible
   out=$(pane_rows "FM_CODEBURN_BIN=$FAKE_CODEBURN FM_HOME=$HOME_DIR $ROOT/bin/fm-fleet-view.sh --watch 1" 12 "FLEET STATUS")
@@ -99,6 +127,64 @@ test_fleet_panel_uses_the_whole_pane_when_it_fits() {
   pass "the fleet panel uses the whole pane when the frame fits"
 }
 
+test_drawn_geometry_overrides_a_wider_pty_on_every_frame() {
+  local geometry geometry_count out widest visible waited=0
+  geometry="$TMP_ROOT/drawn-geometry"
+  geometry_count="$TMP_ROOT/drawn-geometry-count"
+  cat > "$geometry" <<'EOF'
+#!/usr/bin/env bash
+count=0
+[ ! -f "$FM_TEST_GEOMETRY_COUNT" ] || count=$(cat "$FM_TEST_GEOMETRY_COUNT")
+count=$((count + 1))
+printf '%s\n' "$count" > "$FM_TEST_GEOMETRY_COUNT"
+if [ "$count" -eq 1 ]; then
+  printf '18 6\n'
+else
+  printf '14 4\n'
+fi
+EOF
+  chmod +x "$geometry"
+  out=$(pane_rows_with_drawn_geometry \
+    "FM_TEST_GEOMETRY_COUNT=$geometry_count FM_CODEBURN_BIN=$FAKE_CODEBURN FM_HOME=$HOME_DIR $ROOT/bin/fm-fleet-view.sh --geometry-command $geometry --watch 1 --section in-flight" \
+    54 18 6)
+  while [ "$waited" -lt 30 ] && [ "$(cat "$geometry_count" 2>/dev/null || printf 0)" -lt 2 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  widest=$(printf '%s\n' "$out" | jq -Rrs 'split("\n") | map(length) | max')
+  visible=$(printf '%s\n' "$out" | sed '/^$/d' | wc -l)
+  [ "$(cat "$geometry_count" 2>/dev/null || printf 0)" -ge 2 ] \
+    || fail "the painter did not re-read drawn geometry on its next redraw"
+  [ "$widest" -le 14 ] \
+    || fail "the painter emitted a $widest-column row after the drawn rectangle narrowed to 14 columns: $out"
+  [ "$visible" -le 4 ] \
+    || fail "the painter emitted $visible rows after the drawn rectangle shortened to 4 rows"
+  assert_contains "$out" "more rows" \
+    "the drawn-height budget did not disclose the clipped tail"
+  pass "authoritative drawn geometry bounds every redraw even while its pty reports a larger size"
+}
+
+test_overflow_summary_is_width_clipped_without_scrolling_the_head() {
+  local geometry out first widest
+  geometry="$TMP_ROOT/narrow-geometry"
+  cat > "$geometry" <<'EOF'
+#!/usr/bin/env bash
+printf '21 8\n'
+EOF
+  chmod +x "$geometry"
+  out=$(pane_rows_with_drawn_geometry \
+    "FM_CODEBURN_BIN=$FAKE_CODEBURN FM_HOME=$HOME_DIR $ROOT/bin/fm-fleet-view.sh --geometry-command $geometry --watch 1 --section in-flight" \
+    21 21 8)
+  first=$(printf '%s\n' "$out" | head -1)
+  widest=$(printf '%s\n' "$out" | jq -Rrs 'split("\n") | map(length) | max')
+  [ "$first" = "IN FLIGHT (8)" ] \
+    || fail "the overflow summary wrapped and scrolled the frame head to: $first"
+  [ "$widest" -le 21 ] \
+    || fail "the overflow summary allowed a $widest-column physical row in a 21-column pane"
+  assert_contains "$out" "more rows" "the clipped overflow summary lost its meaning"
+  pass "the overflow summary is clipped to the drawn width and cannot scroll a fitted frame"
+}
+
 test_cockpit_panel_fits_a_short_pane_as_one_frame() {
   local out visible
   out=$(pane_rows "FM_CODEBURN_BIN=$FAKE_CODEBURN FM_HOME=$HOME_DIR $ROOT/bin/fm-cockpit.sh panel --watch 1" 12 "ORCHESTRATION COCKPIT")
@@ -116,4 +202,6 @@ test_cockpit_panel_fits_a_short_pane_as_one_frame() {
 
 test_fleet_panel_fits_a_short_pane_without_scrolling_its_head
 test_fleet_panel_uses_the_whole_pane_when_it_fits
+test_drawn_geometry_overrides_a_wider_pty_on_every_frame
+test_overflow_summary_is_width_clipped_without_scrolling_the_head
 test_cockpit_panel_fits_a_short_pane_as_one_frame

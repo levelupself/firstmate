@@ -404,7 +404,7 @@ render_panel() {
   fm_terminal_fit_height "$rows" \
     "$frame
 
-$(LINES="$budget" COLUMNS="$cols" FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-fleet-view.sh")"
+$(LINES="$budget" COLUMNS="$cols" FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-fleet-view.sh")" "$cols"
 }
 
 if [ "$ACTION" = panel ]; then

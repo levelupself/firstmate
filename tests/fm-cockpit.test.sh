@@ -1063,6 +1063,8 @@ test_default_layout_warns_before_it_changes_the_screen() {
     "the first pane was not launched for this home"
   assert_contains "$body" "pane run $first env FM_HOME=$LAYOUT_HOME bin/fm-fleet-view.sh" \
     "the fleet pane command did not resolve through the durable home"
+  assert_contains "$body" "--geometry-command bin/fm-herdr-pane-geometry.sh" \
+    "the fleet pane did not re-read its authoritative drawn rectangle on redraw"
   assert_not_contains "$body" "$ROOT/bin/fm-fleet-view.sh" \
     "the fleet pane command captured the launcher's disposable checkout"
   assert_contains "$body" "--watch --section waiting" \
