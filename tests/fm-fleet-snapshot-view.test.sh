@@ -1445,10 +1445,11 @@ SH
 }
 
 write_cockpit_record() {  # <home> <fleet-pane-ids> <fleet-pane-sections>
-  local home=$1 ids=$2 sections=$3
+  local home=$1 ids=$2 sections=$3 exact_home
+  exact_home=$(CDPATH='' cd -- "$home" && pwd -P) || return 1
   cat > "$home/state/.herdr-cockpit" <<EOF
 version=3
-home=$home
+home=$exact_home
 session=lab-session
 workspace_id=w9
 tab_id=w9:t1
