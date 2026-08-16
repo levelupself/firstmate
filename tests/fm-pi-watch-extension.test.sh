@@ -1640,6 +1640,9 @@ await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const status = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+// Left as a duration on purpose: the claim is that a linked worktree arms
+// NOTHING, so there is no checkpoint to wait on - only a window in which an
+// arm that should not exist would have had time to write its row.
 await new Promise((resolve) => setTimeout(resolve, 120));
 if (status !== "not-primary") {
   console.error(`expected not-primary, got ${status}`);
@@ -1951,12 +1954,14 @@ EOF
 }
 
 test_opencode_hung_successor_falls_back_to_typed_wake() {
-  local plugin repo home log out status
+  local plugin repo home log bus out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
   repo="$TMP_ROOT/opencode-hung-successor-root"
   home="$TMP_ROOT/opencode-hung-successor-home"
   log="$TMP_ROOT/opencode-hung-successor.log"
+  bus="$TMP_ROOT/opencode-hung-successor.bus"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
+  fm_checkpoint_bus "$bus"
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
@@ -1969,29 +1974,37 @@ else
 fi
 if [ "$count" -eq 0 ]; then
   printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+  printf 'armed %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
   printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
   printf 'signal: synthetic wake\n'
   exit 0
 fi
 trap 'exit 0' TERM INT
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+printf 'armed %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 while :; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+const { counter, latch, openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 const nativeSetTimeout = globalThis.setTimeout;
 const nativeClearTimeout = globalThis.clearTimeout;
 const readinessTimer = { unref() {} };
 const fireReadinessTimeouts = [];
+// Capturing a readiness timeout is an in-process event, so it is counted and
+// awaited rather than polled for through a growing array.
+const readinessCaptured = counter("opencode captured readiness timeouts");
 let readinessAttempts = 0;
 globalThis.setTimeout = (callback, delay, ...args) => {
   if (delay === Number(process.env.FM_OPENCODE_ARM_READY_TIMEOUT_MS)) {
     readinessAttempts += 1;
     if (readinessAttempts >= 2) {
       fireReadinessTimeouts.push(() => callback(...args));
+      readinessCaptured.bump();
       return readinessTimer;
     }
   }
@@ -2003,16 +2016,10 @@ globalThis.clearTimeout = (timer) => {
 const rows = () => existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
-async function waitFor(predicate, message) {
-  for (let i = 0; i < 500; i += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => nativeSetTimeout(resolve, 10));
-  }
-  throw new Error(message);
-}
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 let prompt = "";
 let rowsAtPrompt = 0;
+const fallbackDelivered = latch("opencode hung-successor fallback wake");
 const client = {
   session: {
     promptAsync: async (request) => {
@@ -2020,6 +2027,7 @@ const client = {
       rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
         ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
         : 0;
+      fallbackDelivered.signal();
     },
   },
 };
@@ -2030,22 +2038,25 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
+// The original arm, then one announcement per successor. Each successor is
+// stepped through its own two checkpoints - its arm row and its captured
+// readiness timeout - instead of both being sampled together for 5s.
+await bus.reached("armed");
 for (let successor = 0; successor < 3; successor += 1) {
-  const expectedRows = successor + 2;
-  const expectedTimeouts = successor + 1;
-  await waitFor(
-    () => rows().length >= expectedRows && fireReadinessTimeouts.length >= expectedTimeouts,
-    `successor ${successor + 1} did not reach its arm-log and retirement-trap checkpoint`,
-  );
+  await bus.reached("armed");
+  await readinessCaptured.reached(successor + 1);
   fireReadinessTimeouts[successor]();
 }
-await waitFor(() => prompt, "original fallback was not delivered");
+await fallbackDelivered.reached;
+bus.close();
 const finalRows = rows();
 if (finalRows.length !== 4) throw new Error(`expected one successor plus two retries, got ${finalRows.length}: ${finalRows.join(" | ")}`);
 if (rowsAtPrompt !== 4) throw new Error(`wake arrived before restoration exhausted (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("could not restore watcher continuity after 2 retries")) throw new Error(`missing typed restoration failure: ${prompt}`);
-await new Promise((resolve) => setTimeout(resolve, 100));
+// Left as a duration on purpose: single-flight recovery is a claim that no
+// further arm is launched, which an absence-window is the only way to check.
+await new Promise((resolve) => nativeSetTimeout(resolve, 100));
 const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${stableRows.length} arms`);
 EOF
@@ -2057,7 +2068,7 @@ EOF
 }
 
 test_opencode_unretired_successor_falls_back_without_retry() {
-  local plugin repo home log startup activate unretired retired release out status
+  local plugin repo home log startup activate unretired retired release bus out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
   repo="$TMP_ROOT/opencode-unretired-successor-root"
   home="$TMP_ROOT/opencode-unretired-successor-home"
@@ -2067,7 +2078,9 @@ test_opencode_unretired_successor_falls_back_without_retry() {
   unretired="$TMP_ROOT/opencode-unretired-successor.unretired"
   retired="$TMP_ROOT/opencode-unretired-successor.retired"
   release="$TMP_ROOT/opencode-unretired-successor.release"
+  bus="$TMP_ROOT/opencode-unretired-successor.bus"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
+  fm_checkpoint_bus "$bus"
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
@@ -2085,14 +2098,17 @@ if [ "$count" -eq 0 ]; then
   exit 0
 fi
 printf 'waiting\n' > "${FM_STARTUP_FILE:?}"
+printf 'successor-startup %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 while [ ! -e "$FM_ACTIVATE_FILE" ]; do sleep 0.02; done
-trap 'printf "%s\n" "$$" > "${FM_RETIRED_FILE:?}"' TERM INT
+trap 'printf "%s\n" "$$" > "${FM_RETIRED_FILE:?}"; printf "successor-retired %s\n" "$$" > "${FM_CHECKPOINT_BUS:?}"' TERM INT
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 printf '%s\n' "$$" > "${FM_UNRETIRED_FILE:?}"
+printf 'successor-unretired %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.1; done
+printf 'successor-exited %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_STARTUP_FILE="$startup" FM_ACTIVATE_FILE="$activate" FM_UNRETIRED_FILE="$unretired" FM_RETIRED_FILE="$retired" FM_RELEASE_FILE="$release" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_STARTUP_FILE="$startup" FM_ACTIVATE_FILE="$activate" FM_UNRETIRED_FILE="$unretired" FM_RETIRED_FILE="$retired" FM_RELEASE_FILE="$release" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -2114,13 +2130,8 @@ globalThis.setTimeout = (callback, delay, ...args) => {
 globalThis.clearTimeout = (timer) => {
   if (timer !== readinessTimer) nativeClearTimeout(timer);
 };
-async function waitFor(predicate, message) {
-  for (let i = 0; i < 500; i += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => nativeSetTimeout(resolve, 10));
-  }
-  throw new Error(message);
-}
+const { latch, openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 function pidAlive(pid) {
   try {
     process.kill(Number(pid), 0);
@@ -2134,6 +2145,7 @@ let prompt = "";
 let rowsAtPrompt = 0;
 let successorPidAtPrompt = "";
 let successorAliveAtPrompt = false;
+const fallbackDelivered = latch("opencode unretired-successor fallback wake");
 const client = {
   session: {
     promptAsync: async (request) => {
@@ -2143,6 +2155,7 @@ const client = {
         : 0;
       successorPidAtPrompt = readFileSync(process.env.FM_UNRETIRED_FILE, "utf8").trim();
       successorAliveAtPrompt = pidAlive(successorPidAtPrompt);
+      fallbackDelivered.signal();
     },
   },
 };
@@ -2153,15 +2166,22 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-await waitFor(() => existsSync(process.env.FM_STARTUP_FILE), "successor did not reach the controlled startup gate");
+// Each of these was a 5s poll for a marker file, and two of them then read
+// that file for a pid. existsSync can see a file the shell has created by
+// redirection but not yet written, which is how this test produced an empty
+// "post-fallback retirement evidence named" during this work. Announcing
+// after the write closes that window.
+await bus.reached("successor-startup");
 if (!fireReadinessTimeout) throw new Error("successor readiness timeout was not captured");
 writeFileSync(process.env.FM_ACTIVATE_FILE, "activate\n");
-await waitFor(() => existsSync(process.env.FM_UNRETIRED_FILE), "successor did not install its retirement trap");
-const successorPid = readFileSync(process.env.FM_UNRETIRED_FILE, "utf8").trim();
+const successorPid = await bus.reached("successor-unretired");
+if (readFileSync(process.env.FM_UNRETIRED_FILE, "utf8").trim() !== successorPid) {
+  throw new Error(`successor announced ${successorPid} but recorded a different pid`);
+}
 if (!pidAlive(successorPid)) throw new Error(`successor ${successorPid} retired before the readiness deadline`);
 fireReadinessTimeout();
-await waitFor(() => prompt, "original fallback was not delivered");
-await waitFor(() => existsSync(process.env.FM_RETIRED_FILE), "successor was not asked to retire before fallback");
+await fallbackDelivered.reached;
+await bus.reached("successor-retired");
 const retiredPidAfterFallback = readFileSync(process.env.FM_RETIRED_FILE, "utf8").trim();
 if (retiredPidAfterFallback !== successorPid) throw new Error(`post-fallback retirement evidence named ${retiredPidAfterFallback}, expected successor ${successorPid}`);
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -2174,7 +2194,11 @@ if (!successorAliveAtPrompt || !pidAlive(successorPid)) throw new Error(`success
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-await new Promise((resolve) => setTimeout(resolve, 80));
+// The successor announces its own exit. This replaced an 80ms sleep for a
+// successor that only samples its release file every 100ms, so the sleep was
+// shorter than the thing it was waiting for.
+await bus.reached("successor-exited");
+bus.close();
 EOF
 )
   status=$?
@@ -2184,7 +2208,7 @@ EOF
 }
 
 test_opencode_late_unretired_close_resumes_supervision() {
-  local kind plugin repo home log startup activate ready retired release stop out status
+  local kind plugin repo home log startup activate ready retired release stop bus out status
   for kind in actionable non-actionable; do
     plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
     repo="$TMP_ROOT/opencode-late-$kind-root"
@@ -2196,7 +2220,9 @@ test_opencode_late_unretired_close_resumes_supervision() {
     retired="$TMP_ROOT/opencode-late-$kind.retired"
     release="$TMP_ROOT/opencode-late-$kind.release"
     stop="$TMP_ROOT/opencode-late-$kind.stop"
+    bus="$TMP_ROOT/opencode-late-$kind.bus"
     mkdir -p "$repo/bin" "$home/state" "$home/config"
+    fm_checkpoint_bus "$bus"
     git init -q "$repo"
     : > "$repo/AGENTS.md"
     : > "$home/state/task.meta"
@@ -2215,21 +2241,25 @@ if [ "$count" -eq 0 ]; then
 fi
 if [ "$count" -eq 1 ]; then
   printf 'waiting\n' > "${FM_STARTUP_FILE:?}"
+  printf 'successor-startup %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
   while [ ! -e "$FM_ACTIVATE_FILE" ]; do sleep 0.02; done
-  trap 'printf "%s\\n" "$$" > "${FM_UNRETIRED_RETIRE_FILE:?}"' TERM INT
+  trap 'printf "%s\\n" "$$" > "${FM_UNRETIRED_RETIRE_FILE:?}"; printf "successor-retired %s\\n" "$$" > "${FM_CHECKPOINT_BUS:?}"' TERM INT
   printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
   printf '%s\n' "$$" > "${FM_UNRETIRED_READY_FILE:?}"
+  printf 'successor-ready %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
   while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.02; done
   [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
   exit 0
 fi
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+printf 'armed %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
 trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
+printf 'restored-exited %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
-    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_STARTUP_FILE="$startup" FM_ACTIVATE_FILE="$activate" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_STARTUP_FILE="$startup" FM_ACTIVATE_FILE="$activate" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -2256,8 +2286,11 @@ function pidAlive(pid) {
     return false;
   }
 }
+const { counter, openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const prompts = [];
+const wakes = counter("opencode late-close wakes");
 let successorPidAtFallback = "";
 let successorAliveAtFallback = false;
 const client = {
@@ -2268,19 +2301,13 @@ const client = {
         successorPidAtFallback = readFileSync(process.env.FM_UNRETIRED_READY_FILE, "utf8").trim();
         successorAliveAtFallback = pidAlive(successorPidAtFallback);
       }
+      wakes.bump();
     },
   },
 };
 const rows = () => existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
-async function waitFor(predicate, message) {
-  for (let i = 0; i < 500; i += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => nativeSetTimeout(resolve, 10));
-  }
-  throw new Error(message);
-}
 const hooks = await mod.FmPrimaryWatchArm({
   client,
   directory: process.env.WORKTREE,
@@ -2288,25 +2315,20 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-await waitFor(
-  () => existsSync(process.env.FM_STARTUP_FILE),
-  "successor did not reach the controlled startup gate",
-);
+// The successor announces its startup gate, its readiness, and its retirement
+// rather than leaving the driver to sample three marker files for 5s each.
+await bus.reached("successor-startup");
 writeFileSync(process.env.FM_ACTIVATE_FILE, "activate\n");
-await waitFor(
-  () => existsSync(process.env.FM_UNRETIRED_READY_FILE),
-  "unretired successor did not install its retirement trap",
-);
+const successorPid = await bus.reached("successor-ready");
+if (readFileSync(process.env.FM_UNRETIRED_READY_FILE, "utf8").trim() !== successorPid) {
+  throw new Error(`successor announced ${successorPid} but recorded a different pid`);
+}
 const readinessTimer = readinessTimers.findLast((timer) => timer.active);
 if (!readinessTimer) throw new Error("successor readiness timeout was not captured");
-const successorPid = readFileSync(process.env.FM_UNRETIRED_READY_FILE, "utf8").trim();
 if (!pidAlive(successorPid)) throw new Error(`successor ${successorPid} retired before the readiness deadline`);
 readinessTimer.fire();
-await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
-await waitFor(
-  () => existsSync(process.env.FM_UNRETIRED_RETIRE_FILE),
-  "unretired successor was not asked to retire before fallback",
-);
+await wakes.reached(1);
+await bus.reached("successor-retired");
 const retiredPidAfterFallback = readFileSync(process.env.FM_UNRETIRED_RETIRE_FILE, "utf8").trim();
 if (retiredPidAfterFallback !== successorPid) throw new Error(`post-fallback retirement evidence named ${retiredPidAfterFallback}, expected successor ${successorPid}`);
 if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
@@ -2314,10 +2336,11 @@ if (successorPidAtFallback !== successorPid) throw new Error(`fallback observed 
 if (!successorAliveAtFallback || !pidAlive(successorPid)) throw new Error(`successor ${successorPid} was not genuinely unretired at fallback`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-for (let i = 0; i < 500; i += 1) {
-  if (rows().length >= 3 && (process.env.FM_LATE_KIND !== "actionable" || prompts.some((message) => message.includes("late wake")))) break;
-  await new Promise((resolve) => nativeSetTimeout(resolve, 10));
-}
+// The restored third arm announces itself, and an actionable late close also
+// has to reach a second wake. Both are awaited as events, so neither depends
+// on 5s of polling being long enough for a late close to land.
+await bus.reached("armed");
+if (process.env.FM_LATE_KIND === "actionable") await wakes.reached(2);
 if (rows().length !== 3) throw new Error(`late close did not restore one successor: ${rows().join(" | ")}`);
 if (process.env.FM_LATE_KIND === "actionable") {
   if (prompts.length !== 2 || !prompts[1].includes("late wake")) throw new Error(`late actionable close was not delivered: ${prompts.join(" | ")}`);
@@ -2325,7 +2348,9 @@ if (process.env.FM_LATE_KIND === "actionable") {
   throw new Error(`late non-actionable close sent an extra wake: ${prompts.join(" | ")}`);
 }
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
-await new Promise((resolve) => nativeSetTimeout(resolve, 80));
+// Replaces an 80ms drain: the restored arm says when it is actually gone.
+await bus.reached("restored-exited");
+bus.close();
 EOF
 )
     status=$?
@@ -2336,19 +2361,22 @@ EOF
 }
 
 test_opencode_empty_close_retries_instead_of_disappearing() {
-  local plugin repo home log stop out status
+  local plugin repo home log stop bus out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
   repo="$TMP_ROOT/opencode-empty-close-root"
   home="$TMP_ROOT/opencode-empty-close-home"
   log="$TMP_ROOT/opencode-empty-close.log"
   stop="$TMP_ROOT/opencode-empty-close.stop"
+  bus="$TMP_ROOT/opencode-empty-close.bus"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
+  fm_checkpoint_bus "$bus"
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+printf 'armed %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 count=$(wc -l < "$FM_ARM_LOG" | tr -d '[:space:]')
 if [ "$count" -eq 1 ]; then exit 0; fi
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
@@ -2356,10 +2384,12 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+const { openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 let prompts = 0;
 const client = {
@@ -2376,17 +2406,16 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250; i += 1) {
-  const rows = existsSync(process.env.FM_ARM_LOG)
-    ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-    : [];
-  if (rows.length >= 2) break;
-  await new Promise((resolve) => setTimeout(resolve, 10));
-}
+// Each arm invocation announces its own logged row, so the retry is observed
+// as two announcements rather than as a row count sampled often enough to
+// catch.
+await bus.reached("armed");
+await bus.reached("armed");
 const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (rows.length !== 2) throw new Error(`clean empty close was ignored: ${rows.join(" | ")}`);
 if (prompts !== 0) throw new Error(`restored transient close surfaced ${prompts} failure prompts`);
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+bus.close();
 EOF
 )
   status=$?
@@ -2412,16 +2441,19 @@ printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
 exit 0
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+const { latch } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 let prompt = "";
+const exhaustionSurfaced = latch("opencode retry-limit failure wake");
 const client = {
   session: {
     promptAsync: async (request) => {
       prompt += request.body.parts[0].text;
+      exhaustionSurfaced.signal();
     },
   },
 };
@@ -2432,9 +2464,9 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !prompt; i += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 10));
-}
+// Retry exhaustion is reported through this stub, so the stub is the
+// checkpoint for the whole retry sequence that precedes it.
+await exhaustionSurfaced.reached;
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
@@ -2449,34 +2481,41 @@ EOF
 }
 
 test_opencode_actionable_close_rechecks_session_lock() {
-  local plugin repo home log release out status
+  local plugin repo home log release bus out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
   repo="$TMP_ROOT/opencode-close-lock-root"
   home="$TMP_ROOT/opencode-close-lock-home"
   log="$TMP_ROOT/opencode-close-lock.log"
   release="$TMP_ROOT/opencode-close-lock.release"
+  bus="$TMP_ROOT/opencode-close-lock.bus"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
+  fm_checkpoint_bus "$bus"
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+printf 'armed %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.02; done
 printf 'signal: lock handoff\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" node 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" node 2>&1 <<'EOF'
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+const { latch, openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 let prompt = "";
+const wakeDelivered = latch("opencode lock-loss wake");
 const client = {
   session: {
     promptAsync: async (request) => {
       prompt += request.body.parts[0].text;
+      wakeDelivered.signal();
     },
   },
 };
@@ -2488,22 +2527,24 @@ const hooks = await mod.FmPrimaryWatchArm({
 const lock = `${process.env.FM_HOME}/state/.lock`;
 writeFileSync(lock, `${process.pid}\n`);
 const eventPromise = hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 10));
-}
+// The arm child announces itself, so the lock is only stolen once the arm is
+// genuinely running rather than once its log file happens to be visible.
+await bus.reached("armed");
 const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
 try {
   writeFileSync(lock, `${other.pid}\n`);
   writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
   await eventPromise;
-  for (let i = 0; i < 250 && !prompt.includes("no longer owns the lock"); i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+  // Waiting on the first wake rather than on a wake whose text already
+  // matches: the close handler must report lock loss and nothing else, so an
+  // unexpected first message should fail here instead of being polled past.
+  await wakeDelivered.reached;
   const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
   if (rows.length !== 1) throw new Error(`successor launched after lock loss: ${rows.join(" | ")}`);
   if (!prompt.includes("no longer owns the lock")) throw new Error(`missing lock-loss failure: ${prompt}`);
 } finally {
   other.kill("SIGTERM");
+  bus.close();
 }
 EOF
 )
