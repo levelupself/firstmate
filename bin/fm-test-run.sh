@@ -1498,7 +1498,7 @@ family_bump() {
 
 record_script_result() {
   local script=$1 rc=$2 duration=$3 out=$4 end_iso=$5
-  local base family expected gate_skip fail_delta
+  local base family expected gate_skip gate_skip_reason fail_delta
   base=$(basename "$script")
   family=$(family_for_basename "$base")
   expected=$(expected_gate_skip_for_family "$family")
@@ -1513,7 +1513,8 @@ record_script_result() {
     gate_skip=true
     SKIPPED_GATE=$((SKIPPED_GATE + 1))
     if [ "$expected" = none ]; then
-      log "undeclared gate skip in $script: family $family declares expected_gate_skip=none"
+      gate_skip_reason=$(awk 'NF { print; exit }' "$out" 2>/dev/null || true)
+      log "undeclared gate skip in $script: family $family declares expected_gate_skip=none; reason: $gate_skip_reason"
       rc=1
     fi
   fi

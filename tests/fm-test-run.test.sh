@@ -306,8 +306,8 @@ SH
     || fail "END must retain gate_skip=true and report exit=1: $(grep '^FM_TEST_END' "$out")"
   grep -q 'FM_TEST_SUMMARY total=1 failed=1 skipped_gate=1' "$out" \
     || fail "summary must count the undeclared gate skip as failed: $(grep FM_TEST_SUMMARY "$out")"
-  grep -Fq 'undeclared gate skip' "$tmp/err.txt" \
-    || fail "runner must explain the undeclared gate skip: $(cat "$tmp/err.txt")"
+  grep -Fq "undeclared gate skip in $skip_f: family pure-contract-unit declares expected_gate_skip=none; reason: skip: herdr not found" "$tmp/err.txt" \
+    || fail "runner must explain the undeclared gate skip and preserve its reason: $(cat "$tmp/err.txt")"
   python3 -c '
 import json, sys
 doc = json.load(open(sys.argv[1]))
