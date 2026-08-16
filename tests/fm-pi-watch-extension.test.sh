@@ -4,8 +4,11 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fm-checkpoint-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fm-checkpoint-helpers.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-pi-watch-extension)
+CHECKPOINT_MODULE=$(fm_checkpoint_module "$TMP_ROOT")
 EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 # Node 24 warns when these test-only dynamic imports load tracked ESM plugins
 # from a clean checkout with no tracked .opencode/package.json. The warning is
@@ -116,13 +119,15 @@ test_pi_extension_reports_external_healthy_watcher() {
 printf 'watcher: healthy pid=1 (beacon 0s)\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+const { latch } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 let handler = null;
 let notification = "";
 let prompt = "";
+const delivered = latch("pi external-healthy wake delivery");
 const pi = {
   on() {},
   registerCommand(name, options) {
@@ -131,6 +136,7 @@ const pi = {
   registerTool() {},
   sendUserMessage: async (message) => {
     prompt = message;
+    delivered.signal();
   },
 };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
@@ -155,9 +161,10 @@ if (!notification.includes("started Pi extension arm child")) {
   console.error(notification);
   process.exit(1);
 }
-for (let i = 0; i < 250 && !prompt; i += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 20));
-}
+// The follow-up wake arrives through this driver's own sendUserMessage stub,
+// so the stub is the checkpoint. Nothing here needs to know how long the arm
+// child takes to report its external healthy watcher.
+await delivered.reached;
 if (!prompt.startsWith("\u2063FIRSTMATE_OP: v1 watcher: ")) {
   console.error(`untyped operational follow-up: ${prompt}`);
   process.exit(1);
@@ -245,26 +252,31 @@ EOF
 }
 
 test_pi_redundant_tool_call_is_owned_noop() {
-  local repo home plugin log stop out status
+  local repo home plugin log stop bus out status
   repo="$TMP_ROOT/pi-redundant-tool-root"
   home="$TMP_ROOT/pi-redundant-tool-home"
   log="$TMP_ROOT/pi-redundant-tool.log"
   stop="$TMP_ROOT/pi-redundant-tool.stop"
+  bus="$TMP_ROOT/pi-redundant-tool.bus"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
+  fm_checkpoint_bus "$bus"
   install_pi_watch_extension_fixture "$repo"
   plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'arm\n' >> "${FM_ARM_LOG:?}"
+printf 'armed %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
 trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" node --input-type=module 2>&1 <<'EOF'
+import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+const { openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 let tool = null;
 const pi = {
   on() {},
@@ -291,14 +303,17 @@ if (/^watcher: healthy\b/.test(redundant.content[0]?.text)) {
 if (!redundant.content[0]?.text.includes("only after a later notification says the cycle is missing, failed, or unhealthy")) {
   throw new Error(`redundant call omitted the repair-only condition: ${redundant.content[0]?.text}`);
 }
-for (let i = 0; i < 100 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 10));
-}
-if (!existsSync(process.env.FM_ARM_LOG)) throw new Error("initial arm child did not start");
+// The arm child announces itself once its row is on disk, which is a stronger
+// fact than the log file merely existing.
+await bus.reached("armed");
+// Left as a duration on purpose. The claim under test is that the redundant
+// call started NO second child, and an absence is only observable across some
+// span of time; there is no checkpoint for an event that must never happen.
 await new Promise((resolve) => setTimeout(resolve, 100));
 const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (rows.length !== 1) throw new Error(`redundant call spawned ${rows.length} arm children`);
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+bus.close();
 EOF
 )
   status=$?
@@ -321,10 +336,23 @@ printf 'arm\n' >> "${FM_ARM_LOG:?}"
 exit 0
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_WATCH_REARM_RETRY_BASE_MS=10000 FM_WATCH_REARM_RETRY_MAX_MS=10000 node --input-type=module 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_WATCH_REARM_RETRY_BASE_MS=10000 FM_WATCH_REARM_RETRY_MAX_MS=10000 node --input-type=module 2>&1 <<'EOF'
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+const { latch } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+// The extension arms exactly one timer at the configured retry delay, and it
+// does so at the moment the scheduled continuity retry starts existing. That
+// creation is the checkpoint. The old loop hunted for the same moment by
+// re-calling the tool until its wording changed, which both assumed the retry
+// would appear within a second and made the tool call part of the search
+// rather than the observation.
+const retryScheduled = latch("pi scheduled continuity retry");
+const nativeSetTimeout = globalThis.setTimeout;
+globalThis.setTimeout = (callback, delay, ...args) => {
+  if (delay === Number(process.env.FM_WATCH_REARM_RETRY_BASE_MS)) retryScheduled.signal();
+  return nativeSetTimeout(callback, delay, ...args);
+};
 let tool = null;
 const pi = {
   on() {},
@@ -338,12 +366,8 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-first", {}, undefined, undefined, {});
-let redundant = null;
-for (let i = 0; i < 100; i += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  redundant = await tool.execute("tool-call-during-retry", {}, undefined, undefined, {});
-  if (redundant.content[0]?.text.includes("scheduled continuity retry")) break;
-}
+await retryScheduled.reached;
+const redundant = await tool.execute("tool-call-during-retry", {}, undefined, undefined, {});
 if (!redundant?.content[0]?.text.includes("Pi extension already owns a scheduled continuity retry; no manual re-arm needed")) {
   throw new Error(`scheduled retry did not return ownership-based no-op guidance: ${redundant?.content[0]?.text}`);
 }
@@ -353,7 +377,9 @@ if (/^watcher: healthy\b/.test(redundant.content[0]?.text)) {
 if (!redundant.content[0]?.text.includes("only after a later notification says the cycle is missing, failed, or unhealthy")) {
   throw new Error(`scheduled retry call omitted the repair-only condition: ${redundant.content[0]?.text}`);
 }
-await new Promise((resolve) => setTimeout(resolve, 100));
+// Left as a duration on purpose: the claim is that no second arm child was
+// spawned, and there is no checkpoint for an event that must never occur.
+await new Promise((resolve) => nativeSetTimeout(resolve, 100));
 const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (rows.length !== 1) throw new Error(`scheduled retry call spawned ${rows.length} arm children`);
 EOF
@@ -365,21 +391,25 @@ EOF
 }
 
 test_pi_actionable_close_starts_single_successor_before_delivery() {
-  local repo home plugin log stop out status
+  local repo home plugin log stop bus out status
   repo="$TMP_ROOT/pi-continuous-rearm-root"
   home="$TMP_ROOT/pi-continuous-rearm-home"
   log="$TMP_ROOT/pi-continuous-rearm.log"
   stop="$TMP_ROOT/pi-continuous-rearm.stop"
+  bus="$TMP_ROOT/pi-continuous-rearm.bus"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
+  fm_checkpoint_bus "$bus"
   install_pi_watch_extension_fixture "$repo"
   plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --handling-delivered ]; then
   printf 'confirmed generation=%s watcher=%s\n' "$2" "$4" >> "${FM_ARM_LOG:?}"
+  printf 'confirmed %s\n' "$2" > "${FM_CHECKPOINT_BUS:?}"
   exit 0
 fi
 printf 'arm=%s predecessor=%s\n' "$$" "${FM_WATCH_PREDECESSOR_ARM_PID:-none}" >> "${FM_ARM_LOG:?}"
+printf 'armed %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 count=$(grep -c '^arm=' "$FM_ARM_LOG")
 if [ "$count" -eq 1 ]; then
   printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
@@ -391,13 +421,16 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+const { latch, openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 let tool = null;
 let deliveryStarted = false;
 let rowsAtDelivery = 0;
+const deliveryBegan = latch("pi wake delivery began");
 let releaseDelivery = () => {};
 const deliveryBlocked = new Promise((resolve) => {
   releaseDelivery = resolve;
@@ -413,6 +446,7 @@ const pi = {
       ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
       : 0;
     deliveryStarted = true;
+    deliveryBegan.signal();
     await deliveryBlocked;
   },
 };
@@ -420,26 +454,25 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-continuity", {}, undefined, undefined, {});
-for (let i = 0; i < 250; i += 1) {
-  const rows = existsSync(process.env.FM_ARM_LOG)
-    ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-    : [];
-  if (rows.length >= 2 && deliveryStarted) break;
-  await new Promise((resolve) => setTimeout(resolve, 10));
-}
+// Delivery entering this driver's own stub is the checkpoint. The successor
+// arm row is written before delivery begins, so waiting on delivery already
+// covers the row the old loop was separately polling for - and rowsAtDelivery
+// below is what actually proves that ordering, not the loop condition.
+await deliveryBegan.reached;
 const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (rows.length !== 2) throw new Error(`expected one successor arm, got ${rows.length}: ${rows.join(" | ")}`);
 if (!deliveryStarted) throw new Error("wake delivery did not begin");
 if (rowsAtDelivery !== 2) throw new Error(`wake delivery began before successor establishment (${rowsAtDelivery} arm rows)`);
 if (!/predecessor=[0-9]+/.test(rows[1])) throw new Error(`successor did not receive predecessor identity: ${rows[1]}`);
+// Left as a duration on purpose: this asserts that delivery is NOT confirmed
+// while the prompt is still outstanding, and an absence needs a window.
 await new Promise((resolve) => setTimeout(resolve, 100));
 const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (stableRows.length !== 2) throw new Error(`delivery was confirmed before the prompt succeeded: ${stableRows.join(" | ")}`);
 releaseDelivery();
-for (let i = 0; i < 100; i += 1) {
-  if (readFileSync(process.env.FM_ARM_LOG, "utf8").includes("confirmed generation=fixture-generation")) break;
-  await new Promise((resolve) => setTimeout(resolve, 10));
-}
+// The confirming arm invocation announces itself, so the driver no longer has
+// to guess that a second of polling is enough for it to appear.
+await bus.reached("confirmed");
 const confirmedRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (confirmedRows.filter((row) => row.startsWith("confirmed ")).length !== 1) {
   throw new Error(`successful prompt delivery was not confirmed exactly once: ${confirmedRows.join(" | ")}`);
@@ -475,13 +508,15 @@ trap 'exit 0' TERM INT
 while :; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS=1000 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_PI_ARM_READY_TIMEOUT_MS=1000 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+const { latch } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 let tool = null;
 let prompt = "";
 let rowsAtPrompt = 0;
+const fallbackDelivered = latch("pi hung-successor fallback wake");
 const pi = {
   on() {},
   registerCommand() {},
@@ -493,15 +528,17 @@ const pi = {
     rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
       ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
       : 0;
+    fallbackDelivered.signal();
   },
 };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-hung-successor", {}, undefined, undefined, {});
-for (let i = 0; i < 2000 && !prompt; i += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 10));
-}
+// The fallback wake is delivered into this driver's stub, so the stub is the
+// checkpoint. This replaced a twenty-second budget that had to cover a
+// readiness deadline plus two retries and was still only a guess.
+await fallbackDelivered.reached;
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
@@ -509,6 +546,8 @@ if (rows.length !== 4) throw new Error(`expected one successor plus two retries,
 if (rowsAtPrompt !== 4) throw new Error(`wake arrived before restoration exhausted (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("could not restore watcher continuity after 2 retries")) throw new Error(`missing typed restoration failure: ${prompt}`);
+// Left as a duration on purpose: single-flight recovery is a claim that no
+// further arm is launched, which an absence-window is the only way to check.
 await new Promise((resolve) => setTimeout(resolve, 100));
 const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${stableRows.length} arms`);
