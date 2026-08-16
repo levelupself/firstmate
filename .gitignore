@@ -3,6 +3,7 @@ armada/
 .claude/settings.local.json
 state/
 data/
+scratchpad/
 .no-mistakes/
 .lavish/
 .fm-secondmate-home

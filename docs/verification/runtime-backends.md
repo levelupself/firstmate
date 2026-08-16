@@ -201,7 +201,7 @@ All six installed harnesses' real idle composers reached a proven `empty` (Claud
 The strict blank-row posture held live (a blank shell row deferred injection), and a zellij pane changing for reasons unrelated to submission never confirmed a delivery, replacing the retired content-diff heuristic's false positive.
 Kimi was not installed on the verification machine; its bordered shape is pinned by the portable byte-capture regressions in `tests/fm-composer-lib.test.sh`, which also carry the other five adapters' capability profiles for every harness under both a UTF-8 locale and `LC_ALL=C`.
 This guard is the refresh command after an upgrade to any matrix-covered harness; rerun it and update the versions above rather than trusting this table across releases.
-Cursor is deliberately outside this empty-composer matrix because its terminal cursor is parked outside the composer and tmux must return `unknown`; the [Cursor Agent CLI](#cursor-agent-cli) section owns its separate live evidence and drift guard.
+Cursor is deliberately outside this cursor-anchored empty-composer matrix because its terminal cursor is parked outside the composer; tmux's Cursor-specific, process-identity-gated cursorless fallback is covered by the [Cursor Agent CLI](#cursor-agent-cli) section's separate live evidence and drift guard.
 
 `zellij action dump-screen --pane-id <id> --ansi` was verified at zellij 0.44.0 to preserve ANSI styling (real Claude Code rendered inside a zellij pane dumped `ESC[m` `❯` U+00A0 for its idle composer row), which is the capability the zellij composer classifier reads.
 
@@ -622,6 +622,27 @@ ok - real herdr: an agent that does not stop fails closed instead of being repor
 The registry read through `herdr pane report-agent` is the same source `fm_backend_herdr_agent_state` classifies, so registering and not registering an agent on a plain shell pane exercises exactly the gate every lifecycle verb depends on, with no real agent launched.
 That command is the guard that refreshes this record; run it after every Herdr upgrade rather than trusting the version above.
 
+### Agent lifecycle control
+
+Herdr is one of the two backends whose recovery-grade agent-state classifier the control plane may trust ([agent-control.md](../agent-control.md)), so its lifecycle gating is measured against the real binary; reverified 2026-08-08 on Herdr 0.8.0, and first measured 2026-08-02 on Herdr 0.7.5 with identical results:
+
+```sh
+tests/fm-control-herdr-smoke.test.sh
+```
+
+Observed output:
+
+```text
+ok - real herdr: exit on a pane with no registered agent is idempotent success
+ok - real herdr: interrupt refuses when herdr's own agent registry reports no agent
+ok - real herdr: interrupt delivers the harness's key and proves the agent survived it
+ok - real herdr: no control verb removed the endpoint or the task's local copy
+ok - real herdr: an agent that does not stop fails closed instead of being reported as stopped
+```
+
+The registry read through `herdr pane report-agent` is the same source `fm_backend_herdr_agent_state` classifies, so registering and not registering an agent on a plain shell pane exercises exactly the gate every lifecycle verb depends on, with no real agent launched.
+That command is the guard that refreshes this record; run it after every Herdr upgrade rather than trusting the version above.
+
 ### Away-mode transport
 
 The Pi/Herdr return and injection path was reverified on Herdr 0.7.3 and Pi 0.80.7:
@@ -782,8 +803,8 @@ App-server partial methods and raw socket experiments do not satisfy that bridge
 
 ## Cursor Agent CLI
 
-Cursor is a crewmate/scout adapter only; a `--secondmate` launch is refused.
-The evidence below was produced on 2026-08-11 against the installed signed CLI on macOS 26.5.2 arm64 with tmux 3.6a, running as `kunchenguid`.
+Cursor runs crewmate, scout, secondmate, and primary work; [`supervision.md`](supervision.md#cursor-primary-park-2026-08-13) owns the primary evidence.
+The evidence below was produced on 2026-08-11 against the installed signed CLI on macOS 26.5.2 arm64 with tmux 3.6a, running as `kunchenguid`, and extended on 2026-08-13 with the tmux composer verdict below.
 
 - Binary: `~/.local/bin/cursor-agent`, canonicalizing into `~/.local/share/cursor-agent/versions/2026.08.11-e8db854/cursor-agent`.
 - Version: `cursor-agent --version` reported `2026.08.11-e8db854`, and `cursor-agent status` reported a logged-in account.
@@ -835,13 +856,23 @@ Reverse video is neither dim nor a dark foreground, so ghost stripping leaves a 
 After teaching the shared classifier the glyph, both placeholders, and the plain-row remnant rule, the same captures read `empty` on the styled cursorless backends, while real typed text - including text typed to exactly match the placeholder - still read `pending`.
 An unstyled capture has no ghost-strip proof and correctly stays `unknown`.
 
-**Cursor parks its terminal cursor outside its composer.**
-With the composer on row 12 (zero-based), `#{cursor_y}` reported 17 both when idle and with real text typed, and `#{cursor_flag}` reported 0.
-The tmux composer verdict for a cursor pane is therefore `unknown` in every state, and tmux submission is acknowledged from the busy transition instead.
-On the cursorless backends, styled captures from Herdr and Zellij can prove the reverse-video placeholder empty, while cmux and Orca declare `styled=0` and therefore correctly return `unknown` for Cursor's bare placeholder row rather than risk a false `empty`.
-Herdr later grew its own pre-typing footer baseline and confirms delivery through it (see [Herdr backend](#herdr-backend) below).
-The shared cursorless submit core still claims no busy-transition fallback, so delivery on Zellij, cmux, and Orca can remain unconfirmed even though Cursor's recorded worker state remains backend-agnostic through the transcript fold.
-Claude and Codex were checked in the same run and are unaffected: their settled composers report `cursor_flag=1` and classify `empty`.
+#### tmux composer verdict, corrected 2026-08-13
+
+The 2026-08-11 record that a Cursor pane's tmux composer verdict is `unknown` in every state described the cursor-ANCHORED read, which remains true: `#{cursor_y}` was 25 with `#{cursor_flag}` 0 on an idle pane, pointing below the footer, so tmux's cursor row is not a composer locator for Cursor.
+Read cursorlessly, the same live capture classifies correctly, so the composite verdict is no longer `unknown`:
+
+```text
+cursor_y=25  cursor_flag=0
+with-cursor : unknown      cursorless : empty     (idle composer)
+with-cursor : unknown      cursorless : pending   (real typed text, not submitted)
+with-cursor : unknown      cursorless : unknown   (agent exited to a shell)
+```
+
+`bin/fm-tmux-lib.sh` therefore reclassifies cursorlessly only when the pane's foreground process group is provably Cursor, so every other harness keeps the strict blank-cursor-row posture.
+That supplies the genuine composer-empty proof required for away-mode escalation delivery.
+A live injection through `bin/fm-supervise-daemon.sh`'s own `inject_msg` into a real Cursor pane returned 0 and the pane processed the typed `FIRSTMATE_OP: v1 away-supervisor:` escalation.
+
+`tests/fm-tmux-agent-liveness.test.sh` pins this with real processes and no Cursor installed: it asserts the cursor-anchored source is blind, that the composite still reads `empty` idle and `pending` with typed text, that an identical screen stays `unknown` when the pane is not Cursor, and that a stale Cursor screen over a dead shell never reads `empty`.
 
 ### Busy state
 
