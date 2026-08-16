@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 # Tests for the tracked Pi primary watcher extension and Pi secondmate wiring.
+#
+# Never write an apostrophe inside the Node driver heredocs below, comments
+# included. Each driver sits inside an out=$(...) command substitution, and
+# stock macOS Bash 3.2 tracks quote characters straight through a heredoc body
+# while Bash 4 and later do not. One stray apostrophe makes that scanner
+# swallow everything up to the next one, hiding the double quotes in between,
+# so the file stops parsing on 3.2 while parsing fine everywhere else. The
+# reported error lands thousands of lines away from the apostrophe that caused
+# it. The macos-stock-bash CI job is what catches this; write "the stub in this
+# driver" rather than "this driver's stub" and it never comes up.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -161,7 +171,7 @@ if (!notification.includes("started Pi extension arm child")) {
   console.error(notification);
   process.exit(1);
 }
-// The follow-up wake arrives through this driver's own sendUserMessage stub,
+// The follow-up wake arrives through the sendUserMessage stub in this driver,
 // so the stub is the checkpoint. Nothing here needs to know how long the arm
 // child takes to report its external healthy watcher.
 await delivered.reached;
@@ -454,7 +464,7 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-continuity", {}, undefined, undefined, {});
-// Delivery entering this driver's own stub is the checkpoint. The successor
+// Delivery entering the stub in this driver is the checkpoint. The successor
 // arm row is written before delivery begins, so waiting on delivery already
 // covers the row the old loop was separately polling for - and rowsAtDelivery
 // below is what actually proves that ordering, not the loop condition.
@@ -535,8 +545,8 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-hung-successor", {}, undefined, undefined, {});
-// The fallback wake is delivered into this driver's stub, so the stub is the
-// checkpoint. This replaced a twenty-second budget that had to cover a
+// The fallback wake is delivered into the stub in this driver, so the stub is
+// the checkpoint. This replaced a twenty-second budget that had to cover a
 // readiness deadline plus two retries and was still only a guess.
 await fallbackDelivered.reached;
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -1727,7 +1737,7 @@ const hooks = await mod.FmPrimaryWatchArm({
 const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event(event);
-// The wake prompt entering this driver's own stub is the checkpoint. The
+// The wake prompt entering the stub in this driver is the checkpoint. The
 // successor arm row is written before the prompt begins, and rowsAtPrompt
 // below is what actually proves that ordering.
 await promptBegan.reached;
@@ -2711,8 +2721,7 @@ if (!existsSync(process.env.FM_GUARD_LOG)) {
   process.exit(1);
 }
 if (!promptBodies.some((body) => body.includes("TURN WOULD END BLIND"))) {
-  const promptSeparator = "\n---\n";
-  console.error("missing blind-turn prompt: " + promptBodies.join(promptSeparator));
+  console.error(`missing blind-turn prompt: ${promptBodies.join("\n---\n")}`);
   process.exit(1);
 }
 EOF
