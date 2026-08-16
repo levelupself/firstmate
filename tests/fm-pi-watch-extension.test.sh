@@ -752,9 +752,9 @@ fi
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 printf 'armed %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
-trap 'printf "restored-exited %s\\n" "$$" > "${FM_CHECKPOINT_BUS:?}"; exit 0' TERM INT
+trap 'printf "restored-exited %s\\n" "$$" > "${FM_CHECKPOINT_BUS:?}"' EXIT
+trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
-printf 'restored-exited %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
     out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STARTUP_FILE="$startup" FM_ACTIVATE_FILE="$activate" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
@@ -2256,13 +2256,13 @@ fi
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 printf 'armed %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+trap 'printf "restored-exited %s\\n" "$$" > "${FM_CHECKPOINT_BUS:?}"' EXIT
 trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
-printf 'restored-exited %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
     out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_STARTUP_FILE="$startup" FM_ACTIVATE_FILE="$activate" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const nativeSetTimeout = globalThis.setTimeout;
@@ -2349,6 +2349,7 @@ if (process.env.FM_LATE_KIND === "actionable") {
 } else if (prompts.length !== 1) {
   throw new Error(`late non-actionable close sent an extra wake: ${prompts.join(" | ")}`);
 }
+rmSync(`${process.env.FM_HOME}/state/.lock`);
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 // Replaces an 80ms drain: the restored arm says when it is actually gone.
 const exitedRestoredPid = await bus.reached("restored-exited");
