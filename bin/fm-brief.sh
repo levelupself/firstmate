@@ -476,7 +476,7 @@ case "$MODE" in
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 Delivery contract: mode=direct-PR
-This project ships **direct-PR** without the no-mistakes pipeline. Committing is a midpoint, not the finish - keep going in the same turn: push your branch and open a PR with \`gh-axi\`; never stop there or wait to be told.
+This task ships **direct-PR** without the no-mistakes pipeline. Committing is a midpoint, not the finish - keep going in the same turn: push your branch and open a PR with \`gh-axi\`; never stop there or wait to be told.
 This mode has exactly one terminal report, and only an opened PR can produce it: append \`done: PR {url}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
@@ -487,7 +487,7 @@ EOF
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 Delivery contract: mode=local-only
-This project ships **local-only**: no remote, no PR, no pipeline.
+This task ships **local-only**: no remote, no PR, no pipeline.
 Committing is a midpoint, not the finish - after committing, run the local tests and verify branch \`fm/$ID\` is ready to merge as it stands. Do NOT push, do NOT open a PR, do NOT merge.
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
 This mode has exactly one terminal report: only once tests pass locally, the tree has no uncommitted changes, and the branch is mergeable exactly as it stands, append \`done: ready in branch fm/$ID, tests pass, tree clean\` to the status file and stop.
@@ -499,13 +499,13 @@ EOF
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
     RULE1='1. Never push to the default branch. Never merge a PR.'
     if [ "$NO_MISTAKES_CHECKS_READY" -eq 1 ]; then
-      READY_DELIVERABLE='This project ships **no-mistakes**: the deliverable is a PR whose checks are green.'
+      READY_DELIVERABLE='This task ships **no-mistakes**: the deliverable is a PR whose checks are green.'
       # shellcheck disable=SC2016  # Literal brief text contains backticks, not shell substitutions.
       READY_SIGNAL='This mode has exactly one terminal report, and only a green CI run can produce it: `done: PR {url} checks green`.'
       # shellcheck disable=SC2016  # Literal brief text contains backticks, not shell substitutions.
       READY_FINISH='After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append `done: PR {url} checks green` and stop. You are finished.'
     else
-      READY_DELIVERABLE='This project ships **no-mistakes**: the deliverable is a PR validated by the pipeline and an observed full local suite on its final head.'
+      READY_DELIVERABLE='This task ships **no-mistakes**: the deliverable is a PR validated by the pipeline and an observed full local suite on its final head.'
       IFS= read -r -d '' READY_SIGNAL <<'EOF' || true
 This repository did not demonstrate a working GitHub Actions check gate, so the full local suite is the merge gate.
 Disabled Actions, no recognized test-oriented check on the default head, and an unavailable or malformed probe all select this requirement; uncertainty never falls back to `checks green`.
