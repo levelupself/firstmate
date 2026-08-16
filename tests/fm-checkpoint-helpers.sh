@@ -34,6 +34,19 @@
 # exists to observe that something does NOT happen. A negative window needs a
 # duration by construction, because the absence of an event is only meaningful
 # over some span of time. Those waits belong exactly where they are.
+#
+# The trade this makes, stated plainly. A deadline turns a slow machine into a
+# false failure but turns a real regression into a fast, well-worded one. A
+# checkpoint removes the false failure and turns that same regression into a
+# stall. Measured here by removing the Pi extension's retry-exhaustion wake:
+# the deadline version failed in about 2.5s naming the missing wake, and the
+# checkpoint version ran until it was killed. The waiter prints every
+# outstanding checkpoint when the driver is signalled or when Node gives up on
+# an unsettled await, which covers a driver killed directly - but a harness
+# that kills only the enclosing shell leaves the driver orphaned and that
+# report unseen. Prefer a checkpoint anyway where the signal is genuinely
+# available, and leave the wait alone where it is the only thing reporting a
+# defect.
 
 # fm_checkpoint_bus <path>
 #   Create the checkpoint bus FIFO at <path>, replacing any stale one. Export
@@ -65,11 +78,14 @@ import { Socket } from "node:net";
 // run is cut short. A stalled driver then still says what never signalled.
 const outstanding = new Set();
 let reporterInstalled = false;
+let reported = false;
 
 function reportOutstanding() {
-  if (outstanding.size > 0) {
-    process.stderr.write(`checkpoint never reached: ${[...outstanding].join(", ")}\n`);
-  }
+  // A signal handler that calls process.exit also fires the exit hook, so
+  // report once however the run ends.
+  if (reported || outstanding.size === 0) return;
+  reported = true;
+  process.stderr.write(`checkpoint never reached: ${[...outstanding].join(", ")}\n`);
 }
 
 function watchForOutstanding(label) {
