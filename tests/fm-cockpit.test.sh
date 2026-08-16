@@ -1061,7 +1061,7 @@ test_default_layout_warns_before_it_changes_the_screen() {
     "the third pane did not take an equal share of what was left"
   assert_contains "$body" "pane run $first env FM_HOME=$LAYOUT_HOME" \
     "the first pane was not launched for this home"
-  assert_contains "$body" "pane run $first env FM_HOME=$LAYOUT_HOME bin/fm-fleet-view.sh" \
+  assert_contains "$body" "pane run $first env FM_HOME=$LAYOUT_HOME FM_HERDR_LAB_HELPER= FM_HERDR_LAB_SESSION= bin/fm-fleet-view.sh" \
     "the fleet pane command did not resolve through the durable home"
   assert_contains "$body" "--geometry-command bin/fm-herdr-pane-geometry.sh" \
     "the fleet pane did not re-read its authoritative drawn rectangle on redraw"

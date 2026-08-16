@@ -100,6 +100,15 @@ pane_rows_with_drawn_geometry() {  # <command> <pty-cols> <drawn-cols> <drawn-ro
   kill_server
 }
 
+write_terminal_evidence() {  # <name> <title> <rows>
+  local name=$1 title=$2 rows=$3 escaped
+  [ -n "${FM_TEST_EVIDENCE_DIR:-}" ] || return 0
+  mkdir -p "$FM_TEST_EVIDENCE_DIR"
+  escaped=$(printf '%s\n' "$rows" | jq -Rrs @html)
+  printf '<!doctype html><meta charset="utf-8"><title>%s</title><style>body{background:#111;color:#eee;font:20px/1.25 monospace;padding:2rem}pre{display:inline-block;background:#000;border:1px solid #555;padding:1rem}</style><h1>%s</h1><pre>%s</pre>\n' \
+    "$title" "$title" "$escaped" > "$FM_TEST_EVIDENCE_DIR/$name.html"
+}
+
 test_fleet_panel_fits_a_short_pane_without_scrolling_its_head() {
   local out visible
   out=$(pane_rows "FM_CODEBURN_BIN=$FAKE_CODEBURN FM_HOME=$HOME_DIR $ROOT/bin/fm-fleet-view.sh --watch 1" 12 "FLEET STATUS")
@@ -147,6 +156,8 @@ EOF
   out=$(pane_rows_with_drawn_geometry \
     "FM_TEST_GEOMETRY_COUNT=$geometry_count FM_CODEBURN_BIN=$FAKE_CODEBURN FM_HOME=$HOME_DIR $ROOT/bin/fm-fleet-view.sh --geometry-command $geometry --watch 1 --section in-flight" \
     54 18 6)
+  write_terminal_evidence drawn-geometry-redraw \
+    "Fleet frame after drawn geometry narrows to 14 columns by 4 lines" "$out"
   while [ "$waited" -lt 30 ] && [ "$(cat "$geometry_count" 2>/dev/null || printf 0)" -lt 2 ]; do
     sleep 0.1
     waited=$((waited + 1))
@@ -175,6 +186,8 @@ EOF
   out=$(pane_rows_with_drawn_geometry \
     "FM_CODEBURN_BIN=$FAKE_CODEBURN FM_HOME=$HOME_DIR $ROOT/bin/fm-fleet-view.sh --geometry-command $geometry --watch 1 --section in-flight" \
     21 21 8)
+  write_terminal_evidence overflow-summary \
+    "Fleet frame with width-clipped overflow summary" "$out"
   first=$(printf '%s\n' "$out" | head -1)
   widest=$(printf '%s\n' "$out" | jq -Rrs 'split("\n") | map(length) | max')
   [ "$first" = "IN FLIGHT (8)" ] \
