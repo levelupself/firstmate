@@ -606,7 +606,6 @@ printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 printf '%s\n' "$$" > "${FM_UNRETIRED_FILE:?}"
 printf 'successor-unretired %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.1; done
-printf 'successor-exited %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STARTUP_FILE="$startup" FM_ACTIVATE_FILE="$activate" FM_UNRETIRED_FILE="$unretired" FM_RETIRED_FILE="$retired" FM_RELEASE_FILE="$release" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
@@ -642,9 +641,12 @@ let prompt = "";
 let rowsAtPrompt = 0;
 let successorPidAtPrompt = "";
 let successorAliveAtPrompt = false;
+let sessionShutdown = () => {};
 const fallbackDelivered = latch("pi unretired-successor fallback wake");
 const pi = {
-  on() {},
+  on(event, handler) {
+    if (event === "session_shutdown") sessionShutdown = handler;
+  },
   registerCommand() {},
   registerTool(candidate) {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
@@ -688,13 +690,13 @@ if (successorPidAtPrompt !== successorPid) throw new Error(`fallback observed su
 if (!successorAliveAtPrompt || !pidAlive(successorPid)) throw new Error(`successor ${successorPid} was not genuinely unretired at fallback`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
+sessionShutdown();
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-// The successor announces its own exit. This replaced an 80ms sleep that was
-// meant to let the released successor finish, but the successor only notices
-// the release file every 100ms, so the sleep was shorter than the thing it
-// was waiting for and was landing on luck.
-const exitedSuccessorPid = await bus.reached("successor-exited");
-await waitForExit(exitedSuccessorPid, "successor exit");
+// Process death cannot be announced by the dying process: the announcement
+// necessarily precedes exit and can strand its writer if the bus closes after
+// observing that earlier pid disappear. Observe the actual successor pid
+// instead; this is the process-death check the shared helper preserves.
+await waitForExit(successorPid, "successor exit");
 bus.close();
 EOF
   )
@@ -2102,11 +2104,10 @@ printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 printf '%s\n' "$$" > "${FM_UNRETIRED_FILE:?}"
 printf 'successor-unretired %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.1; done
-printf 'successor-exited %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_STARTUP_FILE="$startup" FM_ACTIVATE_FILE="$activate" FM_UNRETIRED_FILE="$unretired" FM_RETIRED_FILE="$retired" FM_RELEASE_FILE="$release" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const nativeSetTimeout = globalThis.setTimeout;
@@ -2190,12 +2191,11 @@ if (successorPidAtPrompt !== successorPid) throw new Error(`fallback observed su
 if (!successorAliveAtPrompt || !pidAlive(successorPid)) throw new Error(`successor ${successorPid} was not genuinely unretired at fallback`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
 if (!prompt.includes("unready successor arm did not exit within 20ms")) throw new Error(`missing unretired-arm failure: ${prompt}`);
+rmSync(`${process.env.FM_HOME}/state/.lock`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-// The successor announces its own exit. This replaced an 80ms sleep for a
-// successor that only samples its release file every 100ms, so the sleep was
-// shorter than the thing it was waiting for.
-const exitedSuccessorPid = await bus.reached("successor-exited");
-await waitForExit(exitedSuccessorPid, "successor exit");
+// Process death cannot be announced by the dying process. Observe the actual
+// successor pid with the shared process-death check instead.
+await waitForExit(successorPid, "successor exit");
 bus.close();
 EOF
 )
