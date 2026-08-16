@@ -412,7 +412,9 @@ if [ "$ACTION" = panel ]; then
     trap 'fm_terminal_watch_reset; exit 0' INT TERM HUP
     while :; do
       frame=$(render_panel) || true
-      fm_terminal_paint_frame "$frame"
+      # A write that fails is a pane that has gone away underneath this loop:
+      # stop rather than spin forever against a terminal nobody can read.
+      fm_terminal_paint_frame "$frame" || exit 0
       sleep "$PANEL_INTERVAL"
     done
   fi

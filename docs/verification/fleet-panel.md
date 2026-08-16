@@ -115,3 +115,115 @@ A frame sized to exactly fill the pane also requires that painting not terminate
 Newlines therefore separate rows rather than terminating them.
 `ESC[J` erases from the cursor to the end of the display, so text preceding the cursor on the final row survives and the closing erase still clears every row below.
 Twenty consecutive captures of a fixture alternating three-line and one-line frames every 0.05 seconds each showed exactly one complete frame with no residual rows from the longer one.
+
+## Watched-banner ownership inside a cockpit fleet region
+
+Verified on 2026-08-10 against the real herdr 0.8.0 executable, in a guarded non-`default` lab session provisioned by `bin/fm-herdr-lab.sh`.
+
+The accepted verification uses this exact lifecycle scaffold from the repository root.
+The trap is installed before provisioning, every inspection goes through `run`, and the deliberate restart uses only `stop` followed by `provision`.
+
+```sh
+HERDR_LAB_HELPER=/home/fungiman/.treehouse/firstmate-5ccb57/5/firstmate/bin/fm-herdr-lab.sh
+HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fleet-watch-owner-reaping)
+export HERDR_LAB_HELPER HERDR_LAB_SESSION
+
+cleanup_fleet_watch_lab() {
+  "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"
+}
+trap cleanup_fleet_watch_lab EXIT
+
+HERDR_LAB_HELPER="$HERDR_LAB_HELPER" \
+  HERDR_LAB_SESSION="$HERDR_LAB_SESSION" \
+  bash tests/fm-cockpit-herdr-e2e.test.sh
+
+"$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"
+"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" status --json
+"$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION"
+"$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"
+"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" status --json
+
+"$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"
+trap - EXIT
+```
+
+The executable test installs its own teardown trap before its internal provision, creates the cockpit only through the named lab, routes its Herdr adapter through the helper, and checks that teardown leaves the default fleet byte-identical.
+For the record-loss counterfactual, `bash tests/fm-fleet-snapshot-view.test.sh` executes a generation-one watcher, removes its serialized frame record, observes that the watcher exits and releases its lock, then verifies that the replacement generation owns each recorded pane alone.
+
+Two facts about herdr 0.8.0 bound this design and are recorded because the fix depends on them.
+Closing a fleet pane already retires its banner, so process reaping is not the gap; and `pane run` types into the pane's shell, so it cannot start a second banner in a pane whose banner is still in the foreground.
+
+```
+=== E2: close a fleet pane; is its watcher reaped? ===
+  second fleet pane=w1:p3 pids=1686877 1687586
+  close: {"type":"ok"}
+  pid=1686877 reaped by pane close
+  pid=1687586 reaped by pane close
+```
+
+The gap is a region rebuild.
+Adoption that finds no readable record builds a fresh region and leaves the previous generation's panes untouched, so before this rule every rebuild added a live banner rather than replacing one.
+
+```
+=== E4: record lost -> re-adopt builds a SECOND region; old watchers? ===
+  new record fleet ids: w1:p5,w1:p6,w1:p7
+  old first-pane watchers:
+    pid=1686794 STILL PAINTING (unbound)
+```
+
+The same rebuild after the rule strands nothing, and the newly recorded panes keep painting.
+
+```
+generation 1 fleet panes: w1:p2,w1:p3,w1:p4
+generation 1 painter pids: 888733 888983 889036
+--- rebuild the region exactly as E4 did (record lost -> re-adopt) ---
+generation 2 fleet panes: w1:p5,w1:p6,w1:p7
+--- generation 1 painters after the rebuild ---
+  pid=888733 retired itself
+  pid=888983 retired itself
+  pid=889036 retired itself
+--- generation 2 painters (must still be painting) ---
+  pane=w1:p5 painting pid(s)=890456
+  pane=w1:p6 painting pid(s)=890516
+  pane=w1:p7 painting pid(s)=890593
+
+RESULT stranded=0 live_bound_panes=3
+```
+
+Retirement stops the banner and nothing else: the emptied panes stay on the tab for the operator, which is why the tab still reports seven panes above.
+
+Repaint contention was the first hypothesis and does not survive.
+Two banners painting one pane's terminal at 1-second intervals, with different sections and with frames taller than the pane, left exactly one complete board in the pane across repeated captures, because each paint homes the cursor and erases to the end of the display.
+Contention therefore costs authorship - the visible board silently alternates between owners - rather than accumulating rows, which is what makes single ownership the guarantee worth enforcing.
+
+```
+=== B2: add a SECOND painter with a DIFFERENT frame on the same tty ===
+  sample1    rows=20   boards=1   decisions_headers=1
+  sample2    rows=20   boards=1   decisions_headers=1
+  verdict: STABLE
+```
+
+Counting banner processes with a bare process match overstates them roughly twofold: each redraw forks a command substitution that carries the same argv as its parent for the length of one render.
+Only the loop process is a banner.
+
+### Supported cleanup after merge
+
+Legacy watchers already running old code cannot learn the new ownership rule.
+Before cleanup, print a warning that the obsolete fleet panes will disappear and that focus may move, then close only the pane ids confirmed as absent from the current frame's `fleet_pane_ids`.
+The supported interactive path is Herdr's pane close action, not a server or session lifecycle command.
+Do not close the recorded head, viewport, or current fleet pane ids.
+
+The guarded lab cleanup used while verifying candidate pane ids is exact and remains isolated from `default`.
+
+```sh
+printf '%s\n' \
+  'WARNING: confirmed legacy fleet panes will disappear and terminal focus may move.'
+"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane list --workspace "$LAB_WORKSPACE_ID"
+"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane close "$CONFIRMED_LEGACY_PANE_ID"
+"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane list --workspace "$LAB_WORKSPACE_ID"
+"$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"
+trap - EXIT
+```
+
+For a live post-merge frame, first run the updated `bin/fm-cockpit.sh status`, compare its recorded pane ids with Herdr's visible panes, issue the same warning, and use Herdr's interactive close action only for positively identified legacy fleet panes.
+If identity is ambiguous, leave the pane in place rather than guessing.

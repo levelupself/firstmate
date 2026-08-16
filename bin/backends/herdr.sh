@@ -2259,8 +2259,8 @@ fm_backend_herdr_cockpit_binding_live() {  # <state-dir> <home> [<session>]
 # keeps the original check exactly: a version 2 banner was launched before the
 # flag existed and is not made suspicious by the absence of an argument it never
 # had.
-fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane> [<home>] [<sections>]
-  local session=$1 pane=$2 home=${3:-} sections=${4:-} info
+fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane> [<home>] [<sections>] [<identity>]
+  local session=$1 pane=$2 home=${3:-} sections=${4:-} identity=${5:-compatible} info
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || {
     printf 'no-process-info'
     return 0
@@ -2271,6 +2271,24 @@ fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane> [<home>] [<sections
     and (.result.process_info.foreground_processes | type) == "array"
   ' >/dev/null 2>&1; then
     printf 'unreadable'
+    return 0
+  fi
+  if [ "$identity" = strict ]; then
+    if printf '%s' "$info" | jq -e \
+      --arg script "$home/bin/fm-fleet-view.sh" \
+      --arg sections "$sections" '
+      def words: (.argv // (if (.argv0 // "") == "" then [] else [.argv0] end));
+      any(.result.process_info.foreground_processes[]?;
+        (words | index($script)) != null
+        and (words | index("--watch")) != null
+        and ($sections == ""
+             or ((words | index("--section")) as $at
+                 | $at != null and words[$at + 1] == $sections)))
+    ' >/dev/null 2>&1; then
+      printf 'live'
+    else
+      printf 'no-fleet-process'
+    fi
     return 0
   fi
   if ! printf '%s' "$info" | jq -e \
@@ -2738,15 +2756,15 @@ fm_backend_herdr_cockpit_create_fleet_panes() {  # <session> <workspace> <tab> <
     [ -n "$spec" ] || continue
     index=$((index + 1))
     pane=$(printf '%s' "$created" | cut -d, -f"$index")
-    # Each split above fixes its cwd at the durable home. Keep the watcher
-    # relative to that cwd so a disposable launcher checkout is never captured.
+    # Each split above fixes its cwd at the durable home. Resolve both watcher
+    # executables through that home so a disposable launcher checkout is never captured.
     if ! fm_backend_herdr_cli "$session" pane rename "$pane" "firstmate-fleet-$spec" >/dev/null 2>&1 \
        || ! fm_backend_herdr_cli "$session" pane run "$pane" \
          env "FM_HOME=$home" \
          "FM_HERDR_LAB_HELPER=${FM_COCKPIT_LAB_HELPER:-}" \
          "FM_HERDR_LAB_SESSION=${FM_COCKPIT_LAB_SESSION:-}" \
-         bin/fm-fleet-view.sh \
-         --geometry-command "bin/$FM_BACKEND_HERDR_COCKPIT_GEOMETRY_SCRIPT" \
+         "$home/bin/fm-fleet-view.sh" \
+         --geometry-command "$home/bin/$FM_BACKEND_HERDR_COCKPIT_GEOMETRY_SCRIPT" \
          --watch --section "$spec" >/dev/null 2>&1; then
       fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$created" \
         "could not launch the fleet banner" || true
