@@ -47,6 +47,7 @@
 # report unseen. Prefer a checkpoint anyway where the signal is genuinely
 # available, and leave the wait alone where it is the only thing reporting a
 # defect.
+# The module also carries the process-death poll, which stays a poll on purpose.
 
 # fm_checkpoint_bus <path>
 #   Create the checkpoint bus FIFO at <path>, replacing any stale one. Export
@@ -70,6 +71,25 @@ fm_checkpoint_module() {
 // wire format and for why this exists.
 import { openSync } from "node:fs";
 import { Socket } from "node:net";
+
+// Deliberately still a bounded poll, and only ever used for "this pid is
+// gone". A dying process cannot announce its own death: anything it writes is
+// necessarily sent before it exits, so a checkpoint here would downgrade the
+// assertion from "the previous child is gone" to "the previous child intended
+// to go". That is exactly the kind of weakening this sweep exists to avoid,
+// so the arrival of a new child is a checkpoint while the departure of an old
+// one stays an observation.
+export async function waitForExit(pid, label, attempts = 250) {
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      process.kill(Number(pid), 0);
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timeout waiting for ${label}`);
+}
 
 // Every checkpoint currently being waited on, by label. A checkpoint that
 // never arrives stalls rather than failing, which is the whole point: there

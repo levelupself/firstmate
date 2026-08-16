@@ -627,7 +627,7 @@ globalThis.setTimeout = (callback, delay, ...args) => {
 globalThis.clearTimeout = (timer) => {
   if (timer !== readinessTimer) nativeClearTimeout(timer);
 };
-const { latch, openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const { latch, openCheckpointBus, waitForExit } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 function pidAlive(pid) {
   try {
@@ -693,7 +693,8 @@ writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
 // meant to let the released successor finish, but the successor only notices
 // the release file every 100ms, so the sleep was shorter than the thing it
 // was waiting for and was landing on luck.
-await bus.reached("successor-exited");
+const exitedSuccessorPid = await bus.reached("successor-exited");
+await waitForExit(exitedSuccessorPid, "successor exit");
 bus.close();
 EOF
   )
@@ -780,7 +781,7 @@ function pidAlive(pid) {
     return false;
   }
 }
-const { counter, openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const { counter, openCheckpointBus, waitForExit } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 let tool = null;
 const prompts = [];
@@ -842,7 +843,8 @@ if (process.env.FM_LATE_KIND === "actionable") {
 }
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 // Replaces an 80ms drain: the restored arm says when it is actually gone.
-await bus.reached("restored-exited");
+const exitedRestoredPid = await bus.reached("restored-exited");
+await waitForExit(exitedRestoredPid, "restored arm exit");
 bus.close();
 EOF
 )
@@ -879,7 +881,7 @@ SH
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-const { openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const { openCheckpointBus, waitForExit } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 let tool = null;
 let prompts = 0;
@@ -1171,21 +1173,6 @@ function pidAlive(pid) {
   } catch {
     return false;
   }
-}
-
-// Deliberately still a bounded poll, and only ever used for "this pid is
-// gone". A dying process cannot announce its own death: anything it writes is
-// necessarily sent before it exits, so a checkpoint here would downgrade the
-// assertion from "the previous child is gone" to "the previous child intended
-// to go". That is exactly the kind of weakening this sweep exists to avoid,
-// so the arrival of a new child is a checkpoint below while the departure of
-// an old one stays an observation.
-async function waitForExit(pid, label, attempts = 250) {
-  for (let i = 0; i < attempts; i += 1) {
-    if (!pidAlive(pid)) return;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(`timeout waiting for ${label}`);
 }
 
 function liveArmPids() {
@@ -2140,7 +2127,7 @@ globalThis.setTimeout = (callback, delay, ...args) => {
 globalThis.clearTimeout = (timer) => {
   if (timer !== readinessTimer) nativeClearTimeout(timer);
 };
-const { latch, openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const { latch, openCheckpointBus, waitForExit } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 function pidAlive(pid) {
   try {
@@ -2207,7 +2194,8 @@ writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
 // The successor announces its own exit. This replaced an 80ms sleep for a
 // successor that only samples its release file every 100ms, so the sleep was
 // shorter than the thing it was waiting for.
-await bus.reached("successor-exited");
+const exitedSuccessorPid = await bus.reached("successor-exited");
+await waitForExit(exitedSuccessorPid, "successor exit");
 bus.close();
 EOF
 )
@@ -2296,7 +2284,7 @@ function pidAlive(pid) {
     return false;
   }
 }
-const { counter, openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const { counter, openCheckpointBus, waitForExit } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const prompts = [];
@@ -2359,7 +2347,8 @@ if (process.env.FM_LATE_KIND === "actionable") {
 }
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 // Replaces an 80ms drain: the restored arm says when it is actually gone.
-await bus.reached("restored-exited");
+const exitedRestoredPid = await bus.reached("restored-exited");
+await waitForExit(exitedRestoredPid, "restored arm exit");
 bus.close();
 EOF
 )
