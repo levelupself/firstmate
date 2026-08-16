@@ -407,7 +407,7 @@ case "$MODE" in
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 Delivery contract: mode=direct-PR
-This project ships **direct-PR** without the no-mistakes pipeline. Committing is a midpoint, not the finish - keep going in the same turn: push your branch and open a PR with \`gh-axi\`; never stop there or wait to be told.
+This task ships **direct-PR** without the no-mistakes pipeline. Committing is a midpoint, not the finish - keep going in the same turn: push your branch and open a PR with \`gh-axi\`; never stop there or wait to be told.
 This mode has exactly one terminal report, and only an opened PR can produce it: append \`done: PR {url}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
@@ -418,7 +418,7 @@ EOF
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 Delivery contract: mode=local-only
-This project ships **local-only**: no remote, no PR, no pipeline.
+This task ships **local-only**: no remote, no PR, no pipeline.
 Committing is a midpoint, not the finish - after committing, run the local tests and verify branch \`fm/$ID\` is ready to merge as it stands. Do NOT push, do NOT open a PR, do NOT merge.
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
 This mode has exactly one terminal report: only once tests pass locally, the tree has no uncommitted changes, and the branch is mergeable exactly as it stands, append \`done: ready in branch fm/$ID, tests pass, tree clean\` to the status file and stop.
@@ -432,7 +432,7 @@ EOF
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 Delivery contract: mode=no-mistakes
-This project ships **no-mistakes**: the deliverable is a PR whose checks are green.
+This task ships **no-mistakes**: the deliverable is a PR whose checks are green.
 Committing is a midpoint, not the finish - once the implementation is committed, keep going in the same turn and invoke /no-mistakes yourself to validate and ship the PR. Never stop there or wait to be told.
 This mode has exactly one terminal report, and only a green CI run can produce it: \`done: PR {url} checks green\`.
 
