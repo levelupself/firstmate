@@ -437,8 +437,8 @@ test_terminal_report_cannot_be_written_at_commit() {
 
   brief="$home/data/brief-term-nm/brief.md"
   # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
-  assert_grep 'only a green CI run can produce it: `done: PR {url} checks green`' "$brief" \
-    "no-mistakes terminal report must require evidence only a green CI run produces"
+  assert_grep 'only an observed full local suite on the final clean PR head can produce it' "$brief" \
+    "no-mistakes terminal report must require evidence unavailable at the implementation commit"
   assert_grep "invoke /no-mistakes yourself to validate and ship the PR. Never stop there or wait to be told." "$brief" \
     "no-mistakes brief must send the worker straight from commit into validation"
   assert_no_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \
@@ -461,6 +461,123 @@ test_terminal_report_cannot_be_written_at_commit() {
   assert_no_grep "/no-mistakes yourself" "$brief" \
     "local-only brief must not send the worker into the no-mistakes pipeline"
   pass "fm-brief.sh: every ship mode names one terminal report unreachable at commit time"
+}
+
+# A checks-based ready signal is only meaningful when the repository can
+# demonstrate that GitHub Actions is enabled and that its default-branch head
+# produced at least one test-oriented Actions check run. Disabled Actions, an
+# empty check-run set, and a failed probe all select the stricter local-suite handoff.
+# The same arbitrary repository fixture is driven through positive and negative
+# probe results so the decision cannot be keyed to a project name.
+test_no_mistakes_ready_signal_requires_working_ci() {
+  local home fakebin repo brief log
+  home="$TMP_ROOT/ci-readiness-home"
+  fakebin="$TMP_ROOT/ci-readiness-bin"
+  repo="$home/projects/arbitrary-service"
+  log="$TMP_ROOT/ci-readiness-gh.log"
+  mkdir -p "$home/data" "$repo" "$fakebin"
+  git -C "$repo" init -q
+  git -C "$repo" remote add origin https://github.com/example/arbitrary-service.git
+  git -C "$repo" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "${FM_FAKE_GH_LOG:?}"
+case "$*" in
+  *'/actions/permissions'*'--jq .enabled')
+    case "${FM_FAKE_CI_STATE:?}" in
+      disabled) printf 'false\n' ;;
+      unknown) exit 1 ;;
+      *) printf 'true\n' ;;
+    esac
+    ;;
+  *'/commits/release/check-runs'*)
+    case "${FM_FAKE_CI_STATE:?}" in
+      working) printf '2\n' ;;
+      *) exit 97 ;;
+    esac
+    ;;
+  *'/commits/main%23release/check-runs'*)
+    case "${FM_FAKE_CI_STATE:?}" in
+      delimiter) printf '1\n' ;;
+      *) exit 97 ;;
+    esac
+    ;;
+  *'/repos/example/arbitrary-service'*)
+    case "${FM_FAKE_CI_STATE:?}" in
+      api-unreachable) exit 1 ;;
+      working) printf 'release\n' ;;
+      delimiter) printf 'main#release\n' ;;
+      *) printf 'main\n' ;;
+    esac
+    ;;
+  *'/commits/main/check-runs'*)
+    case "${FM_FAKE_CI_STATE:?}" in
+      empty) printf '0\n' ;;
+      *) exit 97 ;;
+    esac
+    ;;
+  *) exit 98 ;;
+esac
+SH
+  chmod +x "$fakebin/gh-axi"
+
+  : > "$log"
+  FM_HOME="$home" PATH="$fakebin:$PATH" FM_FAKE_GH_LOG="$log" FM_FAKE_CI_STATE=working \
+    "$ROOT/bin/fm-brief.sh" ci-working arbitrary-service --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/ci-working/brief.md"
+  # shellcheck disable=SC2016
+  assert_grep 'only a green CI run can produce it: `done: PR {url} checks green`' "$brief" \
+    "a repository with observed GitHub Actions checks lost the checks-green ready signal"
+  assert_no_grep "full local suite is the merge gate" "$brief" \
+    "a repository with observed GitHub Actions checks was assigned the fallback gate"
+  assert_grep "/repos/example/arbitrary-service/commits/release/check-runs" "$log" \
+    "CI readiness detection did not use the authoritative default branch"
+  assert_no_grep "/repos/example/arbitrary-service/commits/main/check-runs" "$log" \
+    "CI readiness detection trusted stale local origin/HEAD metadata"
+
+  FM_HOME="$home" PATH="$fakebin:$PATH" FM_FAKE_GH_LOG="$log" FM_FAKE_CI_STATE=delimiter \
+    "$ROOT/bin/fm-brief.sh" ci-delimiter arbitrary-service --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/ci-delimiter/brief.md"
+  # shellcheck disable=SC2016
+  assert_grep 'only a green CI run can produce it: `done: PR {url} checks green`' "$brief" \
+    "a valid delimiter-bearing default branch lost its observed checks-green signal"
+  assert_grep "/repos/example/arbitrary-service/commits/main%23release/check-runs" "$log" \
+    "CI readiness detection did not encode the default branch as one path segment"
+  assert_no_grep "/repos/example/arbitrary-service/commits/main#release/check-runs" "$log" \
+    "CI readiness detection sent an unencoded default branch delimiter"
+
+  for state in disabled empty unknown api-unreachable; do
+    FM_HOME="$home" PATH="$fakebin:$PATH" FM_FAKE_GH_LOG="$log" FM_FAKE_CI_STATE="$state" \
+      "$ROOT/bin/fm-brief.sh" "ci-$state" arbitrary-service --mode no-mistakes >/dev/null 2>&1
+    brief="$home/data/ci-$state/brief.md"
+    assert_no_grep 'done: PR {url} checks green' "$brief" \
+      "$state CI probe still emitted the vacuous checks-green ready signal"
+    assert_no_grep "the deliverable is a PR whose checks are green" "$brief" \
+      "$state CI probe retained the contradictory checks-based deliverable"
+    assert_grep "the full local suite is the merge gate" "$brief" \
+      "$state CI probe did not select the stricter local-suite requirement"
+    assert_grep "exact 40-character HEAD SHA" "$brief" \
+      "$state CI probe did not require the full head commit identity"
+    assert_grep "proof-file list" "$brief" \
+      "$state CI probe did not require the deciding proof files"
+    assert_grep "A scoped run is acceptable when stated as scoped" "$brief" \
+      "$state CI probe did not preserve scoped-run honesty"
+    assert_grep "An unobserved full pass is not acceptable" "$brief" \
+      "$state CI probe still permitted an inferred full-suite pass"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'uncertainty never falls back to `checks green`' "$brief" \
+      "$state CI probe did not make the fail-closed uncertainty policy explicit"
+  done
+
+  assert_grep "/repos/example/arbitrary-service/actions/permissions" "$log" \
+    "CI readiness detection did not inspect the repository Actions setting"
+  assert_grep "api /repos/example/arbitrary-service --jq .default_branch" "$log" \
+    "CI readiness detection did not request authoritative repository metadata"
+  assert_grep "test(" "$log" \
+    "CI readiness detection accepted Actions checks without recognizing test-oriented names"
+  pass "fm-brief.sh: no-mistakes readiness fails closed when working CI is not observed"
 }
 
 # Generated ship briefs said nothing about when a behavioural test is written, so
@@ -985,6 +1102,7 @@ test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_terminal_report_cannot_be_written_at_commit
+test_no_mistakes_ready_signal_requires_working_ci
 test_behavioral_tests_are_red_first
 test_reports_disclose_commit_and_proof_files
 test_ship_reports_bind_full_suite_to_clean_commit

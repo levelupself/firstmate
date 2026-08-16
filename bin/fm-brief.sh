@@ -52,6 +52,16 @@
 # broad trigger the captain rejected.
 # A ship's terminal report also binds any relied-on full-suite run to the exact
 # clean commit it tested and states its observed pass and fail counts.
+# A no-mistakes ship brief keeps its checks-based ready signal only when the
+# repository's current GitHub state proves both that Actions is enabled and that
+# the default-branch head has at least one test-oriented check run emitted by
+# GitHub Actions. Test orientation is established conservatively from explicit
+# testing, linting, type-checking, verification, coverage, unit, integration,
+# end-to-end, or behavior language in the check name.
+# The probe resolves the repository from its local origin remote, never its
+# project name. Disabled Actions, zero recognized test checks, an unresolvable
+# checkout or remote, and every API or response error all select the stricter
+# full-local-suite ready signal.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
 # the three concrete modes at intake before calling this script.
@@ -222,6 +232,61 @@ shell_quote() {
   printf "'"
 }
 
+github_slug_from_checkout() {
+  local checkout=$1 remote slug
+  remote=$(git -C "$checkout" remote get-url origin 2>/dev/null) || return 1
+  case "$remote" in
+    https://github.com/*) slug=${remote#https://github.com/} ;;
+    git@github.com:*) slug=${remote#git@github.com:} ;;
+    ssh://git@github.com/*) slug=${remote#ssh://git@github.com/} ;;
+    *) return 1 ;;
+  esac
+  slug=${slug%.git}
+  case "$slug" in
+    */*) printf '%s\n' "$slug" ;;
+    *) return 1 ;;
+  esac
+}
+
+repo_checkout_for_ci_probe() {
+  local repo=$1 candidate root_slug
+  candidate="$FM_HOME/projects/$repo"
+  if git -C "$candidate" rev-parse --show-toplevel >/dev/null 2>&1; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  root_slug=$(github_slug_from_checkout "$FM_ROOT") || return 1
+  [ "${root_slug##*/}" = "${repo%.git}" ] || return 1
+  printf '%s\n' "$FM_ROOT"
+}
+
+urlencode_path_segment() {
+  jq -rn --arg value "$1" '$value | @uri'
+}
+
+repo_has_working_test_checks() {
+  local repo=$1 checkout slug enabled default_branch encoded_branch check_count
+  checkout=$(repo_checkout_for_ci_probe "$repo") || return 1
+  slug=$(github_slug_from_checkout "$checkout") || return 1
+  enabled=$(gh-axi api "/repos/$slug/actions/permissions" --jq '.enabled' 2>/dev/null) || return 1
+  [ "$enabled" = true ] || return 1
+  default_branch=$(gh-axi api "/repos/$slug" --jq '.default_branch' 2>/dev/null) || return 1
+  case "$default_branch" in
+    ''|*$'\n'*) return 1 ;;
+  esac
+  git check-ref-format --branch "$default_branch" >/dev/null 2>&1 || return 1
+  encoded_branch=$(urlencode_path_segment "$default_branch" 2>/dev/null) || return 1
+  case "$encoded_branch" in
+    ''|*$'\n'*) return 1 ;;
+  esac
+  check_count=$(gh-axi api "/repos/$slug/commits/$encoded_branch/check-runs" \
+    --jq '[.check_runs[] | select(.app.slug == "github-actions") | select(.name | test("(^|[^[:alnum:]])(test(s|ing)?|lint|type[ -]?check|verify|verification|coverage|unit|integration|e2e|behavior)([^[:alnum:]]|$)"; "i"))] | length' 2>/dev/null) || return 1
+  case "$check_count" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$check_count" -gt 0 ]
+}
+
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 
 if [ "$KIND" = secondmate ]; then
@@ -311,6 +376,10 @@ exit 0
 fi
 
 REPO=${POS[1]}
+NO_MISTAKES_CHECKS_READY=0
+if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ] && repo_has_working_test_checks "$REPO"; then
+  NO_MISTAKES_CHECKS_READY=1
+fi
 
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
@@ -429,12 +498,34 @@ EOF
     SETUP2="
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
     RULE1='1. Never push to the default branch. Never merge a PR.'
+    if [ "$NO_MISTAKES_CHECKS_READY" -eq 1 ]; then
+      READY_DELIVERABLE='This project ships **no-mistakes**: the deliverable is a PR whose checks are green.'
+      # shellcheck disable=SC2016  # Literal brief text contains backticks, not shell substitutions.
+      READY_SIGNAL='This mode has exactly one terminal report, and only a green CI run can produce it: `done: PR {url} checks green`.'
+      # shellcheck disable=SC2016  # Literal brief text contains backticks, not shell substitutions.
+      READY_FINISH='After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append `done: PR {url} checks green` and stop. You are finished.'
+    else
+      READY_DELIVERABLE='This project ships **no-mistakes**: the deliverable is a PR validated by the pipeline and an observed full local suite on its final head.'
+      IFS= read -r -d '' READY_SIGNAL <<'EOF' || true
+This repository did not demonstrate a working GitHub Actions check gate, so the full local suite is the merge gate.
+Disabled Actions, no recognized test-oriented check on the default head, and an unavailable or malformed probe all select this requirement; uncertainty never falls back to `checks green`.
+This mode has exactly one terminal report, and only an observed full local suite on the final clean PR head can produce it: `done: PR {url}; full local suite {pass count} passed, {fail count} failed; exact 40-character HEAD SHA {sha}; tree clean; proof-file list: {paths}`.
+A scoped run is acceptable when stated as scoped, but it does not replace the full local suite gate.
+An unobserved full pass is not acceptable.
+EOF
+      READY_SIGNAL=${READY_SIGNAL%$'\n'}
+      IFS= read -r -d '' READY_FINISH <<'EOF' || true
+After /no-mistakes reaches its CI-ready return point, check out the final PR head, run the full local suite, and confirm the tree is clean.
+Append the single local-suite terminal report above only when its exact SHA, observed pass and fail counts, clean-tree confirmation, and proof-file list are complete, then stop.
+EOF
+      READY_FINISH=${READY_FINISH%$'\n'}
+    fi
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 Delivery contract: mode=no-mistakes
-This project ships **no-mistakes**: the deliverable is a PR whose checks are green.
+$READY_DELIVERABLE
 Committing is a midpoint, not the finish - once the implementation is committed, keep going in the same turn and invoke /no-mistakes yourself to validate and ship the PR. Never stop there or wait to be told.
-This mode has exactly one terminal report, and only a green CI run can produce it: \`done: PR {url} checks green\`.
+$READY_SIGNAL
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
@@ -448,7 +539,7 @@ Two firstmate-specific rules layer on top of that guidance:
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
 
-After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
+$READY_FINISH
 EOF
     ;;
 esac
