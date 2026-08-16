@@ -752,7 +752,7 @@ fi
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 printf 'armed %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
-trap 'exit 0' TERM INT
+trap 'printf "restored-exited %s\\n" "$$" > "${FM_CHECKPOINT_BUS:?}"; exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 printf 'restored-exited %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 SH
@@ -790,8 +790,11 @@ const prompts = [];
 const wakes = counter("pi late-close wakes");
 let successorPidAtFallback = "";
 let successorAliveAtFallback = false;
+let sessionShutdown = () => {};
 const pi = {
-  on() {},
+  on(event, handler) {
+    if (event === "session_shutdown") sessionShutdown = handler;
+  },
   registerCommand() {},
   registerTool(candidate) {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
@@ -843,6 +846,7 @@ if (process.env.FM_LATE_KIND === "actionable") {
 } else if (prompts.length !== 1) {
   throw new Error(`late non-actionable close sent an extra wake: ${prompts.join(" | ")}`);
 }
+sessionShutdown();
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 // Replaces an 80ms drain: the restored arm says when it is actually gone.
 const exitedRestoredPid = await bus.reached("restored-exited");
@@ -1148,7 +1152,7 @@ SH
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-const { openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const { openCheckpointBus, waitForExit } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 
 function makePi() {
