@@ -1456,8 +1456,9 @@ fleet_pane_sections=$sections
 EOF
 }
 
-# Run a watched banner in the background and echo its pid. Output and stderr
-# land in <home>/<tag>.out and <home>/<tag>.err.
+# Run a watched banner in the background and publish its pid as PAINTER_PID.
+# Output and stderr land in <home>/<tag>.out and <home>/<tag>.err. Keeping the
+# process as this shell's direct child makes teardown portable to Bash 3.2.
 start_painter() {  # <home> <bin> <pane-id> <tag> [<section>]
   local home=$1 dir=$2 pane=$3 tag=$4 section=${5:-}
   local -a cmd=("$dir/fm-fleet-view.sh" --watch 0.1)
@@ -1467,7 +1468,7 @@ start_painter() {  # <home> <bin> <pane-id> <tag> [<section>]
     PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" \
     PAINTER_REPORTED_SECTIONS="$section" PATH="$home/fakebin:$PATH" \
     "${cmd[@]}" > "$home/$tag.out" 2> "$home/$tag.err" &
-  printf '%s\n' "$!"
+  PAINTER_PID=$!
 }
 
 reap_painter() {  # <pid>
@@ -1493,7 +1494,8 @@ test_watch_outside_an_adopted_frame_keeps_painting() {
   home=$(make_home painter-standalone)
   dir=$(painter_bin "$home")
   # The documented fallback panel: a home with no adopted frame at all.
-  pid=$(start_painter "$home" "$dir" w9:p7 fallback)
+  start_painter "$home" "$dir" w9:p7 fallback
+  pid=$PAINTER_PID
   wait_for_paint "$home/fallback.out" 'FLEET STATUS' \
     || { reap_painter "$pid"; fail "the fallback fleet panel painted nothing: $(cat "$home/fallback.err")"; }
   kill -0 "$pid" 2>/dev/null || fail "the fallback fleet panel must keep running with no adopted frame"
@@ -1549,7 +1551,8 @@ test_watch_retires_when_its_pane_leaves_the_binding() {
   home=$(make_home painter-retire)
   dir=$(painter_bin "$home")
   write_cockpit_record "$home" 'w9:p2,w9:p3' 'waiting|ready'
-  pid=$(start_painter "$home" "$dir" w9:p2 bound waiting)
+  start_painter "$home" "$dir" w9:p2 bound waiting
+  pid=$PAINTER_PID
   wait_for_paint "$home/bound.out" 'YOUR DECISIONS' \
     || { reap_painter "$pid"; fail "the recorded banner painted nothing: $(cat "$home/bound.err")"; }
   kill -0 "$pid" 2>/dev/null \
@@ -1576,7 +1579,8 @@ test_watch_retires_when_its_bound_frame_record_disappears() {
   home=$(make_home painter-record-loss)
   dir=$(painter_bin "$home")
   write_cockpit_record "$home" 'w9:p2' 'waiting'
-  pid=$(start_painter "$home" "$dir" w9:p2 bound waiting)
+  start_painter "$home" "$dir" w9:p2 bound waiting
+  pid=$PAINTER_PID
   wait_for_paint "$home/bound.out" 'YOUR DECISIONS' \
     || { reap_painter "$pid"; fail "the recorded banner painted nothing: $(cat "$home/bound.err")"; }
   [ -e "$home/state/.fleet-painter-w9:p2.lock" ] \
@@ -1602,7 +1606,8 @@ test_watch_retires_when_its_recorded_pane_moves_to_another_tab() {
   home=$(make_home painter-tab-move)
   dir=$(painter_bin "$home")
   write_cockpit_record "$home" 'w9:p2' 'waiting'
-  pid=$(start_painter "$home" "$dir" w9:p2 bound waiting)
+  start_painter "$home" "$dir" w9:p2 bound waiting
+  pid=$PAINTER_PID
   wait_for_paint "$home/bound.out" 'YOUR DECISIONS' \
     || { reap_painter "$pid"; fail "the recorded banner painted nothing: $(cat "$home/bound.err")"; }
   [ -e "$home/state/.fleet-painter-w9:p2.lock" ] \
@@ -1628,7 +1633,8 @@ test_watch_refuses_a_second_painter_for_one_bound_pane() {
   home=$(make_home painter-single-owner)
   dir=$(painter_bin "$home")
   write_cockpit_record "$home" 'w9:p2,w9:p3' 'waiting|ready'
-  first=$(start_painter "$home" "$dir" w9:p2 owner waiting)
+  start_painter "$home" "$dir" w9:p2 owner waiting
+  first=$PAINTER_PID
   # Painting proves the pane was claimed: the claim is taken before the loop.
   wait_for_paint "$home/owner.out" 'YOUR DECISIONS' \
     || { reap_painter "$first"; fail "the first banner must own its pane: $(cat "$home/owner.err")"; }
@@ -1649,7 +1655,8 @@ test_watch_refuses_a_second_painter_for_one_bound_pane() {
 
   # The owner's exit releases the pane, so the next launch takes it over
   # rather than inheriting a stale refusal.
-  second=$(start_painter "$home" "$dir" w9:p2 successor waiting)
+  start_painter "$home" "$dir" w9:p2 successor waiting
+  second=$PAINTER_PID
   wait_for_paint "$home/successor.out" 'YOUR DECISIONS' \
     || { reap_painter "$second"; fail "a released bound pane must accept a fresh painter: $(cat "$home/successor.err")"; }
   reap_painter "$second"
@@ -1660,7 +1667,8 @@ test_watch_claims_ownership_when_the_frame_is_published_after_launch() {
   local home dir first out rc waited=0
   home=$(make_home painter-late-binding)
   dir=$(painter_bin "$home")
-  first=$(start_painter "$home" "$dir" w9:p2 early waiting)
+  start_painter "$home" "$dir" w9:p2 early waiting
+  first=$PAINTER_PID
   wait_for_paint "$home/early.out" 'YOUR DECISIONS' \
     || { reap_painter "$first"; fail "the pre-publication banner painted nothing: $(cat "$home/early.err")"; }
   write_cockpit_record "$home" 'w9:p2' 'waiting'
