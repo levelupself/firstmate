@@ -442,10 +442,11 @@ EOF
     fm_lock_release "$DECISION_META_LOCK"
     DECISION_META_LOCK_HELD=0
 
-    # Transfer any still-open status decision to its durable backlog owner so the
-    # live status fold does not duplicate the same Captain's Call item.
-    # The transfer line is this home's own bookkeeping close, written by the
-    # turn that just reviewed the decision, so it uses the guarded
+    # Record that each still-open status decision now has a durable backlog
+    # owner. The pure status fold cannot verify that owner, so this parking line
+    # does not close the status decision; only a later resolution does.
+    # The line is this home's own bookkeeping append, written by the turn that
+    # just reviewed the decision, so it uses the guarded
     # self-announced append (bin/fm-wake-lib.sh) and does not wake this same
     # session; an append failure still fails this command loudly.
     while IFS=$'\t' read -r key _verb _summary; do
@@ -454,7 +455,7 @@ EOF
       transfer_rc=0
       fm_wake_status_append_self_announced "$STATE" "$status_file" \
         "captain-held [key=$key]: tracked by $(hold_id "$origin" "$key")" || transfer_rc=$?
-      [ "$transfer_rc" -ne 2 ] || fail "cannot append the captain-held transfer for $origin/$key"
+      [ "$transfer_rc" -ne 2 ] || fail "cannot append the captain-held parking record for $origin/$key"
       key_seen=1
     done <<EOF
 $raw_open

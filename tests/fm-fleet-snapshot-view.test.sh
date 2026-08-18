@@ -1280,9 +1280,9 @@ test_secondmate_open_decision_survives_live_endpoint() {
   pass "a live secondmate endpoint preserves unrelated open decisions"
 }
 
-# An open decision clears ONLY on an explicit resolution referencing its key, never
-# on an unrelated terminal line.
-test_open_decision_transfers_to_captain_hold() {
+# A captain-held parking line never closes an open decision, even when it names
+# the same key and says a backlog item tracks it.
+test_open_decision_survives_captain_held_parking() {
   local home fakebin out
   home=$(make_home captain-held-transfer)
   mkdir -p "$home/secondmate-home"
@@ -1301,10 +1301,11 @@ test_open_decision_transfers_to_captain_hold() {
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
   printf '%s' "$out" | jq -e '
     .tasks[] | select(.id == "transferred-decision")
-    | .hints.pending_decision == false
-      and (.hints.open_decisions | length) == 0
-  ' >/dev/null || fail "captain-held transfer must close only the duplicate status copy: $out"
-  pass "durable captain-held transfer closes the duplicate live status decision"
+    | .hints.pending_decision == true
+      and (.hints.open_decisions | length) == 1
+      and .hints.open_decisions[0].key == "route"
+  ' >/dev/null || fail "captain-held parking hid the unresolved status decision: $out"
+  pass "captain-held parking preserves the unresolved live status decision"
 }
 
 test_open_decision_clears_on_keyed_resolution() {
@@ -1404,7 +1405,7 @@ test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state
 test_open_decision_survives_later_unrelated_event
 test_secondmate_open_decision_survives_live_endpoint
-test_open_decision_transfers_to_captain_hold
+test_open_decision_survives_captain_held_parking
 test_open_decision_clears_on_keyed_resolution
 test_completed_scout_report_is_pointer_not_pending
 test_parked_scout_decision_stays_pending

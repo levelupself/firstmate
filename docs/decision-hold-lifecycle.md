@@ -18,7 +18,7 @@ A post-teardown visual review can complete against the surviving report and dura
 It accepts `--none` as an explicit semantic inventory result, not as inferred absence.
 It verifies every listed identity against tasks-axi before recording completion.
 For an open keyed status decision, it appends a `captain-held [key=<key>]: ...` transfer event only after the matching backlog hold is durable.
-`bin/fm-classify-lib.sh` recognizes that transfer as closing the live status copy without claiming that the captain has answered it.
+The pure status fold cannot verify that separate backlog state, so `bin/fm-classify-lib.sh` treats the event only as parking and keeps the live status decision open until an explicit resolution.
 
 Scout teardown calls the script's read-only `verify` subcommand after checking for the report and before removing any source state.
 The `--force` path remains the explicit captain-approved discard escape hatch.
@@ -56,6 +56,7 @@ Verification date: 2026-07-14.
 Additional quoted `blocked_by` regression verification date: 2026-07-17.
 Plural blocker-readiness and mixed-home projection verification date: 2026-07-22.
 Unrouted close-path verification date: 2026-08-13.
+Status-fold parking safety verification date: 2026-08-17.
 
 The focused end-to-end regression uses only synthetic `sample` identities and decision text.
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
@@ -67,6 +68,9 @@ A declined decision closes with a recorded answer, satisfies `verify`, leaves Be
 A hold closed by a direct `tasks-axi done` reproduces the shape that fails `verify` and blocks teardown, and `repair` with a captain decision file clears both.
 An unanswered decision still blocks completion and teardown, and neither `decline` nor `repair` can close a hold that is still actively held or supply an answer with a missing or empty decision file.
 `repair` also refuses a closed captain-kind task that was never held for the captain.
+
+Two status-fold regressions reproduce a keyed `needs-decision` followed by a keyed `captain-held` parking line.
+The fleet-wide OPEN DECISIONS drain keeps the decision visible, and the cursor-backed path rebuilds a version-4 cache that had persisted the older hidden result.
 
 The final verification commands and their exact summarized outputs follow.
 
@@ -87,9 +91,17 @@ ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuin
 
 $ bash tests/fm-fleet-snapshot-view.test.sh
 ok - backlog normalization takes readiness, holds, and blockers from tasks-axi
-ok - durable captain-held transfer closes the duplicate live status decision
+ok - captain-held parking preserves the unresolved live status decision
 ok - snapshot parses tasks-axi rows and respects operational overrides
 ok - fleet snapshot and panel ready sets agree exactly with tasks-axi
+
+$ bash tests/fm-wake-drain-open-decisions.test.sh
+ok - an explicit resolved [key=X] closes the keyed decision
+ok - keyed captain-held parking leaves the decision visible in OPEN DECISIONS
+
+$ bash tests/fm-wake-drain-open-decisions-cursor.test.sh
+ok - a version-4 fold cache is rebuilt so captain-held parking cannot hide a decision
+ok - a buried decision survives many growing drains with bounded read cost, and resolution durably clears it at bounded cost too
 
 $ bash tests/fm-bearings-snapshot.test.sh
 ok - a completed scout with decision-like report prose is a pointer, not pending
