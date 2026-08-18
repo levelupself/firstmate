@@ -58,6 +58,32 @@ test_family_selection() {
   pass "family selection returns a proper subset of the suite"
 }
 
+test_optional_gate_family_declarations() {
+  local tmp pi_types calm claude out
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-optional-gates.XXXXXX")
+  pi_types="$tmp/fm-pi-primary-types.test.sh"
+  calm="$tmp/fm-calm-pi-extension.test.sh"
+  claude="$tmp/fm-claude-stop-autoarm-live-e2e.test.sh"
+  for fixture in "$pi_types" "$calm" "$claude"; do
+    cat >"$fixture" <<'SH'
+#!/usr/bin/env bash
+echo "skip: fixture gate"
+exit 0
+SH
+    chmod +x "$fixture"
+  done
+
+  out=$(
+    "$RUNNER" "$pi_types" "$calm" "$claude" 2>"$tmp/err"
+  ) || { rm -rf "$tmp"; fail "declared optional gate fixtures must remain successful"; }
+  [ "$(grep -Ec '^FM_TEST_BEGIN .+ family=pi expected_gate_skip=optional-binary$' <<<"$out")" -eq 2 ] \
+    || { rm -rf "$tmp"; fail "both Pi-dependent tests must declare optional-binary: $out"; }
+  grep -Eq '^FM_TEST_BEGIN .+ family=live-harness-optin expected_gate_skip=optin-env$' <<<"$out" \
+    || { rm -rf "$tmp"; fail "Claude live auto-arm must declare optin-env: $out"; }
+  rm -rf "$tmp"
+  pass "Pi binary gates and Claude live opt-in gate are explicitly declared"
+}
+
 test_single_script_selection() {
   local listed
   listed=$("$RUNNER" --list tests/fm-lint.test.sh)
@@ -705,6 +731,7 @@ assert len(doc["scripts"])==3
 
 test_list_all_exact_suite_coverage
 test_family_selection
+test_optional_gate_family_declarations
 test_single_script_selection
 test_changed_file_selection_is_conservative
 test_changed_dependency_selection_and_unmapped_failure
