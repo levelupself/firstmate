@@ -288,6 +288,7 @@ case "${1:-} ${2:-}" in
   "pane rename")
     id=$3
     label=$4
+    [ ! -e "$state/fail-rename" ] || exit 1
     awk -F '\t' -v OFS='\t' -v id="$id" -v label="$label" '$1 == id {$2=label} {print}' \
       "$state/panes.tsv" > "$state/panes.next"
     mv "$state/panes.next" "$state/panes.tsv"
@@ -573,7 +574,7 @@ place_task() {
 }
 
 test_first_worker_lands_in_viewport_and_later_spawns_do_not_steal_it() {
-  local first second log live out rc
+  local first second log live out rc stranded
   : > "$HERDR_LOG"
   first=$(place_task fm-one) || fail "first cockpit task placement failed"
   [ "$first" = "w1:t1 w1:p3" ] || fail "first cockpit task returned unexpected ids: $first"
@@ -606,6 +607,25 @@ test_first_worker_lands_in_viewport_and_later_spawns_do_not_steal_it() {
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_list_live fmtest' "$ROOT")
   assert_contains "$live" $'fmtest:w1:p3\tfm-one' "recovery inventory missed the first split-pane task"
   assert_contains "$live" $'fmtest:w1:p4\tfm-two' "recovery inventory missed the peer-tab task"
+
+  : > "$HERDR_LOG"
+  touch "$HERDR_STATE/fail-rename" "$HERDR_STATE/fail-close"
+  out=$(place_task fm-rename-failure 2>&1)
+  rc=$?
+  rm -f "$HERDR_STATE/fail-rename" "$HERDR_STATE/fail-close"
+  [ "$rc" -ne 0 ] || fail "peer spawn accepted a pane it could not label or remove"
+  stranded=$(awk -F '\t' '$2 == "fm-rename-failure" {print $1}' "$HERDR_STATE/panes.tsv")
+  [ -n "$stranded" ] || fail "peer rename regression did not leave the unconfirmed pane observable"
+  assert_contains "$out" "NOT-RESTORED" \
+    "peer rename failure suppressed its unconfirmed cleanup"
+  assert_contains "$out" "added peer pane $stranded could not be removed" \
+    "peer rename failure did not name the pane still on screen"
+  assert_contains "$(cat "$HERDR_LOG")" "pane close $stranded" \
+    "peer rename failure did not attempt a confirmed close"
+  assert_not_contains "$(cat "$HERDR_LOG")" "pane report-metadata $stranded" \
+    "peer rename failure published metadata for an unlabelled pane"
+  awk -F '\t' -v id="$stranded" '$1 != id' "$HERDR_STATE/panes.tsv" > "$HERDR_STATE/panes.next"
+  mv "$HERDR_STATE/panes.next" "$HERDR_STATE/panes.tsv"
 
   : > "$HERDR_LOG"
   out=$(FM_FAKE_HERDR_ROOT_TAB=w2:t5 place_task fm-cross 2>&1)

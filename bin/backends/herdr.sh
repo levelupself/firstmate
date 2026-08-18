@@ -3265,7 +3265,9 @@ EOF
     # unlabelled. The pane label is the identity used by cockpit ownership,
     # rotation, focus placement, and panel rendering, so publish it explicitly.
     if ! fm_backend_herdr_cli "$session" pane rename "$pane_id" "$label" >/dev/null 2>&1; then
-      fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id" || true
+      if ! fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id"; then
+        echo "COCKPIT: NOT-RESTORED: could not label new herdr cockpit peer pane '$label'; added peer pane $pane_id could not be removed, and the screen still carries it for direct cleanup." >&2
+      fi
       echo "error: could not label new herdr cockpit peer pane '$label'" >&2
       return 1
     fi
