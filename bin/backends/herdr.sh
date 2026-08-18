@@ -2738,15 +2738,17 @@ fm_backend_herdr_cockpit_create_fleet_panes() {  # <session> <workspace> <tab> <
     [ -n "$spec" ] || continue
     index=$((index + 1))
     pane=$(printf '%s' "$created" | cut -d, -f"$index")
-    # Each split above fixes its cwd at the durable home. Keep the watcher
-    # relative to that cwd so a disposable launcher checkout is never captured.
+    # Each split above fixes its cwd and private state at the operational home,
+    # while executables still come from the tracked code root that loaded this
+    # adapter. Never infer code paths from FM_HOME: supported isolated homes do
+    # not contain bin/.
     if ! fm_backend_herdr_cli "$session" pane rename "$pane" "firstmate-fleet-$spec" >/dev/null 2>&1 \
        || ! fm_backend_herdr_cli "$session" pane run "$pane" \
          env "FM_HOME=$home" \
          "FM_HERDR_LAB_HELPER=${FM_COCKPIT_LAB_HELPER:-}" \
          "FM_HERDR_LAB_SESSION=${FM_COCKPIT_LAB_SESSION:-}" \
-         bin/fm-fleet-view.sh \
-         --geometry-command "bin/$FM_BACKEND_HERDR_COCKPIT_GEOMETRY_SCRIPT" \
+         "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" \
+         --geometry-command "$FM_BACKEND_HERDR_ROOT/bin/$FM_BACKEND_HERDR_COCKPIT_GEOMETRY_SCRIPT" \
          --watch --section "$spec" >/dev/null 2>&1; then
       fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$created" \
         "could not launch the fleet banner" || true
@@ -3257,6 +3259,14 @@ EOF
     if [ -z "$pane_id" ] || [ -z "$actual_tab" ] || [ "$actual_workspace" != "$workspace" ] \
       || [ "$pane_workspace" != "$workspace" ] || [ "$pane_tab" != "$actual_tab" ] || [ "$actual_tab" = "$tab" ]; then
       echo "error: herdr cockpit peer tab returned an incomplete or cross-frame pane identity" >&2
+      return 1
+    fi
+    # Herdr applies tab create's label to the tab but leaves its root pane
+    # unlabelled. The pane label is the identity used by cockpit ownership,
+    # rotation, focus placement, and panel rendering, so publish it explicitly.
+    if ! fm_backend_herdr_cli "$session" pane rename "$pane_id" "$label" >/dev/null 2>&1; then
+      fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id" || true
+      echo "error: could not label new herdr cockpit peer pane '$label'" >&2
       return 1
     fi
   fi

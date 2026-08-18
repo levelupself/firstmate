@@ -590,6 +590,8 @@ test_first_worker_lands_in_viewport_and_later_spawns_do_not_steal_it() {
   log=$(cat "$HERDR_LOG")
   assert_contains "$log" "tab create --workspace w1 --cwd /tmp --label fm-two --no-focus" \
     "later child did not open on its own labelled peer tab"
+  assert_contains "$log" "pane rename w1:p4 fm-two" \
+    "later child labelled only its peer tab, not the peer root pane"
   assert_not_contains "$log" "pane move w1:p3" \
     "later child displaced the viewport occupant"
   assert_not_contains "$log" "pane split w1:p1" \
@@ -1061,12 +1063,12 @@ test_default_layout_warns_before_it_changes_the_screen() {
     "the third pane did not take an equal share of what was left"
   assert_contains "$body" "pane run $first env FM_HOME=$LAYOUT_HOME" \
     "the first pane was not launched for this home"
-  assert_contains "$body" "pane run $first env FM_HOME=$LAYOUT_HOME FM_HERDR_LAB_HELPER= FM_HERDR_LAB_SESSION= bin/fm-fleet-view.sh" \
-    "the fleet pane command did not resolve through the durable home"
-  assert_contains "$body" "--geometry-command bin/fm-herdr-pane-geometry.sh" \
+  assert_contains "$body" "pane run $first env FM_HOME=$LAYOUT_HOME FM_HERDR_LAB_HELPER= FM_HERDR_LAB_SESSION= $ROOT/bin/fm-fleet-view.sh" \
+    "the fleet pane command did not resolve through the tracked code root"
+  assert_contains "$body" "--geometry-command $ROOT/bin/fm-herdr-pane-geometry.sh" \
     "the fleet pane did not re-read its authoritative drawn rectangle on redraw"
-  assert_not_contains "$body" "$ROOT/bin/fm-fleet-view.sh" \
-    "the fleet pane command captured the launcher's disposable checkout"
+  assert_not_contains "$body" "$LAYOUT_HOME/bin/fm-fleet-view.sh" \
+    "the fleet pane command incorrectly resolved code through the operational home"
   assert_contains "$body" "--watch --section waiting" \
     "the decisions pane was not launched as its own section"
   assert_contains "$body" "--watch --section ready" \
