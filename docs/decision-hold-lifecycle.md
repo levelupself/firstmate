@@ -71,6 +71,8 @@ An unanswered decision still blocks completion and teardown, and neither `declin
 
 Two status-fold regressions reproduce a keyed `needs-decision` followed by a keyed `captain-held` parking line.
 The fleet-wide OPEN DECISIONS drain keeps the decision visible, and the cursor-backed path rebuilds a version-4 cache that had persisted the older hidden result.
+The pre-fix four-way run produced `hidden`, `visible`, `hidden`, `visible` for needs-decision/captain-held positions before-colon/before-colon, before-colon/note-head, note-head/before-colon, and note-head/note-head respectively.
+That result established that the `captain-held` key position controlled closure under the old fold, independently of the `needs-decision` key position.
 
 The final verification commands and their exact summarized outputs follow.
 
@@ -97,7 +99,7 @@ ok - fleet snapshot and panel ready sets agree exactly with tasks-axi
 
 $ bash tests/fm-wake-drain-open-decisions.test.sh
 ok - an explicit resolved [key=X] closes the keyed decision
-ok - keyed captain-held parking leaves the decision visible in OPEN DECISIONS
+ok - all four keyed parking position combinations leave the decision visible
 
 $ bash tests/fm-wake-drain-open-decisions-cursor.test.sh
 ok - a version-4 fold cache is rebuilt so captain-held parking cannot hide a decision

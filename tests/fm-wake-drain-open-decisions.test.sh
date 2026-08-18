@@ -54,19 +54,30 @@ test_explicit_resolution_closes_it() {
   pass "an explicit resolved [key=X] closes the keyed decision"
 }
 
-test_keyed_captain_held_parking_does_not_close_it() {
-  local dir state out
-  dir=$(make_case keyed-captain-held)
-  state="$dir/state"
-  out="$dir/drain.out"
-  printf 'needs-decision [key=x]: choose a release route\n' > "$state/task-held.status"
-  printf 'captain-held [key=x]: parked at the review gate\n' >> "$state/task-held.status"
+test_keyed_captain_held_parking_position_matrix() {
+  local need_position held_position dir state out need_line held_line
+  for need_position in before-colon note-head; do
+    for held_position in before-colon note-head; do
+      dir=$(make_case "keyed-captain-held-$need_position-$held_position")
+      state="$dir/state"
+      out="$dir/drain.out"
+      case "$need_position" in
+        before-colon) need_line='needs-decision [key=x]: choose a release route' ;;
+        note-head) need_line='needs-decision: [key=x] choose a release route' ;;
+      esac
+      case "$held_position" in
+        before-colon) held_line='captain-held [key=x]: parked at the review gate' ;;
+        note-head) held_line='captain-held: [key=x] parked at the review gate' ;;
+      esac
+      printf '%s\n%s\n' "$need_line" "$held_line" > "$state/task-held.status"
 
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed after keyed captain-held parking"
-
-  grep -F 'task-held [key=x] needs-decision: choose a release route' "$out" >/dev/null \
-    || fail "keyed captain-held parking removed the decision from OPEN DECISIONS: $(cat "$out")"
-  pass "keyed captain-held parking leaves the decision visible in OPEN DECISIONS"
+      FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+        || fail "drain failed for needs-decision=$need_position captain-held=$held_position"
+      grep -F 'task-held [key=x] needs-decision: choose a release route' "$out" >/dev/null \
+        || fail "needs-decision=$need_position captain-held=$held_position removed the decision: $(cat "$out")"
+    done
+  done
+  pass "all four keyed parking position combinations leave the decision visible"
 }
 
 test_reserved_key_namespace_is_owned_by_its_library() {
@@ -233,7 +244,7 @@ test_over_long_decision_note_is_capped_with_a_marker() {
 test_buried_decision_still_surfaces
 test_over_long_decision_note_is_capped_with_a_marker
 test_explicit_resolution_closes_it
-test_keyed_captain_held_parking_does_not_close_it
+test_keyed_captain_held_parking_position_matrix
 test_later_unrelated_terminal_line_does_not_close_it
 test_reserved_key_namespace_is_owned_by_its_library
 test_no_open_decisions_prints_nothing
