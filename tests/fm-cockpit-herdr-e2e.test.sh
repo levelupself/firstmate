@@ -7,8 +7,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 command -v herdr >/dev/null 2>&1 || { echo "skip: herdr not found"; exit 0; }
-command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
-command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found"; exit 0; }
+command -v jq >/dev/null 2>&1 || fail "jq not found; install jq before running the cockpit Herdr end-to-end test"
+command -v treehouse >/dev/null 2>&1 || fail "treehouse not found; install the pinned Treehouse version before running the cockpit Herdr end-to-end test"
 
 LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 SESSION=${HERDR_LAB_SESSION:-$("$LAB_HELPER" name cockpit-e2e)}
