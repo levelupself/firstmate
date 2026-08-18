@@ -124,6 +124,10 @@
 #                 x_mode_setup: those already ran on the local pass.
 #          FM_BOOTSTRAP_DETECT_ONLY composes with it unchanged, so `only` plus
 #          detect-only is the read-only `gh auth status` probe on its own.
+#          FM_BOOTSTRAP_PRIMARY_HARNESS selects the harness-specific auth probe.
+#          An unset value means unknown rather than inspecting the caller's
+#          process ancestry; fm-session-start.sh passes its resolved identity to
+#          both the local bootstrap phase and the deferred network worker.
 #          bin/fm-startup-network.sh owns the deferral: it runs the `only` phase
 #          in a detached bounded worker and publishes the result. This file stays
 #          the single owner of every sweep, and the split changes only WHEN each
@@ -827,7 +831,7 @@ COMMON_TOOLS="node git gh no-mistakes gh-axi chrome-devtools-axi lavish-axi task
 DECLARED_REQUIRED_TOOLS="pnpm ripgrep xz-utils shellcheck"
 DECLARED_OPTIONAL_TOOLS="ast-grep codeburn @infisical/cli herdr"
 BACKEND=$(fm_backend_name)
-PRIMARY_HARNESS=${FM_BOOTSTRAP_PRIMARY_HARNESS:-$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)}
+PRIMARY_HARNESS=${FM_BOOTSTRAP_PRIMARY_HARNESS:-unknown}
 BACKEND_VALID=1
 if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
   BACKEND_VALID=0
