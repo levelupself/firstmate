@@ -189,6 +189,11 @@ jobs:
           command -v tar >/dev/null || { echo "::error::tar is required"; exit 1; }
           jq --version
           python3 --version
+      - name: Install tasks-axi
+        run: |
+          set -eu
+          npm install -g tasks-axi
+          tasks-axi --version
       - name: Install pinned Herdr
         run: |
           set -eu
@@ -207,8 +212,10 @@ jobs:
           set -eu
           command -v herdr >/dev/null || { echo "::error::herdr not on PATH after install"; exit 1; }
           command -v treehouse >/dev/null || { echo "::error::treehouse not on PATH after install"; exit 1; }
+          command -v tasks-axi >/dev/null || { echo "::error::tasks-axi not on PATH after install"; exit 1; }
           herdr --version
           treehouse --version
+          tasks-axi --version
           status=$(herdr status --json)
           printf '%s\n' "$status"
           version=$(printf '%s' "$status" | jq -r '.client.version // empty')

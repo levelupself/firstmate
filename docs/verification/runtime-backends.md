@@ -257,7 +257,7 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
   tests/fm-cockpit-herdr-e2e.test.sh
 ```
 
-Observed guarantees included one stable-width viewport occupant after three placements, parking the displaced pane on an ordinary reachable tab, and restoring the cockpit tab after a programmatically driven focus event for an off-cockpit agent.
+That recorded run established one stable-width viewport occupant after three placements, parking the displaced pane on an ordinary reachable tab, and restoring the cockpit tab after a programmatically driven focus event for an off-cockpit agent.
 The test used only the named lab helper and left the default session byte-identical.
 
 ```text
@@ -267,8 +267,9 @@ ok - real Herdr viewport holds exactly one agent at a stable width with three pl
 ok - real Herdr cockpit lab leaves the default fleet byte-identical
 ```
 
-An operator-driven sidebar click remains pending post-merge confirmation; the real-binary verification drove focus programmatically and must not be treated as a manual click result.
-`tests/fm-cockpit.test.sh` additionally pins task-id-ordered wrapping rotation, foreign-home refusal, listener-death reachability, display-name publication and teardown, and the shared click-and-key placement path.
+The current regression keeps the first viewport occupant in place across background spawns, verifies peer-tab and peer-pane labels, explicitly places an off-cockpit worker through `fm-cockpit.sh show`, checks the default three-pane fleet region alongside the head and viewport, requires both viewport and parked workers in the panel, checks restart idempotence, and requires byte-identical guarded teardown.
+An operator-driven sidebar click remains pending post-merge confirmation; the recorded real-binary verification drove focus programmatically and the current required regression drives the shared placement path through `show`, so neither is a manual click result.
+`tests/fm-cockpit.test.sh` additionally pins task-id-ordered wrapping rotation, foreign-home refusal, listener-death reachability, display-name publication and teardown, peer-pane identity publication, and the shared click-and-key placement path.
 
 The CLI matrix was checked directly:
 
