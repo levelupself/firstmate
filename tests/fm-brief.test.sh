@@ -233,6 +233,9 @@ test_ship_modes_generate_clean_briefs() {
     # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
     assert_grep 'then append `captain-held: {why the task is parked}` before going idle and stopping' "$brief" \
       "$id: brief did not tell a decision-blocked worker to declare captain-held before idling"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'The `captain-held` line only records the park and never closes the decision, with or without a matching key.' "$brief" \
+      "$id: brief did not preserve the decision behind captain-held parking"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"

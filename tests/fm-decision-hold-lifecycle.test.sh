@@ -175,12 +175,15 @@ EOF
   FM_STATE_OVERRIDE="$home/state" bash -c '
     . "$1"; fm_wake_signal_seen_current "$2" "$3"
   ' _ "$ROOT/bin/fm-wake-lib.sh" "$home/state" "$home/state/$id.status" \
-    || fail "captain-held bookkeeping closes re-woke their own home"
+    || fail "captain-held parking bookkeeping re-woke its own home"
   assert_grep "decisions_reviewed=1" "$home/state/$id.meta" "completion attestation missing"
   assert_grep "decision_keys=access,route" "$home/state/$id.meta" "decision inventory was not deterministic"
   open=$(bash -c '. "$1"; status_open_decisions "$2"' _ \
     "$ROOT/bin/fm-classify-lib.sh" "$home/state/$id.status")
-  [ -z "$open" ] || fail "captain-held transfer did not close duplicate live status decisions: $open"
+  printf '%s' "$open" | grep -F $'route\tneeds-decision\tchoose route north or route south' >/dev/null \
+    || fail "captain-held parking hid the route decision from the status fold: $open"
+  printf '%s' "$open" | grep -F $'access\tneeds-decision\tchoose open or restricted sample access' >/dev/null \
+    || fail "captain-held parking hid the access decision from the status fold: $open"
 
   before=$(shasum -a 256 "$home/data/backlog.md" | awk '{print $1}')
   json=$(run_bearings "$home") || fail "Bearings failed with captain-held decisions"
