@@ -749,11 +749,11 @@ if [ "$count" -eq 1 ]; then
   [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
   exit 0
 fi
+trap 'printf "restored-exited %s\\n" "$$" > "${FM_CHECKPOINT_BUS:?}"' EXIT
+trap 'exit 0' TERM INT
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 printf 'armed %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
-trap 'printf "restored-exited %s\\n" "$$" > "${FM_CHECKPOINT_BUS:?}"' EXIT
-trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
@@ -2253,11 +2253,11 @@ if [ "$count" -eq 1 ]; then
   [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
   exit 0
 fi
+trap 'printf "restored-exited %s\\n" "$$" > "${FM_CHECKPOINT_BUS:?}"' EXIT
+trap 'exit 0' TERM INT
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 printf 'armed %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
-trap 'printf "restored-exited %s\\n" "$$" > "${FM_CHECKPOINT_BUS:?}"' EXIT
-trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"

@@ -398,7 +398,6 @@ tests/fm-backend-zellij.test.sh 4225
 tests/fm-backend.test.sh 16370
 tests/fm-backlog-handoff.test.sh 2786
 tests/fm-bearings-snapshot.test.sh 60103
-tests/fm-bootstrap-harness-auth.test.sh 200
 tests/fm-bootstrap.test.sh 21912
 tests/fm-busy-adapter-wiring.test.sh 13962
 tests/fm-busy-state.test.sh 607
