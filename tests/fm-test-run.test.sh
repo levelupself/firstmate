@@ -309,10 +309,10 @@ SH
   pass "aggregate exit reflects any script failure"
 }
 
-test_gate_skip_accounting() {
-  local tmp skip_f out json
+test_undeclared_gate_skip_fails() {
+  local tmp skip_f out json rc
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-skip.XXXXXX")
-  skip_f="$tmp/skip.test.sh"
+  skip_f="$tmp/fm-operational-input.test.sh"
   out="$tmp/out.txt"
   json="$tmp/timing.json"
   cat >"$skip_f" <<'SH'
@@ -321,21 +321,64 @@ echo "skip: herdr not found"
 exit 0
 SH
   chmod +x "$skip_f"
-  "$RUNNER" --json "$json" "$skip_f" >"$out" 2>"$tmp/err.txt" \
-    || fail "gate-skip fixture must exit 0 from the runner"
-  grep -Eq '^FM_TEST_END .+ exit=0 duration_ms=[0-9]+ gate_skip=true$' "$out" \
-    || fail "END must mark gate_skip=true: $(grep '^FM_TEST_END' "$out")"
-  grep -q 'FM_TEST_SUMMARY total=1 failed=0 skipped_gate=1' "$out" \
-    || fail "summary must count skipped_gate=1: $(grep FM_TEST_SUMMARY "$out")"
+  set +e
+  "$RUNNER" --json "$json" "$skip_f" >"$out" 2>"$tmp/err.txt"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "undeclared gate skip must fail when its family declares expected_gate_skip=none"
+  grep -Eq '^FM_TEST_BEGIN .+ family=pure-contract-unit expected_gate_skip=none$' "$out" \
+    || fail "BEGIN must record the existing pure-contract-unit no-skip declaration"
+  grep -Eq '^FM_TEST_END .+ exit=1 duration_ms=[0-9]+ gate_skip=true$' "$out" \
+    || fail "END must retain gate_skip=true and report exit=1: $(grep '^FM_TEST_END' "$out")"
+  grep -q 'FM_TEST_SUMMARY total=1 failed=1 skipped_gate=1' "$out" \
+    || fail "summary must count the undeclared gate skip as failed: $(grep FM_TEST_SUMMARY "$out")"
+  grep -Fq "undeclared gate skip in $skip_f: family pure-contract-unit declares expected_gate_skip=none; reason: skip: herdr not found" "$tmp/err.txt" \
+    || fail "runner must explain the undeclared gate skip and preserve its reason: $(cat "$tmp/err.txt")"
   python3 -c '
 import json, sys
 doc = json.load(open(sys.argv[1]))
 assert doc["scripts"][0]["gate_skip"] is True
+assert doc["scripts"][0]["expected_gate_skip"] == "none"
+assert doc["scripts"][0]["exit"] == 1
 assert doc["summary"]["skipped_gate"] == 1
-assert doc["summary"]["failed"] == 0
+assert doc["summary"]["failed"] == 1
 ' "$json" || { rm -rf "$tmp"; fail "JSON gate_skip accounting is wrong"; }
   rm -rf "$tmp"
-  pass "gate-skip accounting is honest and non-failing"
+  pass "undeclared gate skip fails and remains honestly recorded"
+}
+
+test_declared_gate_skip_stays_successful() {
+  local tmp skip_f out json
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-declared-skip.XXXXXX")
+  skip_f="$tmp/fm-backend-cmux.test.sh"
+  out="$tmp/out.txt"
+  json="$tmp/timing.json"
+  cat >"$skip_f" <<'SH'
+#!/usr/bin/env bash
+echo "skip: cmux not found"
+exit 0
+SH
+  chmod +x "$skip_f"
+  "$RUNNER" --json "$json" "$skip_f" >"$out" 2>"$tmp/err.txt" \
+    || fail "declared optional-binary gate skip must remain successful"
+  grep -Eq '^FM_TEST_BEGIN .+ family=cmux expected_gate_skip=optional-binary$' "$out" \
+    || fail "BEGIN must record the declared optional-binary skip class"
+  grep -Eq '^FM_TEST_END .+ exit=0 duration_ms=[0-9]+ gate_skip=true$' "$out" \
+    || fail "declared gate skip must remain successful: $(grep '^FM_TEST_END' "$out")"
+  grep -q 'FM_TEST_SUMMARY total=1 failed=0 skipped_gate=1' "$out" \
+    || fail "summary must retain a successful declared gate skip: $(grep FM_TEST_SUMMARY "$out")"
+  python3 -c '
+import json, sys
+doc = json.load(open(sys.argv[1]))
+assert doc["scripts"][0]["family"] == "cmux"
+assert doc["scripts"][0]["expected_gate_skip"] == "optional-binary"
+assert doc["scripts"][0]["gate_skip"] is True
+assert doc["scripts"][0]["exit"] == 0
+assert doc["summary"]["skipped_gate"] == 1
+assert doc["summary"]["failed"] == 0
+' "$json" || { rm -rf "$tmp"; fail "declared gate-skip JSON accounting is wrong"; }
+  rm -rf "$tmp"
+  pass "declared optional-binary gate skip stays successful"
 }
 
 test_fail_on_gate_skip_token() {
@@ -648,12 +691,18 @@ SH
   grep -q 'FM_TEST_SUMMARY total=1 failed=1' "$tmp/out5" \
     || { rm -rf "$tmp"; fail "parallel stderr hard-fail summary wrong: $(grep FM_TEST_SUMMARY "$tmp/out5")"; }
 
-  "$runner" --jobs 2 "$d" >"$tmp/out6" 2>"$tmp/err6" \
-    || { rm -rf "$tmp"; fail "ordinary parallel stderr gate skip must remain successful"; }
-  grep -Eq '^FM_TEST_END .+ exit=0 duration_ms=[0-9]+ gate_skip=true$' "$tmp/out6" \
+  set +e
+  "$runner" --jobs 2 "$d" >"$tmp/out6" 2>"$tmp/err6"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] \
+    || { rm -rf "$tmp"; fail "parallel undeclared gate skip must fail"; }
+  grep -Eq '^FM_TEST_END .+ exit=1 duration_ms=[0-9]+ gate_skip=true$' "$tmp/out6" \
     || { rm -rf "$tmp"; fail "parallel stderr gate skip was not recorded"; }
-  grep -q 'FM_TEST_SUMMARY total=1 failed=0 skipped_gate=1' "$tmp/out6" \
+  grep -q 'FM_TEST_SUMMARY total=1 failed=1 skipped_gate=1' "$tmp/out6" \
     || { rm -rf "$tmp"; fail "parallel stderr skip summary wrong: $(grep FM_TEST_SUMMARY "$tmp/out6")"; }
+  grep -Fq 'undeclared gate skip' "$tmp/err6" \
+    || { rm -rf "$tmp"; fail "parallel undeclared gate skip explanation missing"; }
 
   rm -rf "$tmp"
   pass "jobs scheduler runs proven scripts; failure propagates; non-proven refused"
@@ -744,7 +793,8 @@ test_changed_dependency_selection_and_unmapped_failure
 test_empty_selection_emits_summary
 test_timing_markers_and_json
 test_aggregate_exit_behavior
-test_gate_skip_accounting
+test_undeclared_gate_skip_fails
+test_declared_gate_skip_stays_successful
 test_fail_on_gate_skip_token
 test_exclude_family
 test_portable_shard_union_and_coverage_guard
