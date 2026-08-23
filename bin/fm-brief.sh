@@ -596,6 +596,7 @@ $SUITE_GUIDANCE
 7. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 8. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\`, then append \`$CAPTAIN_HELD_VERB: {why the task is parked}\` before going idle and stopping. Firstmate will apply the configured authority and reply with the decision.
+   The \`$CAPTAIN_HELD_VERB\` line only records the park and never closes the decision, with or without a matching key.
    A decision or blocker stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears without a firstmate reply, append \`resolved: {how it cleared}\` yourself (with the same \`[key=<slug>]\` if you opened it with one) as you resume.
 9. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving

@@ -58,6 +58,32 @@ test_family_selection() {
   pass "family selection returns a proper subset of the suite"
 }
 
+test_optional_gate_family_declarations() {
+  local tmp pi_types calm claude out
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-optional-gates.XXXXXX")
+  pi_types="$tmp/fm-pi-primary-types.test.sh"
+  calm="$tmp/fm-calm-pi-extension.test.sh"
+  claude="$tmp/fm-claude-stop-autoarm-live-e2e.test.sh"
+  for fixture in "$pi_types" "$calm" "$claude"; do
+    cat >"$fixture" <<'SH'
+#!/usr/bin/env bash
+echo "skip: fixture gate"
+exit 0
+SH
+    chmod +x "$fixture"
+  done
+
+  out=$(
+    "$RUNNER" "$pi_types" "$calm" "$claude" 2>"$tmp/err"
+  ) || { rm -rf "$tmp"; fail "declared optional gate fixtures must remain successful"; }
+  [ "$(grep -Ec '^FM_TEST_BEGIN .+ family=pi expected_gate_skip=optional-binary$' <<<"$out")" -eq 2 ] \
+    || { rm -rf "$tmp"; fail "both Pi-dependent tests must declare optional-binary: $out"; }
+  grep -Eq '^FM_TEST_BEGIN .+ family=live-harness-optin expected_gate_skip=optin-env$' <<<"$out" \
+    || { rm -rf "$tmp"; fail "Claude live auto-arm must declare optin-env: $out"; }
+  rm -rf "$tmp"
+  pass "Pi binary gates and Claude live opt-in gate are explicitly declared"
+}
+
 test_single_script_selection() {
   local listed
   listed=$("$RUNNER" --list tests/fm-lint.test.sh)
@@ -390,6 +416,8 @@ test_exclude_family() {
   listed=$("$RUNNER" --list --family real-herdr-gated)
   printf '%s\n' "$listed" | grep -Fq 'tests/fm-backend-herdr-smoke.test.sh' \
     || fail "family real-herdr-gated must list smoke test"
+  printf '%s\n' "$listed" | grep -Fq 'tests/fm-cockpit-herdr-e2e.test.sh' \
+    || fail "family real-herdr-gated must list cockpit end-to-end test"
   pass "exclude-family drops the named primary family after selection"
 }
 
@@ -413,6 +441,10 @@ test_portable_shard_union_and_coverage_guard() {
     && fail "portable lanes must not include real-herdr-gated smoke"
   printf '%s\n' "$herdr" | grep -Fq 'tests/fm-backend-herdr-smoke.test.sh' \
     || fail "herdr family must include smoke"
+  printf '%s\n' "$s1" "$s2" "$serial" | grep -Fq 'tests/fm-cockpit-herdr-e2e.test.sh' \
+    && fail "portable lanes must not include cockpit end-to-end test"
+  printf '%s\n' "$herdr" | grep -Fq 'tests/fm-cockpit-herdr-e2e.test.sh' \
+    || fail "herdr family must include cockpit end-to-end test"
   out=$("$RUNNER" --check-coverage)
   assert_contains "$out" "FM_TEST_COVERAGE ok" "coverage guard success marker"
   all_count=$("$RUNNER" --list --all | wc -l | tr -d ' ')
@@ -754,6 +786,7 @@ assert len(doc["scripts"])==3
 
 test_list_all_exact_suite_coverage
 test_family_selection
+test_optional_gate_family_declarations
 test_single_script_selection
 test_changed_file_selection_is_conservative
 test_changed_dependency_selection_and_unmapped_failure

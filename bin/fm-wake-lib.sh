@@ -1053,8 +1053,8 @@ fm_wake_signal_seen_current() {  # <state> <file>
 # Guarded self-announced status append - the one dedup primitive for a status
 # line THIS home's own machinery writes as bookkeeping it has already presented
 # in the very turn or tick that writes it (an answerer-closes resolved line, a
-# pending-reply escalation close, a captain-held transfer). Such a close must
-# not wake the session that wrote it, so this appends the line and then
+# pending-reply escalation close, or captain-held parking bookkeeping). Such an
+# append must not wake the session that wrote it, so this writes the line and then
 # advances the watcher's seen marker to cover exactly the appended bytes and
 # nothing else. The advance is provenance-gated and fails toward waking:
 #   - the marker advances ONLY when the file's pre-append signature matched the

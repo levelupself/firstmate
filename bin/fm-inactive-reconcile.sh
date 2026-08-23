@@ -419,7 +419,9 @@ scan() {
       return 0
     fi
   fi
-  deadline=$(( $(date +%s) + FM_INACTIVE_RECONCILE_BUDGET_SECS ))
+  # date(1) exposes whole seconds. Add one rounding second so a one-second
+  # budget cannot collapse to a few milliseconds near a second boundary.
+  deadline=$(( $(date +%s) + FM_INACTIVE_RECONCILE_BUDGET_SECS + 1 ))
   scan_pass "$cursor" after "$deadline" "$self" || rc=$?
   if [ "$rc" -eq 0 ] && [ -n "$cursor" ]; then
     scan_pass "$cursor" through "$deadline" "$self" || rc=$?

@@ -347,10 +347,44 @@ test_previous_fold_cache_is_refolded_under_current_semantics() {
   pass "an old fold cache is rebuilt once before same-version incremental reads resume"
 }
 
+test_captain_held_fold_cache_is_refolded_under_current_semantics() {
+  local dir state status cursor out probe status_bytes ident probe_bytes
+  dir=$(make_case cursor-captain-held-version)
+  state="$dir/state"
+  status="$state/task8.status"
+  cursor="$state/.task8.open-decisions-cursor"
+  out="$dir/drain.out"
+  probe="$dir/probe.tsv"
+
+  printf 'needs-decision [key=x]: choose a release route\n' > "$status"
+  printf 'captain-held [key=x]: parked at the review gate\n' >> "$status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "bootstrap drain for the captain-held fold-version migration failed"
+  ident=$(sed -n 's/^ident=//p' "$cursor")
+  status_bytes=$(LC_ALL=C wc -c < "$status" | tr -d '[:space:]')
+  {
+    printf 'version=4\n'
+    printf 'offset=%s\n' "$status_bytes"
+    printf 'ident=%s\n' "$ident"
+  } > "$cursor"
+  : > "$probe"
+
+  FM_STATE_OVERRIDE="$state" FM_OPEN_DECISIONS_READ_PROBE="$probe" "$DRAIN" > "$out" \
+    || fail "drain failed while upgrading the captain-held fold cache"
+  grep -F 'task8 [key=x] needs-decision: choose a release route' "$out" >/dev/null \
+    || fail "the version-4 fold cache kept the captain-held decision hidden: $(cat "$out")"
+  probe_bytes=$(last_probe_bytes "$probe" "$status")
+  [ "$probe_bytes" = "$status_bytes" ] \
+    || fail "the version-4 fold cache read $probe_bytes bytes instead of refolding all $status_bytes authoritative bytes"
+
+  pass "a version-4 fold cache is rebuilt so captain-held parking cannot hide a decision"
+}
+
 test_truncated_log_falls_back_to_a_full_refold_not_a_dropped_decision
 test_same_size_rewrite_is_detected_via_inode_identity
 test_read_failure_preserves_state_for_retry
 test_cursor_cache_read_failure_refolds_without_replaying_unread_status
 test_pre_fix_cursor_refolds_corr_tagged_decision
 test_previous_fold_cache_is_refolded_under_current_semantics
+test_captain_held_fold_cache_is_refolded_under_current_semantics
 test_buried_decision_survives_many_growing_drains_and_resolution_clears_it
