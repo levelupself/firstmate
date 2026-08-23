@@ -53,9 +53,9 @@
 #   FM_TEST_SUMMARY_FAMILY family=<name> count=<n> duration_ms=<n> failed=<n>
 #   FM_TEST_SLOWEST rank=<k> script=<path> duration_ms=<n>
 #
-# Exit status is non-zero if any selected script exits non-zero or a configured
-# --fail-on-gate-skip token appears. Other gate skips (first meaningful line
-# matching ^skip:) remain successful and are counted as skipped_gate.
+# Exit status is non-zero if any selected script exits non-zero, a configured
+# --fail-on-gate-skip token appears, or a family declaring expected_gate_skip=none
+# gate-skips. Declared gate skips remain successful and count as skipped_gate.
 #
 # Family labels, the changed-file map, and production portable-shard composition
 # live in this script only (one owner). The proven-isolated candidate set remains
@@ -1505,7 +1505,7 @@ family_bump() {
 
 record_script_result() {
   local script=$1 rc=$2 duration=$3 out=$4 end_iso=$5
-  local base family expected gate_skip fail_delta
+  local base family expected gate_skip gate_skip_reason fail_delta
   base=$(basename "$script")
   family=$(family_for_basename "$base")
   expected=$(expected_gate_skip_for_family "$family")
@@ -1519,6 +1519,11 @@ record_script_result() {
   if [ "$rc" -eq 0 ] && detect_gate_skip "$out"; then
     gate_skip=true
     SKIPPED_GATE=$((SKIPPED_GATE + 1))
+    if [ "$expected" = none ]; then
+      gate_skip_reason=$(awk 'NF { print; exit }' "$out" 2>/dev/null || true)
+      log "undeclared gate skip in $script: family $family declares expected_gate_skip=none; reason: $gate_skip_reason"
+      rc=1
+    fi
   fi
 
   printf 'FM_TEST_END %s %s exit=%s duration_ms=%s gate_skip=%s\n' \
