@@ -17,6 +17,8 @@
 #       and receives durable merge provenance
 #   (j) deleting metadata cannot authorize a different PR for a Done task
 #   (k) an exact prepared receipt remains retryable after Done history is pruned
+#   (l) conflicting concurrent requests serialize before authorization and only
+#       one task-to-PR provenance record can reach the forge
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -295,6 +297,64 @@ EOF
   pass "fm-pr-merge retries the exact prepared merge after Done history is pruned"
 }
 
+test_conflicting_concurrent_requests_merge_only_one_pr() {
+  local case_dir first_pid rc receipt
+  case_dir=$(make_case concurrent-conflict)
+  mkdir -p "$case_dir/wt"
+  : > "$case_dir/gh-axi.log"
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-} ${2:-}" = "pr merge" ]; then
+  : > "$FM_TEST_GH_AXI_ENTERED"
+  while [ ! -f "$FM_TEST_GH_AXI_RELEASE" ]; do sleep 0.05; done
+fi
+SH
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+
+  FM_TEST_GH_AXI_ENTERED="$case_dir/merge-entered" \
+  FM_TEST_GH_AXI_RELEASE="$case_dir/merge-release" \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/31 \
+      > "$case_dir/first.stdout" 2> "$case_dir/first.stderr" &
+  first_pid=$!
+  while [ ! -f "$case_dir/merge-entered" ]; do sleep 0.05; done
+
+  set +e
+  FM_TEST_GH_AXI_ENTERED="$case_dir/merge-entered" \
+  FM_TEST_GH_AXI_RELEASE="$case_dir/merge-release" \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/32 \
+      > "$case_dir/second.stdout" 2> "$case_dir/second.stderr" &
+  local second_pid=$!
+  sleep 0.2
+  : > "$case_dir/merge-release"
+  wait "$first_pid"
+  wait "$second_pid"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "concurrent-conflict: conflicting request should be refused"
+  grep -qxF 'pr merge 31 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "concurrent-conflict: authorized PR was not merged"
+  [ "$(grep -c '^pr merge ' "$case_dir/gh-axi.log")" -eq 1 ] \
+    || fail "concurrent-conflict: more than one PR reached the forge"
+  assert_grep 'merge provenance conflicts with this task and PR' "$case_dir/second.stderr" \
+    "concurrent-conflict: conflicting request did not explain its refusal"
+  receipt="$case_dir/data/pr-merges/task-x1.receipt"
+  assert_grep 'pr=https://github.com/example/repo/pull/31' "$receipt" \
+    "concurrent-conflict: receipt lost the accepted PR"
+  assert_grep 'phase=merged' "$receipt" \
+    "concurrent-conflict: accepted PR receipt did not advance"
+  assert_grep 'pr=https://github.com/example/repo/pull/31' "$case_dir/state/task-x1.meta" \
+    "concurrent-conflict: rejected request rewrote live metadata"
+  assert_no_grep 'pr=https://github.com/example/repo/pull/32' "$case_dir/state/task-x1.meta" \
+    "concurrent-conflict: rejected PR remained in live metadata"
+  pass "fm-pr-merge serializes conflicting requests through durable provenance"
+}
+
 test_malformed_url_refuses_before_merge() {
   local case_dir rc
   case_dir=$(make_case malformed-url)
@@ -424,6 +484,7 @@ test_torn_down_delivered_task_merges_with_durable_provenance
 test_missing_meta_refuses_before_merge
 test_missing_meta_with_wrong_done_pr_refuses
 test_prepared_receipt_allows_same_pr_retry
+test_conflicting_concurrent_requests_merge_only_one_pr
 test_malformed_url_refuses_before_merge
 test_rejects_unsafe_url_segments_before_recording
 test_repo_override_args_refuse_before_recording

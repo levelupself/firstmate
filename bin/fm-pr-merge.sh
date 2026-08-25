@@ -24,6 +24,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
 
 if [ "$#" -lt 2 ]; then
   echo "error: invalid PR merge request" >&2
@@ -74,6 +76,20 @@ reject_repo_overrides "$@" || exit 1
 META="$STATE/$ID.meta"
 PROVENANCE_DIR="$DATA/pr-merges"
 PROVENANCE_RECEIPT="$PROVENANCE_DIR/$ID.receipt"
+MERGE_LOCK="$STATE/.pr-merge-$ID.lock"
+MERGE_LOCK_HELD=0
+
+merge_lock_cleanup() {
+  if [ "$MERGE_LOCK_HELD" = 1 ]; then
+    fm_lock_release "$MERGE_LOCK" || true
+    MERGE_LOCK_HELD=0
+  fi
+}
+
+trap merge_lock_cleanup EXIT
+trap 'exit 1' HUP INT TERM
+fm_lock_acquire_wait "$MERGE_LOCK"
+MERGE_LOCK_HELD=1
 
 receipt_value() {
   local key=$1
@@ -163,15 +179,19 @@ write_provenance_receipt() {
 }
 
 AUTHORIZATION=
-if [ -f "$META" ] && [ ! -L "$META" ]; then
+if [ -e "$PROVENANCE_RECEIPT" ] || [ -L "$PROVENANCE_RECEIPT" ]; then
+  receipt_matches_request || {
+    echo "error: merge provenance conflicts with this task and PR" >&2
+    exit 1
+  }
+  AUTHORIZATION=$(receipt_value authorization)
+elif [ -f "$META" ] && [ ! -L "$META" ]; then
   "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
   grep -qxF "pr=$URL" "$META" || {
     echo "error: PR metadata recording failed" >&2
     exit 1
   }
   AUTHORIZATION=live-meta
-elif receipt_matches_request; then
-  AUTHORIZATION=$(receipt_value authorization)
 elif done_history_matches_request; then
   AUTHORIZATION=done-record
 else
