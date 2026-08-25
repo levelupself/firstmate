@@ -9,9 +9,9 @@
 #
 # The contract here inverts that. The fixture announces each point it reaches
 # by writing one line to a named-checkpoint bus, and the waiter blocks on the
-# name until that announcement arrives. No iteration count, no interval, and
-# no deadline is involved, so a slow machine makes the test slower rather than
-# wrong.
+# name until that announcement arrives. No iteration count, interval, or
+# deadline decides the wait's assertion, so a slow machine makes the test
+# slower rather than wrong.
 #
 # Bus wire format, one checkpoint per line:
 #
