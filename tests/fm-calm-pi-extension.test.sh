@@ -3510,11 +3510,12 @@ JS
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/export $export_file"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
   active_wait=0
-  while [ ! -s "$export_file" ] && [ "$active_wait" -lt 120 ]; do
+  while ! grep -Fq '</html>' "$export_file" 2>/dev/null && [ "$active_wait" -lt 120 ]; do
     sleep 0.05
     active_wait=$((active_wait + 1))
   done
-  [ -s "$export_file" ] || fail "/export did not create its HTML artifact while calm mode was on"
+  grep -Fq '</html>' "$export_file" 2>/dev/null \
+    || fail "/export did not finish its HTML artifact while calm mode was on"
   node - "$export_file" <<'JS' || fail "calm-mode HTML export lost tool data or persisted synthetic provenance"
 const html = require("node:fs").readFileSync(process.argv[2], "utf8");
 const match = html.match(/<script id="session-data" type="application\/json">([^<]+)<\/script>/);
@@ -3536,20 +3537,78 @@ JS
     --disable-gpu \
     --no-sandbox \
     --user-data-dir="$TMP_ROOT/chrome-profile" \
-    --virtual-time-budget=2000 \
-    --dump-dom \
-    "file://$export_file" >"$export_dom" 2>/dev/null &
+    --remote-debugging-port=0 \
+    about:blank >/dev/null 2>&1 &
   chrome_pid=$!
   chrome_wait=0
-  while kill -0 "$chrome_pid" 2>/dev/null && [ "$chrome_wait" -lt 100 ]; do
-    grep -Fq '</html>' "$export_dom" 2>/dev/null && break
+  while [ ! -s "$TMP_ROOT/chrome-profile/DevToolsActivePort" ] && [ "$chrome_wait" -lt 100 ]; do
+    kill -0 "$chrome_pid" 2>/dev/null || break
     sleep 0.1
     chrome_wait=$((chrome_wait + 1))
   done
+  [ -s "$TMP_ROOT/chrome-profile/DevToolsActivePort" ] \
+    || fail "could not start Chrome for calm-mode HTML export assertions"
+  CHROME_PORT=$(head -n 1 "$TMP_ROOT/chrome-profile/DevToolsActivePort") \
+    EXPORT_FILE="$export_file" \
+    EXPORT_DOM="$export_dom" \
+    node --experimental-websocket <<'JS' || fail "could not render calm-mode HTML export DOM"
+const fs = require("node:fs");
+
+(async () => {
+  const baseUrl = `http://127.0.0.1:${process.env.CHROME_PORT}`;
+  const target = await fetch(`${baseUrl}/json/new?${encodeURIComponent("about:blank")}`, {
+    method: "PUT",
+  }).then((response) => response.json());
+  const socket = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    socket.onopen = resolve;
+    socket.onerror = reject;
+  });
+
+  let nextId = 0;
+  const pending = new Map();
+  socket.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    const callbacks = pending.get(message.id);
+    if (!callbacks) return;
+    pending.delete(message.id);
+    message.error
+      ? callbacks.reject(new Error(JSON.stringify(message.error)))
+      : callbacks.resolve(message.result);
+  };
+  const send = (method, params = {}) => new Promise((resolve, reject) => {
+    const id = ++nextId;
+    pending.set(id, { resolve, reject });
+    socket.send(JSON.stringify({ id, method, params }));
+  });
+
+  await send("Page.enable");
+  await send("Runtime.enable");
+  await send("Page.navigate", { url: `file://${process.env.EXPORT_FILE}` });
+  let dom;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const evaluation = await send("Runtime.evaluate", {
+      expression: `document.readyState === "complete" &&
+        document.querySelector("#messages .assistant-message") &&
+        document.querySelector("#tree-container .tree-node") &&
+        document.documentElement.outerHTML`,
+      returnByValue: true,
+    });
+    dom = evaluation.result.value;
+    if (dom) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (!dom) throw new Error("rendered export did not become ready");
+  fs.writeFileSync(process.env.EXPORT_DOM, dom);
+  await send("Page.close");
+  socket.close();
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+JS
   kill "$chrome_pid" 2>/dev/null || true
   wait "$chrome_pid" 2>/dev/null || true
-  grep -Fq '</html>' "$export_dom" 2>/dev/null \
-    || fail "could not render calm-mode HTML export DOM"
   node - "$export_dom" <<'JS' || fail "rendered export DOM violated the Calm conversation boundary"
 const dom = require("node:fs").readFileSync(process.argv[2], "utf8");
 const messages = dom.match(/<div id="messages">([\s\S]*?)<\/main>/)?.[1];
