@@ -110,7 +110,7 @@ test_watchdog_names_a_fixture_that_pins_the_driver_without_dying() {
   gate="$TMP_ROOT/pinned-driver.gate"
   fm_checkpoint_bus "$bus"
   out=$(FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_GATE="$gate" \
-    FM_CHECKPOINT_WATCHDOG_MS=2000 node --input-type=module 2>&1 <<'EOF'
+    FM_CHECKPOINT_WATCHDOG_MS=10000 node --input-type=module 2>&1 <<'EOF'
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -138,7 +138,7 @@ EOF
 )
   status=$?
   [ "$status" -ne 0 ] || fail "pinned driver did not fail"
-  assert_contains "$out" "checkpoint watchdog: no checkpoint activity for 2000ms" \
+  assert_contains "$out" "checkpoint watchdog: no checkpoint activity for 10000ms" \
     "watchdog did not report the pinned driver"
   assert_contains "$out" "outstanding: nothing" \
     "watchdog did not report that no checkpoint was outstanding"
