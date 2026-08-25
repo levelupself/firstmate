@@ -57,11 +57,18 @@ jobs:
           set -eu
           npm install -g tasks-axi
           tasks-axi --version
+      - name: Provision Pi typecheck dependencies
+        run: |
+          set -eu
+          npm install -g typescript @earendil-works/pi-coding-agent
+          tsc --version
+          test -f "$(npm root -g)/@earendil-works/pi-coding-agent/package.json"
       - name: Run portable parallel shard 1
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
           bin/fm-test-run.sh --lane portable-parallel-1 \
+            --fail-on-gate-skip 'Pi typecheck prerequisite' \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-1.json"
       - name: Upload shard 1 timing artifact
         if: always()
@@ -144,6 +151,18 @@ jobs:
           set -eu
           npm install -g tasks-axi
           tasks-axi --version
+      - name: Provision Pi Calm dependencies
+        env:
+          FM_SERIAL_LANE: portable-serial-${{ matrix.shard }}of${{ strategy.job-total }}
+        run: |
+          set -eu
+          if bin/fm-test-run.sh --list --lane "$FM_SERIAL_LANE" \
+            | grep -Fxq 'tests/fm-calm-pi-extension.test.sh'
+          then
+            npm install -g @earendil-works/pi-coding-agent
+            pi --version
+            test -f "$(npm root -g)/@earendil-works/pi-coding-agent/package.json"
+          fi
       - name: Run portable serial shard ${{ matrix.shard }}
         env:
           # job-total rather than a literal, so shrinking or growing the matrix
@@ -155,6 +174,7 @@ jobs:
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
           bin/fm-test-run.sh --lane "$FM_SERIAL_LANE" \
+            --fail-on-gate-skip 'Pi Calm prerequisite' \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-${FM_SERIAL_SHARD}.json"
       - name: Upload portable serial shard ${{ matrix.shard }} timing artifact
         if: always()
