@@ -11,7 +11,7 @@ TMP_ROOT=$(fm_test_tmproot fm-no-mistakes-required)
 fm_git_identity fmtest fmtest@example.invalid
 
 new_graph() {
-  local name=$1 repo="$TMP_ROOT/$1"
+  local repo="$TMP_ROOT/$1"
   mkdir -p "$repo"
   git -C "$repo" init -q -b main
   printf 'common\n' > "$repo/common.txt"
