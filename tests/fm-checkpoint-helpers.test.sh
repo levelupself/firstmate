@@ -105,7 +105,7 @@ EOF
 }
 
 test_watchdog_names_a_fixture_that_pins_the_driver_without_dying() {
-  local bus gate out status
+  local bus fixture_pid gate out status watchdog_pids
   bus="$TMP_ROOT/pinned-driver.bus"
   gate="$TMP_ROOT/pinned-driver.gate"
   fm_checkpoint_bus "$bus"
@@ -142,8 +142,13 @@ EOF
     "watchdog did not report the pinned driver"
   assert_contains "$out" "outstanding: nothing" \
     "watchdog did not report that no checkpoint was outstanding"
-  assert_contains "$out" "live fixture pids: " \
-    "watchdog did not name the fixture still holding the driver open"
+  fixture_pid=$(printf '%s\n' "$out" | sed -n 's/^pinned by //p')
+  [ -n "$fixture_pid" ] || fail "driver did not print the pinned fixture pid: $out"
+  watchdog_pids=$(printf '%s\n' "$out" | sed -n 's/^.*live fixture pids: //p' | tr -d ' ')
+  case ",$watchdog_pids," in
+    *",$fixture_pid,"*) ;;
+    *) fail "watchdog did not name pinned fixture $fixture_pid: $out" ;;
+  esac
   pass "a fixture that pins the driver without dying is named by the watchdog"
 }
 
