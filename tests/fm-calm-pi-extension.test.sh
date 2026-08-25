@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Focused rendering, lifecycle, persistence, and interactive TUI checks for /calm.
+# Disposition: PROVISION. The owning portable serial shard installs the current
+# Pi package and CLI because an unexecuted check could ship broken Calm rendering,
+# transcript semantics, persistence, or interactive lifecycle behavior to Pi.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -74,11 +77,11 @@ find_chrome() {
 test_home_resolution() {
   local fixture out status version
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-    echo "skip: node or npm not found for Pi calm home-resolution test"
+    echo "skip: Pi Calm prerequisite node or npm not found for home-resolution test"
     return 0
   fi
   if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
-    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+    echo "skip: Pi Calm prerequisite installed @earendil-works/pi-coding-agent package not found"
     return 0
   fi
   version=$(node -p "require('$PI_PACKAGE_DIR/package.json').version")
@@ -200,11 +203,11 @@ test_pi_compat_no_upper_bound() {
 test_pi_compat_degraded_adapter() {
   local fixture out status
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-    echo "skip: node or npm not found for Pi calm degraded-adapter test"
+    echo "skip: Pi Calm prerequisite node or npm not found for degraded-adapter test"
     return 0
   fi
   if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
-    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+    echo "skip: Pi Calm prerequisite installed @earendil-works/pi-coding-agent package not found"
     return 0
   fi
 
@@ -304,7 +307,7 @@ JS
 test_pi_compat_missing_adapter_exports() {
   local fixture out status
   if ! command -v node >/dev/null 2>&1; then
-    echo "skip: node not found for Pi calm missing-adapter-export test"
+    echo "skip: Pi Calm prerequisite node not found for missing-adapter-export test"
     return 0
   fi
 
@@ -357,11 +360,11 @@ JS
 test_builtin_gate_load_time() {
   local fixture out output_file status
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-    echo "skip: node or npm not found for Pi calm gate test"
+    echo "skip: Pi Calm prerequisite node or npm not found for gate test"
     return 0
   fi
   if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
-    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+    echo "skip: Pi Calm prerequisite installed @earendil-works/pi-coding-agent package not found"
     return 0
   fi
 
@@ -444,11 +447,11 @@ JS
 test_calm_activation_collision_and_regression_bound() {
   local fixture out output_file status
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-    echo "skip: node or npm not found for Pi calm activation test"
+    echo "skip: Pi Calm prerequisite node or npm not found for activation test"
     return 0
   fi
   if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
-    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+    echo "skip: Pi Calm prerequisite installed @earendil-works/pi-coding-agent package not found"
     return 0
   fi
 
@@ -659,11 +662,11 @@ JS
 test_rendering_and_session_lifecycle() {
   local fixture out output_file status version
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-    echo "skip: node or npm not found for Pi calm renderer test"
+    echo "skip: Pi Calm prerequisite node or npm not found for renderer test"
     return 0
   fi
   if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
-    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+    echo "skip: Pi Calm prerequisite installed @earendil-works/pi-coding-agent package not found"
     return 0
   fi
   version=$(node -p "require('$PI_PACKAGE_DIR/package.json').version")
@@ -1359,11 +1362,11 @@ JS
 test_calm_mid_turn_working_notes() {
   local fixture out output_file status version
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-    echo "skip: node or npm not found for Pi calm mid-turn renderer test"
+    echo "skip: Pi Calm prerequisite node or npm not found for mid-turn renderer test"
     return 0
   fi
   if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
-    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+    echo "skip: Pi Calm prerequisite installed @earendil-works/pi-coding-agent package not found"
     return 0
   fi
   version=$(node -p "require('$PI_PACKAGE_DIR/package.json').version")
@@ -1619,7 +1622,7 @@ JS
 test_operational_followup_turn_e2e() {
   local project home config sessions version label case_name calm_state expected_notifications session_file pane i captain_line handled_line geometry_gap exact_session
   if ! command -v pi >/dev/null 2>&1 || ! command -v tmux >/dev/null 2>&1; then
-    echo "skip: pi or tmux not found for Pi operational follow-up E2E"
+    echo "skip: Pi Calm prerequisite pi or tmux not found for operational follow-up E2E"
     return 0
   fi
   version=$(pi --version 2>/dev/null || true)
@@ -1816,9 +1819,11 @@ TS
       fail "Pi follow-up $label case did not process the monitoring notification"
     fi
 
-    pane=$(tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" -S - 2>/dev/null || true)
+    wait_for_text "$TMP_ROOT/followup-pane-$label.txt" "MONITOR_HANDLED_${label}_ONE" \
+      || fail "Pi follow-up $label case did not render the processing result"
+    pane=$(cat "$TMP_ROOT/followup-pane-$label.txt")
     [ "$(printf '%s\n' "$pane" | grep -Fc "CAPTAIN_ANSWER_$label" || true)" -eq 1 ] \
-      || fail "Pi follow-up $label case rendered a duplicate captain answer"
+      || fail "Pi follow-up $label case did not render exactly one captain answer"
     assert_contains "$pane" "CAPTAIN_PROMPT_$label" "Pi follow-up $label case hid the genuine captain prompt"
     assert_contains "$pane" "MONITOR_HANDLED_${label}_ONE" "Pi follow-up $label case did not render the intended processing result"
     if [ "$calm_state" = on ]; then
@@ -1973,7 +1978,7 @@ test_hidden_block_geometry_e2e() {
   local project home config sessions session_file snapshot expanded_snapshot calm_off_snapshot restarted_snapshot
   local version skill_line final_line gap i
   if ! command -v pi >/dev/null 2>&1 || ! command -v tmux >/dev/null 2>&1; then
-    echo "skip: pi or tmux not found for Pi Calm hidden-block geometry E2E"
+    echo "skip: Pi Calm prerequisite pi or tmux not found for hidden-block geometry E2E"
     return 0
   fi
   version=$(pi --version 2>/dev/null || true)
@@ -2214,11 +2219,11 @@ TS
 test_working_ship_geometry_and_lifecycle() {
   local fixture out status version
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-    echo "skip: node or npm not found for Pi Calm working-ship test"
+    echo "skip: Pi Calm prerequisite node or npm not found for working-ship test"
     return 0
   fi
   if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
-    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+    echo "skip: Pi Calm prerequisite installed @earendil-works/pi-coding-agent package not found"
     return 0
   fi
   version=$(node -p "require('$PI_PACKAGE_DIR/package.json').version")
@@ -3079,9 +3084,9 @@ JS
 }
 
 test_interactive_terminal_e2e() {
-  local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot export_snapshot restored_snapshot working_snapshot working_response_snapshot restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_pid chrome_wait active_wait active_screen_wait boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_narrow_sails boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
+  local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot restored_snapshot working_snapshot working_response_snapshot restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_pid chrome_wait active_wait active_screen_wait boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_narrow_sails boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
   if ! command -v pi >/dev/null 2>&1 || ! command -v tmux >/dev/null 2>&1; then
-    echo "skip: pi or tmux not found for Pi calm interactive E2E"
+    echo "skip: Pi Calm prerequisite pi or tmux not found for interactive E2E"
     return 0
   fi
   version=$(pi --version 2>/dev/null || true)
@@ -3098,7 +3103,6 @@ test_interactive_terminal_e2e() {
   hidden_snapshot="$TMP_ROOT/hidden.txt"
   active_before_snapshot="$TMP_ROOT/active-before.txt"
   active_hidden_snapshot="$TMP_ROOT/active-hidden.txt"
-  export_snapshot="$TMP_ROOT/export.txt"
   restored_snapshot="$TMP_ROOT/restored.txt"
   working_snapshot="$TMP_ROOT/working.txt"
   working_response_snapshot="$TMP_ROOT/working-response.txt"
@@ -3505,8 +3509,13 @@ JS
 
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/export $export_file"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
-  wait_for_text "$export_snapshot" "Session exported to: $export_file" \
-    || fail "/export did not complete while calm mode was on"
+  active_wait=0
+  while ! grep -Fq '</html>' "$export_file" 2>/dev/null && [ "$active_wait" -lt 120 ]; do
+    sleep 0.05
+    active_wait=$((active_wait + 1))
+  done
+  grep -Fq '</html>' "$export_file" 2>/dev/null \
+    || fail "/export did not finish its HTML artifact while calm mode was on"
   node - "$export_file" <<'JS' || fail "calm-mode HTML export lost tool data or persisted synthetic provenance"
 const html = require("node:fs").readFileSync(process.argv[2], "utf8");
 const match = html.match(/<script id="session-data" type="application\/json">([^<]+)<\/script>/);
@@ -3528,20 +3537,78 @@ JS
     --disable-gpu \
     --no-sandbox \
     --user-data-dir="$TMP_ROOT/chrome-profile" \
-    --virtual-time-budget=2000 \
-    --dump-dom \
-    "file://$export_file" >"$export_dom" 2>/dev/null &
+    --remote-debugging-port=0 \
+    about:blank >/dev/null 2>&1 &
   chrome_pid=$!
   chrome_wait=0
-  while kill -0 "$chrome_pid" 2>/dev/null && [ "$chrome_wait" -lt 100 ]; do
-    grep -Fq '</html>' "$export_dom" 2>/dev/null && break
+  while [ ! -s "$TMP_ROOT/chrome-profile/DevToolsActivePort" ] && [ "$chrome_wait" -lt 100 ]; do
+    kill -0 "$chrome_pid" 2>/dev/null || break
     sleep 0.1
     chrome_wait=$((chrome_wait + 1))
   done
+  [ -s "$TMP_ROOT/chrome-profile/DevToolsActivePort" ] \
+    || fail "could not start Chrome for calm-mode HTML export assertions"
+  CHROME_PORT=$(head -n 1 "$TMP_ROOT/chrome-profile/DevToolsActivePort") \
+    EXPORT_FILE="$export_file" \
+    EXPORT_DOM="$export_dom" \
+    node --experimental-websocket <<'JS' || fail "could not render calm-mode HTML export DOM"
+const fs = require("node:fs");
+
+(async () => {
+  const baseUrl = `http://127.0.0.1:${process.env.CHROME_PORT}`;
+  const target = await fetch(`${baseUrl}/json/new?${encodeURIComponent("about:blank")}`, {
+    method: "PUT",
+  }).then((response) => response.json());
+  const socket = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    socket.onopen = resolve;
+    socket.onerror = reject;
+  });
+
+  let nextId = 0;
+  const pending = new Map();
+  socket.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    const callbacks = pending.get(message.id);
+    if (!callbacks) return;
+    pending.delete(message.id);
+    message.error
+      ? callbacks.reject(new Error(JSON.stringify(message.error)))
+      : callbacks.resolve(message.result);
+  };
+  const send = (method, params = {}) => new Promise((resolve, reject) => {
+    const id = ++nextId;
+    pending.set(id, { resolve, reject });
+    socket.send(JSON.stringify({ id, method, params }));
+  });
+
+  await send("Page.enable");
+  await send("Runtime.enable");
+  await send("Page.navigate", { url: `file://${process.env.EXPORT_FILE}` });
+  let dom;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const evaluation = await send("Runtime.evaluate", {
+      expression: `document.readyState === "complete" &&
+        document.querySelector("#messages .assistant-message") &&
+        document.querySelector("#tree-container .tree-node") &&
+        document.documentElement.outerHTML`,
+      returnByValue: true,
+    });
+    dom = evaluation.result.value;
+    if (dom) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (!dom) throw new Error("rendered export did not become ready");
+  fs.writeFileSync(process.env.EXPORT_DOM, dom);
+  await send("Page.close");
+  socket.close();
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+JS
   kill "$chrome_pid" 2>/dev/null || true
   wait "$chrome_pid" 2>/dev/null || true
-  grep -Fq '</html>' "$export_dom" 2>/dev/null \
-    || fail "could not render calm-mode HTML export DOM"
   node - "$export_dom" <<'JS' || fail "rendered export DOM violated the Calm conversation boundary"
 const dom = require("node:fs").readFileSync(process.argv[2], "utf8");
 const messages = dom.match(/<div id="messages">([\s\S]*?)<\/main>/)?.[1];

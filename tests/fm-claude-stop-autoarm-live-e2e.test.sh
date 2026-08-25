@@ -9,6 +9,11 @@
 # forced continuation while the hook's launch is healthy.
 # The project and FM_HOME are isolated; Claude keeps using its existing managed
 # authentication. No live fleet home, worktree, or session is touched.
+# Disposition: MANUAL-ONLY. This guards real Claude Code's credentialed Stop-hook
+# lifecycle, where vendor hook drift could break tokenless supervision continuity.
+# Standard CI has neither the managed Claude authentication nor a safe synthetic
+# substitute for that vendor behavior, so run it on demand after Claude upgrades
+# and before refreshing the dated evidence in docs/verification/supervision.md.
 # shellcheck disable=SC2016 # the model, not this test shell, reads the prompt text
 set -u
 
