@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# Tests for the shared checkpoint bus in tests/fm-checkpoint-helpers.sh.
+#
+# The subject is the guarantee that a checkpoint nothing can satisfy is
+# reported by name instead of waited on. Every case below drives the helper
+# through a real fixture process, because the whole question is what happens
+# when a separate process dies without announcing.
+#
+# Never write an apostrophe inside the Node driver heredocs below, comments
+# included: each one sits inside an out=$(...) command substitution, and stock
+# macOS Bash 3.2 tracks quote characters straight through a heredoc body while
+# Bash 4 and later do not. See the same warning in
+# tests/fm-pi-watch-extension.test.sh for the failure it produces.
+set -u
+
+# shellcheck source=tests/lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fm-checkpoint-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fm-checkpoint-helpers.sh"
+
+TMP_ROOT=$(fm_test_tmproot fm-checkpoint-helpers)
+CHECKPOINT_MODULE=$(fm_checkpoint_module "$TMP_ROOT")
+export NODE_NO_WARNINGS=1
+
+test_wait_is_named_when_the_only_fixture_exits_without_announcing() {
+  local bus out status
+  bus="$TMP_ROOT/exit-without-announcing.bus"
+  fm_checkpoint_bus "$bus"
+  out=$(FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" node --input-type=module 2>&1 <<'EOF'
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
+
+const { openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
+// The one process that could announce reaches its exit without doing so, so
+// after it is gone nothing in this process or under it can ever satisfy the
+// wait below.
+spawn("bash", ["-c", "exit 0"], { stdio: ["ignore", "pipe", "pipe"] });
+await bus.reached("never-announced");
+process.stdout.write("the unreachable wait resolved\n");
+EOF
+)
+  status=$?
+  [ "$status" -ne 0 ] || fail "unreachable checkpoint did not fail the driver"
+  assert_contains "$out" "checkpoint can never arrive: bus:never-announced" \
+    "unreachable checkpoint was not named"
+  pass "a wait no surviving fixture can announce is named instead of held open"
+}
+
+test_wait_is_named_when_the_fixture_is_killed_rather_than_exiting() {
+  local bus out status
+  bus="$TMP_ROOT/killed-fixture.bus"
+  fm_checkpoint_bus "$bus"
+  out=$(FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" node --input-type=module 2>&1 <<'EOF'
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
+
+const { openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
+// SIGKILL runs no trap of any kind, so no announcement is possible on this
+// path however the fixture is written. The kernel closing the dead process
+// handles is the only signal left, and it is the one this has to work from.
+const fixture = spawn("bash", ["-c", "sleep 30"], { stdio: ["ignore", "pipe", "pipe"] });
+setTimeout(() => fixture.kill("SIGKILL"), 20);
+await bus.reached("killed-before-announcing");
+process.stdout.write("the unreachable wait resolved\n");
+EOF
+)
+  status=$?
+  [ "$status" -ne 0 ] || fail "killed fixture did not fail the driver"
+  assert_contains "$out" "checkpoint can never arrive: bus:killed-before-announcing" \
+    "checkpoint left unreachable by a killed fixture was not named"
+  pass "a fixture killed rather than exited still ends its checkpoint by name"
+}
+
+test_pending_timer_is_not_mistaken_for_an_unreachable_wait() {
+  local bus out status
+  bus="$TMP_ROOT/retry-gap.bus"
+  fm_checkpoint_bus "$bus"
+  out=$(FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" node --input-type=module 2>&1 <<'EOF'
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
+
+const { openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
+// The shape the watcher extension uses to restore continuity: no fixture is
+// alive at all, and the only thing that will start one is an unreferenced
+// timer. Treating that gap as unreachable would reject a checkpoint that is
+// genuinely still coming, so this is the case the liveness rule must not fire
+// on.
+const gap = setTimeout(() => {
+  spawn("bash", ["-c", "printf 'late-arm 7\\n' > \"$FM_CHECKPOINT_BUS\""], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}, 200);
+gap.unref();
+const payload = await bus.reached("late-arm");
+if (payload !== "7") throw new Error(`late arm announced ${payload}, expected 7`);
+EOF
+)
+  status=$?
+  [ -z "$out" ] || fail "retry-gap test printed output: $out"
+  expect_code 0 "$status" "a checkpoint behind a pending timer must still be awaited"
+  pass "a checkpoint still reachable through a pending timer is awaited, not rejected"
+}
+
+test_watchdog_names_a_fixture_that_pins_the_driver_without_dying() {
+  local bus fixture_pid gate out status watchdog_pids
+  bus="$TMP_ROOT/pinned-driver.bus"
+  gate="$TMP_ROOT/pinned-driver.gate"
+  fm_checkpoint_bus "$bus"
+  out=$(FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_GATE="$gate" \
+    FM_CHECKPOINT_WATCHDOG_MS=10000 node --input-type=module 2>&1 <<'EOF'
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const { openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
+// A fixture that announces once, then announces again after the reader has
+// gone. The second write blocks in the kernel with no reader on the far end,
+// so the fixture never dies and keeps this process alive through its own
+// stdio handles. Liveness cannot see that: nothing is outstanding and nothing
+// is dead, which is silence until the job is cancelled.
+const fixture = spawn(
+  "bash",
+  [
+    "-c",
+    "printf 'ready 1\\n' > \"$FM_CHECKPOINT_BUS\"; while [ ! -e \"$FM_GATE\" ]; do sleep 0.02; done; printf 'late 1\\n' > \"$FM_CHECKPOINT_BUS\"",
+  ],
+  { stdio: ["ignore", "pipe", "pipe"] },
+);
+await bus.reached("ready");
+bus.close();
+writeFileSync(process.env.FM_GATE, "go\n");
+process.stdout.write(`pinned by ${fixture.pid}\n`);
+EOF
+)
+  status=$?
+  [ "$status" -ne 0 ] || fail "pinned driver did not fail"
+  assert_contains "$out" "checkpoint watchdog: no checkpoint activity for 10000ms" \
+    "watchdog did not report the pinned driver"
+  assert_contains "$out" "outstanding: nothing" \
+    "watchdog did not report that no checkpoint was outstanding"
+  fixture_pid=$(printf '%s\n' "$out" | sed -n 's/^pinned by //p')
+  [ -n "$fixture_pid" ] || fail "driver did not print the pinned fixture pid: $out"
+  watchdog_pids=$(printf '%s\n' "$out" | sed -n 's/^.*live fixture pids: //p' | tr -d ' ')
+  case ",$watchdog_pids," in
+    *",$fixture_pid,"*) ;;
+    *) fail "watchdog did not name pinned fixture $fixture_pid: $out" ;;
+  esac
+  pass "a fixture that pins the driver without dying is named by the watchdog"
+}
+
+test_wait_is_named_when_the_only_fixture_exits_without_announcing
+test_wait_is_named_when_the_fixture_is_killed_rather_than_exiting
+test_pending_timer_is_not_mistaken_for_an_unreachable_wait
+test_watchdog_names_a_fixture_that_pins_the_driver_without_dying
