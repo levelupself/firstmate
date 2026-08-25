@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Tests for bin/fm-pr-merge.sh: the one path firstmate uses to merge a task's
-# PR, which must always record pr= and any available pr_head= into the task's
-# meta before merging so fm-teardown.sh's landed-check has a PR reference to
-# verify against, even on repos with no PR CI where the usual "checks green"
-# fm-pr-check.sh trigger never fires.
+# PR, which records pr= and any available pr_head= into a live task's metadata
+# before merging and keeps durable merge provenance after volatile task state is
+# gone.
 #
 # Matrix:
 #   (a) merge records pr= and pr_head= before merging, and merges
@@ -14,6 +13,10 @@
 #   (f) malformed PR URL fails fast without calling gh-axi
 #   (g) explicit merge method is not overridden by the default --squash
 #   (h) repo override args fail fast because the repo comes from the URL
+#   (i) a torn-down delivered task is authorized by its exact Done PR record
+#       and receives durable merge provenance
+#   (j) deleting metadata cannot authorize a different PR for a Done task
+#   (k) an exact prepared receipt remains retryable after Done history is pruned
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -29,7 +32,7 @@ make_case() {
   local name=$1 case_dir fakebin
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
-  mkdir -p "$case_dir/state" "$fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
   fm_write_meta "$case_dir/state/task-x1.meta" \
     "window=fm-task-x1" \
     "worktree=$case_dir/wt" \
@@ -88,6 +91,7 @@ run_pr_merge() {
   local case_dir=$1 rc; shift
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
@@ -99,8 +103,50 @@ run_pr_merge() {
   return "$rc"
 }
 
+test_torn_down_delivered_task_merges_with_durable_provenance() {
+  local case_dir fakebin rc receipt
+  case_dir="$TMP_ROOT/torn-down-delivered"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  : > "$case_dir/gh-axi.log"
+  cat > "$case_dir/data/backlog.md" <<'MD'
+# Backlog
+
+## In flight
+
+## Queued
+
+## Done
+- [x] delivered-x1 - Delivered task https://github.com/example/repo/pull/21 (merged 2026-08-18)
+MD
+
+  set +e
+  run_pr_merge "$case_dir" delivered-x1 https://github.com/example/repo/pull/21 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" \
+    "torn-down-delivered: fm-pr-merge should succeed; stderr: $(tr '\n' ' ' < "$case_dir/stderr")"
+  grep -qxF 'pr merge 21 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "torn-down-delivered: gh-axi pr merge was not invoked"
+  receipt="$case_dir/data/pr-merges/delivered-x1.receipt"
+  assert_grep 'schema=fm-pr-merge.v1' "$receipt" \
+    "torn-down-delivered: durable receipt has the wrong schema"
+  assert_grep 'task_id=delivered-x1' "$receipt" \
+    "torn-down-delivered: durable receipt lost the task identity"
+  assert_grep 'pr=https://github.com/example/repo/pull/21' "$receipt" \
+    "torn-down-delivered: durable receipt lost the PR identity"
+  assert_grep 'phase=merged' "$receipt" \
+    "torn-down-delivered: durable receipt did not record the merge outcome"
+  assert_grep 'authorization=done-record' "$receipt" \
+    "torn-down-delivered: durable receipt lost its Done-record authorization"
+  pass "fm-pr-merge merges a torn-down delivered task with durable provenance"
+}
+
 test_records_pr_and_head_before_merging() {
-  local case_dir rc
+  local case_dir rc receipt
   case_dir=$(make_case records-before-merge)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" deadbeefcafefeed0000000000000000deadbeef
@@ -117,6 +163,11 @@ test_records_pr_and_head_before_merging() {
     "records-before-merge: pr= was not recorded"
   assert_grep 'pr_head=deadbeefcafefeed0000000000000000deadbeef' "$case_dir/state/task-x1.meta" \
     "records-before-merge: pr_head= was not recorded"
+  receipt="$case_dir/data/pr-merges/task-x1.receipt"
+  assert_grep 'phase=merged' "$receipt" \
+    "records-before-merge: durable receipt did not record the merge outcome"
+  assert_grep 'authorization=live-meta' "$receipt" \
+    "records-before-merge: durable receipt lost its live-task authorization"
   grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "records-before-merge: gh-axi pr merge was not invoked with number, --repo, and default --squash"
   pass "fm-pr-merge records pr= and pr_head= before invoking gh-axi pr merge"
@@ -138,6 +189,8 @@ test_merge_failure_propagates_after_recording() {
   expect_code 1 "$rc" "merge-fails: fm-pr-merge should propagate the gh-axi merge failure"
   assert_grep 'pr=https://github.com/example/repo/pull/13' "$case_dir/state/task-x1.meta" \
     "merge-fails: pr= should already be recorded even though the merge itself failed"
+  assert_grep 'phase=prepared' "$case_dir/data/pr-merges/task-x1.receipt" \
+    "merge-fails: the durable pre-merge provenance was not retained"
   pass "fm-pr-merge propagates a real merge failure without silently succeeding"
 }
 
@@ -176,7 +229,70 @@ test_missing_meta_refuses_before_merge() {
   [ ! -s "$case_dir/gh-axi.log" ] || fail "missing-meta: gh-axi pr merge was invoked"
   assert_absent "$case_dir/state/missing-x1.check.sh" \
     "missing-meta: fm-pr-check should not arm a poll for an unknown task"
+  assert_absent "$case_dir/data/pr-merges/missing-x1.receipt" \
+    "missing-meta: an unknown task received merge provenance"
   pass "fm-pr-merge refuses before merging when task meta is missing"
+}
+
+test_missing_meta_with_wrong_done_pr_refuses() {
+  local case_dir fakebin rc
+  case_dir="$TMP_ROOT/wrong-done-pr"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
+  add_gh_mocks "$case_dir" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  : > "$case_dir/gh-axi.log"
+  cat > "$case_dir/data/backlog.md" <<'MD'
+# Backlog
+
+## Done
+- [x] delivered-x1 - Delivered task https://github.com/example/repo/pull/20 (merged 2026-08-18)
+MD
+
+  set +e
+  run_pr_merge "$case_dir" delivered-x1 https://github.com/example/repo/pull/21 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "wrong-done-pr: fm-pr-merge should refuse"
+  assert_grep 'no delivered-task PR provenance matches' "$case_dir/stderr" \
+    "wrong-done-pr: refusal did not explain the missing exact provenance"
+  [ ! -s "$case_dir/gh-axi.log" ] || fail "wrong-done-pr: gh-axi pr merge was invoked"
+  assert_absent "$case_dir/data/pr-merges/delivered-x1.receipt" \
+    "wrong-done-pr: mismatched Done provenance created a receipt"
+  pass "fm-pr-merge requires the Done record to match the exact task and PR"
+}
+
+test_prepared_receipt_allows_same_pr_retry() {
+  local case_dir fakebin receipt
+  case_dir="$TMP_ROOT/prepared-retry"
+  fakebin="$case_dir/fakebin"
+  receipt="$case_dir/data/pr-merges/delivered-x1.receipt"
+  mkdir -p "$case_dir/state" "$case_dir/data/pr-merges" "$fakebin"
+  add_gh_mocks "$case_dir" cccccccccccccccccccccccccccccccccccccccc
+  : > "$case_dir/gh-axi.log"
+  cat > "$receipt" <<'EOF'
+schema=fm-pr-merge.v1
+task_id=delivered-x1
+pr=https://github.com/example/repo/pull/21
+phase=prepared
+authorization=done-record
+prepared_epoch=1770000000
+EOF
+
+  run_pr_merge "$case_dir" delivered-x1 https://github.com/example/repo/pull/21 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "prepared-retry: fm-pr-merge failed"
+
+  grep -qxF 'pr merge 21 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "prepared-retry: gh-axi pr merge was not invoked"
+  assert_grep 'phase=merged' "$receipt" \
+    "prepared-retry: durable receipt did not advance to merged"
+  assert_grep 'authorization=done-record' "$receipt" \
+    "prepared-retry: durable receipt lost its original authorization"
+  assert_grep 'prepared_epoch=1770000000' "$receipt" \
+    "prepared-retry: durable receipt lost the original preparation time"
+  pass "fm-pr-merge retries the exact prepared merge after Done history is pruned"
 }
 
 test_malformed_url_refuses_before_merge() {
@@ -304,7 +420,10 @@ test_parses_pr_url_for_gh_axi() {
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
+test_torn_down_delivered_task_merges_with_durable_provenance
 test_missing_meta_refuses_before_merge
+test_missing_meta_with_wrong_done_pr_refuses
+test_prepared_receipt_allows_same_pr_retry
 test_malformed_url_refuses_before_merge
 test_rejects_unsafe_url_segments_before_recording
 test_repo_override_args_refuse_before_recording
