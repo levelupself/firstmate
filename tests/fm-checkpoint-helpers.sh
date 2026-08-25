@@ -206,6 +206,7 @@ let idleTurns = 0;
 
 function noteProgress() {
   idleTurns = 0;
+  armWatchdog();
 }
 
 function yieldOneTurn() {
@@ -267,7 +268,6 @@ function watchForOutstanding(label, reject) {
     process.on("exit", reportOutstanding);
     process.on("beforeExit", checkLiveness);
   }
-  armWatchdog();
   noteProgress();
   const waiters = outstanding.get(label) ?? new Set();
   outstanding.set(label, waiters);
@@ -279,8 +279,6 @@ function clearOutstanding(label, reject) {
   if (!waiters) return;
   waiters.delete(reject);
   if (waiters.size === 0) outstanding.delete(label);
-  armWatchdog();
-  noteProgress();
 }
 
 // Opening a FIFO read-write keeps a writer end held inside this process, so
@@ -306,13 +304,13 @@ export function openCheckpointBus(path) {
   };
 
   socket.on("data", (chunk) => {
-    noteProgress();
     buffered += chunk;
     let cut = buffered.indexOf("\n");
     while (cut !== -1) {
       const line = buffered.slice(0, cut).trim();
       buffered = buffered.slice(cut + 1);
       if (line) {
+        noteProgress();
         const gap = line.indexOf(" ");
         const name = gap === -1 ? line : line.slice(0, gap);
         const payload = gap === -1 ? "" : line.slice(gap + 1).trim();
@@ -383,6 +381,7 @@ export function latch(label = "latch") {
     // Signalling twice is a fixture detail, not an error: only the first one
     // settles the checkpoint, and later ones must not unbalance the hold.
     signal(value) {
+      noteProgress();
       if (settled) return;
       settled = true;
       if (held) clearOutstanding(label, reject);
@@ -407,6 +406,7 @@ export function counter(label = "counter") {
   let count = 0;
   return {
     bump() {
+      noteProgress();
       count += 1;
       while (waiters.length > 0 && waiters[0].target <= count) {
         const waiter = waiters.shift();
