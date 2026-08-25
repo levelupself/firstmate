@@ -710,36 +710,38 @@ SH
 
 test_herdr_ci_family_run_has_a_step_timeout() {
   # The required Herdr lane's hang tripwire is the family-run *step* bound, not
-  # the 75-minute job cap. Parse the workflow as YAML so nested `with.name`
-  # artifact keys cannot masquerade as the step contract.
-  command -v ruby >/dev/null 2>&1 \
-    || fail "ruby is required to parse .github/workflows/ci.yml as YAML"
-  local json job_timeout step_timeout
-  json=$(ruby -ryaml -rjson -e '
-doc = YAML.load_file(ARGV[0])
-job = doc.fetch("jobs").fetch("tests-herdr")
-step = job.fetch("steps").find { |s|
-  s.is_a?(Hash) && s["name"] == "Run real-Herdr family (serial, required)"
-}
-raise "missing family-run step" if step.nil?
-raise "family-run step has no timeout-minutes" unless step.key?("timeout-minutes")
-puts JSON.generate(
-  "job_timeout" => job.fetch("timeout-minutes"),
-  "step_timeout" => step.fetch("timeout-minutes")
-)
-' "$ROOT/.github/workflows/ci.yml") \
-    || fail "could not parse tests-herdr timeouts from ci.yml"
-  job_timeout=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["job_timeout"])' <<<"$json") \
-    || fail "could not read job timeout from parsed workflow"
-  step_timeout=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["step_timeout"])' <<<"$json") \
-    || fail "could not read step timeout from parsed workflow"
-  [ "$job_timeout" = 75 ] \
-    || fail "tests-herdr job backstop must stay 75 minutes, got $job_timeout"
-  [ "$step_timeout" = 20 ] \
-    || fail "family-run step timeout must be 20 minutes, got $step_timeout"
-  [ "$step_timeout" -lt "$job_timeout" ] \
-    || fail "family-run step timeout must be below the job backstop"
+  # the 75-minute job cap. The checker parses YAML structure so nested keys
+  # cannot masquerade as the named step contract.
+  "$ROOT/bin/fm-herdr-ci-timeout-check.mjs" "$ROOT/.github/workflows/ci.yml" \
+    || fail "could not verify tests-herdr timeouts from ci.yml"
   pass "Herdr CI family-run step times out at 20 min under a 75 min job backstop"
+}
+
+test_herdr_ci_nested_with_name_is_not_a_step() {
+  local tmp workflow out rc
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-herdr-timeout.XXXXXX")
+  workflow="$tmp/ci.yml"
+  out="$tmp/out"
+  cat > "$workflow" <<'YAML'
+jobs:
+  tests-herdr:
+    timeout-minutes: 75
+    steps:
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Run real-Herdr family (serial, required)
+          timeout-minutes: 20
+YAML
+  set +e
+  "$ROOT/bin/fm-herdr-ci-timeout-check.mjs" "$workflow" >"$out" 2>&1
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] \
+    || { rm -rf "$tmp"; fail "nested with.name must not satisfy the family-run step contract"; }
+  grep -Fq 'missing step named Run real-Herdr family (serial, required)' "$out" \
+    || { rm -rf "$tmp"; fail "nested with.name refusal was not explicit: $(cat "$out")"; }
+  rm -rf "$tmp"
+  pass "nested with.name cannot masquerade as the Herdr family-run step"
 }
 
 test_aggregate_json() {
@@ -803,4 +805,5 @@ test_portable_serial_shard_lane_refusals
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
 test_herdr_ci_family_run_has_a_step_timeout
+test_herdr_ci_nested_with_name_is_not_a_step
 test_aggregate_json
