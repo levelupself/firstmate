@@ -332,7 +332,10 @@ Local homes share the guarded fast-forward helper, while remote updates delegate
 The updater separately fetches an optional remote named `upstream` and reports remote movement, pending commit and changed-path counts, the latest pending subject, and the last identifiable upstream catch-up date without moving a checkout.
 That signal exists only when the command runs and the remote fetch succeeds; it exposes commit subjects and paths for review but does not continuously monitor upstream, infer whether a change serves a fleet need, or predict merge conflicts.
 Pending template work enters the fork only through a separate reviewed merge commit, never through a reset, rebase, force-push, or prefer-theirs conflict pass.
-The required-submission workflow exempts that merge from the no-mistakes body signature only when the server-fetched commit graph proves one two-parent merge imported history from the repository's configured fork parent, the head contains the current base, and no ordinary authored commit sits outside the catch-up merge spine.
+The required-submission workflow exempts that merge from the no-mistakes body signature only when the server-fetched commit graph proves exactly one two-parent catch-up merge whose non-first parent belongs to the repository's configured fork-parent history, the head contains the current pull request base, and no ordinary authored commit sits outside upstream history and the catch-up/base-sync merge spine.
+Pull request metadata, commit messages, authorship, and environment claims are deliberately absent from this proof, so an author cannot assert the exemption.
+Although no-mistakes supports an already-up-to-date merge shape, rerunning it over a hand-resolved catch-up solely to manufacture a body signature would add pipeline cost and make the signature certify work that pipeline did not produce.
+Making the required check advisory would instead weaken the enforcement boundary and permit merging past a red submission gate.
 The mechanics are owned by the `/updatefirstmate` skill and firstmate's operating manual in [`AGENTS.md`](../AGENTS.md) (self-update).
 
 ## Restart-proof

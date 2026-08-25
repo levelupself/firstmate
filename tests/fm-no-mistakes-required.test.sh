@@ -35,6 +35,9 @@ run_check() {
   local repo=$1 base=$2 head=$3 upstream=$4
   PR_TITLE='Upstream catch-up' \
     PR_BODY='This pull request is an upstream catch-up.' \
+    PR_AUTHOR='trusted-maintainer' \
+    PR_LABELS='upstream-catch-up,gate-exempt' \
+    CATCHUP_EXEMPT='true' \
     "$CHECK" "$repo" "$base" "$head" "$upstream" 2>&1
 }
 
@@ -84,7 +87,7 @@ test_rejects_claim_without_graph_proof() {
   [ "$rc" -ne 0 ] || fail 'title and body claim received the catch-up exemption'
   assert_contains "$out" 'no qualifying upstream catch-up merge was found' \
     'claim-only pull request fails for missing graph proof'
-  pass 'title and body claims cannot substitute for commit-graph proof'
+  pass 'metadata and environment claims cannot substitute for commit-graph proof'
 }
 
 case "${1:-all}" in
