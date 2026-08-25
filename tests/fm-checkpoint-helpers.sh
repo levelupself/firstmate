@@ -35,18 +35,37 @@
 # duration by construction, because the absence of an event is only meaningful
 # over some span of time. Those waits belong exactly where they are.
 #
-# The trade this makes, stated plainly. A deadline turns a slow machine into a
-# false failure but turns a real regression into a fast, well-worded one. A
-# checkpoint removes the false failure and turns that same regression into a
-# stall. Measured here by removing the Pi extension's retry-exhaustion wake:
-# the deadline version failed in about 2.5s naming the missing wake, and the
-# checkpoint version ran until it was killed. The waiter prints every
-# outstanding checkpoint when the driver is signalled or when Node gives up on
-# an unsettled await, which covers a driver killed directly - but a harness
-# that kills only the enclosing shell leaves the driver orphaned and that
-# report unseen. Prefer a checkpoint anyway where the signal is genuinely
-# available, and leave the wait alone where it is the only thing reporting a
-# defect.
+# The trade a checkpoint used to make, and no longer makes. A deadline turns a
+# slow machine into a false failure but turns a real regression into a fast,
+# well-worded one. A bare checkpoint removes the false failure and turns that
+# same regression into a stall: measured here by removing the Pi extension's
+# retry-exhaustion wake, the deadline version failed in about 2.5s naming the
+# missing wake, and the checkpoint version ran until it was killed.
+#
+# Two guarantees close that gap, and between them a checkpoint that cannot be
+# satisfied is always reported rather than waited on. Neither is a deadline:
+# neither one decides an assertion, and a slow machine only makes the run
+# slower.
+#
+# 1. Liveness. A checkpoint can only be announced by something that can still
+#    run - a live fixture process, or a pending timer that will start or signal
+#    one. Node already tracks both: a live child holds its stdio handles open,
+#    and this module counts pending timers. When neither remains and a wait is
+#    still outstanding, nothing in this process or under it will ever satisfy
+#    that wait, so it is rejected by name instead of waited on forever. The
+#    condition is exact and event-driven, and it holds for a fixture that was
+#    killed rather than exited, because the kernel closes a dead process's
+#    handles whatever killed it.
+#
+# 2. Watchdog. Liveness cannot see a fixture that never dies - one blocked
+#    writing to a bus whose reader has closed, say, which keeps its parent
+#    alive through the very handles liveness reads. That leaves the run alive
+#    with nothing outstanding and nothing to report, which is silence to the
+#    job cap. One idle-time watchdog per driver, reset by every checkpoint,
+#    prints what is outstanding and which fixtures are still alive, then exits
+#    non-zero. It can only turn silence into a named report; it can never pass
+#    a test. FM_CHECKPOINT_WATCHDOG_MS overrides its idle bound.
+#
 # The module also carries the process-death poll, which stays a poll on purpose.
 
 # fm_checkpoint_bus <path>
@@ -91,24 +110,150 @@ export async function waitForExit(pid, label, attempts = 250) {
   throw new Error(`timeout waiting for ${label}`);
 }
 
-// Every checkpoint currently being waited on, by label. A checkpoint that
-// never arrives stalls rather than failing, which is the whole point: there
-// is no deadline left to get wrong. The cost of that is that a genuine
-// regression stops instead of reporting, so name what is outstanding when the
-// run is cut short. A stalled driver then still says what never signalled.
-const outstanding = new Set();
+// Every checkpoint currently being waited on, by label, with the rejecters
+// that are settled if it becomes unreachable. See the liveness and watchdog
+// guarantees in tests/fm-checkpoint-helpers.sh for why both exist.
+const outstanding = new Map();
 let reporterInstalled = false;
 let reported = false;
+
+// Node reports neither an unreferenced pending timer nor one that a driver has
+// stubbed out, so count them here. A pending timer is the one way work can
+// still start when no fixture is alive - the extension schedules its continuity
+// retries exactly that way - and treating that gap as unreachable would reject
+// a checkpoint that is genuinely still coming.
+const nativeSetTimeout = globalThis.setTimeout;
+const nativeClearTimeout = globalThis.clearTimeout;
+const countedTimers = new WeakSet();
+let pendingTimers = 0;
+
+// A driver may stub setTimeout to seize a specific delay, in which case the
+// callback fires by hand and never through a real timer. Count only what the
+// underlying implementation returns as a genuine Timeout.
+function isRealTimer(timer) {
+  return Boolean(timer) && typeof timer === "object" && typeof timer.refresh === "function";
+}
+
+function releaseTimer(timer) {
+  if (!countedTimers.delete(timer)) return;
+  pendingTimers -= 1;
+}
+
+globalThis.setTimeout = (callback, delay, ...args) => {
+  if (typeof callback !== "function") return nativeSetTimeout(callback, delay, ...args);
+  let timer = null;
+  const settle = (...called) => {
+    releaseTimer(timer);
+    return callback(...called);
+  };
+  timer = nativeSetTimeout(settle, delay, ...args);
+  if (isRealTimer(timer)) {
+    countedTimers.add(timer);
+    pendingTimers += 1;
+  }
+  return timer;
+};
+
+globalThis.clearTimeout = (timer) => {
+  releaseTimer(timer);
+  return nativeClearTimeout(timer);
+};
+
+function outstandingLabels() {
+  return [...outstanding.keys()];
+}
+
+function liveFixturePids() {
+  let handles = [];
+  try {
+    handles = process._getActiveHandles();
+  } catch {
+    return [];
+  }
+  return handles
+    .filter((handle) => handle && typeof handle.pid === "number" && handle.pid !== process.pid)
+    .map((handle) => handle.pid);
+}
 
 function reportOutstanding() {
   // A signal handler that calls process.exit also fires the exit hook, so
   // report once however the run ends.
   if (reported || outstanding.size === 0) return;
   reported = true;
-  process.stderr.write(`checkpoint never reached: ${[...outstanding].join(", ")}\n`);
+  process.stderr.write(`checkpoint never reached: ${outstandingLabels().join(", ")}\n`);
 }
 
-function watchForOutstanding(label) {
+// Settle every outstanding wait as unreachable. Called only from the liveness
+// check below, which has already established that nothing can announce.
+function rejectOutstanding(reason) {
+  const rejecters = [...outstanding.values()].flatMap((waiters) => [...waiters]);
+  const labels = outstandingLabels();
+  outstanding.clear();
+  reported = true;
+  const failure = new Error(`checkpoint can never arrive: ${labels.join(", ")} - ${reason}`);
+  for (const reject of rejecters) reject(failure);
+}
+
+// Nothing is running that could announce a checkpoint: no fixture holds a
+// handle open, and no timer is pending to start one. Node is about to exit, so
+// this is the exact moment the wait became unreachable rather than slow.
+//
+// Two things can still be in flight at that moment and neither is a guess: a
+// pending timer, which is counted above, and a line already written to the bus
+// that this process has not polled yet. Yielding the loop a turn settles both,
+// and idleTurns only ever delays the verdict.
+let idleTurns = 0;
+
+function noteProgress() {
+  idleTurns = 0;
+}
+
+function yieldOneTurn() {
+  // A referenced timer this module does not count, purely to give the loop one
+  // more turn so anything already in flight can land.
+  nativeSetTimeout(() => {}, 1);
+}
+
+function checkLiveness() {
+  if (outstanding.size === 0) return;
+  if (pendingTimers > 0) {
+    // Work is still scheduled, so the verdict is not due yet. Timers do not
+    // advance the idle count: only turns with nothing pending at all do.
+    yieldOneTurn();
+    return;
+  }
+  if (idleTurns < 2) {
+    idleTurns += 1;
+    yieldOneTurn();
+    return;
+  }
+  rejectOutstanding("no live fixture process and no pending timer can still announce it");
+}
+
+// One idle-time bound per driver, for the case liveness cannot see: a fixture
+// that never dies keeps this process alive through its own stdio handles, so
+// the loop never empties and no checkpoint is left outstanding to name. Kept
+// unreferenced so it never holds the process open and never masks liveness.
+const watchdogMs = Number(process.env.FM_CHECKPOINT_WATCHDOG_MS) > 0
+  ? Number(process.env.FM_CHECKPOINT_WATCHDOG_MS)
+  : 120000;
+let watchdog = null;
+
+function armWatchdog() {
+  if (watchdog) nativeClearTimeout(watchdog);
+  watchdog = nativeSetTimeout(() => {
+    const waiting = outstanding.size > 0 ? outstandingLabels().join(", ") : "nothing";
+    const pids = liveFixturePids();
+    const alive = pids.length > 0 ? pids.join(", ") : "none";
+    process.stderr.write(
+      `checkpoint watchdog: no checkpoint activity for ${watchdogMs}ms; outstanding: ${waiting}; live fixture pids: ${alive}\n`,
+    );
+    process.exit(1);
+  }, watchdogMs);
+  watchdog.unref();
+}
+
+function watchForOutstanding(label, reject) {
   if (!reporterInstalled) {
     reporterInstalled = true;
     for (const signal of ["SIGTERM", "SIGINT"]) {
@@ -120,8 +265,22 @@ function watchForOutstanding(label) {
     // Node giving up on its own - an unsettled top-level await - is the other
     // way a checkpoint can fail to arrive, and it deserves the same naming.
     process.on("exit", reportOutstanding);
+    process.on("beforeExit", checkLiveness);
   }
-  outstanding.add(label);
+  armWatchdog();
+  noteProgress();
+  const waiters = outstanding.get(label) ?? new Set();
+  outstanding.set(label, waiters);
+  waiters.add(reject);
+}
+
+function clearOutstanding(label, reject) {
+  const waiters = outstanding.get(label);
+  if (!waiters) return;
+  waiters.delete(reject);
+  if (waiters.size === 0) outstanding.delete(label);
+  armWatchdog();
+  noteProgress();
 }
 
 // Opening a FIFO read-write keeps a writer end held inside this process, so
@@ -130,14 +289,15 @@ function watchForOutstanding(label) {
 export function openCheckpointBus(path) {
   const socket = new Socket({ fd: openSync(path, "r+"), readable: true, writable: false });
   socket.setEncoding("utf8");
-  // The bus keeps the event loop alive only while something is waiting on it,
-  // so a driver that has finished its checkpoints still exits on its own.
+  // The bus never holds the event loop open. Whatever is going to announce a
+  // checkpoint is what keeps this process alive - a live fixture through its
+  // stdio handles, or a pending timer - and when none of that is left the
+  // liveness check names the wait instead of holding the run open on its own.
   socket.unref();
 
   const arrived = new Map();
   const waiters = new Map();
   let buffered = "";
-  let awaiting = 0;
 
   const queueFor = (map, name) => {
     const queue = map.get(name) ?? [];
@@ -145,14 +305,8 @@ export function openCheckpointBus(path) {
     return queue;
   };
 
-  const settle = (name, resolve, payload) => {
-    awaiting -= 1;
-    if (awaiting === 0) socket.unref();
-    if (queueFor(waiters, name).length === 0) outstanding.delete(`bus:${name}`);
-    resolve(payload);
-  };
-
   socket.on("data", (chunk) => {
+    noteProgress();
     buffered += chunk;
     let cut = buffered.indexOf("\n");
     while (cut !== -1) {
@@ -167,8 +321,13 @@ export function openCheckpointBus(path) {
         // dropped: a fixture is allowed to reach its checkpoint before the
         // driver gets around to asking about it, and two announcements can
         // arrive inside a single read.
-        if (waiting.length > 0) settle(name, waiting.shift(), payload);
-        else queueFor(arrived, name).push(payload);
+        if (waiting.length > 0) {
+          const waiter = waiting.shift();
+          clearOutstanding(`bus:${name}`, waiter.reject);
+          waiter.resolve(payload);
+        } else {
+          queueFor(arrived, name).push(payload);
+        }
       }
       cut = buffered.indexOf("\n");
     }
@@ -178,14 +337,18 @@ export function openCheckpointBus(path) {
     // Resolve with the payload of the next unconsumed announcement of <name>.
     // Repeated checkpoints of the same name are consumed in arrival order, so
     // a fixture that reaches the same point several times can be stepped
-    // through one occurrence at a time.
+    // through one occurrence at a time. Rejects, naming <name>, when nothing
+    // is left that could announce it.
     reached(name) {
       const ready = queueFor(arrived, name);
-      if (ready.length > 0) return Promise.resolve(ready.shift());
-      awaiting += 1;
-      socket.ref();
-      watchForOutstanding(`bus:${name}`);
-      return new Promise((resolve) => queueFor(waiters, name).push(resolve));
+      if (ready.length > 0) {
+        noteProgress();
+        return Promise.resolve(ready.shift());
+      }
+      return new Promise((resolve, reject) => {
+        queueFor(waiters, name).push({ resolve, reject });
+        watchForOutstanding(`bus:${name}`, reject);
+      });
     },
     // True when <name> has an unconsumed announcement already in hand. Use it
     // to read a checkpoint's arrival without waiting on it.
@@ -198,59 +361,39 @@ export function openCheckpointBus(path) {
   };
 }
 
-// Hold the event loop open for as long as something is waiting on an
-// in-process checkpoint. Without this, Node can decide a driver is finished
-// while the very signal it is waiting for is still in flight, and the old
-// polling loops were accidentally doing this job with their tick timers. The
-// interval never fires and bounds nothing; it only keeps the process alive.
-function keepAlive() {
-  let held = 0;
-  let handle = null;
-  return {
-    hold() {
-      held += 1;
-      if (handle === null) handle = setInterval(() => {}, 2147483647);
-    },
-    release() {
-      held -= 1;
-      if (held === 0 && handle !== null) {
-        clearInterval(handle);
-        handle = null;
-      }
-    },
-  };
-}
-
 // An in-process checkpoint, for the case where the announcing side is a stub
 // this driver owns rather than a separate process. Same contract as the bus:
-// the other side signals, and the waiter blocks on the signal.
+// the other side signals, and the waiter blocks on the signal. Nothing here
+// holds the event loop open either - whatever drives the stub is what keeps
+// this process alive, and when that is gone the wait is named rather than
+// held.
 export function latch(label = "latch") {
-  const alive = keepAlive();
   let settled = false;
   let held = false;
   let resolve;
-  const promise = new Promise((settle) => {
-    resolve = settle;
+  let reject;
+  const promise = new Promise((settleWith, failWith) => {
+    resolve = settleWith;
+    reject = failWith;
   });
+  // Nobody may be reading this latch yet, and an unobserved rejection is a
+  // crash rather than a report. Reading it removes the guard.
+  promise.catch(() => {});
   return {
     // Signalling twice is a fixture detail, not an error: only the first one
     // settles the checkpoint, and later ones must not unbalance the hold.
     signal(value) {
       if (settled) return;
       settled = true;
-      if (held) {
-        alive.release();
-        outstanding.delete(label);
-      }
+      if (held) clearOutstanding(label, reject);
       resolve(value);
     },
     // Reading this is what declares interest, so a latch nobody waits on -
-    // the losing side of a race, say - never holds the process open.
+    // the losing side of a race, say - is never reported as unreachable.
     get reached() {
       if (!settled && !held) {
         held = true;
-        alive.hold();
-        watchForOutstanding(label);
+        watchForOutstanding(label, reject);
       }
       return promise;
     },
@@ -260,16 +403,14 @@ export function latch(label = "latch") {
 // A latch that counts. Await the nth occurrence of a repeated in-process
 // event without polling for a counter to move.
 export function counter(label = "counter") {
-  const alive = keepAlive();
   const waiters = [];
   let count = 0;
   return {
     bump() {
       count += 1;
       while (waiters.length > 0 && waiters[0].target <= count) {
-        alive.release();
         const waiter = waiters.shift();
-        outstanding.delete(waiter.key);
+        clearOutstanding(waiter.key, waiter.reject);
         waiter.resolve(count);
       }
     },
@@ -277,13 +418,15 @@ export function counter(label = "counter") {
       return count;
     },
     reached(target) {
-      if (count >= target) return Promise.resolve(count);
+      if (count >= target) {
+        noteProgress();
+        return Promise.resolve(count);
+      }
       const key = `${label}>=${target}`;
-      alive.hold();
-      watchForOutstanding(key);
-      return new Promise((resolve) => {
-        waiters.push({ target, key, resolve });
+      return new Promise((resolve, reject) => {
+        waiters.push({ target, key, resolve, reject });
         waiters.sort((a, b) => a.target - b.target);
+        watchForOutstanding(key, reject);
       });
     },
   };
