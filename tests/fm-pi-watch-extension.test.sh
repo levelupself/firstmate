@@ -1580,12 +1580,14 @@ import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = { session: { promptAsync: async () => {} } };
-await mod.FmPrimaryWatchArm({
+const hooks = await mod.FmPrimaryWatchArm({
   client,
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
+const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
+await hooks.event(event);
 const readOnlyStatus = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
 if (readOnlyStatus !== "read-only") {
   console.error(`watch arm returned ${readOnlyStatus} without owning the session lock`);
@@ -1596,6 +1598,7 @@ if (existsSync(process.env.FM_ARM_LOG)) {
   process.exit(1);
 }
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+await hooks.event(event);
 const ownedStatus = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
 if (ownedStatus !== "external") {
   console.error(`watch arm returned ${ownedStatus} with session lock ownership`);
