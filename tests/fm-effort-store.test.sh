@@ -361,6 +361,59 @@ RECEIPT_OUTCOME=$(query "SELECT merged_at IS NOT NULL, outcome FROM task WHERE t
   || fail "a durable sanctioned merge receipt did not supply merge lifecycle proof: $RECEIPT_OUTCOME"
 pass 'durable merge receipt supplies missing merge lifecycle proof'
 
+fm_write_meta "$FM_HOME/state/912-local-receipt.meta" \
+  "worktree=$ROOTDIR/worktrees/local-receipt" \
+  "project=$PROJECT" \
+  "harness=codex" \
+  "model=configured-gpt" \
+  "effort=xhigh" \
+  "kind=ship" \
+  "mode=local-only" \
+  "spawned_at=2026-06-03T10:00:00Z" \
+  "teardown_at=2026-06-03T11:05:00Z"
+mkdir -p "$FM_HOME/data/local-landings"
+fm_write_meta "$FM_HOME/data/local-landings/912-local-receipt.receipt" \
+  "schema=fm-local-landing.v1" \
+  "task_id=912-local-receipt" \
+  "project=$PROJECT" \
+  "branch=fm/912-local-receipt" \
+  "default_branch=main" \
+  "before_sha=1111111111111111111111111111111111111111" \
+  "landed_sha=2222222222222222222222222222222222222222" \
+  "phase=landed" \
+  "event_at=2026-06-03T11:00:00Z"
+"$STORE" capture 912-local-receipt >/dev/null \
+  || fail 'local-receipt lifecycle capture failed'
+LOCAL_RECEIPT_OUTCOME=$(query "SELECT local_landed_at, outcome FROM task WHERE task_id = '912-local-receipt'")
+[ "$LOCAL_RECEIPT_OUTCOME" = '2026-06-03T11:00:00Z|local-landed' ] \
+  || fail "a completed local receipt did not supply lifecycle proof: $LOCAL_RECEIPT_OUTCOME"
+pass 'completed local receipt supplies local landing lifecycle proof'
+
+fm_write_meta "$FM_HOME/state/913-prepared-local.meta" \
+  "worktree=$ROOTDIR/worktrees/prepared-local" \
+  "project=$PROJECT" \
+  "harness=codex" \
+  "kind=ship" \
+  "mode=local-only" \
+  "spawned_at=2026-06-04T10:00:00Z" \
+  "teardown_at=2026-06-04T11:05:00Z"
+fm_write_meta "$FM_HOME/data/local-landings/913-prepared-local.receipt" \
+  "schema=fm-local-landing.v1" \
+  "task_id=913-prepared-local" \
+  "project=$PROJECT" \
+  "branch=fm/913-prepared-local" \
+  "default_branch=main" \
+  "before_sha=1111111111111111111111111111111111111111" \
+  "landed_sha=2222222222222222222222222222222222222222" \
+  "phase=prepared" \
+  "event_at=2026-06-04T11:00:00Z"
+"$STORE" capture 913-prepared-local >/dev/null \
+  || fail 'prepared local-receipt lifecycle capture failed'
+PREPARED_LOCAL=$(query "SELECT local_landed_at, outcome FROM task WHERE task_id = '913-prepared-local'")
+[ "$PREPARED_LOCAL" = 'NULL|NULL' ] \
+  || fail "an incomplete local receipt falsely proved landing: $PREPARED_LOCAL"
+pass 'prepared local receipt does not prove landing'
+
 CAPTURE_FINGERPRINT=$("$STORE" fingerprint)
 CAPTURE_RAW_SIZE=$(wc -c < "$RAW")
 "$STORE" capture 910-lifecycle --outcome pr-merged >/dev/null \
