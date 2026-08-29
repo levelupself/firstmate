@@ -1122,7 +1122,7 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
       bind(row?.started_at && row?.ended_at ? isoSecondsBetween(row.started_at, row.ended_at) : null),
       bind(totals ? totals.agent_active_seconds : null),
       bind(gitResult.status === 'present' ? gitResult.first_commit_at : null),
-      bind(row?.pr_opened_at ?? annotation?.pr_opened_at),
+      bind(row?.pr_opened_at),
       bind(row?.started_at && row?.pr_opened_at ? isoSecondsBetween(row.started_at, row.pr_opened_at) : null),
       bind(row?.merged_at || receipt?.merged_at || null),
       bind(row?.local_landed_at || localReceipt?.local_landed_at || null),

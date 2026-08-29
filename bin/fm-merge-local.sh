@@ -150,8 +150,9 @@ if [ -e "$RECEIPT" ] || [ -L "$RECEIPT" ]; then
   if ! receipt_matches_request \
     && [ "$(receipt_value schema)" = fm-local-landing.v1 ] \
     && [ "$(receipt_value task_id)" = "$ID" ] \
-    && [ "$(receipt_value project)" = "$PROJ" ] \
     && [ "$(receipt_value phase)" = landed ] \
+    && printf '%s\n' "$(receipt_value spawned_at)" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
+    && printf '%s\n' "$(receipt_value event_at)" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
     && [ "$(receipt_value spawned_at)" != "$SPAWNED_AT" ]; then
     HISTORY_DIR="$RECEIPT_DIR/history"
     [ ! -e "$HISTORY_DIR" ] || { [ -d "$HISTORY_DIR" ] && [ ! -L "$HISTORY_DIR" ]; } \

@@ -166,6 +166,8 @@ done
 [ "$(wc -c < "$FM_HOME/data/effort-annotations.jsonl")" -eq "$ANNOTATION_SIZE" ] \
   || fail 'rejected lifecycle annotation options changed the durable annotation record'
 pass 'manual annotations reject lifecycle-owned outcome and timestamp fields'
+printf '%s\n' '{"task":"905-modify-memory","pr_opened_at":"2026-03-01T00:30:00Z"}' \
+  >> "$FM_HOME/data/effort-annotations.jsonl"
 
 # --- rebuild ----------------------------------------------------------------
 
@@ -178,6 +180,10 @@ UNPROVEN_MERGE=$(query "SELECT merged_at FROM task WHERE task_id = '901-introduc
 [ "$UNPROVEN_MERGE" = 'NULL' ] \
   || fail "git history invented an unsanctioned merge timestamp: $UNPROVEN_MERGE"
 pass 'merge timestamp remains missing without lifecycle proof'
+MANUAL_PR_OPEN=$(query "SELECT pr_opened_at FROM task WHERE task_id = '905-modify-memory'")
+[ "$MANUAL_PR_OPEN" = 'NULL' ] \
+  || fail "manual annotation populated PR-open lifecycle time: $MANUAL_PR_OPEN"
+pass 'PR-open timestamp remains missing without forge lifecycle proof'
 
 # Rebuild consumed the durable snapshots and never queried account-wide logs.
 [ ! -e "$ROOTDIR/codeburn-called" ] || fail 'rebuild unexpectedly queried mutable codeburn history'
