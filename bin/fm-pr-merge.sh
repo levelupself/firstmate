@@ -80,6 +80,7 @@ PROVENANCE_DIR="$DATA/pr-merges"
 PROVENANCE_RECEIPT="$PROVENANCE_DIR/$ID.receipt"
 MERGE_LOCK="$STATE/.pr-merge-$ID.lock"
 MERGE_LOCK_HELD=0
+CURRENT_SPAWNED_AT=$(sed -n 's/^spawned_at=//p' "$META" 2>/dev/null | tail -1)
 
 merge_lock_cleanup() {
   if [ "$MERGE_LOCK_HELD" = 1 ]; then
@@ -107,9 +108,12 @@ receipt_matches_request() {
   [ "$(grep -c '^phase=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
   [ "$(grep -c '^authorization=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
   [ "$(grep -c '^prepared_epoch=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
+  [ "$(grep -c '^spawned_at=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
   [ "$(receipt_value schema)" = fm-pr-merge.v1 ] || return 1
   [ "$(receipt_value task_id)" = "$ID" ] || return 1
   [ "$(receipt_value pr)" = "$URL" ] || return 1
+  printf '%s\n' "$(receipt_value spawned_at)" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' || return 1
+  [ -z "$CURRENT_SPAWNED_AT" ] || [ "$(receipt_value spawned_at)" = "$CURRENT_SPAWNED_AT" ] || return 1
   authorization=$(receipt_value authorization)
   [ "$authorization" = live-meta ] || [ "$authorization" = done-record ] || return 1
   prepared_epoch=$(receipt_value prepared_epoch)
@@ -171,6 +175,7 @@ write_provenance_receipt() {
       'schema=fm-pr-merge.v1' \
       "task_id=$ID" \
       "pr=$URL" \
+      "spawned_at=$CURRENT_SPAWNED_AT" \
       "phase=$phase" \
       "authorization=$authorization" \
       "prepared_epoch=$prepared_epoch"
@@ -186,18 +191,21 @@ if [ -e "$PROVENANCE_RECEIPT" ] || [ -L "$PROVENANCE_RECEIPT" ]; then
     echo "error: merge provenance conflicts with this task and PR" >&2
     exit 1
   }
+  CURRENT_SPAWNED_AT=$(receipt_value spawned_at)
   AUTHORIZATION=$(receipt_value authorization)
 elif [ -f "$META" ] && [ ! -L "$META" ]; then
+  printf '%s\n' "$CURRENT_SPAWNED_AT" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' || {
+    echo "error: task launch identity is unavailable" >&2
+    exit 1
+  }
   "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
   grep -qxF "pr=$URL" "$META" || {
     echo "error: PR metadata recording failed" >&2
     exit 1
   }
   AUTHORIZATION=live-meta
-elif done_history_matches_request; then
-  AUTHORIZATION=done-record
 else
-  echo "error: task metadata is unavailable and no delivered-task PR provenance matches" >&2
+  echo "error: task metadata is unavailable and no launch-bound merge receipt exists" >&2
   exit 1
 fi
 

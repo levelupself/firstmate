@@ -73,6 +73,9 @@ fi
 before=$(git -C "$PROJ" rev-parse --short "$DEFAULT")
 BEFORE_SHA=$(git -C "$PROJ" rev-parse "$DEFAULT")
 LANDED_SHA=$(git -C "$PROJ" rev-parse "$BRANCH")
+SPAWNED_AT=$(sed -n 's/^spawned_at=//p' "$META" | tail -1)
+printf '%s\n' "$SPAWNED_AT" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
+  || { echo "error: task launch identity is unavailable" >&2; exit 1; }
 RECEIPT_DIR="$DATA/local-landings"
 RECEIPT="$RECEIPT_DIR/$ID.receipt"
 LANDING_LOCK="$STATE/.local-landing-$ID.lock"
@@ -97,11 +100,12 @@ receipt_value() {
 receipt_matches_request() {
   local key phase
   [ -f "$RECEIPT" ] && [ ! -L "$RECEIPT" ] || return 1
-  for key in schema task_id project branch default_branch before_sha landed_sha phase event_at; do
+  for key in schema task_id spawned_at project branch default_branch before_sha landed_sha phase event_at; do
     [ "$(grep -c "^${key}=" "$RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
   done
   [ "$(receipt_value schema)" = fm-local-landing.v1 ] || return 1
   [ "$(receipt_value task_id)" = "$ID" ] || return 1
+  [ "$(receipt_value spawned_at)" = "$SPAWNED_AT" ] || return 1
   [ "$(receipt_value project)" = "$PROJ" ] || return 1
   [ "$(receipt_value branch)" = "$BRANCH" ] || return 1
   [ "$(receipt_value default_branch)" = "$DEFAULT" ] || return 1
@@ -129,6 +133,7 @@ write_receipt() {
   printf '%s\n' \
     'schema=fm-local-landing.v1' \
     "task_id=$ID" \
+    "spawned_at=$SPAWNED_AT" \
     "project=$PROJ" \
     "branch=$BRANCH" \
     "default_branch=$DEFAULT" \
