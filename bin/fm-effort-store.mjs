@@ -169,7 +169,7 @@ function readRawCapture(file, issues) {
       continue
     }
     const row = {}
-    columns.forEach((name, index) => { row[name] = fields[index] })
+    columns.forEach((name, index) => { row[name] = fields[index] === '' ? null : fields[index] })
     if (!row.task) {
       issues.push({source: 'raw', task_id: null, kind: 'v2-row-without-task', detail: line})
       continue
@@ -779,7 +779,7 @@ function rebuild(options) {
     // the superseded one is surfaced rather than silently discarded. An exact
     // retry is intentionally invisible so an interrupted teardown can replay
     // capture without changing the logical store.
-    if (existing && JSON.stringify(existing) !== JSON.stringify(row)) {
+    if (existing && existing.started_at !== row.started_at) {
       issues.push({source: 'raw', task_id: row.task, kind: 'duplicate-task-row', detail: `${existing.started_at || ''}..${existing.ended_at || ''}`})
     }
     rawByTask.set(row.task, row)
@@ -1231,7 +1231,6 @@ function capture(options, taskId, argv) {
   }
   const meta = readMeta(path.join(options.stateDir, `${taskId}.meta`))
   if (!meta) throw new Error(`task metadata is unavailable for ${taskId}`)
-  if (!meta.teardown_at) throw new Error(`task ${taskId} has no deterministic teardown_at stamp`)
   const row = {
     task: taskId,
     worktree: meta.worktree,

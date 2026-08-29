@@ -151,6 +151,7 @@ fm_pr_poll_publish_prepared || {
   echo "error: could not publish PR poll" >&2
   exit 1
 }
+fm_task_effort_capture_best_effort "$FM_ROOT" "$ID"
 printf 'armed: state/%s.check.sh\n' "$ID"
 
 # Best-effort Linear linking runs last so it can never prevent metadata or poll publication.

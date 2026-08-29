@@ -214,11 +214,13 @@ fi
 
 gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
 write_provenance_receipt merged "$AUTHORIZATION" "$PREPARED_EPOCH" "$(date +%s)"
+fm_task_effort_capture_best_effort "$FM_ROOT" "$ID"
 if [ -f "$META" ]; then
   fm_task_meta_set_once "$META" merged_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || {
     echo "error: merged PR succeeded but its lifecycle stamp could not be recorded" >&2
     exit 1
   }
+  fm_task_effort_capture_best_effort "$FM_ROOT" "$ID"
 fi
 
 # The merge has landed. Record that outcome in Linear - Done, plus the pull

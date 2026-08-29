@@ -156,8 +156,10 @@ if [ "$(receipt_value phase)" != landed ]; then
   write_receipt landed "$EVENT_AT" \
     || { echo "error: local landing succeeded but its durable receipt could not be completed" >&2; exit 1; }
 fi
+fm_task_effort_capture_best_effort "$FM_ROOT" "$ID"
 fm_task_meta_set_once "$META" local_landed_at "$EVENT_AT" || {
   echo "error: local landing succeeded but its lifecycle stamp could not be recorded" >&2
   exit 1
 }
+fm_task_effort_capture_best_effort "$FM_ROOT" "$ID"
 echo "merged $BRANCH into local $DEFAULT ($before -> $after) in $PROJ"
