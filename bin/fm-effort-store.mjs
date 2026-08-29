@@ -1108,7 +1108,7 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
       bind(gitResult.status === 'present' ? gitResult.first_commit_at : null),
       bind(row?.pr_opened_at ?? annotation?.pr_opened_at),
       bind(row?.started_at && row?.pr_opened_at ? isoSecondsBetween(row.started_at, row.pr_opened_at) : null),
-      bind(row?.merged_at ?? receipt?.merged_at ?? annotation?.merged_at ?? (gitResult.status === 'present' ? gitResult.merged_at : null)),
+      bind(row?.merged_at || receipt?.merged_at || null),
       bind(row?.local_landed_at),
       bind(row?.teardown_at ?? row?.ended_at),
       bind(structure?.files_changed),
@@ -1355,8 +1355,6 @@ const TEXT_FLAGS = {
   '--branch': 'branch',
   '--pr-url': 'pr_url',
   '--backend': 'backend',
-  '--pr-opened-at': 'pr_opened_at',
-  '--merged-at': 'merged_at',
   '--project': 'project',
   '--kind': 'kind',
 }
@@ -1391,10 +1389,6 @@ function parseAnnotation(taskId, argv) {
       rounds.push(note === undefined ? {round: index, reason} : {round: index, reason, note})
     } else if (flag === '--commit') {
       commits.push(needsValue())
-    } else if (flag === '--outcome') {
-      const outcome = needsValue()
-      if (outcome !== 'merged' && outcome !== 'abandoned') throw new Error("--outcome must be 'merged' or 'abandoned'")
-      record.outcome = outcome
     } else if (flag === '--reverted') {
       const reverted = needsValue()
       if (reverted !== 'yes' && reverted !== 'no') throw new Error("--reverted must be 'yes' or 'no'")
