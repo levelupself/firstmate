@@ -2892,5 +2892,5 @@ fi
 
 SPAWN_DELIVERY=
 [ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
-[ "$KIND" = secondmate ] || fm_task_effort_capture_best_effort "$FM_ROOT" "$ID"
+[ "$KIND" = secondmate ] || fm_task_effort_capture_launch "$FM_ROOT" "$ID"
 echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"

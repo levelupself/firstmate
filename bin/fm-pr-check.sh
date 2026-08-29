@@ -67,9 +67,8 @@ fi
 "$FM_ROOT/bin/fm-guard.sh" || true
 
 # pr_head is recorded only when the forge's CLI can supply it. gh exposes the
-# head commit as a selectable field; plain glab exposes it only inside its JSON
-# output, which would need a JSON processor firstmate does not require, so a
-# GitLab task records no pr_head. Both consumers already treat it as optional:
+# head commit as a selectable field; a GitLab task records no pr_head. Both
+# consumers already treat it as optional:
 # bin/fm-teardown.sh reads the head from the forge at teardown rather than from
 # metadata and falls back to its provider-agnostic content check, and
 # bin/fm-review-diff.sh resolves the head from the remote when none is recorded.
@@ -83,6 +82,23 @@ if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/d
   fi
   if REMOTE_OPENED_AT=$(cd "$WT" && gh pr view "$URL" --json createdAt -q .createdAt 2>/dev/null) \
     && printf '%s\n' "$REMOTE_OPENED_AT" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
+    PR_OPENED_AT=$REMOTE_OPENED_AT
+  fi
+fi
+if [ "$PROVIDER" = gitlab ]; then
+  if REMOTE_OPENED_AT=$(glab mr view "$NUMBER" -R "https://$HOST/$PROJECT_PATH" --output json 2>/dev/null \
+    | node -e '
+      let input = ""
+      process.stdin.setEncoding("utf8")
+      process.stdin.on("data", chunk => { input += chunk })
+      process.stdin.on("end", () => {
+        try {
+          const value = JSON.parse(input).created_at
+          if (typeof value === "string") process.stdout.write(value)
+        } catch {}
+      })
+    ') && printf '%s\n' "$REMOTE_OPENED_AT" \
+      | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
     PR_OPENED_AT=$REMOTE_OPENED_AT
   fi
 fi

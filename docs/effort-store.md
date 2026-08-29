@@ -11,7 +11,8 @@ It is not a cost tracker: spend is one column among structure, process, time, an
 
 The raw layer is `data/cost-attribution.tsv`.
 It is append-only and irreplaceable because each lifecycle producer records its current durable facts while task metadata is available.
-`fm-spawn.sh` stamps launch time, `fm-pr-check.sh` stamps the first observation of a PR, `fm-pr-merge.sh` stamps a sanctioned PR merge, and `fm-merge-local.sh` stamps a sanctioned local landing.
+`fm-spawn.sh` stamps launch time, `fm-pr-check.sh` stamps the forge-created PR-open time, `fm-pr-merge.sh` stamps a sanctioned PR merge, and `fm-merge-local.sh` stamps a sanctioned local landing.
+GitHub and GitLab creation timestamps come from their structured forge responses; an unavailable or invalid provider timestamp remains NULL.
 Launch, PR-open, sanctioned merge, sanctioned local landing, and teardown producers incrementally capture their metadata or receipts and rebuild the store.
 `fm-teardown.sh` additionally snapshots task usage, stamps teardown time and outcome, and captures the final revision before deleting task state.
 No agent or operator command is part of that lifecycle.
