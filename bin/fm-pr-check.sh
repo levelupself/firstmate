@@ -75,10 +75,15 @@ fi
 # bin/fm-review-diff.sh resolves the head from the remote when none is recorded.
 WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_HEAD=
+PR_OPENED_AT=
 if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/dev/null 2>&1; then
   if REMOTE_HEAD=$(cd "$WT" && gh pr view "$URL" --json headRefOid -q .headRefOid 2>/dev/null) \
     && fm_pr_head_valid "$REMOTE_HEAD"; then
     PR_HEAD=$REMOTE_HEAD
+  fi
+  if REMOTE_OPENED_AT=$(cd "$WT" && gh pr view "$URL" --json createdAt -q .createdAt 2>/dev/null) \
+    && printf '%s\n' "$REMOTE_OPENED_AT" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
+    PR_OPENED_AT=$REMOTE_OPENED_AT
   fi
 fi
 
@@ -114,8 +119,6 @@ EXISTING_PR_OPENED_AT=$(sed -n 's/^pr_opened_at=//p' "$META" | tail -1)
 if [ "$EXISTING_PR" = "$URL" ] \
   && printf '%s\n' "$EXISTING_PR_OPENED_AT" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
   PR_OPENED_AT=$EXISTING_PR_OPENED_AT
-else
-  PR_OPENED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 fi
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
@@ -125,7 +128,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 done < "$META"
 printf 'pr=%s\n' "$URL" >> "$META_TMP" || exit 1
 [ -z "$PR_HEAD" ] || printf 'pr_head=%s\n' "$PR_HEAD" >> "$META_TMP" || exit 1
-printf 'pr_opened_at=%s\n' "$PR_OPENED_AT" >> "$META_TMP" || exit 1
+[ -z "$PR_OPENED_AT" ] || printf 'pr_opened_at=%s\n' "$PR_OPENED_AT" >> "$META_TMP" || exit 1
 chmod 0600 "$META_TMP" || exit 1
 fm_pr_private_file_valid "$META_TMP" 600 "$STATE_DEVICE" || exit 1
 fm_pr_metadata_identity_parse "$META_TMP" || exit 1

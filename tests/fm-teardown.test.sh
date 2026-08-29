@@ -1472,7 +1472,7 @@ process.stdout.write([row?.tokens_in, row?.tokens_out, row?.notional_cost_usd, r
 NODE
   row=$(node "$query" "$db")
   case "$row" in
-    120\|30\|0.75\|local-landed\|????-??-??T??:??:??Z) ;;
+    120\|30\|0.75\|\|????-??-??T??:??:??Z) ;;
     *) fail "effort-capture: teardown store row was incomplete: $row" ;;
   esac
   first=$(FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \

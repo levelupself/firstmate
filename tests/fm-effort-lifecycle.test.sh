@@ -27,6 +27,7 @@ cat > "$FAKEBIN/gh" <<'SH'
 #!/usr/bin/env bash
 case " $* " in
   *" headRefOid "*) printf '%s\n' 0123456789abcdef0123456789abcdef01234567 ;;
+  *" createdAt "*) printf '%s\n' 2026-08-22T09:08:07Z ;;
 esac
 SH
 cat > "$FAKEBIN/gh-axi" <<'SH'
@@ -55,8 +56,7 @@ run_pr_check() {
 run_pr_check >"$TMP_ROOT/pr-check.out" 2>"$TMP_ROOT/pr-check.err" \
   || fail "PR check failed: $(tr '\n' ' ' < "$TMP_ROOT/pr-check.err")"
 OPENED_AT=$(sed -n 's/^pr_opened_at=//p' "$HOME_DIR/state/pr-task.meta")
-[[ "$OPENED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
-  || fail 'PR check did not stamp pr_opened_at'
+[ "$OPENED_AT" = 2026-08-22T09:08:07Z ] || fail 'PR check did not preserve forge pr_opened_at'
 run_pr_check >"$TMP_ROOT/pr-check-repeat.out" 2>"$TMP_ROOT/pr-check-repeat.err" \
   || fail "repeated PR check failed: $(tr '\n' ' ' < "$TMP_ROOT/pr-check-repeat.err")"
 [ "$(sed -n 's/^pr_opened_at=//p' "$HOME_DIR/state/pr-task.meta")" = "$OPENED_AT" ] \

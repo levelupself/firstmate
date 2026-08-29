@@ -1131,7 +1131,7 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
       bind(totals?.notional_cost_usd),
       bind(totals?.api_calls),
       bind(totals?.sessions),
-      bind(row?.outcome ?? (receipt ? 'pr-merged' : null) ?? annotation?.outcome ?? (gitResult.status === 'present' ? gitResult.outcome : null)),
+      bind(row ? (row.outcome || null) : ((receipt ? 'pr-merged' : null) ?? annotation?.outcome ?? (gitResult.status === 'present' ? gitResult.outcome : null))),
       bind(annotation?.reverted ?? (gitResult.status === 'present' ? gitResult.reverted : null)),
     )
 
