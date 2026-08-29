@@ -115,6 +115,21 @@ function readMeta(file) {
   return meta
 }
 
+function readMetaWithRequiredFields(file, requiredFields) {
+  const text = readTextFile(file)
+  if (text === null) return null
+  const meta = {}
+  const counts = new Map()
+  for (const line of text.split('\n')) {
+    const separator = line.indexOf('=')
+    if (separator <= 0) continue
+    const key = line.slice(0, separator)
+    meta[key] = line.slice(separator + 1)
+    counts.set(key, (counts.get(key) || 0) + 1)
+  }
+  return requiredFields.every(field => counts.get(field) === 1) ? meta : null
+}
+
 function git(repo, args, {timeoutMs = 20000} = {}) {
   const result = spawnSync('git', ['-C', repo, ...args], {
     encoding: 'utf8',
@@ -1084,7 +1099,10 @@ function computeDurability(repo, perTask) {
 
 function readMergeReceipt(dataDir, taskId, spawnedAt) {
   if (!TASK_ID_PATTERN.test(taskId)) return null
-  const receipt = readMeta(path.join(dataDir, 'pr-merges', `${taskId}.receipt`))
+  const receipt = readMetaWithRequiredFields(
+    path.join(dataDir, 'pr-merges', `${taskId}.receipt`),
+    ['schema', 'task_id', 'pr', 'spawned_at', 'phase', 'authorization', 'prepared_epoch', 'merged_epoch'],
+  )
   if (!receipt || receipt.schema !== 'fm-pr-merge.v1' || receipt.task_id !== taskId
       || !/^https:\/\/github\.com\/(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]{0,37}[A-Za-z0-9])\/[A-Za-z0-9._-]{1,100}\/pull\/[1-9]\d*$/.test(receipt.pr || '')
       || receipt.spawned_at !== spawnedAt || receipt.phase !== 'merged'

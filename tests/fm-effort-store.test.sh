@@ -506,6 +506,19 @@ RECEIPT_OUTCOME=$(query "SELECT merged_at IS NOT NULL, outcome FROM task WHERE t
   || fail "a durable sanctioned merge receipt did not supply merge lifecycle proof: $RECEIPT_OUTCOME"
 pass 'durable merge receipt supplies missing merge lifecycle proof'
 
+for duplicate_field in task_id authorization; do
+  case "$duplicate_field" in
+    task_id) printf '%s\n' 'task_id=911-receipt-outcome' >> "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" ;;
+    authorization) printf '%s\n' 'authorization=live-meta' >> "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" ;;
+  esac
+  "$STORE" capture 911-receipt-outcome >/dev/null || fail "duplicate $duplicate_field merge receipt aborted capture"
+  DUPLICATE_RECEIPT=$(query "SELECT merged_at, outcome FROM task WHERE task_id = '911-receipt-outcome'")
+  [ "$DUPLICATE_RECEIPT" = 'NULL|NULL' ] \
+    || fail "duplicate $duplicate_field merge receipt proved landing: $DUPLICATE_RECEIPT"
+  sed -i '$d' "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt"
+done
+pass 'duplicate merge receipt identity and authorization remain untrusted'
+
 for malformed_contract in missing-authorization invalid-authorization missing-preparation invalid-preparation; do
   case "$malformed_contract" in
     missing-authorization) sed -i '/^authorization=/d' "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" ;;
