@@ -130,7 +130,7 @@ write_receipt() {
   fi
   umask 077
   tmp=$(mktemp "$RECEIPT_DIR/.$ID.receipt.XXXXXX") || return 1
-  printf '%s\n' \
+  if ! printf '%s\n' \
     'schema=fm-local-landing.v1' \
     "task_id=$ID" \
     "spawned_at=$SPAWNED_AT" \
@@ -141,9 +141,11 @@ write_receipt() {
     "landed_sha=$LANDED_SHA" \
     "phase=$phase" \
     "event_at=$event_at" > "$tmp" \
-    && chmod 600 "$tmp" \
-    && mv -f "$tmp" "$RECEIPT" \
-    || { rm -f "$tmp"; return 1; }
+    || ! chmod 600 "$tmp" \
+    || ! mv -f "$tmp" "$RECEIPT"; then
+    rm -f "$tmp"
+    return 1
+  fi
 }
 
 if [ -e "$RECEIPT" ] || [ -L "$RECEIPT" ]; then
