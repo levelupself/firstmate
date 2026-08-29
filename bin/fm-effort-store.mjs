@@ -1041,10 +1041,10 @@ function computeDurability(repo, perTask) {
   return rows
 }
 
-function readMergeReceipt(dataDir, taskId) {
+function readMergeReceipt(dataDir, taskId, spawnedAt) {
   if (!TASK_ID_PATTERN.test(taskId)) return null
   const receipt = readMeta(path.join(dataDir, 'pr-merges', `${taskId}.receipt`))
-  if (!receipt || receipt.schema !== 'fm-pr-merge.v1' || receipt.task_id !== taskId || receipt.phase !== 'merged') return null
+  if (!receipt || receipt.schema !== 'fm-pr-merge.v1' || receipt.task_id !== taskId || receipt.spawned_at !== spawnedAt || receipt.phase !== 'merged') return null
   const epoch = Number(receipt.merged_epoch)
   return {
     pr_url: receipt.pr || null,
@@ -1052,10 +1052,10 @@ function readMergeReceipt(dataDir, taskId) {
   }
 }
 
-function readLocalLandingReceipt(dataDir, taskId) {
+function readLocalLandingReceipt(dataDir, taskId, spawnedAt) {
   if (!TASK_ID_PATTERN.test(taskId)) return null
   const receipt = readMeta(path.join(dataDir, 'local-landings', `${taskId}.receipt`))
-  if (!receipt || receipt.schema !== 'fm-local-landing.v1' || receipt.task_id !== taskId || receipt.phase !== 'landed') return null
+  if (!receipt || receipt.schema !== 'fm-local-landing.v1' || receipt.task_id !== taskId || receipt.spawned_at !== spawnedAt || receipt.phase !== 'landed') return null
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(receipt.event_at || '')) return null
   if (!receipt.project || receipt.branch !== `fm/${taskId}` || !receipt.default_branch) return null
   if (!/^[0-9a-f]{40}$/.test(receipt.before_sha || '') || !/^[0-9a-f]{40}$/.test(receipt.landed_sha || '')) return null
@@ -1092,8 +1092,8 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
     const row = task.raw
     const annotation = task.annotation
     const burn = usageByTask.get(task.taskId) || {status: 'missing', detail: 'durable task usage snapshot was not consulted'}
-    const receipt = readMergeReceipt(options.dataDir, task.taskId)
-    const localReceiptCandidate = readLocalLandingReceipt(options.dataDir, task.taskId)
+    const receipt = readMergeReceipt(options.dataDir, task.taskId, row?.started_at)
+    const localReceiptCandidate = readLocalLandingReceipt(options.dataDir, task.taskId, row?.started_at)
     const localReceipt = localReceiptCandidate && row?.project === localReceiptCandidate.project ? localReceiptCandidate : null
     const gitResult = gitResults.results.get(task.taskId) || {status: 'missing', detail: 'git source not consulted'}
     const structure = gitResult.status === 'present' ? gitResult.structure : null

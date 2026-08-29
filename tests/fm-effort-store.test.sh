@@ -351,6 +351,7 @@ mkdir -p "$FM_HOME/data/pr-merges"
 fm_write_meta "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" \
   "schema=fm-pr-merge.v1" \
   "task_id=911-receipt-outcome" \
+  "spawned_at=2026-06-02T10:00:00Z" \
   "phase=merged" \
   "pr=https://github.com/example/repo/pull/11" \
   "merged_epoch=1780398000"
@@ -375,6 +376,7 @@ mkdir -p "$FM_HOME/data/local-landings"
 fm_write_meta "$FM_HOME/data/local-landings/912-local-receipt.receipt" \
   "schema=fm-local-landing.v1" \
   "task_id=912-local-receipt" \
+  "spawned_at=2026-06-03T10:00:00Z" \
   "project=$PROJECT" \
   "branch=fm/912-local-receipt" \
   "default_branch=main" \
@@ -400,6 +402,7 @@ fm_write_meta "$FM_HOME/state/913-prepared-local.meta" \
 fm_write_meta "$FM_HOME/data/local-landings/913-prepared-local.receipt" \
   "schema=fm-local-landing.v1" \
   "task_id=913-prepared-local" \
+  "spawned_at=2026-06-04T10:00:00Z" \
   "project=$PROJECT" \
   "branch=fm/913-prepared-local" \
   "default_branch=main" \
@@ -413,6 +416,33 @@ PREPARED_LOCAL=$(query "SELECT local_landed_at, outcome FROM task WHERE task_id 
 [ "$PREPARED_LOCAL" = 'NULL|NULL' ] \
   || fail "an incomplete local receipt falsely proved landing: $PREPARED_LOCAL"
 pass 'prepared local receipt does not prove landing'
+
+fm_write_meta "$FM_HOME/state/911-receipt-outcome.meta" \
+  "worktree=$ROOTDIR/worktrees/receipt-outcome" \
+  "project=$PROJECT" \
+  "harness=codex" \
+  "kind=ship" \
+  "mode=no-mistakes" \
+  "spawned_at=2026-07-02T10:00:00Z" \
+  "teardown_at=2026-07-02T11:05:00Z"
+"$STORE" capture 911-receipt-outcome >/dev/null || fail 'reused PR task capture failed'
+REUSED_PR=$(query "SELECT merged_at, outcome FROM task WHERE task_id = '911-receipt-outcome'")
+[ "$REUSED_PR" = 'NULL|NULL' ] \
+  || fail "a reused task inherited an earlier PR receipt: $REUSED_PR"
+
+fm_write_meta "$FM_HOME/state/912-local-receipt.meta" \
+  "worktree=$ROOTDIR/worktrees/local-receipt" \
+  "project=$PROJECT" \
+  "harness=codex" \
+  "kind=ship" \
+  "mode=local-only" \
+  "spawned_at=2026-07-03T10:00:00Z" \
+  "teardown_at=2026-07-03T11:05:00Z"
+"$STORE" capture 912-local-receipt >/dev/null || fail 'reused local task capture failed'
+REUSED_LOCAL=$(query "SELECT local_landed_at, outcome FROM task WHERE task_id = '912-local-receipt'")
+[ "$REUSED_LOCAL" = 'NULL|NULL' ] \
+  || fail "a reused task inherited an earlier local receipt: $REUSED_LOCAL"
+pass 'reused task IDs cannot inherit prior launch receipts'
 
 CAPTURE_FINGERPRINT=$("$STORE" fingerprint)
 CAPTURE_RAW_SIZE=$(wc -c < "$RAW")
