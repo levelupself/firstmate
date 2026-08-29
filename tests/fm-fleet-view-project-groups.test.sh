@@ -24,6 +24,15 @@ jq -n '{
      hints:{open_decisions:[]},paths:{report:{present:false}},pr:{url:null}},
     {id:"psychogenesis-active-3",project:"/tmp/projects/psychogenesis",
      current_state:{state:"working"},backlog:{repo:"psychogenesis",title:"Third migration",order:3},
+     hints:{open_decisions:[]},paths:{report:{present:false}},pr:{url:null}},
+    {id:"failed-one",project:"/tmp/projects/firstmate",
+     current_state:{state:"failed",detail:"failed one"},backlog:{repo:"firstmate",title:"Failed one"},
+     hints:{open_decisions:[]},paths:{report:{present:false}},pr:{url:null}},
+    {id:"failed-two",project:"/tmp/projects/firstmate",
+     current_state:{state:"failed",detail:"failed two"},backlog:{repo:"firstmate",title:"Failed two"},
+     hints:{open_decisions:[]},paths:{report:{present:false}},pr:{url:null}},
+    {id:"failed-three",project:"/tmp/projects/firstmate",
+     current_state:{state:"failed",detail:"failed three"},backlog:{repo:"firstmate",title:"Failed three"},
      hints:{open_decisions:[]},paths:{report:{present:false}},pr:{url:null}}
   ],
   secondmate_landed: {records: []},
@@ -71,4 +80,8 @@ assert_contains "$combined_view" "psychogenesis-active" \
   "combined-section budgeting hid the in-flight project row"
 assert_contains "$combined_view" "mtg-blocked" \
   "combined-section budgeting let in-flight work hide the blocked project row"
+
+historical_view=$(COLUMNS=60 LINES=7 "$VIEW_BIN/fm-fleet-view.sh" --section in-flight,failed)
+assert_contains "$historical_view" "psychogenesis-active" \
+  "historical detail consumed the active project row allocation"
 pass "narrow fleet decisions group three projects, preserve id tails, and truncate fairly"

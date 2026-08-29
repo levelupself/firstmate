@@ -396,7 +396,8 @@ render_once() {
        + (if wanted("waiting") and ($waiting | length) == 0 then 1 else 0 end)
        + (if wanted("ready") and ($ready | length) == 0 then 1 else 0 end)
        + (if wanted("in-flight") and ($in_flight | length) == 0 then 1 else 0 end)
-       + (if wanted("blocked") and ($blocked | length) == 0 then 1 else 0 end)
+       + (if wanted("blocked") and ($blocked | length) == 0 then 1 else 0 end)) as $active_fixed_rows
+    | ($active_fixed_rows
        + (if wanted("finished") then
             if ($finished | length) == 0 then 1
             else [$finished[:5][] | 2 + (if .artifact == null then 0 else 1 end)] | add
@@ -406,7 +407,9 @@ render_once() {
             if ($failed | length) == 0 then 1 else 2 * ($failed | length) end
           else 0 end)) as $fixed_rows
     | (if $group_count == 0 then 0
-       else ([0, ((($height - $fixed_rows - $group_count) / $group_count) | floor)] | max)
+       elif $height >= ($active_fixed_rows + (2 * $group_count)) then
+         ([1, ((($height - $fixed_rows - $group_count) / $group_count) | floor)] | max)
+       else 0
        end) as $group_cap
     | (if $banner then
          ("=" * $width),
