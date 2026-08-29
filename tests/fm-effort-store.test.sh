@@ -110,17 +110,17 @@ export FM_CODEBURN_BIN="$FAKEBIN/codeburn"
 
 # Durable task-usage snapshots are the cost source. Rebuilds must not consult
 # mutable account-wide codeburn history after teardown.
-write_usage() { # <task> <input> <output> <cost> <calls> <actual-model>
-  local task=$1 input=$2 output=$3 cost=$4 calls=$5 actual_model=$6
+write_usage() { # <task> <input> <output> <cost> <calls> <actual-model> [spawned-at]
+  local task=$1 input=$2 output=$3 cost=$4 calls=$5 actual_model=$6 spawned_at=${7:-2026-01-01T00:00:00Z}
   mkdir -p "$FM_HOME/data/$task"
   cat > "$FM_HOME/data/$task/usage.json" <<JSON
-{"schema":"fm-task-usage.v2","id":"$task","harness":"codex","configured_model":"default","actual_models":["$actual_model"],"models":[{"name":"$actual_model","calls":$calls,"input_tokens":$input,"output_tokens":$output,"cache_read_tokens":0,"cache_write_tokens":0,"cost_usd":$cost}],"tokens":{"input":$input,"output":$output,"cache_read":0,"cache_write":0},"cost_usd":$cost,"calls":$calls,"sessions":1,"spawned_at":"2026-01-01T00:00:00Z","captured_at":"2026-01-01T02:00:00Z"}
+{"schema":"fm-task-usage.v2","id":"$task","harness":"codex","configured_model":"default","actual_models":["$actual_model"],"models":[{"name":"$actual_model","calls":$calls,"input_tokens":$input,"output_tokens":$output,"cache_read_tokens":0,"cache_write_tokens":0,"cost_usd":$cost}],"tokens":{"input":$input,"output":$output,"cache_read":0,"cache_write":0},"cost_usd":$cost,"calls":$calls,"sessions":1,"spawned_at":"$spawned_at","captured_at":"2026-01-01T02:00:00Z"}
 JSON
 }
 write_usage 901-introduce-memory 110 22 0.75 2 claude-opus-5
-write_usage 902-extend-memory 7 3 0.01 1 gpt-x
-write_usage 903-unlinked-scout 0 0 0 0 none
-write_usage 904-later-occupant 42 8 0.02 1 claude-opus-5
+write_usage 902-extend-memory 7 3 0.01 1 gpt-x 2026-02-01T00:00:00Z
+write_usage 903-unlinked-scout 0 0 0 0 none 2026-03-01T00:00:00Z
+write_usage 904-later-occupant 42 8 0.02 1 claude-opus-5 2026-04-01T00:00:00Z
 mkdir -p "$FM_HOME/data/900-broken-cycle"
 cat > "$FM_HOME/data/900-broken-cycle/usage.json" <<'JSON'
 {"schema":"fm-task-usage.v1","id":"900-broken-cycle","harness":"codex","configured_model":"default","actual_models":[],"models":[],"tokens":{"input":0,"output":0,"cache_read":0,"cache_write":0},"cost_usd":0,"calls":0,"spawned_at":"2026-08-10T00:00:00Z","captured_at":"2026-08-10T01:00:00Z"}
@@ -325,7 +325,7 @@ fm_write_meta "$FM_HOME/state/910-lifecycle.meta" \
   "pr_opened_at=2026-06-01T10:15:00Z" \
   "merged_at=2026-06-01T11:00:00Z" \
   "teardown_at=2026-06-01T11:05:00Z"
-write_usage 910-lifecycle 321 45 1.25 6 gpt-5.6-sol
+write_usage 910-lifecycle 321 45 1.25 6 gpt-5.6-sol 2026-06-01T10:00:00Z
 
 rm -f "$DB"
 CAPTURE_OUT=$("$STORE" capture 910-lifecycle --outcome pr-merged 2>&1) \
@@ -443,6 +443,18 @@ REUSED_LOCAL=$(query "SELECT local_landed_at, outcome FROM task WHERE task_id = 
 [ "$REUSED_LOCAL" = 'NULL|NULL' ] \
   || fail "a reused task inherited an earlier local receipt: $REUSED_LOCAL"
 pass 'reused task IDs cannot inherit prior launch receipts'
+
+fm_write_meta "$FM_HOME/state/902-extend-memory.meta" \
+  "worktree=$WT_B" \
+  "project=$PROJECT" \
+  "harness=codex" \
+  "kind=ship" \
+  "spawned_at=2026-07-04T10:00:00Z"
+"$STORE" capture 902-extend-memory >/dev/null || fail 'reused usage task capture failed'
+REUSED_USAGE=$(query "SELECT tokens_in, tokens_out, notional_cost_usd, (SELECT group_concat(model) FROM task_model WHERE task_id = '902-extend-memory') FROM task WHERE task_id = '902-extend-memory'")
+[ "$REUSED_USAGE" = 'NULL|NULL|NULL|NULL' ] \
+  || fail "a reused task inherited an earlier usage snapshot: $REUSED_USAGE"
+pass 'reused task IDs cannot inherit prior usage snapshots'
 
 CAPTURE_FINGERPRINT=$("$STORE" fingerprint)
 CAPTURE_RAW_SIZE=$(wc -c < "$RAW")

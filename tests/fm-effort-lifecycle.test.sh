@@ -112,4 +112,18 @@ FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
   || fail 'local merge retry changed the completed receipt event time'
 pass 'local landing retry preserves completed receipt time'
 
+fm_write_meta "$HOME_DIR/state/local-task.meta" \
+  "worktree=$TMP_ROOT/local-wt" \
+  "project=$LOCAL_PROJECT" \
+  'kind=ship' \
+  'mode=local-only' \
+  'spawned_at=2026-08-30T10:00:00Z'
+FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
+  "$LOCAL_MERGE" local-task >/dev/null || fail 'reused local task merge failed'
+[ -f "$HOME_DIR/data/local-landings/history/local-task.2026-08-29T10-00-00Z.receipt" ] \
+  || fail 'reused local task did not retain its completed prior receipt'
+[ "$(sed -n 's/^spawned_at=//p' "$RECEIPT")" = '2026-08-30T10:00:00Z' ] \
+  || fail 'reused local task did not create current launch provenance'
+pass 'reused local task rotates completed receipt history'
+
 printf '# all fm-effort-lifecycle tests passed\n'

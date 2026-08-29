@@ -147,6 +147,23 @@ write_receipt() {
 }
 
 if [ -e "$RECEIPT" ] || [ -L "$RECEIPT" ]; then
+  if ! receipt_matches_request \
+    && [ "$(receipt_value schema)" = fm-local-landing.v1 ] \
+    && [ "$(receipt_value task_id)" = "$ID" ] \
+    && [ "$(receipt_value project)" = "$PROJ" ] \
+    && [ "$(receipt_value phase)" = landed ] \
+    && [ "$(receipt_value spawned_at)" != "$SPAWNED_AT" ]; then
+    HISTORY_DIR="$RECEIPT_DIR/history"
+    [ ! -e "$HISTORY_DIR" ] || { [ -d "$HISTORY_DIR" ] && [ ! -L "$HISTORY_DIR" ]; } \
+      || { echo "error: local landing history is unavailable" >&2; exit 1; }
+    mkdir -p "$HISTORY_DIR"
+    OLD_SPAWNED_AT=$(receipt_value spawned_at)
+    HISTORY_RECEIPT="$HISTORY_DIR/$ID.${OLD_SPAWNED_AT//:/-}.receipt"
+    [ ! -e "$HISTORY_RECEIPT" ] || { echo "error: local landing history conflicts" >&2; exit 1; }
+    mv "$RECEIPT" "$HISTORY_RECEIPT"
+  fi
+fi
+if [ -e "$RECEIPT" ] || [ -L "$RECEIPT" ]; then
   receipt_matches_request || { echo "error: local landing provenance conflicts with this task" >&2; exit 1; }
   EVENT_AT=$(receipt_value event_at)
   BEFORE_SHA=$(receipt_value before_sha)

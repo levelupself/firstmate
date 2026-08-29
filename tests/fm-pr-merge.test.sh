@@ -162,6 +162,19 @@ test_records_pr_and_head_before_merging() {
     "records-before-merge: durable receipt lost its live-task authorization"
   grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "records-before-merge: gh-axi pr merge was not invoked with number, --repo, and default --squash"
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=fm-task-x1" \
+    "worktree=$case_dir/wt" \
+    "project=$case_dir/project" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "spawned_at=2026-08-30T10:00:00Z"
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    >/dev/null 2> "$case_dir/reuse.stderr" || fail "records-before-merge: reused task merge failed"
+  [ -f "$case_dir/data/pr-merges/history/task-x1.2026-08-29T10-00-00Z.receipt" ] \
+    || fail "records-before-merge: reused task did not retain completed receipt history"
+  assert_grep 'spawned_at=2026-08-30T10:00:00Z' "$receipt" \
+    "records-before-merge: reused task did not create current launch provenance"
   pass "fm-pr-merge records pr= and pr_head= before invoking gh-axi pr merge"
 }
 
