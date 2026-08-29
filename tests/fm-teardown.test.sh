@@ -1452,7 +1452,7 @@ exit 1
 SH
   chmod +x "$case_dir/fakebin/codeburn"
   cat > "$case_dir/data/task-x1/usage.json" <<'JSON'
-{"schema":"fm-task-usage.v2","id":"task-x1","harness":"codex","configured_model":"configured-gpt","actual_models":["gpt-5.6-sol"],"models":[{"name":"gpt-5.6-sol","calls":4,"input_tokens":120,"output_tokens":30,"cache_read_tokens":0,"cache_write_tokens":0,"cost_usd":0.75}],"tokens":{"input":120,"output":30,"cache_read":0,"cache_write":0},"cost_usd":0.75,"calls":4,"sessions":1,"spawned_at":"2026-08-29T10:00:00Z","captured_at":"2026-08-29T11:00:00Z"}
+{"schema":"fm-task-usage.v2","id":"task-x1","harness":"codex","configured_model":"configured-gpt","actual_models":["gpt-5.6-sol"],"models":[{"name":"gpt-5.6-sol","calls":4,"input_tokens":120,"output_tokens":30,"cache_read_tokens":0,"cache_write_tokens":0,"cost_usd":0.75}],"tokens":{"input":120,"output":30,"cache_read":0,"cache_write":0},"cost_usd":0.75,"calls":4,"sessions":1,"spawned_at":"2026-08-29T10:00:00Z","captured_at":"2026-08-29T11:00:00Z","correlation":{"baseline":true}}
 JSON
 
   set +e

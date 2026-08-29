@@ -26,6 +26,7 @@ REAL_MV=$(command -v mv)
 REAL_STAT=$(command -v stat)
 REAL_CHMOD=$(command -v chmod)
 REAL_BASENAME=$(command -v basename)
+REAL_NODE=$(command -v node)
 
 ack_watcher_cycle() {  # <state>
   local state=$1 err sequence generation
@@ -117,6 +118,7 @@ esac
 printf 'title:\tfixture merge request\nstate:\t%s\nauthor:\tsomeone\n' "${FM_TEST_GLAB_STATE:-opened}"
 SH
   chmod +x "$fakebin/gh" "$fakebin/gh-axi" "$fakebin/glab"
+  ln -s "$REAL_NODE" "$fakebin/node"
   : > "$dir/gh.log"
   : > "$dir/gh-axi.log"
   : > "$dir/glab.log"
