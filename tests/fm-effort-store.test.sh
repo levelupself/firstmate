@@ -362,11 +362,12 @@ fm_write_meta "$FM_HOME/state/916-invalid-launch.meta" \
   "pr_opened_at=2026-03-02T11:00:00Z" \
   "teardown_at=2026-03-02T12:00:00Z" \
   "outcome=forced"
+write_usage 916-invalid-launch 12 3 0.25 2 forged-model 2026-02-30T10:00:00Z
 "$STORE" capture 916-invalid-launch >/dev/null || fail 'invalid launch capture failed'
-INVALID_LAUNCH=$(query "SELECT started_at, pr_opened_at, launch_to_pr_seconds, teardown_at, outcome FROM task WHERE task_id = '916-invalid-launch'")
-[ "$INVALID_LAUNCH" = 'NULL|NULL|NULL|NULL|NULL' ] \
+INVALID_LAUNCH=$(query "SELECT started_at, pr_opened_at, launch_to_pr_seconds, teardown_at, outcome, model, tokens_in, tokens_out, notional_cost_usd, api_calls, sessions, (SELECT group_concat(model) FROM task_model WHERE task_id = '916-invalid-launch') FROM task WHERE task_id = '916-invalid-launch'")
+[ "$INVALID_LAUNCH" = 'NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL' ] \
   || fail "an impossible launch authorized lifecycle fields: $INVALID_LAUNCH"
-pass 'impossible launch timestamps invalidate dependent lifecycle fields'
+pass 'impossible launch timestamps invalidate lifecycle and usage attribution'
 
 fm_write_meta "$FM_HOME/state/917-invalid-lifecycle.meta" \
   "worktree=$ROOTDIR/worktrees/invalid-lifecycle" \
@@ -495,6 +496,8 @@ fm_write_meta "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" \
   "spawned_at=2026-06-02T10:00:00Z" \
   "phase=merged" \
   "pr=https://github.com/example/repo/pull/11" \
+  "authorization=live-meta" \
+  "prepared_epoch=1780396200" \
   "merged_epoch=1780398000"
 "$STORE" capture 911-receipt-outcome >/dev/null \
   || fail 'receipt-backed lifecycle capture failed'
@@ -502,6 +505,24 @@ RECEIPT_OUTCOME=$(query "SELECT merged_at IS NOT NULL, outcome FROM task WHERE t
 [ "$RECEIPT_OUTCOME" = '1|pr-merged' ] \
   || fail "a durable sanctioned merge receipt did not supply merge lifecycle proof: $RECEIPT_OUTCOME"
 pass 'durable merge receipt supplies missing merge lifecycle proof'
+
+for malformed_contract in missing-authorization invalid-authorization missing-preparation invalid-preparation; do
+  case "$malformed_contract" in
+    missing-authorization) sed -i '/^authorization=/d' "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" ;;
+    invalid-authorization) printf '%s\n' 'authorization=manual' >> "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" ;;
+    missing-preparation)
+      sed -i 's/^authorization=manual$/authorization=live-meta/' "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt"
+      sed -i '/^prepared_epoch=/d' "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt"
+      ;;
+    invalid-preparation) printf '%s\n' 'prepared_epoch=not-an-epoch' >> "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" ;;
+  esac
+  "$STORE" capture 911-receipt-outcome >/dev/null || fail "$malformed_contract merge receipt aborted capture"
+  MALFORMED_CONTRACT=$(query "SELECT merged_at, outcome FROM task WHERE task_id = '911-receipt-outcome'")
+  [ "$MALFORMED_CONTRACT" = 'NULL|NULL' ] \
+    || fail "$malformed_contract merge receipt proved landing: $MALFORMED_CONTRACT"
+done
+sed -i 's/^prepared_epoch=not-an-epoch$/prepared_epoch=1780396200/' "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt"
+pass 'incomplete or unauthorized merge receipts remain untrusted'
 
 sed -i 's/merged_epoch=1780398000/merged_epoch=9007199254740991/' "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt"
 "$STORE" capture 911-receipt-outcome >/dev/null || fail 'out-of-range merge receipt aborted capture'

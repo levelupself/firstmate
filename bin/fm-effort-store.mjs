@@ -341,7 +341,10 @@ function discoverUsageTaskIds(dataDir) {
 
 function collectUsage(tasks, options, issues) {
   const byTask = new Map()
-  for (const task of tasks) byTask.set(task.taskId, readTaskUsage(options.dataDir, task.taskId, task.raw?.started_at, issues))
+  for (const task of tasks) {
+    byTask.set(task.taskId, readTaskUsage(options.dataDir, task.taskId,
+      canonicalTimestamp(task.raw?.started_at), issues))
+  }
   return byTask
 }
 
@@ -1082,14 +1085,22 @@ function computeDurability(repo, perTask) {
 function readMergeReceipt(dataDir, taskId, spawnedAt) {
   if (!TASK_ID_PATTERN.test(taskId)) return null
   const receipt = readMeta(path.join(dataDir, 'pr-merges', `${taskId}.receipt`))
-  if (!receipt || receipt.schema !== 'fm-pr-merge.v1' || receipt.task_id !== taskId || receipt.spawned_at !== spawnedAt || receipt.phase !== 'merged') return null
-  if (!/^(0|[1-9]\d*)$/.test(receipt.merged_epoch || '')) return null
-  const epoch = Number(receipt.merged_epoch)
-  const milliseconds = epoch * 1000
-  const merged = Number.isInteger(epoch) && epoch >= 0 && Number.isFinite(milliseconds)
-    && milliseconds <= 8640000000000000 ? new Date(milliseconds) : null
-  const mergedAt = merged && Number.isFinite(merged.getTime())
-    ? validatedLifecycleTimestamp(merged.toISOString().replace('.000Z', 'Z'), spawnedAt) : null
+  if (!receipt || receipt.schema !== 'fm-pr-merge.v1' || receipt.task_id !== taskId
+      || !/^https:\/\/github\.com\/(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]{0,37}[A-Za-z0-9])\/[A-Za-z0-9._-]{1,100}\/pull\/[1-9]\d*$/.test(receipt.pr || '')
+      || receipt.spawned_at !== spawnedAt || receipt.phase !== 'merged'
+      || !['live-meta', 'done-record'].includes(receipt.authorization)) return null
+  const epochTimestamp = (value, earliest) => {
+    if (!/^(0|[1-9]\d*)$/.test(value || '')) return null
+    const epoch = Number(value)
+    const milliseconds = epoch * 1000
+    if (!Number.isSafeInteger(epoch) || milliseconds > 8640000000000000) return null
+    const date = new Date(milliseconds)
+    if (!Number.isFinite(date.getTime())) return null
+    return validatedLifecycleTimestamp(date.toISOString().replace('.000Z', 'Z'), earliest)
+  }
+  const preparedAt = epochTimestamp(receipt.prepared_epoch, spawnedAt)
+  const mergedAt = preparedAt ? epochTimestamp(receipt.merged_epoch, preparedAt) : null
+  if (!mergedAt) return null
   return {
     pr_url: receipt.pr || null,
     merged_at: mergedAt,
@@ -1167,7 +1178,7 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
       bind(row?.branch ?? annotation?.branch),
       bind(row?.pr_url ?? receipt?.pr_url ?? annotation?.pr_url),
       bind(row?.harness),
-      bind(row?.model),
+      bind(startedAt ? row?.model : null),
       bind(row?.effort),
       bind(row?.backend ?? annotation?.backend),
       bind(row?.worktree),
