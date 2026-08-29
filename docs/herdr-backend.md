@@ -74,7 +74,7 @@ A version 2 record, written before the region could hold more than one pane, sta
 Add `--watch` with an optional positive interval to keep that textual view live.
 
 Within an adopted frame, the right-hand viewport region is a single-occupancy slot: exactly one worker is on display there at a time.
-The first spawn may fill an empty viewport, but later spawns open on ordinary labelled peer tabs and never displace the viewport occupant; only `show`, `next`, `prev`, or an explicitly armed focus listener changes what the operator is reading.
+The first spawn may fill an empty viewport, but later spawns open on ordinary labelled peer tabs whose root panes carry the same task label and never displace the viewport occupant; only `show`, `next`, `prev`, or an explicitly armed focus listener changes what the operator is reading.
 The slot is always the right child of one split from the pinned head at a fixed ratio, so its width is the same every time a worker enters or leaves it, and it is never subdivided to fit a second worker.
 Placing a worker parks whoever was there onto its own tab labelled with that task first, then moves the incoming pane in.
 A parked worker sits in the ordinary non-cockpit topology - one labelled `fm-<id>` tab of its own - so it stays exactly as reachable as on a home that never adopted a cockpit, keeps its own sidebar entry, and is never closed or hidden.
