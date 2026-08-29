@@ -57,3 +57,15 @@ fm_task_effort_capture_best_effort() {
     return 0
   }
 }
+
+fm_task_effort_capture_launch() {
+  local root=$1 id=$2
+  [ -x "$root/bin/fm-effort-store.sh" ] || {
+    echo "error: launch effort capture is unavailable for $id" >&2
+    return 1
+  }
+  "$root/bin/fm-effort-store.sh" capture "$id" >/dev/null || {
+    echo "error: launch effort capture failed for $id" >&2
+    return 1
+  }
+}

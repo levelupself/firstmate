@@ -114,7 +114,7 @@ write_usage() { # <task> <input> <output> <cost> <calls> <actual-model> [spawned
   local task=$1 input=$2 output=$3 cost=$4 calls=$5 actual_model=$6 spawned_at=${7:-2026-01-01T00:00:00Z}
   mkdir -p "$FM_HOME/data/$task"
   cat > "$FM_HOME/data/$task/usage.json" <<JSON
-{"schema":"fm-task-usage.v2","id":"$task","harness":"codex","configured_model":"default","actual_models":["$actual_model"],"models":[{"name":"$actual_model","calls":$calls,"input_tokens":$input,"output_tokens":$output,"cache_read_tokens":0,"cache_write_tokens":0,"cost_usd":$cost}],"tokens":{"input":$input,"output":$output,"cache_read":0,"cache_write":0},"cost_usd":$cost,"calls":$calls,"sessions":1,"spawned_at":"$spawned_at","captured_at":"2026-01-01T02:00:00Z"}
+{"schema":"fm-task-usage.v2","id":"$task","harness":"codex","configured_model":"default","actual_models":["$actual_model"],"models":[{"name":"$actual_model","calls":$calls,"input_tokens":$input,"output_tokens":$output,"cache_read_tokens":0,"cache_write_tokens":0,"cost_usd":$cost}],"tokens":{"input":$input,"output":$output,"cache_read":0,"cache_write":0},"cost_usd":$cost,"calls":$calls,"sessions":1,"spawned_at":"$spawned_at","captured_at":"2026-01-01T02:00:00Z","correlation":{"baseline":true}}
 JSON
 }
 write_usage 901-introduce-memory 110 22 0.75 2 claude-opus-5
@@ -341,6 +341,86 @@ LIFECYCLE=$(query "SELECT launch_to_pr_seconds, tokens_in, tokens_out, notional_
 [ "$LIFECYCLE" = '900|321|45|1.25|2026-06-01T10:15:00Z|2026-06-01T11:00:00Z|2026-06-01T11:05:00Z|pr-merged' ] \
   || fail "captured lifecycle fields were incomplete: $LIFECYCLE"
 pass 'lifecycle capture creates and populates the store without a remembered rebuild'
+
+sed -i 's/"baseline":true/"baseline":false/' "$FM_HOME/data/910-lifecycle/usage.json"
+"$STORE" capture 910-lifecycle --outcome pr-merged >/dev/null \
+  || fail 'unbounded usage capture failed'
+UNBOUNDED_USAGE=$(query "SELECT tokens_in, tokens_out, notional_cost_usd FROM task WHERE task_id = '910-lifecycle'")
+[ "$UNBOUNDED_USAGE" = 'NULL|NULL|NULL' ] \
+  || fail "usage without a launch baseline was accepted: $UNBOUNDED_USAGE"
+grep -q '"baseline":false' "$FM_HOME/data/910-lifecycle/usage.json" \
+  || fail 'unbounded usage snapshot was not preserved for diagnostics'
+pass 'usage without a valid launch baseline remains missing'
+sed -i 's/"baseline":false/"baseline":true/' "$FM_HOME/data/910-lifecycle/usage.json"
+
+sed -i 's/"sessions":1/"sessions":"malformed"/' "$FM_HOME/data/910-lifecycle/usage.json"
+"$STORE" capture 910-lifecycle --outcome pr-merged >/dev/null \
+  || fail 'malformed sessions capture failed'
+MALFORMED_SESSIONS=$(query "SELECT tokens_in, tokens_out, notional_cost_usd, api_calls, sessions, (SELECT group_concat(model) FROM task_model WHERE task_id = '910-lifecycle') FROM task WHERE task_id = '910-lifecycle'")
+[ "$MALFORMED_SESSIONS" = 'NULL|NULL|NULL|NULL|NULL|NULL' ] \
+  || fail "usage with malformed sessions was partially accepted: $MALFORMED_SESSIONS"
+pass 'malformed sessions makes the entire usage source missing'
+sed -i 's/"sessions":"malformed"/"sessions":1/' "$FM_HOME/data/910-lifecycle/usage.json"
+
+node - "$FM_HOME/data/910-lifecycle/usage.json" <<'NODE'
+const fs = require('fs')
+const file = process.argv[2]
+const usage = JSON.parse(fs.readFileSync(file, 'utf8'))
+usage.tokens.input = '321'
+fs.writeFileSync(file, `${JSON.stringify(usage)}\n`)
+NODE
+"$STORE" capture 910-lifecycle --outcome pr-merged >/dev/null \
+  || fail 'string total capture failed'
+STRING_TOTAL=$(query "SELECT tokens_in, tokens_out, notional_cost_usd, api_calls, sessions, (SELECT group_concat(model) FROM task_model WHERE task_id = '910-lifecycle') FROM task WHERE task_id = '910-lifecycle'")
+[ "$STRING_TOTAL" = 'NULL|NULL|NULL|NULL|NULL|NULL' ] \
+  || fail "usage with a string total was partially accepted: $STRING_TOTAL"
+pass 'numeric-looking strings make the entire usage source missing'
+write_usage 910-lifecycle 321 45 1.25 6 gpt-5.6-sol 2026-06-01T10:00:00Z
+
+node - "$FM_HOME/data/910-lifecycle/usage.json" <<'NODE'
+const fs = require('fs')
+const file = process.argv[2]
+const usage = JSON.parse(fs.readFileSync(file, 'utf8'))
+usage.models[0].calls = true
+fs.writeFileSync(file, `${JSON.stringify(usage)}\n`)
+NODE
+"$STORE" capture 910-lifecycle --outcome pr-merged >/dev/null \
+  || fail 'boolean model total capture failed'
+BOOLEAN_MODEL_TOTAL=$(query "SELECT tokens_in, tokens_out, notional_cost_usd, api_calls, sessions, (SELECT group_concat(model) FROM task_model WHERE task_id = '910-lifecycle') FROM task WHERE task_id = '910-lifecycle'")
+[ "$BOOLEAN_MODEL_TOTAL" = 'NULL|NULL|NULL|NULL|NULL|NULL' ] \
+  || fail "usage with a boolean model total was partially accepted: $BOOLEAN_MODEL_TOTAL"
+pass 'non-numeric model totals make the entire usage source missing'
+write_usage 910-lifecycle 321 45 1.25 6 gpt-5.6-sol 2026-06-01T10:00:00Z
+
+node - "$FM_HOME/data/910-lifecycle/usage.json" <<'NODE'
+const fs = require('fs')
+const file = process.argv[2]
+const usage = JSON.parse(fs.readFileSync(file, 'utf8'))
+usage.models = {}
+fs.writeFileSync(file, `${JSON.stringify(usage)}\n`)
+NODE
+"$STORE" capture 910-lifecycle --outcome pr-merged >/dev/null \
+  || fail 'malformed model collection capture failed'
+MALFORMED_MODELS=$(query "SELECT tokens_in, notional_cost_usd, sessions, (SELECT group_concat(model) FROM task_model WHERE task_id = '910-lifecycle') FROM task WHERE task_id = '910-lifecycle'")
+[ "$MALFORMED_MODELS" = 'NULL|NULL|NULL|NULL' ] \
+  || fail "usage with a malformed model collection was partially accepted: $MALFORMED_MODELS"
+pass 'malformed model collections make the entire usage source missing'
+write_usage 910-lifecycle 321 45 1.25 6 gpt-5.6-sol 2026-06-01T10:00:00Z
+
+node - "$FM_HOME/data/910-lifecycle/usage.json" <<'NODE'
+const fs = require('fs')
+const file = process.argv[2]
+const usage = JSON.parse(fs.readFileSync(file, 'utf8'))
+usage.actual_models = ['different-model']
+fs.writeFileSync(file, `${JSON.stringify(usage)}\n`)
+NODE
+"$STORE" capture 910-lifecycle --outcome pr-merged >/dev/null \
+  || fail 'inconsistent model collection capture failed'
+INCONSISTENT_MODELS=$(query "SELECT tokens_in, notional_cost_usd, sessions, (SELECT group_concat(model) FROM task_model WHERE task_id = '910-lifecycle') FROM task WHERE task_id = '910-lifecycle'")
+[ "$INCONSISTENT_MODELS" = 'NULL|NULL|NULL|NULL' ] \
+  || fail "usage with inconsistent model collections was partially accepted: $INCONSISTENT_MODELS"
+pass 'inconsistent model collections make the entire usage source missing'
+write_usage 910-lifecycle 321 45 1.25 6 gpt-5.6-sol 2026-06-01T10:00:00Z
 
 fm_write_meta "$FM_HOME/state/911-receipt-outcome.meta" \
   "worktree=$ROOTDIR/worktrees/receipt-outcome" \

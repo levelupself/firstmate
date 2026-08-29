@@ -178,6 +178,7 @@ fi
 git -C "$PROJ" merge --ff-only "$BRANCH" >/dev/null
 after=$(git -C "$PROJ" rev-parse --short "$DEFAULT")
 if [ "$(receipt_value phase)" != landed ]; then
+  EVENT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   write_receipt landed "$EVENT_AT" \
     || { echo "error: local landing succeeded but its durable receipt could not be completed" >&2; exit 1; }
 fi

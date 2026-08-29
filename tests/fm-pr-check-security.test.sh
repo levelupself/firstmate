@@ -26,6 +26,7 @@ REAL_MV=$(command -v mv)
 REAL_STAT=$(command -v stat)
 REAL_CHMOD=$(command -v chmod)
 REAL_BASENAME=$(command -v basename)
+REAL_NODE=$(command -v node)
 
 ack_watcher_cycle() {  # <state>
   local state=$1 err sequence generation
@@ -108,9 +109,16 @@ SH
 printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
 [ "${FM_TEST_GLAB_FAIL:-0}" = 0 ] || exit 1
 [ "${FM_TEST_GLAB_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GLAB_SLEEP"
+case " $* " in
+  *" --output json "*)
+    printf '{"created_at":"%s"}\n' "${FM_TEST_GLAB_CREATED_AT:-2026-08-21T13:45:00Z}"
+    exit 0
+    ;;
+esac
 printf 'title:\tfixture merge request\nstate:\t%s\nauthor:\tsomeone\n' "${FM_TEST_GLAB_STATE:-opened}"
 SH
   chmod +x "$fakebin/gh" "$fakebin/gh-axi" "$fakebin/glab"
+  ln -s "$REAL_NODE" "$fakebin/node"
   : > "$dir/gh.log"
   : > "$dir/gh-axi.log"
   : > "$dir/glab.log"
@@ -677,6 +685,25 @@ SH
       || fail "legacy task teardown changed the reserved migration namespace"
   done
   pass "valid direct and merge flows record exact metadata and reject multiline head metadata"
+}
+
+test_gitlab_records_forge_open_time() {
+  local dir url
+  dir=$(make_case gitlab-open-time)
+  write_task_meta "$dir"
+  url=https://gitlab.example/group/project/-/merge_requests/7
+  run_check_entry "$dir" task-a "$url" >/dev/null 2>/dev/null \
+    || fail "GitLab PR check failed"
+  [ "$(sed -n 's/^pr_opened_at=//p' "$dir/home/state/task-a.meta")" = 2026-08-21T13:45:00Z ] \
+    || fail "GitLab forge creation time was not recorded"
+
+  dir=$(make_case gitlab-invalid-open-time)
+  write_task_meta "$dir"
+  FM_TEST_GLAB_CREATED_AT=not-a-time run_check_entry "$dir" task-a "$url" >/dev/null 2>/dev/null \
+    || fail "GitLab PR check failed when forge creation time was invalid"
+  assert_no_grep '^pr_opened_at=' "$dir/home/state/task-a.meta" \
+    "GitLab PR check invented an open time from an invalid forge timestamp"
+  pass "GitLab PR checks preserve only valid forge creation times"
 }
 
 run_watcher_bounded() {
@@ -3384,6 +3411,7 @@ test_gitlab_merged_poll_retires() {
 
 test_parser_matrix
 test_gitlab_merge_watch
+test_gitlab_records_forge_open_time
 test_merged_poll_retires_once
 test_persistent_secondmate_retirement_is_poll_only
 test_retirement_crash_recovery

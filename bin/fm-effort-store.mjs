@@ -232,9 +232,7 @@ function readAnnotations(file, issues) {
 const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
 function finiteNonnegative(value) {
-  if (value === null || value === undefined || value === '') return null
-  const number = Number(value)
-  return Number.isFinite(number) && number >= 0 ? number : null
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 }
 
 function readTaskUsage(dataDir, taskId, spawnedAt, issues) {
@@ -263,6 +261,10 @@ function readTaskUsage(dataDir, taskId, spawnedAt, issues) {
     issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-launch-identity', detail: file})
     return {status: 'missing', detail: 'durable task usage snapshot belongs to another launch'}
   }
+  if (usage.correlation?.baseline !== true) {
+    issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-unbounded-attribution', detail: file})
+    return {status: 'missing', detail: 'durable task usage snapshot lacks a valid launch baseline'}
+  }
   const totals = {
     tokens_in: finiteNonnegative(usage.tokens?.input),
     tokens_out: finiteNonnegative(usage.tokens?.output),
@@ -274,15 +276,35 @@ function readTaskUsage(dataDir, taskId, spawnedAt, issues) {
     sessions: finiteNonnegative(usage.sessions),
     agent_active_seconds: finiteNonnegative(usage.agent_active_seconds),
   }
-  const required = ['tokens_in', 'tokens_out', 'tokens_cached_read', 'tokens_cached_write', 'notional_cost_usd', 'api_calls']
+  const required = ['tokens_in', 'tokens_out', 'tokens_cached_read', 'tokens_cached_write', 'notional_cost_usd', 'api_calls', 'sessions']
   if (required.some(key => totals[key] === null)) {
     issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-shape', detail: file})
     return {status: 'missing', detail: 'durable task usage snapshot is missing required totals'}
   }
+  if (!Array.isArray(usage.models) || !Array.isArray(usage.actual_models)) {
+    issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-model-shape', detail: file})
+    return {status: 'missing', detail: 'durable task usage snapshot has malformed model collections'}
+  }
+  const producedModelNames = []
+  for (const model of usage.models) {
+    const name = typeof model?.name === 'string' ? model.name : ''
+    const modelTotals = [model?.calls, model?.input_tokens, model?.output_tokens,
+      model?.cache_read_tokens, model?.cache_write_tokens, model?.cost_usd]
+    if (!name.trim() || name === '<synthetic>'
+        || modelTotals.some(value => typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+      issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-model-shape', detail: file})
+      return {status: 'missing', detail: 'durable task usage snapshot has a malformed model entry'}
+    }
+    producedModelNames.push(name)
+  }
+  if (usage.actual_models.some(name => typeof name !== 'string' || !name.trim())
+      || JSON.stringify(usage.actual_models) !== JSON.stringify(producedModelNames)) {
+    issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-model-identity', detail: file})
+    return {status: 'missing', detail: 'durable task usage snapshot model collections disagree'}
+  }
   const models = []
-  for (const model of Array.isArray(usage.models) ? usage.models : []) {
-    const name = typeof model.name === 'string' ? model.name : ''
-    if (!name || name === '<synthetic>') continue
+  for (const model of usage.models) {
+    const name = model.name
     models.push({
       provider: typeof model.provider === 'string' ? model.provider : '',
       model: name,
