@@ -2438,9 +2438,10 @@ if [ "$BACKEND" = herdr ]; then
 fi
 
 # Snapshot codeburn usage before the worktree is released back to the pool or
-# removed: fm-task-usage.sh correlates purely by worktree path + time range, so a
-# concurrent spawn that reclaims this worktree after release could otherwise have
-# its early activity double-counted into this task's final usage.json.
+# removed: fm-task-usage.sh resolves the worktree to codeburn's reported project
+# key and subtracts its pre-launch baseline, so a concurrent spawn that reclaims
+# this worktree after release could otherwise have its early activity counted in
+# this task's final usage.json.
 if [ "$KIND" != secondmate ]; then
   "$FM_ROOT/bin/fm-task-usage.sh" "$ID" --snapshot \
     || echo "teardown: warning: could not snapshot codeburn usage for $ID" >&2
