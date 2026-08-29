@@ -51,7 +51,8 @@ In that status-log fallback, a declared external wait reports the distinct `paus
 The semantic branch reports working only on an exact busy verdict and names the source that produced it; an unknown verdict never becomes working, never permits the status-log fallback, and never becomes a silent idle.
 For whole-fleet read-only review, `bin/fm-fleet-snapshot.sh --json` emits schema `fm-fleet-snapshot.v1` from the backlog, task metadata, current lifecycle state, endpoint probes, PR/report pointers, task reports, per-task codeburn usage (docs/task-usage.md), bounded current summaries from registered homes, and return-channel guidance.
 `bin/fm-fleet-view.sh` renders that snapshot as a height-bounded panel ordered around decisions, ready queued capacity, in-flight work, and genuinely blocked queued work, while finished and failed history remains available through independent section filters.
-Unknown live runtime state stays in the in-flight projection, and every shortened frame discloses its omitted row count.
+Live rows are grouped by project and share limited height fairly across projects while retaining state and priority order within each group.
+Unknown live runtime state stays in the in-flight projection, and each shortened live project group discloses its omitted row count.
 READY still holds exactly the queued set that `tasks-axi ready` returns, but it separates that set: rows the snapshot marks `dispatch_clear` render plainly, while rows whose own durable contract stops the backlog from confirming dispatch render with a `?` marker and the reason, and the heading counts the two apart.
 The snapshot owns that judgement so the renderer keeps deriving no backlog state of its own.
 `bin/fm-bearings-snapshot.sh` provides the bounded bearings projection, so both views consume one structured contract instead of reparsing raw fleet files.
