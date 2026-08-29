@@ -116,8 +116,18 @@ function readMeta(file) {
 }
 
 function readMetaWithRequiredFields(file, requiredFields) {
-  const text = readTextFile(file)
-  if (text === null) return null
+  let descriptor
+  let text
+  try {
+    descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    const stat = fs.fstatSync(descriptor)
+    if (!stat.isFile() || stat.size > MAX_IMPORT_FILE_BYTES) return null
+    text = fs.readFileSync(descriptor, 'utf8')
+  } catch {
+    return null
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor)
+  }
   const meta = {}
   const counts = new Map()
   for (const line of text.split('\n')) {

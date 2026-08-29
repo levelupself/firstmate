@@ -506,6 +506,16 @@ RECEIPT_OUTCOME=$(query "SELECT merged_at IS NOT NULL, outcome FROM task WHERE t
   || fail "a durable sanctioned merge receipt did not supply merge lifecycle proof: $RECEIPT_OUTCOME"
 pass 'durable merge receipt supplies missing merge lifecycle proof'
 
+mv "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" "$FM_HOME/data/pr-merges/911-receipt-outcome.target"
+ln -s 911-receipt-outcome.target "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt"
+"$STORE" capture 911-receipt-outcome >/dev/null || fail 'symlinked merge receipt aborted capture'
+SYMLINKED_MERGE=$(query "SELECT merged_at, outcome FROM task WHERE task_id = '911-receipt-outcome'")
+[ "$SYMLINKED_MERGE" = 'NULL|NULL' ] \
+  || fail "symlinked merge receipt proved landing: $SYMLINKED_MERGE"
+rm "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt"
+mv "$FM_HOME/data/pr-merges/911-receipt-outcome.target" "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt"
+pass 'symlinked merge receipts remain untrusted'
+
 for duplicate_field in task_id authorization; do
   case "$duplicate_field" in
     task_id) printf '%s\n' 'task_id=911-receipt-outcome' >> "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" ;;
@@ -586,6 +596,16 @@ LOCAL_RECEIPT_OUTCOME=$(query "SELECT local_landed_at, outcome FROM task WHERE t
 [ "$LOCAL_RECEIPT_OUTCOME" = '2026-06-03T11:00:00Z|local-landed' ] \
   || fail "a completed local receipt did not supply lifecycle proof: $LOCAL_RECEIPT_OUTCOME"
 pass 'completed local receipt supplies local landing lifecycle proof'
+
+mv "$FM_HOME/data/local-landings/912-local-receipt.receipt" "$FM_HOME/data/local-landings/912-local-receipt.target"
+ln -s 912-local-receipt.target "$FM_HOME/data/local-landings/912-local-receipt.receipt"
+"$STORE" capture 912-local-receipt >/dev/null || fail 'symlinked local receipt aborted capture'
+SYMLINKED_LOCAL=$(query "SELECT local_landed_at, outcome FROM task WHERE task_id = '912-local-receipt'")
+[ "$SYMLINKED_LOCAL" = 'NULL|NULL' ] \
+  || fail "symlinked local receipt proved landing: $SYMLINKED_LOCAL"
+rm "$FM_HOME/data/local-landings/912-local-receipt.receipt"
+mv "$FM_HOME/data/local-landings/912-local-receipt.target" "$FM_HOME/data/local-landings/912-local-receipt.receipt"
+pass 'symlinked local receipts remain untrusted'
 
 for duplicate_field in task_id event_at; do
   case "$duplicate_field" in
