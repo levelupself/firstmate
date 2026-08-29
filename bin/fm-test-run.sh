@@ -943,8 +943,7 @@ families_for_changed_path() {
     bin/fm-x-*|bin/fm-check*)
       printf '%s\n' pr-forge
       ;;
-    bin/fm-no-mistakes-attestation.sh|bin/fm-no-mistakes-required.sh|\
-    .github/workflows/no-mistakes-required.yml)
+    bin/fm-no-mistakes-required.sh|.github/workflows/no-mistakes-required.yml)
       printf '%s\n' pr-forge
       ;;
     bin/fm-nm-run-lib.sh)

@@ -26,17 +26,9 @@ jobs:
       github.event.pull_request.user.login != 'github-actions[bot]' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
-      - name: Check out trusted gate implementation
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
       - name: Verify no-mistakes signature in PR body
         id: signature
         env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
@@ -47,13 +39,18 @@ jobs:
             echo 'found=true' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if printf '%s' "${PR_BODY:-}" |
-            bin/fm-no-mistakes-attestation.sh "$HEAD_SHA"; then
-            echo "Found matching no-mistakes pipeline attestation in PR #${PR_NUMBER} body."
-            echo 'found=true' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           echo 'found=false' >> "$GITHUB_OUTPUT"
+
+      # The checker must come from the trusted base, not from author-controlled
+      # pull request content. Signed pipeline PRs skip this checkout entirely,
+      # which lets the change introducing the checker bootstrap normally.
+      - name: Check out trusted gate implementation
+        if: steps.signature.outputs.found != 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Verify upstream catch-up from the commit graph
         if: steps.signature.outputs.found != 'true'
