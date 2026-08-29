@@ -232,9 +232,7 @@ function readAnnotations(file, issues) {
 const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
 function finiteNonnegative(value) {
-  if (value === null || value === undefined || value === '') return null
-  const number = Number(value)
-  return Number.isFinite(number) && number >= 0 ? number : null
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 }
 
 function readTaskUsage(dataDir, taskId, spawnedAt, issues) {
