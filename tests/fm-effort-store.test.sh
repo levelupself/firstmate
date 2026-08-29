@@ -478,6 +478,24 @@ INCONSISTENT_MODELS=$(query "SELECT tokens_in, notional_cost_usd, sessions, (SEL
 pass 'inconsistent model collections make the entire usage source missing'
 write_usage 910-lifecycle 321 45 1.25 6 gpt-5.6-sol 2026-06-01T10:00:00Z
 
+node - "$FM_HOME/data/910-lifecycle/usage.json" <<'NODE'
+const fs = require('fs')
+const file = process.argv[2]
+const usage = JSON.parse(fs.readFileSync(file, 'utf8'))
+usage.models.push({...usage.models[0]})
+usage.actual_models.push(usage.actual_models[0])
+fs.writeFileSync(file, `${JSON.stringify(usage)}\n`)
+NODE
+rm -f "$DB"
+"$STORE" rebuild >/dev/null || fail 'duplicate durable models aborted delete-and-rebuild'
+DUPLICATE_MODELS=$(query "SELECT tokens_in, tokens_out, notional_cost_usd, api_calls, sessions, (SELECT group_concat(model) FROM task_model WHERE task_id = '910-lifecycle') FROM task WHERE task_id = '910-lifecycle'")
+[ "$DUPLICATE_MODELS" = 'NULL|NULL|NULL|NULL|NULL|NULL' ] \
+  || fail "duplicate durable model identities were ingested: $DUPLICATE_MODELS"
+pass 'duplicate durable model identities remain missing without aborting rebuild'
+write_usage 910-lifecycle 321 45 1.25 6 gpt-5.6-sol 2026-06-01T10:00:00Z
+"$STORE" capture 910-lifecycle --outcome pr-merged >/dev/null \
+  || fail 'restoring valid usage after duplicate model test failed'
+
 fm_write_meta "$FM_HOME/state/911-receipt-outcome.meta" \
   "worktree=$ROOTDIR/worktrees/receipt-outcome" \
   "project=$PROJECT" \

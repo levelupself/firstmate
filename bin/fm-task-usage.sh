@@ -293,6 +293,14 @@ for (const model of baseline.models) {
   for (const key of modelKeys) counter(model, key, `baseline model ${model.name} ${key}`)
   beforeModels.set(model.name, model)
 }
+const currentModelNames = new Set()
+for (const model of current.models) {
+  if (!model || typeof model.name !== 'string' || !model.name || currentModelNames.has(model.name)) {
+    console.error('fm-task-usage: duplicate or invalid current model identity; refusing attribution')
+    process.exit(1)
+  }
+  currentModelNames.add(model.name)
+}
 const models = (current.models || []).map(model => {
   const old = beforeModels.get(model.name)
   if (!old) {

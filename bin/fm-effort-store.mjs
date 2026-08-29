@@ -311,15 +311,24 @@ function readTaskUsage(dataDir, taskId, spawnedAt, issues) {
     return {status: 'missing', detail: 'durable task usage snapshot has malformed model collections'}
   }
   const producedModelNames = []
+  const producedModelIdentities = new Set()
   for (const model of usage.models) {
     const name = typeof model?.name === 'string' ? model.name : ''
+    const provider = typeof model?.provider === 'string' ? model.provider.trim() : ''
+    const normalizedName = name.trim()
+    const identity = `${provider}${KEY_SEPARATOR}${normalizedName}`
     const modelTotals = [model?.calls, model?.input_tokens, model?.output_tokens,
       model?.cache_read_tokens, model?.cache_write_tokens, model?.cost_usd]
-    if (!name.trim() || name === '<synthetic>'
+    if (!normalizedName || normalizedName === '<synthetic>'
         || modelTotals.some(value => typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
       issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-model-shape', detail: file})
       return {status: 'missing', detail: 'durable task usage snapshot has a malformed model entry'}
     }
+    if (producedModelIdentities.has(identity)) {
+      issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-model-duplicate', detail: file})
+      return {status: 'missing', detail: 'durable task usage snapshot has duplicate model identities'}
+    }
+    producedModelIdentities.add(identity)
     producedModelNames.push(name)
   }
   if (usage.actual_models.some(name => typeof name !== 'string' || !name.trim())
@@ -329,9 +338,9 @@ function readTaskUsage(dataDir, taskId, spawnedAt, issues) {
   }
   const models = []
   for (const model of usage.models) {
-    const name = model.name
+    const name = model.name.trim()
     models.push({
-      provider: typeof model.provider === 'string' ? model.provider : '',
+      provider: typeof model.provider === 'string' ? model.provider.trim() : '',
       model: name,
       tokens_in: finiteNonnegative(model.input_tokens),
       tokens_out: finiteNonnegative(model.output_tokens),
