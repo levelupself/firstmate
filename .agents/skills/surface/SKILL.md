@@ -41,7 +41,7 @@ Do not continue with the corresponding Windows route unless `[ -x "$explorer_bin
   Never hold `lavish-axi poll` open in the conversational turn.
   If the board opens but feedback arming fails, report that partial result plainly.
 - For a directory, convert it with `windows_path=$(wslpath -w -- "$path")`, then run `"$explorer_bin" "$windows_path"`.
-- For an office document, PDF, image, or video, convert it with `windows_path=$(wslpath -w -- "$path")`, then run `"$cmd_bin" /d /c start "" "$windows_path"` to use the Windows default application.
+- For an office document, PDF, image, or video, convert it with `windows_path=$(wslpath -w -- "$path")`, then run `(cd "$(dirname "$cmd_bin")" && "$cmd_bin" /d /c start "" "$windows_path")` to use the Windows default application without passing CMD the WSL home directory as an unsupported UNC working directory.
 - For a text or code file, state its resolved location and show its useful contents or a relevant excerpt in this session.
   Do not launch an editor unless the captain separately asks for one.
 
