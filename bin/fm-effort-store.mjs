@@ -283,10 +283,30 @@ function readTaskUsage(dataDir, taskId, spawnedAt, issues) {
     issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-shape', detail: file})
     return {status: 'missing', detail: 'durable task usage snapshot is missing required totals'}
   }
+  if (!Array.isArray(usage.models) || !Array.isArray(usage.actual_models)) {
+    issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-model-shape', detail: file})
+    return {status: 'missing', detail: 'durable task usage snapshot has malformed model collections'}
+  }
+  const producedModelNames = []
+  for (const model of usage.models) {
+    const name = typeof model?.name === 'string' ? model.name : ''
+    const modelTotals = [model?.calls, model?.input_tokens, model?.output_tokens,
+      model?.cache_read_tokens, model?.cache_write_tokens, model?.cost_usd]
+    if (!name.trim() || name === '<synthetic>'
+        || modelTotals.some(value => typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+      issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-model-shape', detail: file})
+      return {status: 'missing', detail: 'durable task usage snapshot has a malformed model entry'}
+    }
+    producedModelNames.push(name)
+  }
+  if (usage.actual_models.some(name => typeof name !== 'string' || !name.trim())
+      || JSON.stringify(usage.actual_models) !== JSON.stringify(producedModelNames)) {
+    issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-model-identity', detail: file})
+    return {status: 'missing', detail: 'durable task usage snapshot model collections disagree'}
+  }
   const models = []
-  for (const model of Array.isArray(usage.models) ? usage.models : []) {
-    const name = typeof model.name === 'string' ? model.name : ''
-    if (!name || name === '<synthetic>') continue
+  for (const model of usage.models) {
+    const name = model.name
     models.push({
       provider: typeof model.provider === 'string' ? model.provider : '',
       model: name,

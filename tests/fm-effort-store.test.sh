@@ -362,6 +362,36 @@ MALFORMED_SESSIONS=$(query "SELECT tokens_in, tokens_out, notional_cost_usd, api
 pass 'malformed sessions makes the entire usage source missing'
 sed -i 's/"sessions":"malformed"/"sessions":1/' "$FM_HOME/data/910-lifecycle/usage.json"
 
+node - "$FM_HOME/data/910-lifecycle/usage.json" <<'NODE'
+const fs = require('fs')
+const file = process.argv[2]
+const usage = JSON.parse(fs.readFileSync(file, 'utf8'))
+usage.models = {}
+fs.writeFileSync(file, `${JSON.stringify(usage)}\n`)
+NODE
+"$STORE" capture 910-lifecycle --outcome pr-merged >/dev/null \
+  || fail 'malformed model collection capture failed'
+MALFORMED_MODELS=$(query "SELECT tokens_in, notional_cost_usd, sessions, (SELECT group_concat(model) FROM task_model WHERE task_id = '910-lifecycle') FROM task WHERE task_id = '910-lifecycle'")
+[ "$MALFORMED_MODELS" = 'NULL|NULL|NULL|NULL' ] \
+  || fail "usage with a malformed model collection was partially accepted: $MALFORMED_MODELS"
+pass 'malformed model collections make the entire usage source missing'
+write_usage 910-lifecycle 321 45 1.25 6 gpt-5.6-sol 2026-06-01T10:00:00Z
+
+node - "$FM_HOME/data/910-lifecycle/usage.json" <<'NODE'
+const fs = require('fs')
+const file = process.argv[2]
+const usage = JSON.parse(fs.readFileSync(file, 'utf8'))
+usage.actual_models = ['different-model']
+fs.writeFileSync(file, `${JSON.stringify(usage)}\n`)
+NODE
+"$STORE" capture 910-lifecycle --outcome pr-merged >/dev/null \
+  || fail 'inconsistent model collection capture failed'
+INCONSISTENT_MODELS=$(query "SELECT tokens_in, notional_cost_usd, sessions, (SELECT group_concat(model) FROM task_model WHERE task_id = '910-lifecycle') FROM task WHERE task_id = '910-lifecycle'")
+[ "$INCONSISTENT_MODELS" = 'NULL|NULL|NULL|NULL' ] \
+  || fail "usage with inconsistent model collections was partially accepted: $INCONSISTENT_MODELS"
+pass 'inconsistent model collections make the entire usage source missing'
+write_usage 910-lifecycle 321 45 1.25 6 gpt-5.6-sol 2026-06-01T10:00:00Z
+
 fm_write_meta "$FM_HOME/state/911-receipt-outcome.meta" \
   "worktree=$ROOTDIR/worktrees/receipt-outcome" \
   "project=$PROJECT" \
