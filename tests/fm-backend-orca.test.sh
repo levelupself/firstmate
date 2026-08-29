@@ -56,6 +56,13 @@ neutral_fm_root() {  # <dir> -> echoes a minimal root with a quiet guard
 exit 0
 SH
   chmod +x "$root/bin/fm-guard.sh"
+  for helper in fm-task-usage.sh fm-effort-store.sh fm-fleet-sync.sh; do
+    cat > "$root/bin/$helper" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+    chmod +x "$root/bin/$helper"
+  done
   printf '%s\n' "$root"
 }
 
