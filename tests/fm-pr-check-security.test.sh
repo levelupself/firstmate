@@ -78,6 +78,10 @@ SH
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
 case " $* " in
   *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;
+  *" createdAt "*)
+    [ "${FM_TEST_GH_CREATED_FAIL:-0}" = 0 ] || exit 1
+    printf '%s\n' "${FM_TEST_GH_CREATED_AT:-2026-08-20T12:34:56Z}"
+    ;;
   *" state "*)
     [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
     [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
@@ -537,8 +541,7 @@ test_valid_recording_and_merge_derivation() {
     || fail "canonical pr metadata was not exact"
   grep -qxF "pr_head=$expected" "$dir/home/state/task-a.meta" || fail "PR head metadata was not exact"
   opened_at=$(sed -n 's/^pr_opened_at=//p' "$dir/home/state/task-a.meta")
-  [[ "$opened_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
-    || fail "PR-open lifecycle time was not stamped"
+  [ "$opened_at" = 2026-08-20T12:34:56Z ] || fail "forge PR-open lifecycle time was not preserved"
   cmp -s "$POLL" "$dir/home/state/task-a.check.sh" || fail "published check was not byte-for-byte static"
   [ "$(file_mode "$dir/home/state/task-a.check.sh")" = 600 ] || fail "published check mode was not 0600"
   [ "$(file_mode "$dir/home/state/task-a.pr-poll")" = 600 ] || fail "published sidecar mode was not 0600"
@@ -589,6 +592,13 @@ test_valid_recording_and_merge_derivation() {
   assert_no_grep 'pr_head=' "$dir/home/state/task-a.meta" "multiline PR head reached metadata"
   assert_no_grep 'window=unexpected' "$dir/home/state/task-a.meta" "newline metadata key was injected"
 
+  dir=$(make_case unavailable-open-time)
+  write_task_meta "$dir"
+  FM_TEST_GH_CREATED_FAIL=1 run_check_entry "$dir" task-a https://github.com/o/r/pull/3 \
+    >/dev/null 2>/dev/null || fail "PR check failed when forge creation time was unavailable"
+  assert_no_grep '^pr_opened_at=' "$dir/home/state/task-a.meta" \
+    "PR check invented an open time when the forge timestamp was unavailable"
+
   dir=$(make_case lifecycle-compatible-id)
   write_task_meta "$dir" Task_A.1
   run_merge_entry "$dir" Task_A.1 https://github.com/o/r/pull/3 \
@@ -605,7 +615,7 @@ SH
   touch "$dir/home/state/.last-watcher-beat"
   FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
     "$TEARDOWN" Task_A.1 --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
-    || fail "safe lifecycle-compatible task ID could not be torn down"
+    || fail "safe lifecycle-compatible task ID could not be torn down: $(tr '\n' ' ' < "$dir/teardown.err")"
   [ ! -e "$dir/home/state/Task_A.1.meta" ] \
     || fail "safe lifecycle-compatible task teardown retained metadata"
 
