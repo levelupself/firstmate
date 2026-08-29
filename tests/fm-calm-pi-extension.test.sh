@@ -3084,7 +3084,7 @@ JS
 }
 
 test_interactive_terminal_e2e() {
-  local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot restored_snapshot working_snapshot working_response_snapshot restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_pid chrome_wait active_wait active_screen_wait boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_narrow_sails boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
+  local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot restored_snapshot working_snapshot working_response_snapshot restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_pid chrome_wait chrome_attempt chrome_profile chrome_log active_wait active_screen_wait boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_narrow_sails boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
   if ! command -v pi >/dev/null 2>&1 || ! command -v tmux >/dev/null 2>&1; then
     echo "skip: Pi Calm prerequisite pi or tmux not found for interactive E2E"
     return 0
@@ -3532,23 +3532,34 @@ const synthetic = entries.find((entry) => entry.type === "custom_message" && ent
 if (!synthetic || synthetic.display) process.exit(1);
 JS
   chrome=$(find_chrome) || fail "Chrome or Chromium is required for rendered export DOM assertions"
-  "$chrome" \
-    --headless=new \
-    --disable-gpu \
-    --no-sandbox \
-    --user-data-dir="$TMP_ROOT/chrome-profile" \
-    --remote-debugging-port=0 \
-    about:blank >/dev/null 2>&1 &
-  chrome_pid=$!
-  chrome_wait=0
-  while [ ! -s "$TMP_ROOT/chrome-profile/DevToolsActivePort" ] && [ "$chrome_wait" -lt 100 ]; do
-    kill -0 "$chrome_pid" 2>/dev/null || break
-    sleep 0.1
-    chrome_wait=$((chrome_wait + 1))
+  chrome_attempt=0
+  while [ "$chrome_attempt" -lt 3 ]; do
+    chrome_profile="$TMP_ROOT/chrome-profile-$chrome_attempt"
+    chrome_log="$TMP_ROOT/chrome-$chrome_attempt.log"
+    "$chrome" \
+      --headless=new \
+      --disable-gpu \
+      --no-sandbox \
+      --user-data-dir="$chrome_profile" \
+      --remote-debugging-port=0 \
+      about:blank >"$chrome_log" 2>&1 &
+    chrome_pid=$!
+    chrome_wait=0
+    while [ ! -s "$chrome_profile/DevToolsActivePort" ] && [ "$chrome_wait" -lt 100 ]; do
+      kill -0 "$chrome_pid" 2>/dev/null || break
+      sleep 0.1
+      chrome_wait=$((chrome_wait + 1))
+    done
+    [ -s "$chrome_profile/DevToolsActivePort" ] && break
+    kill "$chrome_pid" 2>/dev/null || true
+    wait "$chrome_pid" 2>/dev/null || true
+    chrome_attempt=$((chrome_attempt + 1))
   done
-  [ -s "$TMP_ROOT/chrome-profile/DevToolsActivePort" ] \
-    || fail "could not start Chrome for calm-mode HTML export assertions"
-  CHROME_PORT=$(head -n 1 "$TMP_ROOT/chrome-profile/DevToolsActivePort") \
+  if [ ! -s "$chrome_profile/DevToolsActivePort" ]; then
+    sed -n '1,80p' "$chrome_log" >&2
+    fail "could not start Chrome for calm-mode HTML export assertions after 3 attempts"
+  fi
+  CHROME_PORT=$(head -n 1 "$chrome_profile/DevToolsActivePort") \
     EXPORT_FILE="$export_file" \
     EXPORT_DOM="$export_dom" \
     node --experimental-websocket <<'JS' || fail "could not render calm-mode HTML export DOM"
