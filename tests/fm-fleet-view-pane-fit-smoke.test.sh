@@ -170,8 +170,8 @@ EOF
     || fail "the painter emitted a $widest-column row after the drawn rectangle narrowed to 14 columns: $out"
   [ "$visible" -le 4 ] \
     || fail "the painter emitted $visible rows after the drawn rectangle shortened to 4 rows"
-  assert_contains "$out" "more rows" \
-    "the drawn-height budget did not disclose the clipped tail"
+  assert_contains "$out" "hidden" \
+    "the drawn-height budget did not disclose the project-local clipped tail"
   pass "authoritative drawn geometry bounds every redraw even while its pty reports a larger size"
 }
 
@@ -194,7 +194,7 @@ EOF
     || fail "the overflow summary wrapped and scrolled the frame head to: $first"
   [ "$widest" -le 21 ] \
     || fail "the overflow summary allowed a $widest-column physical row in a 21-column pane"
-  assert_contains "$out" "more rows" "the clipped overflow summary lost its meaning"
+  assert_contains "$out" "hidden" "the clipped project-local overflow summary lost its meaning"
   pass "the overflow summary is clipped to the drawn width and cannot scroll a fitted frame"
 }
 
