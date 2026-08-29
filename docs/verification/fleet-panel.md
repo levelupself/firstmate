@@ -4,6 +4,7 @@ Audience: maintainer verification.
 
 This record holds reusable evidence for the fleet panel projection and watch-mode repaint guarantees.
 The implementation is shared by `bin/fm-fleet-view.sh` and `bin/fm-cockpit.sh`, while `tests/fm-fleet-snapshot-view.test.sh` owns automated readiness agreement, section ordering, height truncation, independent section rendering, and residual-line coverage.
+`tests/fm-fleet-view-project-groups.test.sh` owns project grouping, fair per-project truncation, distinguishing id tails, and the stable no-repository group.
 `tests/fm-fleet-view-pane-fit-smoke.test.sh` owns the real-pane fit that a `LINES`-driven fixture cannot reach, because supplying `LINES` takes the explicit-override branch and never measures anything.
 `tests/fm-cockpit.test.sh` owns the generated Herdr pane-command guarantee that every section watcher resolves through the tracked code root while receiving the operational home separately through `FM_HOME`.
 
@@ -61,6 +62,23 @@ done
 ```
 
 The observed pane changed directly between complete frames without a visible blank refresh.
+
+## Project groups and fair row limits
+
+Verified on 2026-08-29 with the production fleet renderer against a three-project snapshot fixture.
+
+```sh
+bash tests/fm-fleet-view-project-groups.test.sh
+```
+
+The eleven-row decision pane showed Firstmate, mtg, and psychogenesis headers together.
+The noisy psychogenesis group received the same two-row cap as its peers, reported four hidden rows on its own header, and preserved the `alt-cost-rule` and `communal-zone-lifecycle` tails from ids with a long shared prefix.
+The quiet mtg group retained its only row.
+The same executable check covered READY, IN FLIGHT, and BLOCKED grouping and assigned a record with no repository value to the stable `No repository` group.
+
+```text
+ok - narrow fleet decisions group three projects, preserve id tails, and truncate fairly
+```
 
 ## Stable generated watcher command
 

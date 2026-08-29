@@ -20,6 +20,9 @@
 # reason, and its heading counts the two apart whenever any row needs a check.
 # No dependency-ready row is dropped: the captain sees the whole queue and the
 # count never claims the backlog confirmed more clear work than it did.
+# Visible work is grouped under compact project headers in every live section.
+# Each project receives the same row cap for the available pane height, and its
+# header reports that project's hidden count instead of one global list tail.
 # Watch mode uses only bash, jq, terminal control sequences, and sleep; a failed
 # snapshot or render prints an explicit degraded panel and retries next redraw.
 set -u
@@ -51,6 +54,8 @@ READY holds every queued task with no open dependency and no active hold. Rows
 that can be handed to a worker now are listed with a bullet; rows the backlog
 cannot confirm are listed with a "?" and the reason, and the heading counts the
 two apart.
+Live sections group rows by project and divide limited row capacity evenly
+between those projects. A project header reports its own hidden-row count.
 EOF
 }
 
@@ -217,6 +222,7 @@ render_once() {
   fi
 
   if ! rendered=$(printf '%s\n' "$snapshot" | jq -r --argjson width "$width" \
+    --argjson height "$height" \
     --argjson sections "$SECTIONS_JSON" --arg last "$LAST_SECTION" \
     --argjson banner "$BANNER" '
     # One section is rendered when it was selected, and separated from the next
@@ -230,6 +236,60 @@ render_once() {
         elif $n <= 1 then .[:$n]
         else .[:($n - 1)] + "…" end;
     def line($prefix; $value): $prefix + ($value | clip(($width - ($prefix | length)) | if . < 1 then 1 else . end));
+    def middle_clip($n):
+      clean
+      | if length <= $n then .
+        elif $n <= 1 then .[:$n]
+        else (($n - 1) / 2 | floor) as $left
+          | .[:$left] + "…" + .[-($n - $left - 1):]
+        end;
+    def project_label($repo; $project):
+      if (($repo // "") | tostring | length) > 0 then
+        (($repo | tostring | split("/") | last | sub("[.]git$"; "")) as $name
+         | if ($name | ascii_downcase) == "firstmate" then "Firstmate" else $name end)
+      else
+        (($project // "") | tostring) as $name
+        | if ($name == "firstmate" or ($name | endswith("/firstmate"))) then "Firstmate"
+          elif ($name | contains("/projects/")) then ($name | split("/") | last)
+          elif ($name != "" and ($name | contains("/") | not)) then $name
+          else "No repository"
+          end
+      end;
+    def task_project($t): project_label($t.backlog.repo; $t.project);
+    def backlog_project($row): project_label($row.repo; null);
+    def row_line($row):
+      (($width - ($row.marker | length)) | if . < 1 then 1 else . end) as $available
+      | ($row.joiner // " · ") as $joiner
+      | ($row.id | middle_clip($available)) as $id
+      | if (($row.id | clean | length) + ($joiner | length) + ($row.detail | clean | length)) <= $available then
+          line($row.marker; ($row.id + $joiner + $row.detail))
+        elif ($row.id | clean | length) <= (($available * 3 / 5) | floor) then
+          line($row.marker; ($row.id + $joiner + $row.detail))
+        else $row.marker + $id
+        end;
+    # A project header costs one row. The remaining rows are divided evenly
+    # between projects, so every group gets one task before any group gets a
+    # second. Unused capacity is intentionally not reassigned: the policy is
+    # deterministic for the rendered group set, and one noisy project can never
+    # consume the share of another project.
+    def grouped_lines($rows; $budget):
+      if ($rows | length) == 0 then []
+      else
+        ($rows | sort_by([.project_sort, .state_rank, .priority, .order, .id]) | group_by(.project)) as $groups
+        | ($groups | length) as $group_count
+        | ([1, ((($budget - $group_count) / $group_count) | floor)] | max) as $cap
+        | [range(0; $group_count) as $index
+           | ($groups[$index]) as $group
+           | ([($group | length), $cap] | min) as $shown
+           | (($group | length) - $shown) as $hidden
+           | ("[" + $group[0].project + "]"
+              + (if $hidden > 0 then " · +\($hidden) hidden" else "" end) | middle_clip($width)),
+             ($group[:$shown][] | row_line(.))]
+      end;
+    def section_budget:
+      if $banner then [$height - 6, 2] | max
+      else [$height - 1, 2] | max
+      end;
     def task_title($t): ($t.backlog.title // $t.project // $t.id // "unknown");
     def task_step($t):
       (($t.current_state.detail // "") as $detail
@@ -262,32 +322,40 @@ render_once() {
     | ([.tasks[]? as $task
         | ($task.hints.open_decisions // [])[]?
         | {id:($task.id // "unknown"),verb:(.verb // "needs-decision"),
-           summary:(.summary // "reason unavailable"),artifact:task_artifact($task)}]) as $decision_waiting
+           summary:(.summary // "reason unavailable"),artifact:task_artifact($task),
+           project:task_project($task),priority:($task.backlog.priority // 999999),
+           order:($task.backlog.order // 999999)}]) as $decision_waiting
     | (($decision_waiting
        + [$captain_held[]
           | {id:(.id // "unknown"),verb:"needs-decision",
-             summary:(.hold // .blocked_reason // .body_excerpt // .title // "reason unavailable"),artifact:null}]
+             summary:(.hold // .blocked_reason // .body_excerpt // .title // "reason unavailable"),artifact:null,
+             project:backlog_project(.),priority:(.priority // 999999),order:(.order // 999999)}]
        + [$tasks[]
           | select(waiting_on_merge(.))
           | {id:(.id // "unknown"),verb:"merge",
              summary:"merge approval pending",
-             artifact:task_artifact(.)}])
+             artifact:task_artifact(.),project:task_project(.),
+             priority:(.backlog.priority // 999999),order:(.backlog.order // 999999)}])
        | reduce .[] as $row ([];
            if ([.[].id] | index($row.id)) == null then . + [$row] else . end)
-       | sort_by([if .verb == "needs-decision" then 0 else 1 end, .id])) as $waiting
+       | map(. + {marker:"! ",detail:(.summary + (if .artifact == null then "" else " · " + .artifact end)),
+                  project_sort:(.project | ascii_downcase),
+                  state_rank:(if .verb == "needs-decision" then 0 else 1 end)})
+       | sort_by([.project_sort,.state_rank,.priority,.order,.id])) as $waiting
     | ([$waiting[].id] | unique) as $waiting_ids
     | ([$tasks[]
         | select((.current_state.state // "unknown") == "done" and (waiting_on_merge(.) | not))
-        | {id:(.id // "unknown"),title:task_title(.),summary:task_step(.),artifact:task_artifact(.)}]) as $live_finished
+        | {id:(.id // "unknown"),title:task_title(.),summary:task_step(.),artifact:task_artifact(.),
+           repo:(.backlog.repo // null),project:(.project // null)}]) as $live_finished
     | ([.backlog.records[]?
         | select(.state == "done" and .structured == true
                  and ((.id as $id | $current_task_ids | index($id)) == null))
         | {id,title,summary:((.completion.verb // "done") + (if (.completion.date // "") == "" then "" else " " + .completion.date end)),
-           artifact:(.pr_url // .report_path // .local_note // null),completion}]
+           artifact:(.pr_url // .report_path // .local_note // null),completion,repo,project:null}]
        + [(.secondmate_landed.records // [])[]?
           | select((.id as $id | $current_task_ids | index($id)) == null)
           | {id,title,summary:((.completion.verb // "done") + (if (.completion.date // "") == "" then "" else " " + .completion.date end)),
-             artifact:(.pr_url // .report_path // .local_note // null),completion}]
+             artifact:(.pr_url // .report_path // .local_note // null),completion,repo:(.repo // null),project:(.project // null)}]
        | sort_by([(.completion.date // ""),(.id // "")]) | reverse) as $history_finished
     | (reduce ($live_finished + $history_finished)[] as $row
          ([]; if ([.[].id] | index($row.id)) == null then . + [$row] else . end)) as $finished
@@ -313,9 +381,7 @@ render_once() {
       (if ($waiting | length) == 0 then
          "  None."
        else
-         $waiting[]
-         | line("! "; (.id + " · " + .summary
-                        + (if .artifact == null then "" else " · " + .artifact end)))
+         grouped_lines($waiting; section_budget)[]
        end),
       gap("waiting")
        else empty end),
@@ -326,37 +392,49 @@ render_once() {
        (if ($ready | length) == 0 then
           "  None."
         else
-          ($ready_clear[] | line("• "; ((.id // "unknown") + " · " + (.title // "unknown")))),
-          # The reason replaces the title rather than following it: on a narrow
-          # pane the title would push the reason out of the row, which is the
-          # one thing this line exists to say. Firstmate ids read as titles.
-          ($ready_review[] | line("? "; ((.id // "unknown") + " · " + review_text)))
+          grouped_lines(
+            ([$ready_clear[] | {id:(.id // "unknown"),detail:(.title // "unknown"),marker:"• ",
+                                project:backlog_project(.),project_sort:(backlog_project(.) | ascii_downcase),
+                                state_rank:0,priority:(.priority // 999999),order:(.order // 999999)}]
+             + [$ready_review[] | {id:(.id // "unknown"),detail:review_text,marker:"? ",
+                                   project:backlog_project(.),project_sort:(backlog_project(.) | ascii_downcase),
+                                   state_rank:1,priority:(.priority // 999999),order:(.order // 999999)}]);
+            section_budget)[]
         end),
        gap("ready")
        else empty end),
       (if wanted("in-flight") then
        ("IN FLIGHT (\($in_flight | length))" | clip($width)),
-       (if ($in_flight | length) == 0 then
+        (if ($in_flight | length) == 0 then
           "  None."
         else
-          $in_flight[]
-          | (.current_state.state // "unknown") as $state
-          | line("• "; ((.id // "unknown")
-                        + (if $state == "working" then ""
-                           elif $state == "unknown" then " · state unavailable"
-                           else " · " + $state end)
-                        + " · " + task_title(.)))
+          grouped_lines(
+            [$in_flight[]
+             | (.current_state.state // "unknown") as $state
+             | {id:(.id // "unknown"),marker:"• ",project:task_project(.),
+                project_sort:(task_project(.) | ascii_downcase),
+                state_rank:(if $state == "working" then 0 elif $state == "unknown" then 2 else 1 end),
+                priority:(.backlog.priority // 999999),order:(.backlog.order // 999999),
+                detail:((if $state == "working" then ""
+                         elif $state == "unknown" then "state unavailable · "
+                         else $state + " · " end) + task_title(.))}];
+            section_budget)[]
         end),
        gap("in-flight")
        else empty end),
       (if wanted("blocked") then
        ("BLOCKED (\($blocked | length))" | clip($width)),
-       (if ($blocked | length) == 0 then
+        (if ($blocked | length) == 0 then
           "  None."
         else
-          $blocked[]
-          | line("• "; ((.id // "unknown") + " ← " + ((.unresolved_blocker_ids // []) | join(","))
-                        + (if (.blocked_reason // "") == "" then "" else " · " + .blocked_reason end)))
+          grouped_lines(
+            [$blocked[]
+             | {id:(.id // "unknown"),marker:"• ",joiner:" ",project:backlog_project(.),
+                project_sort:(backlog_project(.) | ascii_downcase),state_rank:0,
+                priority:(.priority // 999999),order:(.order // 999999),
+                detail:("← " + ((.unresolved_blocker_ids // []) | join(","))
+                        + (if (.blocked_reason // "") == "" then "" else " · " + .blocked_reason end))}];
+            section_budget)[]
         end),
        gap("blocked")
        else empty end),
@@ -366,7 +444,7 @@ render_once() {
          "  Nothing has finished successfully."
        else
          $finished[:5][]
-         | line("• "; ((.id // "unknown") + " · " + (.title // "unknown"))),
+         | line("• "; ("[" + project_label(.repo; .project) + "] " + (.id // "unknown") + " · " + (.title // "unknown"))),
            line("  "; (.summary // "done")),
            (if .artifact == null then empty else line("  "; .artifact) end)
        end),
@@ -378,7 +456,7 @@ render_once() {
          "  No failed tasks."
        else
          $failed[]
-         | line("• "; ((.id // "unknown") + " · " + task_title(.))),
+         | line("• "; ("[" + task_project(.) + "] " + (.id // "unknown") + " · " + task_title(.))),
            line("  "; task_step(.))
        end),
       gap("failed")
