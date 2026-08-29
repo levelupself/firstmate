@@ -354,6 +354,34 @@ REVERSED_PR=$(query "SELECT launch_to_pr_seconds FROM task WHERE task_id = '914-
 [ "$REVERSED_PR" = 'NULL' ] || fail "reversed launch-to-PR was not missing: $REVERSED_PR"
 pass 'PR timestamps before launch produce a missing duration'
 
+fm_write_meta "$FM_HOME/state/916-invalid-launch.meta" \
+  "worktree=$ROOTDIR/worktrees/invalid-launch" \
+  "project=$PROJECT" \
+  "kind=ship" \
+  "spawned_at=2026-02-30T10:00:00Z" \
+  "pr_opened_at=2026-03-02T11:00:00Z" \
+  "teardown_at=2026-03-02T12:00:00Z" \
+  "outcome=forced"
+"$STORE" capture 916-invalid-launch >/dev/null || fail 'invalid launch capture failed'
+INVALID_LAUNCH=$(query "SELECT started_at, pr_opened_at, launch_to_pr_seconds, teardown_at, outcome FROM task WHERE task_id = '916-invalid-launch'")
+[ "$INVALID_LAUNCH" = 'NULL|NULL|NULL|NULL|NULL' ] \
+  || fail "an impossible launch authorized lifecycle fields: $INVALID_LAUNCH"
+pass 'impossible launch timestamps invalidate dependent lifecycle fields'
+
+fm_write_meta "$FM_HOME/state/917-invalid-lifecycle.meta" \
+  "worktree=$ROOTDIR/worktrees/invalid-lifecycle" \
+  "project=$PROJECT" \
+  "kind=ship" \
+  "spawned_at=2026-02-01T10:00:00Z" \
+  "pr_opened_at=2026-02-30T11:00:00Z" \
+  "teardown_at=2026-02-30T12:00:00Z" \
+  "outcome=forced"
+"$STORE" capture 917-invalid-lifecycle >/dev/null || fail 'invalid lifecycle capture failed'
+INVALID_LIFECYCLE=$(query "SELECT pr_opened_at, launch_to_pr_seconds, ended_at, wall_clock_seconds, teardown_at, outcome FROM task WHERE task_id = '917-invalid-lifecycle'")
+[ "$INVALID_LIFECYCLE" = 'NULL|NULL|NULL|NULL|NULL|NULL' ] \
+  || fail "impossible lifecycle timestamps were accepted: $INVALID_LIFECYCLE"
+pass 'impossible PR, end, and teardown timestamps remain missing'
+
 fm_write_meta "$FM_HOME/state/915-unproven-outcome.meta" \
   "worktree=$ROOTDIR/worktrees/unproven-outcome" \
   "project=$PROJECT" \

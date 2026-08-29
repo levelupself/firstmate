@@ -785,10 +785,15 @@ function isoSecondsBetween(from, to) {
   return Math.round((b - a) / 1000)
 }
 
-function validatedLifecycleTimestamp(value, startedAt) {
+function canonicalTimestamp(value) {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value || '')) return null
   const milliseconds = Date.parse(value)
   if (!Number.isFinite(milliseconds) || new Date(milliseconds).toISOString().replace('.000Z', 'Z') !== value) return null
+  return value
+}
+
+function validatedLifecycleTimestamp(value, startedAt) {
+  if (!canonicalTimestamp(startedAt) || !canonicalTimestamp(value)) return null
   return isoSecondsBetween(startedAt, value) === null ? null : value
 }
 
@@ -1131,19 +1136,23 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
   for (const task of tasks) {
     const row = task.raw
     const annotation = task.annotation
+    const startedAt = canonicalTimestamp(row?.started_at)
+    const endedAt = validatedLifecycleTimestamp(row?.ended_at, startedAt)
+    const prOpenedAt = validatedLifecycleTimestamp(row?.pr_opened_at, startedAt)
+    const teardownAt = validatedLifecycleTimestamp(row?.teardown_at, startedAt)
     const burn = usageByTask.get(task.taskId) || {status: 'missing', detail: 'durable task usage snapshot was not consulted'}
-    const receipt = readMergeReceipt(options.dataDir, task.taskId, row?.started_at)
-    const localReceiptCandidate = readLocalLandingReceipt(options.dataDir, task.taskId, row?.started_at)
+    const receipt = readMergeReceipt(options.dataDir, task.taskId, startedAt)
+    const localReceiptCandidate = readLocalLandingReceipt(options.dataDir, task.taskId, startedAt)
     const localReceipt = localReceiptCandidate && row?.project === localReceiptCandidate.project ? localReceiptCandidate : null
     const gitResult = gitResults.results.get(task.taskId) || {status: 'missing', detail: 'git source not consulted'}
     const structure = gitResult.status === 'present' ? gitResult.structure : null
     const totals = burn.status === 'present' ? burn.totals : null
     const stampedMergedAt = row?.outcome === 'pr-merged'
-      ? validatedLifecycleTimestamp(row.merged_at, row.started_at) : null
+      ? validatedLifecycleTimestamp(row.merged_at, startedAt) : null
     const stampedLocalLandedAt = row?.outcome === 'local-landed'
-      ? validatedLifecycleTimestamp(row.local_landed_at, row.started_at) : null
+      ? validatedLifecycleTimestamp(row.local_landed_at, startedAt) : null
     const teardownOutcome = ['forced', 'scout-complete'].includes(row?.outcome)
-      && validatedLifecycleTimestamp(row.teardown_at ?? row.ended_at, row.started_at) ? row.outcome : null
+      && teardownAt ? row.outcome : null
     const provenOutcome = receipt?.merged_at ? 'pr-merged'
       : localReceipt?.local_landed_at ? 'local-landed'
         : stampedMergedAt ? 'pr-merged'
@@ -1162,17 +1171,17 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
       bind(row?.effort),
       bind(row?.backend ?? annotation?.backend),
       bind(row?.worktree),
-      bind(row?.started_at),
-      bind(row?.started_at),
-      bind(row?.ended_at),
-      bind(row?.started_at && row?.ended_at ? isoSecondsBetween(row.started_at, row.ended_at) : null),
+      bind(startedAt),
+      bind(startedAt),
+      bind(endedAt),
+      bind(endedAt ? isoSecondsBetween(startedAt, endedAt) : null),
       bind(totals ? totals.agent_active_seconds : null),
       bind(gitResult.status === 'present' ? gitResult.first_commit_at : null),
-      bind(row?.pr_opened_at),
-      bind(row?.started_at && row?.pr_opened_at ? isoSecondsBetween(row.started_at, row.pr_opened_at) : null),
+      bind(prOpenedAt),
+      bind(prOpenedAt ? isoSecondsBetween(startedAt, prOpenedAt) : null),
       bind(receipt?.merged_at || stampedMergedAt),
       bind(localReceipt?.local_landed_at || stampedLocalLandedAt),
-      bind(row?.teardown_at ?? row?.ended_at),
+      bind(teardownAt),
       bind(structure?.files_changed),
       bind(structure?.prod_src_files),
       bind(structure?.distinct_areas),
