@@ -587,6 +587,19 @@ LOCAL_RECEIPT_OUTCOME=$(query "SELECT local_landed_at, outcome FROM task WHERE t
   || fail "a completed local receipt did not supply lifecycle proof: $LOCAL_RECEIPT_OUTCOME"
 pass 'completed local receipt supplies local landing lifecycle proof'
 
+for duplicate_field in task_id event_at; do
+  case "$duplicate_field" in
+    task_id) printf '%s\n' 'task_id=912-local-receipt' >> "$FM_HOME/data/local-landings/912-local-receipt.receipt" ;;
+    event_at) printf '%s\n' 'event_at=2026-06-03T11:00:00Z' >> "$FM_HOME/data/local-landings/912-local-receipt.receipt" ;;
+  esac
+  "$STORE" capture 912-local-receipt >/dev/null || fail "duplicate $duplicate_field local receipt aborted capture"
+  DUPLICATE_LOCAL=$(query "SELECT local_landed_at, outcome FROM task WHERE task_id = '912-local-receipt'")
+  [ "$DUPLICATE_LOCAL" = 'NULL|NULL' ] \
+    || fail "duplicate $duplicate_field local receipt proved landing: $DUPLICATE_LOCAL"
+  sed -i '$d' "$FM_HOME/data/local-landings/912-local-receipt.receipt"
+done
+pass 'duplicate local receipt identity and event time remain untrusted'
+
 for malformed_event_at in '2026-02-30T11:00:00Z' '2026-06-03T09:59:59Z' ''; do
   sed -i "s/^event_at=.*/event_at=$malformed_event_at/" "$FM_HOME/data/local-landings/912-local-receipt.receipt"
   "$STORE" capture 912-local-receipt >/dev/null || fail 'malformed local receipt aborted capture'

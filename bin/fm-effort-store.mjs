@@ -1127,7 +1127,11 @@ function readMergeReceipt(dataDir, taskId, spawnedAt) {
 
 function readLocalLandingReceipt(dataDir, taskId, spawnedAt) {
   if (!TASK_ID_PATTERN.test(taskId)) return null
-  const receipt = readMeta(path.join(dataDir, 'local-landings', `${taskId}.receipt`))
+  const receipt = readMetaWithRequiredFields(
+    path.join(dataDir, 'local-landings', `${taskId}.receipt`),
+    ['schema', 'task_id', 'spawned_at', 'project', 'branch', 'default_branch',
+      'before_sha', 'landed_sha', 'phase', 'event_at'],
+  )
   if (!receipt || receipt.schema !== 'fm-local-landing.v1' || receipt.task_id !== taskId || receipt.spawned_at !== spawnedAt || receipt.phase !== 'landed') return null
   const landedAt = validatedLifecycleTimestamp(receipt.event_at, spawnedAt)
   if (!landedAt) return null
