@@ -157,6 +157,15 @@ query() {  # <sql>
   || fail 'annotate should record a task'
 "$STORE" annotate 902-extend-memory --failure-mode loudly --round 1:discovery >/dev/null \
   || fail 'annotate should record a second task'
+ANNOTATION_SIZE=$(wc -c < "$FM_HOME/data/effort-annotations.jsonl")
+for lifecycle_option in --outcome --merged-at --pr-opened-at; do
+  if "$STORE" annotate 902-extend-memory "$lifecycle_option" merged >/dev/null 2>&1; then
+    fail "annotate accepted lifecycle-owned option $lifecycle_option"
+  fi
+done
+[ "$(wc -c < "$FM_HOME/data/effort-annotations.jsonl")" -eq "$ANNOTATION_SIZE" ] \
+  || fail 'rejected lifecycle annotation options changed the durable annotation record'
+pass 'manual annotations reject lifecycle-owned outcome and timestamp fields'
 
 # --- rebuild ----------------------------------------------------------------
 
@@ -164,6 +173,11 @@ REBUILD_OUT=$("$STORE" rebuild 2>&1) || fail "rebuild failed: $REBUILD_OUT"
 assert_contains "$REBUILD_OUT" 'rebuilt 9 tasks' 'rebuild should report every task it discovered'
 assert_present "$DB" 'rebuild should create the store'
 pass 'rebuild builds the store from raw lifecycle capture, durable task usage, and git'
+
+UNPROVEN_MERGE=$(query "SELECT merged_at FROM task WHERE task_id = '901-introduce-memory'")
+[ "$UNPROVEN_MERGE" = 'NULL' ] \
+  || fail "git history invented an unsanctioned merge timestamp: $UNPROVEN_MERGE"
+pass 'merge timestamp remains missing without lifecycle proof'
 
 # Rebuild consumed the durable snapshots and never queried account-wide logs.
 [ ! -e "$ROOTDIR/codeburn-called" ] || fail 'rebuild unexpectedly queried mutable codeburn history'
@@ -342,10 +356,10 @@ fm_write_meta "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" \
   "merged_epoch=1780398000"
 "$STORE" capture 911-receipt-outcome >/dev/null \
   || fail 'receipt-backed lifecycle capture failed'
-RECEIPT_OUTCOME=$(query "SELECT outcome FROM task WHERE task_id = '911-receipt-outcome'")
-[ "$RECEIPT_OUTCOME" = 'pr-merged' ] \
-  || fail "a durable sanctioned merge receipt did not supply the missing raw outcome: $RECEIPT_OUTCOME"
-pass 'durable merge receipt supplies a missing raw teardown outcome'
+RECEIPT_OUTCOME=$(query "SELECT merged_at IS NOT NULL, outcome FROM task WHERE task_id = '911-receipt-outcome'")
+[ "$RECEIPT_OUTCOME" = '1|pr-merged' ] \
+  || fail "a durable sanctioned merge receipt did not supply merge lifecycle proof: $RECEIPT_OUTCOME"
+pass 'durable merge receipt supplies missing merge lifecycle proof'
 
 CAPTURE_FINGERPRINT=$("$STORE" fingerprint)
 CAPTURE_RAW_SIZE=$(wc -c < "$RAW")

@@ -34,8 +34,7 @@
 #   --findings <n> --review-rounds <n> --ask-user <n> --gate-failures <n>
 #   --title <text> --branch <name> --pr-url <url> --backend <name>
 #   --commit <sha>                  repeatable; the task-to-commit link
-#   --outcome merged|abandoned --reverted yes|no
-#   --pr-opened-at <iso> --merged-at <iso>
+#   --reverted yes|no
 #
 # `capture` is the lifecycle-owned append-and-rebuild path. It reads stamped
 # task metadata and the durable usage snapshot. Operators normally use `report`.
