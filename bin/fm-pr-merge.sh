@@ -187,6 +187,24 @@ write_provenance_receipt() {
 
 AUTHORIZATION=
 if [ -e "$PROVENANCE_RECEIPT" ] || [ -L "$PROVENANCE_RECEIPT" ]; then
+  if ! receipt_matches_request \
+    && [ -n "$CURRENT_SPAWNED_AT" ] \
+    && [ "$(receipt_value schema)" = fm-pr-merge.v1 ] \
+    && [ "$(receipt_value task_id)" = "$ID" ] \
+    && [ "$(receipt_value pr)" = "$URL" ] \
+    && [ "$(receipt_value phase)" = merged ] \
+    && [ "$(receipt_value spawned_at)" != "$CURRENT_SPAWNED_AT" ]; then
+    HISTORY_DIR="$PROVENANCE_DIR/history"
+    [ ! -e "$HISTORY_DIR" ] || { [ -d "$HISTORY_DIR" ] && [ ! -L "$HISTORY_DIR" ]; } \
+      || { echo "error: merge provenance history is unavailable" >&2; exit 1; }
+    mkdir -p "$HISTORY_DIR"
+    OLD_SPAWNED_AT=$(receipt_value spawned_at)
+    HISTORY_RECEIPT="$HISTORY_DIR/$ID.${OLD_SPAWNED_AT//:/-}.receipt"
+    [ ! -e "$HISTORY_RECEIPT" ] || { echo "error: merge provenance history conflicts" >&2; exit 1; }
+    mv "$PROVENANCE_RECEIPT" "$HISTORY_RECEIPT"
+  fi
+fi
+if [ -e "$PROVENANCE_RECEIPT" ] || [ -L "$PROVENANCE_RECEIPT" ]; then
   receipt_matches_request || {
     echo "error: merge provenance conflicts with this task and PR" >&2
     exit 1

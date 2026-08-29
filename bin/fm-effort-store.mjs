@@ -237,7 +237,7 @@ function finiteNonnegative(value) {
   return Number.isFinite(number) && number >= 0 ? number : null
 }
 
-function readTaskUsage(dataDir, taskId, issues) {
+function readTaskUsage(dataDir, taskId, spawnedAt, issues) {
   if (!TASK_ID_PATTERN.test(taskId)) {
     return {status: 'missing', detail: 'task id is not safe for a durable usage path'}
   }
@@ -258,6 +258,10 @@ function readTaskUsage(dataDir, taskId, issues) {
   if (usage.schema === 'fm-task-usage.v1') {
     issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-pre-deterministic-attribution', detail: file})
     return {status: 'missing', detail: 'legacy usage snapshot predates deterministic project attribution'}
+  }
+  if (!spawnedAt || usage.spawned_at !== spawnedAt) {
+    issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-launch-identity', detail: file})
+    return {status: 'missing', detail: 'durable task usage snapshot belongs to another launch'}
   }
   const totals = {
     tokens_in: finiteNonnegative(usage.tokens?.input),
@@ -315,7 +319,7 @@ function discoverUsageTaskIds(dataDir) {
 
 function collectUsage(tasks, options, issues) {
   const byTask = new Map()
-  for (const task of tasks) byTask.set(task.taskId, readTaskUsage(options.dataDir, task.taskId, issues))
+  for (const task of tasks) byTask.set(task.taskId, readTaskUsage(options.dataDir, task.taskId, task.raw?.started_at, issues))
   return byTask
 }
 
