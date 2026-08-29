@@ -353,6 +353,15 @@ grep -q '"baseline":false' "$FM_HOME/data/910-lifecycle/usage.json" \
 pass 'usage without a valid launch baseline remains missing'
 sed -i 's/"baseline":false/"baseline":true/' "$FM_HOME/data/910-lifecycle/usage.json"
 
+sed -i 's/"sessions":1/"sessions":"malformed"/' "$FM_HOME/data/910-lifecycle/usage.json"
+"$STORE" capture 910-lifecycle --outcome pr-merged >/dev/null \
+  || fail 'malformed sessions capture failed'
+MALFORMED_SESSIONS=$(query "SELECT tokens_in, tokens_out, notional_cost_usd, api_calls, sessions, (SELECT group_concat(model) FROM task_model WHERE task_id = '910-lifecycle') FROM task WHERE task_id = '910-lifecycle'")
+[ "$MALFORMED_SESSIONS" = 'NULL|NULL|NULL|NULL|NULL|NULL' ] \
+  || fail "usage with malformed sessions was partially accepted: $MALFORMED_SESSIONS"
+pass 'malformed sessions makes the entire usage source missing'
+sed -i 's/"sessions":"malformed"/"sessions":1/' "$FM_HOME/data/910-lifecycle/usage.json"
+
 fm_write_meta "$FM_HOME/state/911-receipt-outcome.meta" \
   "worktree=$ROOTDIR/worktrees/receipt-outcome" \
   "project=$PROJECT" \

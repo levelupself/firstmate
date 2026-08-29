@@ -278,7 +278,7 @@ function readTaskUsage(dataDir, taskId, spawnedAt, issues) {
     sessions: finiteNonnegative(usage.sessions),
     agent_active_seconds: finiteNonnegative(usage.agent_active_seconds),
   }
-  const required = ['tokens_in', 'tokens_out', 'tokens_cached_read', 'tokens_cached_write', 'notional_cost_usd', 'api_calls']
+  const required = ['tokens_in', 'tokens_out', 'tokens_cached_read', 'tokens_cached_write', 'notional_cost_usd', 'api_calls', 'sessions']
   if (required.some(key => totals[key] === null)) {
     issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-shape', detail: file})
     return {status: 'missing', detail: 'durable task usage snapshot is missing required totals'}
