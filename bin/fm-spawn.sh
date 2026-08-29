@@ -175,6 +175,9 @@
 # muse installs no hook at all - its plugin engine is off in the default build - so
 # it writes state/<id>.muse-session to bind the pane to muse's own session event
 # log; muse is crewmate/scout only and is refused for --secondmate.
+# codex installs no per-task hook either: it writes state/<id>.codex-session to
+# bind the pane to codex's own session rollout log (sessions root, this task's
+# worktree, and the rollouts that already named it).
 # cursor installs no per-task hook either: it writes state/<id>.cursor-session to
 # bind the pane to cursor's own conversation transcript (projects root, the exact
 # workspace path cursor records in .workspace-trusted, and the conversations that
@@ -2486,13 +2489,37 @@ EOF
       ;;
     codex*)
       # Semantic busy-state source negotiation (bin/fm-busy-lib.sh owns the
-      # probes and the evidence). Neither Codex path is usable on the
+      # probes and the evidence). Neither Codex PUSH path is usable on the
       # installed binary: a pane worker's turns are not observable through
       # the app-server protocol, and its lifecycle hooks did not fire for a
-      # firstmate-launched worker. Codex therefore classifies unknown with
-      # an explicit reason rather than falling back to idle, and no busy
-      # wiring is installed. The turn-end NOTIFICATION marker still rides
-      # the launch command via -c notify=[...] and __TURNEND__.
+      # firstmate-launched worker. Codex therefore takes the same PULL route
+      # as muse and cursor: it writes its own durable per-session rollout log
+      # and brackets every turn there, so nothing is armed and no record is
+      # seeded, and this sidecar is the whole binding. It pins the sessions
+      # root and this task's worktree, which codex records as each session's
+      # cwd, plus every rollout that already names that worktree, so a
+      # relaunch into a reused worktree folds its OWN session instead of its
+      # predecessor's. The classifier then accepts only one remaining rollout
+      # and never guesses between incarnations. The turn-end NOTIFICATION
+      # marker still rides the launch command via -c notify=[...] and
+      # __TURNEND__.
+      CODEX_SESSIONS_ROOT="${CODEX_HOME:-$HOME/.codex}/sessions"
+      # The classifier scans codex's YYYY/MM/DD tree from this day onward rather
+      # than walking a whole sessions history on every redraw. One day earlier
+      # than today absorbs any skew between codex's directory day and this
+      # shell's, and a rollout older than that cannot belong to this pane.
+      CODEX_SESSIONS_FROM=$(date -u -d '1 day ago' +%Y/%m/%d 2>/dev/null \
+        || date -u -v-1d +%Y/%m/%d 2>/dev/null || printf '')
+      {
+        printf 'sessions_root=%s\n' "$CODEX_SESSIONS_ROOT"
+        printf 'workspace_root=%s\n' "$WT"
+        [ -z "$CODEX_SESSIONS_FROM" ] || printf 'sessions_from=%s\n' "$CODEX_SESSIONS_FROM"
+        while IFS= read -r CODEX_PRIOR_LOG; do
+          [ -n "$CODEX_PRIOR_LOG" ] && printf 'prior_session=%s\n' "$CODEX_PRIOR_LOG"
+        done <<EOF
+$(fm_busy_codex_matching_logs "$CODEX_SESSIONS_ROOT" "$WT" "$CODEX_SESSIONS_FROM" 2>/dev/null || true)
+EOF
+      } > "$STATE/$ID.codex-session"
       ;;
     grok*)
       # grok fires a Stop hook at every turn boundary (verified, grok 0.2.73), the

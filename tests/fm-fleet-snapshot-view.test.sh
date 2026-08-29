@@ -644,6 +644,53 @@ EOF
   pass "fleet snapshot and panel ready sets agree exactly with tasks-axi"
 }
 
+# The captain's 2026-08-29 acceptance criterion: every decision renders exactly
+# once at several terminal widths. Sibling captain decisions filed for one
+# origin share a long id prefix by construction - fm-decision-hold.sh names them
+# <origin>-decision-<key> - so a left-anchored clip collapses them into
+# identical rows, which is what "! 050-model-compati... three times" was. They
+# are distinct decisions and must stay distinguishable at every width the
+# cockpit can give a fleet pane.
+test_sibling_decisions_stay_distinct_at_every_width() {
+  local home width view rows unique widest
+  home=$(make_home decision-width)
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] compatibility-matrix-decision-vendor-list - Choose the vendor list (repo: alpha) (kind: captain) (hold: needs the captain to choose the vendor list) (hold-kind: captain)
+  Origin: compatibility-matrix
+  Decision key: vendor-list
+- [ ] compatibility-matrix-decision-fallback-policy - Choose the fallback policy (repo: alpha) (kind: captain) (hold: needs the captain to choose the fallback policy) (hold-kind: captain)
+  Origin: compatibility-matrix
+  Decision key: fallback-policy
+- [ ] compatibility-matrix-decision-adapter-scope - Choose the adapter scope (repo: alpha) (kind: captain) (hold: needs the captain to choose the adapter scope) (hold-kind: captain)
+  Origin: compatibility-matrix
+  Decision key: adapter-scope
+
+## Done
+EOF
+  for width in 100 60 40 30 24 20; do
+    view=$(COLUMNS="$width" LINES=40 FM_HOME="$home" "$VIEW" --section waiting)
+    assert_contains "$view" "YOUR DECISIONS (3)" \
+      "width $width lost a decision from the heading count"
+    rows=$(printf '%s\n' "$view" | grep -c '^! ') || true
+    [ "$rows" = 3 ] \
+      || fail "width $width rendered $rows decision rows for 3 decisions: $view"
+    unique=$(printf '%s\n' "$view" | grep '^! ' | LC_ALL=C sort -u | wc -l | tr -d ' ')
+    [ "$unique" = 3 ] \
+      || fail "width $width collapsed sibling decisions into $unique distinguishable rows: $view"
+    # No row may exceed the width it was rendered for, or the terminal wraps it
+    # into extra physical rows and the frame stops fitting its pane. Measured in
+    # characters, like the renderer's own clip: the rows carry multi-byte
+    # separators, so a byte count would report a false overflow.
+    widest=$(printf '%s\n' "$view" | jq -Rrs 'split("\n") | map(length) | max')
+    [ "$widest" -le "$width" ] \
+      || fail "width $width emitted a $widest-character row: $view"
+  done
+  pass "sibling captain decisions render exactly once and stay distinct at every width"
+}
+
 test_ready_separates_dispatchable_from_unconfirmed() {
   local home out view ready_section
   home=$(make_home ready-dispatch-truth)
@@ -1422,11 +1469,17 @@ test_parked_scout_decision_stays_pending() {
 painter_bin() {  # <home> -> the bin dir the banner runs from
   local home=$1 fakebin="$1/fakebin"
   mkdir -p "$fakebin"
+  cat > "$home/fm-herdr-pane-geometry.sh" <<'SH'
+#!/usr/bin/env bash
+printf '45 20\n'
+SH
+  chmod +x "$home/fm-herdr-pane-geometry.sh"
   cat > "$fakebin/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
 mode=${PAINTER_REPORTED_MODE:-live}
 script=${PAINTER_VIEW:?}
+geometry=${PAINTER_GEOMETRY:-$PAINTER_HOME/fm-herdr-pane-geometry.sh}
 if [ "${1:-}" = pane ] && [ "${2:-}" = get ]; then
   tab=$(cat "$PAINTER_HOME/reported-tab" 2>/dev/null || printf 'w9:t1')
   cwd=$PAINTER_HOME
@@ -1440,10 +1493,12 @@ case "$mode" in
   basename) script=/wrong/checkout/bin/fm-fleet-view.sh ;;
 esac
 if [ "$mode" = watch ]; then
-  argv=$(jq -cn --arg script "$script" '["bash",$script]')
+  argv=$(jq -cn --arg script "$script" --arg geometry "$geometry" \
+    '["bash",$script,"--geometry-command",$geometry]')
 else
-  argv=$(jq -cn --arg script "$script" --arg sections "${PAINTER_REPORTED_SECTIONS:-}" '
-    ["bash",$script,"--watch","0.1"]
+  argv=$(jq -cn --arg script "$script" --arg geometry "$geometry" \
+    --arg sections "${PAINTER_REPORTED_SECTIONS:-}" '
+    ["bash",$script,"--geometry-command",$geometry,"--watch","0.1"]
     + (if $sections == "" then [] else ["--section",$sections] end)')
 fi
 jq -cn --arg pane "${HERDR_PANE_ID:?}" --argjson argv "$argv" '
@@ -1474,7 +1529,7 @@ EOF
 # process as this shell's direct child makes teardown portable to Bash 3.2.
 start_painter() {  # <home> <bin> <pane-id> <tag> [<section>]
   local home=$1 dir=$2 pane=$3 tag=$4 section=${5:-}
-  local -a cmd=("$dir/fm-fleet-view.sh" --watch 0.1)
+  local -a cmd=("$dir/fm-fleet-view.sh" --geometry-command "$home/fm-herdr-pane-geometry.sh" --watch 0.1)
   [ -z "$section" ] || cmd+=(--section "$section")
   FM_HOME="$home" COLUMNS=45 LINES=20 \
     HERDR_SESSION=lab-session HERDR_PANE_ID="$pane" HERDR_TAB_ID=w9:t1 \
@@ -1742,6 +1797,7 @@ test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
 test_ready_set_agrees_with_tasks_axi
 test_ready_separates_dispatchable_from_unconfirmed
+test_sibling_decisions_stay_distinct_at_every_width
 test_ready_counts_stay_plain_without_unconfirmed_work
 test_backlog_projection_uses_one_source_image
 test_view_respects_terminal_height

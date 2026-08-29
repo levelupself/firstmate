@@ -224,6 +224,7 @@ fm_control_harness_wiring_paths() {  # <harness> <worktree> <state-dir> <id>
       printf '%s\n' "$state/$id.muse-session-current"
       ;;
     cursor) printf '%s\n' "$state/$id.cursor-session" ;;
+    codex) printf '%s\n' "$state/$id.codex-session" ;;
   esac
 }
 

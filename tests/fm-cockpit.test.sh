@@ -251,28 +251,41 @@ case "${1:-} ${2:-}" in
     case "$status" in
       fleet-live)
         emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
-          --argjson extra "$(section_argv)" '["bash",$s,"--watch"] + $extra')"
+          --arg g "$FM_COCKPIT_ROOT/bin/fm-herdr-pane-geometry.sh" \
+          --argjson extra "$(section_argv)" \
+          '["bash",$s,"--geometry-command",$g,"--watch"] + $extra')"
         ;;
       fleet-relative)
         # The same watcher, started by hand from the checkout through a
         # relative path rather than the adapter's absolute invocation.
-        emit_processes "$(jq -cn --argjson extra "$(section_argv)" \
-          '["bash","bin/fm-fleet-view.sh","--watch"] + $extra')"
+        emit_processes "$(jq -cn --arg g "bin/fm-herdr-pane-geometry.sh" \
+          --argjson extra "$(section_argv)" \
+          '["bash","bin/fm-fleet-view.sh","--geometry-command",$g,"--watch"] + $extra')"
         ;;
       fleet-env-home)
         emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
+          --arg g "$FM_COCKPIT_ROOT/bin/fm-herdr-pane-geometry.sh" \
           --arg h "FM_HOME=${FM_FAKE_FLEET_HOME:-}" --argjson extra "$(section_argv)" \
-          '["env",$h,$s,"--watch"] + $extra')"
+          '["env",$h,$s,"--geometry-command",$g,"--watch"] + $extra')"
         ;;
       fleet-other-sections)
         # A fleet view for this home, watching, but not the part of the fleet
         # the frame recorded for this pane.
         emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
-          '["bash",$s,"--watch","--section","failed"]')"
+          --arg g "$FM_COCKPIT_ROOT/bin/fm-herdr-pane-geometry.sh" \
+          '["bash",$s,"--geometry-command",$g,"--watch","--section","failed"]')"
+        ;;
+      fleet-stale-painter)
+        # A fleet view for the right home, watching, showing exactly the
+        # recorded sections - but launched before --geometry-command existed,
+        # so it paints to the pane's own pty instead of the drawn rectangle.
+        emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
+          --argjson extra "$(section_argv)" '["bash",$s,"--watch"] + $extra')"
         ;;
       fleet-no-watch)
         emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
-          '["bash",$s]')"
+          --arg g "$FM_COCKPIT_ROOT/bin/fm-herdr-pane-geometry.sh" \
+          '["bash",$s,"--geometry-command",$g]')"
         ;;
       fleet-unreadable)
         printf '%s\n' '{"result":{"type":"something_else"}}'
@@ -1403,6 +1416,36 @@ test_an_unresolved_home_path_still_matches_the_live_banner() {
   pass "a home spelled through a symlink still matches its own live banner"
 }
 
+# A fleet painter launched before --geometry-command existed keeps running
+# forever: it satisfies every other liveness check, so the region is reported
+# live and never rebuilt, while it paints to the pane's own pty instead of the
+# drawn rectangle. On 2026-08-29 the captain's cockpit was still running
+# painters started on 2026-08-13 for exactly that reason, and their frames
+# wrapped, scrolled, and left fragments of several redraws on screen at once.
+# A pane that cannot paint to the drawn rectangle is not live.
+test_a_fleet_painter_without_the_geometry_binding_is_not_live() {
+  local fleet out
+  reset_layout_frame
+  run_layout_cockpit adopt >/dev/null 2>&1 || fail "banner adoption failed"
+  fleet=$(set_fleet_pane_status fleet-stale-painter)
+  out=$(run_layout_cockpit status 2>&1) \
+    && fail "status reported a live region for a painter with no geometry binding"
+  assert_contains "$out" "(fleet-no-geometry-binding)" \
+    "status did not name the missing geometry binding as the failing check"
+  assert_contains "$out" "not painting to the pane's drawn size" \
+    "the refusal did not explain the missing geometry binding in plain words"
+  out=$(LINES=40 COLUMNS=120 run_layout_cockpit panel 2>&1) \
+    || fail "panel did not render a region with a stale painter"
+  assert_contains "$out" "FLEET column=$fleet [no-geometry-binding]" \
+    "the panel did not name the pane whose painter cannot size itself"
+
+  # Restoring a painter that IS bound to the drawn rectangle restores the region.
+  set_fleet_pane_status fleet-live >/dev/null
+  run_layout_cockpit status >/dev/null 2>&1 \
+    || fail "a geometry-bound painter did not restore the region"
+  pass "a fleet pane whose painter cannot size itself to the drawn rectangle is not live"
+}
+
 test_fleet_diagnostics_name_the_check_that_failed() {
   local fleet out
   reset_layout_frame
@@ -1600,6 +1643,7 @@ test_re_adoption_neither_warns_nor_touches_the_screen
 test_a_relative_path_fleet_view_still_counts_as_live
 test_an_unresolved_home_path_still_matches_the_live_banner
 test_fleet_diagnostics_name_the_check_that_failed
+test_a_fleet_painter_without_the_geometry_binding_is_not_live
 test_every_fleet_pane_must_be_live_and_show_what_the_frame_recorded
 test_a_version_two_frame_stays_live_as_its_single_pane_arrangement
 test_banner_zoom_is_reversible_and_moves_no_pane

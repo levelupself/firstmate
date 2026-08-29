@@ -214,9 +214,9 @@ Claude Code's primary watcher protocol is Stop-owned: the auto-arm hook fires on
 
 | Fact | Value |
 |---|---|
-| Busy state | Unknown until a semantic source is live-verified: the app-server turn lifecycle is unreachable for a pane worker, and project lifecycle hooks did not fire for a firstmate-launched worker. |
+| Busy state | Its own per-session rollout log, folded on demand by `bin/fm-busy-lib.sh` (source `codex-rollout`). Each turn is bracketed by a `task_started` open and a `task_complete` or `turn_aborted` close, so unlike Claude's `Stop` hook this source covers manual interruption. Nothing is armed and no record is ever seeded; the push surfaces stay unusable (the app-server turn lifecycle is unreachable for a pane worker, and project lifecycle hooks did not fire for a firstmate-launched worker). |
 | Exit command | `/quit` (slash popup needs about 1 second between text and Enter; the shared submit path used by `fm-control` handles it) |
-| Interrupt | single Escape |
+| Interrupt | single Escape (recorded 2026-06-11 on 0.139.0; on 0.145.0 a single Escape was observed NOT to reach a running turn while `Ctrl+C` did - see docs/verification/supervision.md "Codex rollout turn bracket") |
 | Skill invocation | `$<skill>` (e.g. `$no-mistakes`); `/<skill>` is claude-only and codex rejects it as "Unrecognized command" |
 
 A `$<skill>` invocation opens a `$`-autocomplete (skill) popup, the same hazard as the `/` slash popup: submitting too fast lets the popup swallow the Enter, so the invocation never lands.

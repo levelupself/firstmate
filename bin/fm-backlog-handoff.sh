@@ -24,7 +24,16 @@
 #     archiving;
 #   - the multi-key classification and idempotent per-key reporting: a key
 #     already present in the secondmate backlog is reported and skipped, and if
-#     any key matches neither backlog nothing is moved.
+#     any key matches neither backlog nothing is moved;
+#   - carrying each moved item's own open captain decision holds. A decision
+#     filed by bin/fm-decision-hold.sh is a separate backlog item
+#     <origin>-decision-<key> with no dependency edge back to its origin, so
+#     tasks-axi neither moves nor refuses it. Left behind it is stranded - its
+#     origin lives elsewhere, so it can never be resolved where it sits, and it
+#     keeps showing in the originating home's decisions panel as work that
+#     already left. backlog_decision_holds_for owns the exact match (generated
+#     id prefix AND recorded Origin), and the holds join the same atomic move
+#     and are reported alongside the keys the caller named.
 #
 # What `tasks-axi mv <id>... --to <dest>` owns: moving each full item BLOCK
 # byte-exact (header, body lines, blank separators, and indented pseudo-headings
@@ -244,6 +253,82 @@ backlog_key_section() {
   ' "$file"
 }
 
+# Every queued captain decision hold this backlog carries FOR <origin-key>.
+#
+# bin/fm-decision-hold.sh files each decision as its OWN backlog item, identity
+# <origin-id>-decision-<decision-key>, with no dependency edge back to the
+# origin - so `tasks-axi mv <origin>` neither carries it nor refuses. Left
+# behind, such a hold is stranded: its origin now lives in another home, so it
+# can never be resolved where it sits, and it keeps rendering in the
+# originating home's decisions panel as work that already left.
+#
+# Both halves of that identity are required here. The id prefix alone could
+# belong to unrelated work that happens to start the same way, and the recorded
+# `Origin:` line alone could be prose, so a hold travels only when it carries
+# the generated prefix AND names this exact origin.
+backlog_decision_holds_for() {  # <file> <origin-key>
+  local file=$1 key=$2
+  [ -f "$file" ] || return 0
+  awk -v key="$key" '
+    function flush() {
+      if (candidate != "" && origin) print candidate
+      candidate = ""
+      origin = 0
+    }
+    BEGIN { section = "## Queued"; prefix = key "-decision-" }
+    /^##[[:space:]]+/ {
+      flush()
+      section = $0
+      sub(/^##[[:space:]]+/, "## ", section)
+      sub(/[[:space:]]+$/, "", section)
+      next
+    }
+    /^- \[[ x]\] / {
+      flush()
+      rest = $0
+      sub(/^- \[[ x]\] +/, "", rest)
+      id = rest
+      sub(/[ \t].*/, "", id)
+      if (section == "## Queued" && id != key && index(id, prefix) == 1) candidate = id
+      next
+    }
+    {
+      if (candidate != "") {
+        line = $0
+        sub(/^[[:space:]]+/, "", line)
+        sub(/[[:space:]]+$/, "", line)
+        if (line == ("Origin: " key)) origin = 1
+      }
+    }
+    END { flush() }
+  ' "$file"
+}
+
+# Print every decision hold owned by <keys...> that is not already among those
+# keys and has not already reached <dest>, one per line, so a caller can add
+# them to its own move set and report them separately. Printing rather than
+# writing through a nameref keeps this usable on stock macOS bash 3.2, which
+# has no namerefs.
+collect_decision_holds() {  # <dest-backlog> <key>...
+  local dest=$1 key hold existing selected
+  local -a discovered=()
+  shift
+  for key in "$@"; do
+    while IFS= read -r hold; do
+      [ -n "$hold" ] || continue
+      selected=0
+      for existing in "$@" ${discovered[@]+"${discovered[@]}"}; do
+        [ "$existing" != "$hold" ] || { selected=1; break; }
+      done
+      [ "$selected" -eq 0 ] || continue
+      # Already delivered by an earlier run: converge instead of duplicating.
+      [ -z "$(backlog_key_section "$dest" "$hold" 2>/dev/null || true)" ] || continue
+      discovered+=("$hold")
+      printf '%s\n' "$hold"
+    done < <(backlog_decision_holds_for "$MAIN_BACKLOG" "$key")
+  done
+}
+
 backlog_key_noncanonical_body_lines() {
   local file=$1 key=$2
   awk -v key="$key" '
@@ -347,8 +432,8 @@ remove_interrupted_source_duplicates() { # <outbox> <keys...>
 }
 
 remote_handoff() { # <secondmate-id> <keys...>
-  local id=$1 outbox section main_section out_section key mv_out
-  local -a requested to_move already missing in_flight done_items not_queued
+  local id=$1 outbox section main_section out_section key hold mv_out
+  local -a requested to_move already missing in_flight done_items not_queued carried
   shift
   requested=("$@")
   outbox="$DATA/handoff/$id.outbox.md"
@@ -364,6 +449,7 @@ remote_handoff() { # <secondmate-id> <keys...>
   in_flight=()
   done_items=()
   not_queued=()
+  carried=()
   for key in "${requested[@]}"; do
     out_section=$(backlog_key_section "$outbox" "$key" 2>/dev/null || true)
     main_section=$(backlog_key_section "$MAIN_BACKLOG" "$key" 2>/dev/null || true)
@@ -389,6 +475,17 @@ remote_handoff() { # <secondmate-id> <keys...>
     echo "       nothing new was staged." >&2
     return 1
   fi
+  # An item's open captain decisions belong with the work, so they are added to
+  # the SAME atomic move rather than left stranded in this home.
+  if [ "${#to_move[@]}" -gt 0 ]; then
+    while IFS= read -r hold; do
+      [ -n "$hold" ] || continue
+      to_move+=("$hold")
+      carried+=("$hold")
+    done <<EOF
+$(collect_decision_holds "$outbox" "${to_move[@]}")
+EOF
+  fi
   for key in "${to_move[@]}"; do
     while IFS= read -r line; do
       printf 'error: refusing to hand off %s: non-2-space continuation line: %s\n' "$key" "$line" >&2
@@ -409,6 +506,7 @@ remote_handoff() { # <secondmate-id> <keys...>
   remove_interrupted_source_duplicates "$outbox" "${requested[@]}" || return 1
   remote_deliver_outbox "$id" "$outbox" || return 1
   echo "handed off ${#requested[@]} item(s) to remote secondmate $id: ${requested[*]}"
+  [ "${#carried[@]}" -eq 0 ] || echo "  carried open captain decisions: ${carried[*]}"
   [ "${#already[@]}" -eq 0 ] || echo "  already staged (recovered): ${already[*]}"
 }
 
@@ -526,6 +624,17 @@ if [ "${#TO_MOVE[@]}" -eq 0 ]; then
   exit 0
 fi
 
+# An item's open captain decisions belong with the work, so they join the SAME
+# atomic move rather than staying stranded in this home.
+CARRIED=()
+while IFS= read -r hold; do
+  [ -n "$hold" ] || continue
+  TO_MOVE+=("$hold")
+  CARRIED+=("$hold")
+done <<EOF
+$(collect_decision_holds "$SUB_BACKLOG" "${TO_MOVE[@]}")
+EOF
+
 FAILED=0
 for key in "${TO_MOVE[@]}"; do
   while IFS= read -r line; do
@@ -573,6 +682,9 @@ fi
 
 echo "handed off ${#TO_MOVE[@]} item(s) to $ID: ${TO_MOVE[*]}"
 echo "  into $SUB_BACKLOG"
+if [ "${#CARRIED[@]}" -gt 0 ]; then
+  echo "  carried open captain decisions: ${CARRIED[*]}"
+fi
 if [ "${#ALREADY[@]}" -gt 0 ]; then
   echo "  already present (skipped): ${ALREADY[*]}"
 fi
