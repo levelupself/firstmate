@@ -70,9 +70,16 @@ make_case() {
   mkdir -p "$dir/home/state" "$dir/home/data" "$dir/home/config" "$dir/wt" "$fakebin" "$fake_root/bin"
   cat > "$fake_root/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
-printf 'guard\n' >> "$FM_TEST_GUARD_LOG"
+printf 'guard\n' >> "${FM_TEST_GUARD_LOG:-/dev/null}"
 SH
   chmod +x "$fake_root/bin/fm-guard.sh"
+  for helper in fm-task-usage.sh fm-effort-store.sh fm-fleet-sync.sh; do
+    cat > "$fake_root/bin/$helper" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+    chmod +x "$fake_root/bin/$helper"
+  done
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
@@ -119,7 +126,8 @@ write_task_meta() {
     "worktree=$dir/wt" \
     "project=$dir/project" \
     "kind=ship" \
-    "mode=no-mistakes"
+    "mode=no-mistakes" \
+    "spawned_at=2026-08-20T12:00:00Z"
 }
 
 write_poll_meta() {
@@ -613,7 +621,7 @@ exit 0
 SH
   chmod 0700 "$dir/fakebin/tmux"
   touch "$dir/home/state/.last-watcher-beat"
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$dir/fakebin:$BASE_PATH" \
     "$TEARDOWN" Task_A.1 --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
     || fail "safe lifecycle-compatible task ID could not be torn down: $(tr '\n' ' ' < "$dir/teardown.err")"
   [ ! -e "$dir/home/state/Task_A.1.meta" ] \
@@ -627,7 +635,8 @@ SH
       "worktree=$dir/missing-worktree" \
       "project=$dir/project" \
       'kind=ship' \
-      'mode=local-only'
+      'mode=local-only' \
+      'spawned_at=2026-08-20T12:00:00Z'
     mkdir -p "$dir/home/state/.pr-check-quarantine"
     chmod 0700 "$dir/home/state/.pr-check-quarantine"
     printf 'reserved migration evidence\n' \
@@ -641,7 +650,7 @@ SH
     touch "$dir/home/state/.last-watcher-beat"
     mkdir "$dir/home/state/$id.check.sh"
     set +e
-    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$dir/fakebin:$BASE_PATH" \
       "$TEARDOWN" "$id" --force > "$dir/unsafe-teardown.out" 2> "$dir/unsafe-teardown.err"
     rc=$?
     set -e
@@ -660,7 +669,7 @@ SH
       || fail "path-safe legacy task ID could not use the PR merge flow"
     fm_pr_poll_artifacts_valid "$dir/home/state" "$id" "$POLL" \
       || fail "path-safe legacy task ID did not publish an authenticated poll"
-    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$dir/fakebin:$BASE_PATH" \
       "$TEARDOWN" "$id" --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
       || fail "legacy path-safe task ID could not be torn down"
     [ ! -e "$dir/home/state/$id.meta" ] || fail "legacy task teardown retained metadata"
@@ -1481,7 +1490,7 @@ test_ambiguous_failure_accepts_validated_replacement() {
     || fail "ambiguous partial migration did not persist recovery obligations"
 
   rmdir "$state/task-a.pr-poll"
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_CHECK" task-a https://github.com/o/r/pull/10 >/dev/null \
     || fail "validated replacement poll could not be published"
   fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
@@ -1726,7 +1735,7 @@ SH
   chmod +x "$fakebin/tmux"
   touch "$state/.last-watcher-beat"
   set +e
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$fakebin:$BASE_PATH" \
     "$TEARDOWN" task-a --force > "$dir/teardown.out" 2> "$dir/teardown.err"
   rc=$?
   set -e
@@ -1881,7 +1890,7 @@ SH
   chmod 0700 "$dir/fakebin/tmux"
   touch "$state/.last-watcher-beat"
   set +e
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$dir/fakebin:$BASE_PATH" \
     "$TEARDOWN" _noncanonical --force > "$dir/teardown.out" 2> "$dir/teardown.err"
   rc=$?
   set -e
@@ -1903,7 +1912,7 @@ SH
   [ -f "$state/.pr-check-quarantine/!noncanonical.check.abc123" ] \
     || fail "legacy reserved retry did not migrate its quarantined evidence"
   assert_valid_migration_marker "$state/.pr-check-migration-v1"
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$dir/fakebin:$BASE_PATH" \
     "$TEARDOWN" _noncanonical --force > "$dir/teardown-2.out" 2> "$dir/teardown-2.err" \
     || fail "task teardown did not recover after legacy namespace migration"
   [ ! -e "$state/_noncanonical.meta" ] \
@@ -2659,7 +2668,7 @@ SH
   chmod +x "$fakebin/tmux"
   touch "$dir/home/state/.last-watcher-beat"
 
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$fakebin:$BASE_PATH" \
     "$TEARDOWN" task-a --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
     || fail "teardown cleanup fixture failed"
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "teardown left the runnable check"
@@ -2691,7 +2700,7 @@ exit 0
 SH
   chmod +x "$fakebin/tmux"
   touch "$dir/home/state/.last-watcher-beat"
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$fakebin:$BASE_PATH" \
     "$TEARDOWN" task-a --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
     || fail "teardown could not finish a valid crash-left retirement receipt"
   assert_poll_absent "$dir/home/state" task-a
@@ -2719,7 +2728,7 @@ SH
   chmod +x "$fakebin/tmux"
   touch "$dir/home/state/.last-watcher-beat"
 
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$fakebin:$BASE_PATH" \
     "$TEARDOWN" invalid --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
     || fail "valid invalid task teardown failed"
   [ ! -e "$dir/home/state/.pr-check-quarantine/invalid.check.abc123" ] \
@@ -2753,7 +2762,7 @@ SH
     chmod +x "$fakebin/tmux"
     touch "$dir/home/state/.last-watcher-beat"
     set +e
-    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_FAKE_TMUX_LOG="$dir/tmux.log" \
+    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" FM_FAKE_TMUX_LOG="$dir/tmux.log" \
       PATH="$fakebin:$BASE_PATH" "$TEARDOWN" task-a --force \
       > "$dir/teardown.out" 2> "$dir/teardown.err"
     rc=$?
@@ -2792,7 +2801,7 @@ SH
     chmod +x "$fakebin/tmux"
     touch "$dir/home/state/.last-watcher-beat"
     set +e
-    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$fakebin:$BASE_PATH" \
+    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$fakebin:$BASE_PATH" \
       "$TEARDOWN" task-a --force > "$dir/teardown.out" 2> "$dir/teardown.err"
     rc=$?
     set -e
