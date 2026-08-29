@@ -330,7 +330,8 @@ fm_write_meta "$FM_HOME/state/910-lifecycle.meta" \
   "pr=https://github.com/example/repo/pull/10" \
   "pr_opened_at=2026-06-01T10:15:00Z" \
   "merged_at=2026-06-01T11:00:00Z" \
-  "teardown_at=2026-06-01T11:05:00Z"
+  "teardown_at=2026-06-01T11:05:00Z" \
+  "outcome=pr-merged"
 write_usage 910-lifecycle 321 45 1.25 6 gpt-5.6-sol 2026-06-01T10:00:00Z
 
 rm -f "$DB"
@@ -341,6 +342,32 @@ LIFECYCLE=$(query "SELECT launch_to_pr_seconds, tokens_in, tokens_out, notional_
 [ "$LIFECYCLE" = '900|321|45|1.25|2026-06-01T10:15:00Z|2026-06-01T11:00:00Z|2026-06-01T11:05:00Z|pr-merged' ] \
   || fail "captured lifecycle fields were incomplete: $LIFECYCLE"
 pass 'lifecycle capture creates and populates the store without a remembered rebuild'
+
+fm_write_meta "$FM_HOME/state/914-reversed-pr.meta" \
+  "worktree=$ROOTDIR/worktrees/reversed-pr" \
+  "project=$PROJECT" \
+  "kind=ship" \
+  "spawned_at=2026-06-05T10:00:00Z" \
+  "pr_opened_at=2026-06-05T09:59:59Z"
+"$STORE" capture 914-reversed-pr >/dev/null || fail 'reversed PR capture failed'
+REVERSED_PR=$(query "SELECT launch_to_pr_seconds FROM task WHERE task_id = '914-reversed-pr'")
+[ "$REVERSED_PR" = 'NULL' ] || fail "reversed launch-to-PR was not missing: $REVERSED_PR"
+pass 'PR timestamps before launch produce a missing duration'
+
+fm_write_meta "$FM_HOME/state/915-unproven-outcome.meta" \
+  "worktree=$ROOTDIR/worktrees/unproven-outcome" \
+  "project=$PROJECT" \
+  "kind=ship" \
+  "spawned_at=2026-06-05T10:00:00Z" \
+  "teardown_at=2026-06-05T11:00:00Z" \
+  "outcome=pr-merged"
+if "$STORE" capture 915-unproven-outcome --outcome invented >/dev/null 2>&1; then
+  fail 'capture accepted an arbitrary lifecycle outcome'
+fi
+"$STORE" capture 915-unproven-outcome >/dev/null || fail 'unproven outcome capture failed'
+UNPROVEN_OUTCOME=$(query "SELECT merged_at, outcome FROM task WHERE task_id = '915-unproven-outcome'")
+[ "$UNPROVEN_OUTCOME" = 'NULL|NULL' ] || fail "an outcome without lifecycle proof was accepted: $UNPROVEN_OUTCOME"
+pass 'arbitrary and unproven landing outcomes remain missing'
 
 sed -i 's/"baseline":true/"baseline":false/' "$FM_HOME/data/910-lifecycle/usage.json"
 "$STORE" capture 910-lifecycle --outcome pr-merged >/dev/null \
@@ -447,6 +474,13 @@ RECEIPT_OUTCOME=$(query "SELECT merged_at IS NOT NULL, outcome FROM task WHERE t
 [ "$RECEIPT_OUTCOME" = '1|pr-merged' ] \
   || fail "a durable sanctioned merge receipt did not supply merge lifecycle proof: $RECEIPT_OUTCOME"
 pass 'durable merge receipt supplies missing merge lifecycle proof'
+
+sed -i 's/merged_epoch=1780398000/merged_epoch=9007199254740991/' "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt"
+"$STORE" capture 911-receipt-outcome >/dev/null || fail 'out-of-range merge receipt aborted capture'
+MALFORMED_MERGE=$(query "SELECT merged_at, outcome FROM task WHERE task_id = '911-receipt-outcome'")
+[ "$MALFORMED_MERGE" = 'NULL|NULL' ] || fail "out-of-range merge receipt was accepted: $MALFORMED_MERGE"
+pass 'out-of-range merge receipt timestamps remain missing'
+sed -i 's/merged_epoch=9007199254740991/merged_epoch=1780398000/' "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt"
 
 fm_write_meta "$FM_HOME/state/912-local-receipt.meta" \
   "worktree=$ROOTDIR/worktrees/local-receipt" \

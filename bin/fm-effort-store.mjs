@@ -781,8 +781,15 @@ const bind = value => {
 function isoSecondsBetween(from, to) {
   const a = Date.parse(from)
   const b = Date.parse(to)
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return null
-  return Math.max(0, Math.round((b - a) / 1000))
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return null
+  return Math.round((b - a) / 1000)
+}
+
+function validatedLifecycleTimestamp(value, startedAt) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value || '')) return null
+  const milliseconds = Date.parse(value)
+  if (!Number.isFinite(milliseconds) || new Date(milliseconds).toISOString().replace('.000Z', 'Z') !== value) return null
+  return isoSecondsBetween(startedAt, value) === null ? null : value
 }
 
 function rebuild(options) {
@@ -1072,9 +1079,12 @@ function readMergeReceipt(dataDir, taskId, spawnedAt) {
   const receipt = readMeta(path.join(dataDir, 'pr-merges', `${taskId}.receipt`))
   if (!receipt || receipt.schema !== 'fm-pr-merge.v1' || receipt.task_id !== taskId || receipt.spawned_at !== spawnedAt || receipt.phase !== 'merged') return null
   const epoch = Number(receipt.merged_epoch)
+  const milliseconds = epoch * 1000
+  const merged = Number.isInteger(epoch) && epoch >= 0 && Number.isFinite(milliseconds)
+    && milliseconds <= 8640000000000000 ? new Date(milliseconds) : null
   return {
     pr_url: receipt.pr || null,
-    merged_at: Number.isInteger(epoch) && epoch >= 0 ? new Date(epoch * 1000).toISOString().replace('.000Z', 'Z') : null,
+    merged_at: merged && Number.isFinite(merged.getTime()) ? merged.toISOString().replace('.000Z', 'Z') : null,
   }
 }
 
@@ -1124,6 +1134,16 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
     const gitResult = gitResults.results.get(task.taskId) || {status: 'missing', detail: 'git source not consulted'}
     const structure = gitResult.status === 'present' ? gitResult.structure : null
     const totals = burn.status === 'present' ? burn.totals : null
+    const stampedMergedAt = row?.outcome === 'pr-merged'
+      ? validatedLifecycleTimestamp(row.merged_at, row.started_at) : null
+    const stampedLocalLandedAt = row?.outcome === 'local-landed'
+      ? validatedLifecycleTimestamp(row.local_landed_at, row.started_at) : null
+    const teardownOutcome = ['forced', 'scout-complete'].includes(row?.outcome)
+      && validatedLifecycleTimestamp(row.teardown_at ?? row.ended_at, row.started_at) ? row.outcome : null
+    const provenOutcome = receipt?.merged_at ? 'pr-merged'
+      : localReceipt?.local_landed_at ? 'local-landed'
+        : stampedMergedAt ? 'pr-merged'
+          : stampedLocalLandedAt ? 'local-landed' : teardownOutcome
 
     taskInsert.run(
       task.taskId,
@@ -1146,8 +1166,8 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
       bind(gitResult.status === 'present' ? gitResult.first_commit_at : null),
       bind(row?.pr_opened_at),
       bind(row?.started_at && row?.pr_opened_at ? isoSecondsBetween(row.started_at, row.pr_opened_at) : null),
-      bind(row?.merged_at || receipt?.merged_at || null),
-      bind(row?.local_landed_at || localReceipt?.local_landed_at || null),
+      bind(receipt?.merged_at || stampedMergedAt),
+      bind(localReceipt?.local_landed_at || stampedLocalLandedAt),
       bind(row?.teardown_at ?? row?.ended_at),
       bind(structure?.files_changed),
       bind(structure?.prod_src_files),
@@ -1169,7 +1189,7 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
       bind(totals?.notional_cost_usd),
       bind(totals?.api_calls),
       bind(totals?.sessions),
-      bind(row?.outcome || (receipt ? 'pr-merged' : null) || (localReceipt ? 'local-landed' : null)),
+      bind(provenOutcome),
       bind(annotation?.reverted ?? (gitResult.status === 'present' ? gitResult.reverted : null)),
     )
 
@@ -1257,6 +1277,12 @@ function capture(options, taskId, argv) {
   }
   const meta = readMeta(path.join(options.stateDir, `${taskId}.meta`))
   if (!meta) throw new Error(`task metadata is unavailable for ${taskId}`)
+  if (outcome !== null && !['pr-merged', 'local-landed', 'forced', 'scout-complete'].includes(outcome)) {
+    throw new Error(`unsupported lifecycle outcome '${outcome}'`)
+  }
+  if (outcome !== null && outcome !== meta.outcome) {
+    throw new Error('capture outcome does not match the stamped lifecycle outcome')
+  }
   const row = {
     task: taskId,
     worktree: meta.worktree,
@@ -1275,7 +1301,7 @@ function capture(options, taskId, argv) {
     merged_at: meta.merged_at,
     local_landed_at: meta.local_landed_at,
     teardown_at: meta.teardown_at,
-    outcome: outcome || meta.outcome,
+    outcome: outcome ?? meta.outcome,
   }
   for (const column of CAPTURE_COLUMNS) row[column] = String(row[column] ?? '')
   fs.mkdirSync(path.dirname(options.rawFile), {recursive: true})
