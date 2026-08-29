@@ -160,6 +160,53 @@ if (a.cost_usd === b.cost_usd || a.calls === b.calls || a.tokens.input === b.tok
 ' "$json_a" "$json_b" || fail "different tasks were not independently attributed: a=$json_a b=$json_b"
 pass "a later pooled-worktree occupant subtracts the earlier occupant and two tasks have different totals"
 
+fm_write_meta "$HOME_DIR/state/task-zero.meta" \
+  "worktree=$POOLED_WORKTREE" \
+  "harness=codex" \
+  "model=configured-model" \
+  "kind=ship" \
+  "spawned_at=2026-07-19T14:34:56Z"
+export FM_CODEBURN_FIXTURE="$TMP_ROOT/baseline-zero.json"
+write_fixture "$FM_CODEBURN_FIXTURE" 3.25 7 4 7 11
+FM_HOME="$HOME_DIR" "$USAGE" task-zero --baseline
+zero_usage=$(FM_HOME="$HOME_DIR" "$USAGE" task-zero --json)
+node -e '
+const u=JSON.parse(process.argv[1])
+if (u.cost_usd !== 0 || u.calls !== 0 || u.sessions !== 0) process.exit(1)
+if (Object.values(u.tokens).some(value => value !== 0) || u.models.length !== 0) process.exit(1)
+' "$zero_usage" || fail "legitimate exact-zero deltas were rejected: $zero_usage"
+pass "explicit equal counters preserve legitimate exact-zero deltas"
+
+for invalid_counter in missing nonnumeric decreasing; do
+  task="invalid-$invalid_counter"
+  fm_write_meta "$HOME_DIR/state/$task.meta" \
+    "worktree=$POOLED_WORKTREE" \
+    "harness=codex" \
+    "kind=ship" \
+    "spawned_at=2026-07-19T15:34:56Z"
+  export FM_CODEBURN_FIXTURE="$TMP_ROOT/$task-baseline.json"
+  write_fixture "$FM_CODEBURN_FIXTURE" 1.25 2 1 5 8
+  FM_HOME="$HOME_DIR" "$USAGE" "$task" --baseline
+  export FM_CODEBURN_FIXTURE="$TMP_ROOT/$task-current.json"
+  write_fixture "$FM_CODEBURN_FIXTURE" 2.75 5 3 7 11
+  node - "$FM_CODEBURN_FIXTURE" "$invalid_counter" <<'NODE'
+const fs = require('fs')
+const [file, kind] = process.argv.slice(2)
+const fixture = JSON.parse(fs.readFileSync(file, 'utf8'))
+const overview = fixture.projects[0].report.overview
+if (kind === 'missing') delete overview.tokens.input
+if (kind === 'nonnumeric') overview.calls = '5'
+if (kind === 'decreasing') overview.sessions = 0
+fs.writeFileSync(file, `${JSON.stringify(fixture)}\n`)
+NODE
+  FM_HOME="$HOME_DIR" "$USAGE" "$task" --snapshot >"$TMP_ROOT/$task.out" 2>"$TMP_ROOT/$task.err"
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "$invalid_counter counter produced a usage snapshot"
+  [ ! -e "$HOME_DIR/data/$task/usage.json" ] \
+    || fail "$invalid_counter counter persisted plausible-zero attribution"
+done
+pass "missing, nonnumeric, and decreasing counters leave usage unavailable"
+
 fm_write_meta "$HOME_DIR/state/missing-project.meta" \
   "worktree=$HOME_DIR/unreported-worktree" \
   "harness=codex" \

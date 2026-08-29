@@ -252,24 +252,61 @@ const [currentPath, baselinePath, id, title, kind, project, deliveryMode, harnes
 const current = JSON.parse(fs.readFileSync(currentPath, 'utf8'))
 const baselinePresent = fs.existsSync(baselinePath)
 const baseline = baselinePresent ? JSON.parse(fs.readFileSync(baselinePath, 'utf8')) : {}
+if (!baselinePresent) {
+  console.error('fm-task-usage: saved baseline is unavailable; refusing an unbounded total')
+  process.exit(1)
+}
 if (baselinePresent && !(baseline.projects || []).some(project => project.name === projectKey)) {
   console.error(`fm-task-usage: saved baseline does not identify codeburn project ${projectKey}; refusing an unbounded total`)
   process.exit(1)
 }
 const before = baseline.overview || {}
 const after = current.overview || {}
-const diff = (a, b) => Math.max(0, Number(a || 0) - Number(b || 0))
-const beforeModels = new Map((baseline.models || []).map(model => [model.name, model]))
+const counter = (object, key, label) => {
+  if (!Object.prototype.hasOwnProperty.call(object, key)
+      || typeof object[key] !== 'number' || !Number.isFinite(object[key]) || object[key] < 0) {
+    console.error(`fm-task-usage: invalid ${label} counter; refusing plausible-zero attribution`)
+    process.exit(1)
+  }
+  return object[key]
+}
+const diff = (currentObject, baselineObject, key, label) => {
+  const currentValue = counter(currentObject, key, `current ${label}`)
+  const baselineValue = counter(baselineObject, key, `baseline ${label}`)
+  if (currentValue < baselineValue) {
+    console.error(`fm-task-usage: decreasing ${label} counter; refusing plausible-zero attribution`)
+    process.exit(1)
+  }
+  return currentValue - baselineValue
+}
+if (!Array.isArray(baseline.models) || !Array.isArray(current.models)) {
+  console.error('fm-task-usage: invalid model counters; refusing plausible-zero attribution')
+  process.exit(1)
+}
+const modelKeys = ['calls', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'cost']
+const beforeModels = new Map()
+for (const model of baseline.models) {
+  if (!model || typeof model.name !== 'string' || !model.name || beforeModels.has(model.name)) {
+    console.error('fm-task-usage: invalid baseline model identity; refusing plausible-zero attribution')
+    process.exit(1)
+  }
+  for (const key of modelKeys) counter(model, key, `baseline model ${model.name} ${key}`)
+  beforeModels.set(model.name, model)
+}
 const models = (current.models || []).map(model => {
-  const old = beforeModels.get(model.name) || {}
+  const old = beforeModels.get(model.name)
+  if (!old) {
+    console.error(`fm-task-usage: model ${model.name} lacks baseline counters; refusing plausible-zero attribution`)
+    process.exit(1)
+  }
   return {
     name: model.name,
-    calls: diff(model.calls, old.calls),
-    input_tokens: diff(model.inputTokens, old.inputTokens),
-    output_tokens: diff(model.outputTokens, old.outputTokens),
-    cache_read_tokens: diff(model.cacheReadTokens, old.cacheReadTokens),
-    cache_write_tokens: diff(model.cacheWriteTokens, old.cacheWriteTokens),
-    cost_usd: diff(model.cost, old.cost),
+    calls: diff(model, old, 'calls', `model ${model.name} calls`),
+    input_tokens: diff(model, old, 'inputTokens', `model ${model.name} input tokens`),
+    output_tokens: diff(model, old, 'outputTokens', `model ${model.name} output tokens`),
+    cache_read_tokens: diff(model, old, 'cacheReadTokens', `model ${model.name} cache read tokens`),
+    cache_write_tokens: diff(model, old, 'cacheWriteTokens', `model ${model.name} cache write tokens`),
+    cost_usd: diff(model, old, 'cost', `model ${model.name} cost`),
   }
 }).filter(model => model.name !== '<synthetic>' && (model.calls || model.input_tokens || model.output_tokens || model.cache_read_tokens || model.cache_write_tokens || model.cost_usd))
 const tokens = after.tokens || {}
@@ -289,14 +326,14 @@ const summary = {
   actual_models: models.map(model => model.name),
   models,
   tokens: {
-    input: diff(tokens.input, oldTokens.input),
-    output: diff(tokens.output, oldTokens.output),
-    cache_read: diff(tokens.cacheRead, oldTokens.cacheRead),
-    cache_write: diff(tokens.cacheWrite, oldTokens.cacheWrite),
+    input: diff(tokens, oldTokens, 'input', 'input tokens'),
+    output: diff(tokens, oldTokens, 'output', 'output tokens'),
+    cache_read: diff(tokens, oldTokens, 'cacheRead', 'cache read tokens'),
+    cache_write: diff(tokens, oldTokens, 'cacheWrite', 'cache write tokens'),
   },
-  cost_usd: diff(after.cost, before.cost),
-  calls: diff(after.calls, before.calls),
-  sessions: diff(after.sessions, before.sessions),
+  cost_usd: diff(after, before, 'cost', 'cost'),
+  calls: diff(after, before, 'calls', 'calls'),
+  sessions: diff(after, before, 'sessions', 'sessions'),
   spawned_at: spawnedAt || null,
   captured_at: capturedAt,
   duration_seconds: Number.isFinite(started) && Number.isFinite(captured) ? Math.max(0, Math.floor((captured - started) / 1000)) : null,
