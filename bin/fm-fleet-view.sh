@@ -272,12 +272,11 @@ render_once() {
     # second. Unused capacity is intentionally not reassigned: the policy is
     # deterministic for the rendered group set, and one noisy project can never
     # consume the share of another project.
-    def grouped_lines($rows; $budget):
+    def grouped_lines($rows; $cap):
       if ($rows | length) == 0 then []
       else
         ($rows | sort_by([.project_sort, .state_rank, .priority, .order, .id]) | group_by(.project)) as $groups
         | ($groups | length) as $group_count
-        | ([1, ((($budget - $group_count) / $group_count) | floor)] | max) as $cap
         | [range(0; $group_count) as $index
            | ($groups[$index]) as $group
            | ([($group | length), $cap] | min) as $shown
@@ -286,10 +285,7 @@ render_once() {
               + (if $hidden > 0 then " · +\($hidden) hidden" else "" end) | middle_clip($width)),
              ($group[:$shown][] | row_line(.))]
       end;
-    def section_budget:
-      if $banner then [$height - 6, 2] | max
-      else [$height - 1, 2] | max
-      end;
+    def group_count($rows): [$rows[].project] | unique | length;
     def task_title($t): ($t.backlog.title // $t.project // $t.id // "unknown");
     def task_step($t):
       (($t.current_state.detail // "") as $detail
@@ -370,6 +366,48 @@ render_once() {
     | ([$ready[] | select(.dispatch_clear != true)]) as $ready_review
     | ([.backlog.records[]?
         | select(.state == "queued" and .structured == true and .blocked == true)]) as $blocked
+    | ([$ready_clear[] | {id:(.id // "unknown"),detail:(.title // "unknown"),marker:"• ",
+                         project:backlog_project(.),project_sort:(backlog_project(.) | ascii_downcase),
+                         state_rank:0,priority:(.priority // 999999),order:(.order // 999999)}]
+       + [$ready_review[] | {id:(.id // "unknown"),detail:review_text,marker:"? ",
+                            project:backlog_project(.),project_sort:(backlog_project(.) | ascii_downcase),
+                            state_rank:1,priority:(.priority // 999999),order:(.order // 999999)}]) as $ready_rows
+    | ([$in_flight[]
+        | (.current_state.state // "unknown") as $state
+        | {id:(.id // "unknown"),marker:"• ",project:task_project(.),
+           project_sort:(task_project(.) | ascii_downcase),
+           state_rank:(if $state == "working" then 0 elif $state == "unknown" then 2 else 1 end),
+           priority:(.backlog.priority // 999999),order:(.backlog.order // 999999),
+           detail:((if $state == "working" then ""
+                    elif $state == "unknown" then "state unavailable · "
+                    else $state + " · " end) + task_title(.))}]) as $in_flight_rows
+    | ([$blocked[]
+        | {id:(.id // "unknown"),marker:"• ",joiner:" ",project:backlog_project(.),
+           project_sort:(backlog_project(.) | ascii_downcase),state_rank:0,
+           priority:(.priority // 999999),order:(.order // 999999),
+           detail:("← " + ((.unresolved_blocker_ids // []) | join(","))
+                   + (if (.blocked_reason // "") == "" then "" else " · " + .blocked_reason end))}]) as $blocked_rows
+    | ((if wanted("waiting") then group_count($waiting) else 0 end)
+       + (if wanted("ready") then group_count($ready_rows) else 0 end)
+       + (if wanted("in-flight") then group_count($in_flight_rows) else 0 end)
+       + (if wanted("blocked") then group_count($blocked_rows) else 0 end)) as $group_count
+    | (($sections | length) + (($sections | length) - 1)
+       + (if $banner then 4 else 0 end)
+       + (if wanted("waiting") and ($waiting | length) == 0 then 1 else 0 end)
+       + (if wanted("ready") and ($ready | length) == 0 then 1 else 0 end)
+       + (if wanted("in-flight") and ($in_flight | length) == 0 then 1 else 0 end)
+       + (if wanted("blocked") and ($blocked | length) == 0 then 1 else 0 end)
+       + (if wanted("finished") then
+            if ($finished | length) == 0 then 1
+            else [$finished[:5][] | 2 + (if .artifact == null then 0 else 1 end)] | add
+            end
+          else 0 end)
+       + (if wanted("failed") then
+            if ($failed | length) == 0 then 1 else 2 * ($failed | length) end
+          else 0 end)) as $fixed_rows
+    | (if $group_count == 0 then 0
+       else ([0, ((($height - $fixed_rows - $group_count) / $group_count) | floor)] | max)
+       end) as $group_cap
     | (if $banner then
          ("=" * $width),
          ("FLEET STATUS" | clip($width)),
@@ -381,7 +419,7 @@ render_once() {
       (if ($waiting | length) == 0 then
          "  None."
        else
-         grouped_lines($waiting; section_budget)[]
+         grouped_lines($waiting; $group_cap)[]
        end),
       gap("waiting")
        else empty end),
@@ -392,14 +430,7 @@ render_once() {
        (if ($ready | length) == 0 then
           "  None."
         else
-          grouped_lines(
-            ([$ready_clear[] | {id:(.id // "unknown"),detail:(.title // "unknown"),marker:"• ",
-                                project:backlog_project(.),project_sort:(backlog_project(.) | ascii_downcase),
-                                state_rank:0,priority:(.priority // 999999),order:(.order // 999999)}]
-             + [$ready_review[] | {id:(.id // "unknown"),detail:review_text,marker:"? ",
-                                   project:backlog_project(.),project_sort:(backlog_project(.) | ascii_downcase),
-                                   state_rank:1,priority:(.priority // 999999),order:(.order // 999999)}]);
-            section_budget)[]
+          grouped_lines($ready_rows; $group_cap)[]
         end),
        gap("ready")
        else empty end),
@@ -408,17 +439,7 @@ render_once() {
         (if ($in_flight | length) == 0 then
           "  None."
         else
-          grouped_lines(
-            [$in_flight[]
-             | (.current_state.state // "unknown") as $state
-             | {id:(.id // "unknown"),marker:"• ",project:task_project(.),
-                project_sort:(task_project(.) | ascii_downcase),
-                state_rank:(if $state == "working" then 0 elif $state == "unknown" then 2 else 1 end),
-                priority:(.backlog.priority // 999999),order:(.backlog.order // 999999),
-                detail:((if $state == "working" then ""
-                         elif $state == "unknown" then "state unavailable · "
-                         else $state + " · " end) + task_title(.))}];
-            section_budget)[]
+          grouped_lines($in_flight_rows; $group_cap)[]
         end),
        gap("in-flight")
        else empty end),
@@ -427,14 +448,7 @@ render_once() {
         (if ($blocked | length) == 0 then
           "  None."
         else
-          grouped_lines(
-            [$blocked[]
-             | {id:(.id // "unknown"),marker:"• ",joiner:" ",project:backlog_project(.),
-                project_sort:(backlog_project(.) | ascii_downcase),state_rank:0,
-                priority:(.priority // 999999),order:(.order // 999999),
-                detail:("← " + ((.unresolved_blocker_ids // []) | join(","))
-                        + (if (.blocked_reason // "") == "" then "" else " · " + .blocked_reason end))}];
-            section_budget)[]
+          grouped_lines($blocked_rows; $group_cap)[]
         end),
        gap("blocked")
        else empty end),

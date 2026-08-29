@@ -18,6 +18,12 @@ jq -n '{
   tasks: [
     {id:"psychogenesis-active",project:"/tmp/projects/psychogenesis",
      current_state:{state:"working"},backlog:{repo:"psychogenesis",title:"Active migration",order:1},
+     hints:{open_decisions:[]},paths:{report:{present:false}},pr:{url:null}},
+    {id:"psychogenesis-active-2",project:"/tmp/projects/psychogenesis",
+     current_state:{state:"working"},backlog:{repo:"psychogenesis",title:"Second migration",order:2},
+     hints:{open_decisions:[]},paths:{report:{present:false}},pr:{url:null}},
+    {id:"psychogenesis-active-3",project:"/tmp/projects/psychogenesis",
+     current_state:{state:"working"},backlog:{repo:"psychogenesis",title:"Third migration",order:3},
      hints:{open_decisions:[]},paths:{report:{present:false}},pr:{url:null}}
   ],
   secondmate_landed: {records: []},
@@ -59,4 +65,10 @@ assert_contains "$live_view" "[psychogenesis]" \
   "in-flight work lacks the same project grouping as decisions"
 assert_contains "$live_view" "[mtg]" \
   "blocked work lacks the same project grouping as decisions"
+
+combined_view=$(COLUMNS=60 LINES=8 "$VIEW_BIN/fm-fleet-view.sh" --section in-flight,blocked)
+assert_contains "$combined_view" "psychogenesis-active" \
+  "combined-section budgeting hid the in-flight project row"
+assert_contains "$combined_view" "mtg-blocked" \
+  "combined-section budgeting let in-flight work hide the blocked project row"
 pass "narrow fleet decisions group three projects, preserve id tails, and truncate fairly"
