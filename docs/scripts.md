@@ -19,7 +19,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a narrow prioritized panel, optionally in watch mode   |
 | `fm-bearings-snapshot.sh` | Project the fleet snapshot to the compact TOON bearings view; local-only unless `--include-prs` |
 | `fm-task-usage.sh`       | Baseline, snapshot, or report live codeburn usage for one crewmate/scout cycle (docs/task-usage.md) |
-| `fm-effort-store.sh`     | Rebuild, annotate, and fingerprint the derived per-task effort store (docs/effort-store.md) |
+| `fm-effort-store.sh`     | Capture, rebuild, report, annotate, and fingerprint the derived per-task effort store (docs/effort-store.md) |
 | `fm-update.sh`           | Fast-forward local or remote homes from origin and observe an optional upstream template remote without merging it |
 | `fm-on.sh`               | Execute one tracked Firstmate command in a configured remote secondmate home, using its job worker except for the doctor bootstrap |
 | `fm-remote-job-lib.sh`   | Shared bounded remote job queue, worker readiness, LaunchAgent contract, and filesystem-composed PATH |

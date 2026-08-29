@@ -26,6 +26,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-task-meta-lock-lib.sh
+. "$SCRIPT_DIR/fm-task-meta-lock-lib.sh"
 
 if [ "$#" -lt 2 ]; then
   echo "error: invalid PR merge request" >&2
@@ -212,6 +214,12 @@ fi
 
 gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
 write_provenance_receipt merged "$AUTHORIZATION" "$PREPARED_EPOCH" "$(date +%s)"
+if [ -f "$META" ]; then
+  fm_task_meta_set_once "$META" merged_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || {
+    echo "error: merged PR succeeded but its lifecycle stamp could not be recorded" >&2
+    exit 1
+  }
+fi
 
 # The merge has landed. Record that outcome in Linear - Done, plus the pull
 # request as an attachment - because this is the last moment the task id and the

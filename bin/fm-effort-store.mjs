@@ -1,15 +1,13 @@
 #!/usr/bin/env node
 // Ingestion and schema for the derived agentic-effort store.
 //
-// This module owns the derived layer only. The raw layer -
-// data/cost-attribution.tsv, produced by the separately delivered teardown
-// capture - is irreplaceable and is never written here. Everything in the
-// database is recomputed from three joined sources plus one recorded-by-hand
-// source, so the file is safe to delete at any time and `rebuild` restores it
-// exactly.
+// This module owns lifecycle capture and the derived layer. The raw layer,
+// data/cost-attribution.tsv, is irreplaceable and append-only. Everything in
+// the database is recomputed from three durable sources plus one recorded-by-
+// hand source, so the file is safe to delete and `rebuild` restores it exactly.
 //
 //   raw         data/cost-attribution.tsv       identity, dispatch axes, window
-//   codeburn    codeburn export --format json   effort tokens and notional cost
+//   codeburn    data/<task>/usage.json           effort tokens and notional cost
 //   git         the project clone               structure, time, durability
 //   annotation  data/effort-annotations.jsonl   the posterior nobody can derive
 //
@@ -26,15 +24,14 @@
 // schema section is not the v2 join is recorded in ingest_issue rather than
 // guessed at.
 //
-// Determinism: no wall-clock value is ever written to the database, so two
-// rebuilds over the same inputs produce identical content and `fingerprint`
-// can prove it.
+// Determinism: rebuild consults no current wall clock. Event times are durable
+// inputs, so two rebuilds over the same inputs produce identical content and
+// `fingerprint` can prove it.
 //
 // bin/fm-effort-store.sh is the entry point and owns the CLI contract; run it
 // with --help. This file is invoked by that script and not directly.
 
-const IDLE_GAP_SECONDS = 300
-const SCHEMA_VERSION = 'fm-effort-store.v1'
+const SCHEMA_VERSION = 'fm-effort-store.v2'
 const CLASSIFIER_VERSION = 'fm-effort-classifier.v1'
 const V2_MARKER = '# schema=firstmate-effort-attribution-v2'
 const MAX_IMPORT_FILE_BYTES = 512 * 1024
@@ -62,7 +59,6 @@ process.emitWarning = (warning, ...rest) => {
 const { DatabaseSync } = await import('node:sqlite')
 const fs = await import('node:fs')
 const path = await import('node:path')
-const os = await import('node:os')
 const crypto = await import('node:crypto')
 const { spawnSync } = await import('node:child_process')
 
@@ -97,6 +93,26 @@ function unescapeRawValue(value) {
     else out += `\\${next}`
   }
   return out
+}
+
+function escapeRawValue(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/\t/g, '\\t')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+}
+
+function readMeta(file) {
+  const text = readTextFile(file)
+  if (text === null) return null
+  const meta = {}
+  for (const line of text.split('\n')) {
+    const separator = line.indexOf('=')
+    if (separator <= 0) continue
+    meta[line.slice(0, separator)] = line.slice(separator + 1)
+  }
+  return meta
 }
 
 function git(repo, args, {timeoutMs = 20000} = {}) {
@@ -206,117 +222,101 @@ function readAnnotations(file, issues) {
   return {byTask}
 }
 
-// --- source 2: codeburn ----------------------------------------------------
+// --- source 2: durable codeburn task snapshots -----------------------------
 //
-// One export covers every task window; per-record timestamps then window each
-// task exactly, which is what makes a pooled worktree attributable to the task
-// that actually held it. Matching is tiered because codeburn's project key is
-// not always the literal worktree path: it can drop the leading separator and
-// re-split a directory name that contains a dash. A tier is only allowed to
-// match when it maps to exactly one codeburn project, so an ambiguous
-// normalization records missing rather than attributing spend to a guess.
+// fm-task-usage writes the task-bounded snapshot while volatile metadata still
+// exists. Rebuild consumes only that durable artifact. Re-querying account-wide
+// logs here would make an old row change as logs rotate and would turn a failed
+// historical attribution into a plausible zero.
 
-function normalizeProjectKey(value) {
-  return value.replace(/^\/+/, '').replace(/[-/_]+/g, '/').replace(/\/+$/, '').toLowerCase()
+const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+function finiteNonnegative(value) {
+  if (value === null || value === undefined || value === '') return null
+  const number = Number(value)
+  return Number.isFinite(number) && number >= 0 ? number : null
 }
 
-function runCodeburn(from, to, timeoutSeconds) {
-  const bin = process.env.FM_CODEBURN_BIN || 'codeburn'
-  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-effort-store-'))
-  const outFile = path.join(outDir, 'codeburn.json')
+function readTaskUsage(dataDir, taskId, issues) {
+  if (!TASK_ID_PATTERN.test(taskId)) {
+    return {status: 'missing', detail: 'task id is not safe for a durable usage path'}
+  }
+  const file = path.join(dataDir, taskId, 'usage.json')
+  const text = readTextFile(file)
+  if (text === null) return {status: 'missing', detail: 'durable task usage snapshot is absent'}
+  let usage
   try {
-    const result = spawnSync(bin, [
-      '--timezone', 'UTC', 'export', '--format', 'json',
-      '--from', from, '--to', to, '-o', outFile,
-    ], {encoding: 'utf8', timeout: timeoutSeconds * 1000, maxBuffer: 16 * 1024 * 1024})
-    if (result.error || result.status !== 0) {
-      return {ok: false, detail: `codeburn export failed (${result.error ? result.error.code : `exit ${result.status}`})`}
-    }
-    const text = readTextFile(outFile)
-    if (text === null) return {ok: false, detail: 'codeburn export produced no file'}
-    return {ok: true, data: JSON.parse(text)}
-  } catch (error) {
-    return {ok: false, detail: `codeburn export unreadable: ${error.message}`}
-  } finally {
-    fs.rmSync(outDir, {recursive: true, force: true})
+    usage = JSON.parse(text)
+  } catch {
+    issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-unparsable', detail: file})
+    return {status: 'missing', detail: 'durable task usage snapshot is not valid JSON'}
   }
-}
-
-function indexCodeburnRecords(records) {
-  const byProject = new Map()
-  const byNormalized = new Map()
-  for (const record of records) {
-    const project = typeof record.project === 'string' ? record.project : ''
-    if (!project) continue
-    if (!byProject.has(project)) byProject.set(project, [])
-    byProject.get(project).push(record)
-    const normalized = normalizeProjectKey(project)
-    if (!byNormalized.has(normalized)) byNormalized.set(normalized, new Set())
-    byNormalized.get(normalized).add(project)
+  if (!['fm-task-usage.v1', 'fm-task-usage.v2'].includes(usage.schema) || usage.id !== taskId) {
+    issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-identity', detail: file})
+    return {status: 'missing', detail: 'durable task usage snapshot has the wrong schema or task id'}
   }
-  for (const list of byProject.values()) {
-    list.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)))
+  if (usage.schema === 'fm-task-usage.v1') {
+    issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-pre-deterministic-attribution', detail: file})
+    return {status: 'missing', detail: 'legacy usage snapshot predates deterministic project attribution'}
   }
-  return {byProject, byNormalized}
-}
-
-function matchCodeburnProject(index, worktree) {
-  if (index.byProject.has(worktree)) return {project: worktree, match: 'exact'}
-  const normalized = normalizeProjectKey(worktree)
-  const candidates = index.byNormalized.get(normalized)
-  if (!candidates || candidates.size === 0) return {project: null, match: 'none'}
-  if (candidates.size > 1) return {project: null, match: 'ambiguous'}
-  return {project: [...candidates][0], match: 'normalized'}
-}
-
-// Active time is the walked span with idle stretches removed, so a task left
-// parked overnight does not read as an overnight of effort.
-function summarizeCodeburnRecords(records) {
   const totals = {
-    tokens_in: 0, tokens_out: 0, tokens_reasoning: 0,
-    tokens_cached_read: 0, tokens_cached_write: 0,
-    notional_cost_usd: 0, api_calls: 0, agent_active_seconds: 0,
+    tokens_in: finiteNonnegative(usage.tokens?.input),
+    tokens_out: finiteNonnegative(usage.tokens?.output),
+    tokens_reasoning: finiteNonnegative(usage.tokens?.reasoning),
+    tokens_cached_read: finiteNonnegative(usage.tokens?.cache_read),
+    tokens_cached_write: finiteNonnegative(usage.tokens?.cache_write),
+    notional_cost_usd: finiteNonnegative(usage.cost_usd),
+    api_calls: finiteNonnegative(usage.calls),
+    sessions: finiteNonnegative(usage.sessions),
+    agent_active_seconds: finiteNonnegative(usage.agent_active_seconds),
   }
-  const models = new Map()
-  let previous = null
-  for (const record of records) {
-    totals.tokens_in += Number(record.inputTokens || 0)
-    totals.tokens_out += Number(record.outputTokens || 0)
-    totals.tokens_reasoning += Number(record.reasoningTokens || 0)
-    totals.tokens_cached_read += Number(record.cacheReadTokens || 0)
-    totals.tokens_cached_write += Number(record.cacheWriteTokens || 0)
-    totals.notional_cost_usd += Number(record.cost || 0)
-    totals.api_calls += 1
-    const at = Date.parse(record.timestamp)
-    if (previous !== null && Number.isFinite(at)) {
-      const gap = (at - previous) / 1000
-      if (gap > 0 && gap <= IDLE_GAP_SECONDS) totals.agent_active_seconds += gap
-    }
-    if (Number.isFinite(at)) previous = at
-    const key = [record.provider || '', record.model || ''].join(KEY_SEPARATOR)
-    if (!models.has(key)) {
-      models.set(key, {
-        provider: record.provider || '', model: record.model || '',
-        tokens_in: 0, tokens_out: 0, tokens_reasoning: 0,
-        tokens_cached_read: 0, tokens_cached_write: 0,
-        notional_cost_usd: 0, api_calls: 0,
-      })
-    }
-    const model = models.get(key)
-    model.tokens_in += Number(record.inputTokens || 0)
-    model.tokens_out += Number(record.outputTokens || 0)
-    model.tokens_reasoning += Number(record.reasoningTokens || 0)
-    model.tokens_cached_read += Number(record.cacheReadTokens || 0)
-    model.tokens_cached_write += Number(record.cacheWriteTokens || 0)
-    model.notional_cost_usd += Number(record.cost || 0)
-    model.api_calls += 1
+  const required = ['tokens_in', 'tokens_out', 'tokens_cached_read', 'tokens_cached_write', 'notional_cost_usd', 'api_calls']
+  if (required.some(key => totals[key] === null)) {
+    issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-shape', detail: file})
+    return {status: 'missing', detail: 'durable task usage snapshot is missing required totals'}
   }
-  totals.agent_active_seconds = Math.round(totals.agent_active_seconds)
-  totals.notional_cost_usd = Math.round(totals.notional_cost_usd * 1e6) / 1e6
-  for (const model of models.values()) {
-    model.notional_cost_usd = Math.round(model.notional_cost_usd * 1e6) / 1e6
+  const models = []
+  for (const model of Array.isArray(usage.models) ? usage.models : []) {
+    const name = typeof model.name === 'string' ? model.name : ''
+    if (!name || name === '<synthetic>') continue
+    models.push({
+      provider: typeof model.provider === 'string' ? model.provider : '',
+      model: name,
+      tokens_in: finiteNonnegative(model.input_tokens),
+      tokens_out: finiteNonnegative(model.output_tokens),
+      tokens_reasoning: finiteNonnegative(model.reasoning_tokens),
+      tokens_cached_read: finiteNonnegative(model.cache_read_tokens),
+      tokens_cached_write: finiteNonnegative(model.cache_write_tokens),
+      notional_cost_usd: finiteNonnegative(model.cost_usd),
+      api_calls: finiteNonnegative(model.calls),
+    })
   }
-  return {totals, models: sortedBy([...models.values()], m => [m.provider, m.model].join(KEY_SEPARATOR))}
+  return {
+    status: 'present',
+    detail: `${usage.schema} durable task usage snapshot`,
+    totals,
+    models: sortedBy(models, model => [model.provider, model.model].join(KEY_SEPARATOR)),
+    usage,
+  }
+}
+
+function discoverUsageTaskIds(dataDir) {
+  let entries
+  try {
+    entries = fs.readdirSync(dataDir, {withFileTypes: true})
+  } catch {
+    return []
+  }
+  return entries
+    .filter(entry => entry.isDirectory() && TASK_ID_PATTERN.test(entry.name)
+      && fs.existsSync(path.join(dataDir, entry.name, 'usage.json')))
+    .map(entry => entry.name)
+}
+
+function collectUsage(tasks, options, issues) {
+  const byTask = new Map()
+  for (const task of tasks) byTask.set(task.taskId, readTaskUsage(options.dataDir, task.taskId, issues))
+  return byTask
 }
 
 // --- source 3: git ---------------------------------------------------------
@@ -624,7 +624,10 @@ CREATE TABLE task (
   agent_active_seconds INTEGER,
   first_commit_at     TEXT,
   pr_opened_at        TEXT,
+  launch_to_pr_seconds INTEGER,
   merged_at           TEXT,
+  local_landed_at     TEXT,
+  teardown_at         TEXT,
   files_changed       INTEGER,
   prod_src_files      INTEGER,
   distinct_areas      INTEGER,
@@ -644,7 +647,8 @@ CREATE TABLE task (
   tokens_cached_write INTEGER,
   notional_cost_usd   REAL,
   api_calls           INTEGER,
-  outcome             TEXT CHECK (outcome IN ('merged', 'abandoned')),
+  sessions            INTEGER,
+  outcome             TEXT,
   reverted            INTEGER CHECK (reverted IN (0, 1))
 );
 
@@ -693,13 +697,13 @@ CREATE TABLE task_model (
   task_id             TEXT NOT NULL,
   provider            TEXT NOT NULL,
   model               TEXT NOT NULL,
-  tokens_in           INTEGER NOT NULL,
-  tokens_out          INTEGER NOT NULL,
-  tokens_reasoning    INTEGER NOT NULL,
-  tokens_cached_read  INTEGER NOT NULL,
-  tokens_cached_write INTEGER NOT NULL,
-  notional_cost_usd   REAL NOT NULL,
-  api_calls           INTEGER NOT NULL,
+  tokens_in           INTEGER,
+  tokens_out          INTEGER,
+  tokens_reasoning    INTEGER,
+  tokens_cached_read  INTEGER,
+  tokens_cached_write INTEGER,
+  notional_cost_usd   REAL,
+  api_calls           INTEGER,
   PRIMARY KEY (task_id, provider, model)
 );
 
@@ -763,13 +767,19 @@ function rebuild(options) {
   // A task can enter the store from the raw layer or from an annotation alone,
   // so work that never reached teardown is still visible as a task with its raw
   // source recorded missing.
-  const taskIds = new Set([...raw.rows.map(row => row.task), ...annotations.byTask.keys()])
+  const taskIds = new Set([
+    ...raw.rows.map(row => row.task),
+    ...annotations.byTask.keys(),
+    ...discoverUsageTaskIds(options.dataDir),
+  ])
   const rawByTask = new Map()
   for (const row of raw.rows) {
     const existing = rawByTask.get(row.task)
     // Repeated ids can only come from a reused id; the latest window wins and
-    // the superseded one is surfaced rather than silently discarded.
-    if (existing) {
+    // the superseded one is surfaced rather than silently discarded. An exact
+    // retry is intentionally invisible so an interrupted teardown can replay
+    // capture without changing the logical store.
+    if (existing && JSON.stringify(existing) !== JSON.stringify(row)) {
       issues.push({source: 'raw', task_id: row.task, kind: 'duplicate-task-row', detail: `${existing.started_at || ''}..${existing.ended_at || ''}`})
     }
     rawByTask.set(row.task, row)
@@ -781,7 +791,7 @@ function rebuild(options) {
     annotation: annotations.byTask.get(taskId) || null,
   }))
 
-  const codeburn = collectCodeburn(tasks, options, issues)
+  const usage = collectUsage(tasks, options, issues)
   const gitResults = collectGit(tasks, options, issues)
 
   const db = createDatabase(options.dbPath)
@@ -791,10 +801,9 @@ function rebuild(options) {
     for (const [key, value] of [
       ['schema_version', SCHEMA_VERSION],
       ['classifier_version', CLASSIFIER_VERSION],
-      ['idle_gap_seconds', String(IDLE_GAP_SECONDS)],
     ]) metaInsert.run(key, value)
 
-    writeTasks(db, tasks, codeburn, gitResults)
+    writeTasks(db, tasks, usage, gitResults, options)
     writeDurability(db, gitResults)
     writeIssues(db, issues)
     db.exec('COMMIT')
@@ -806,56 +815,6 @@ function rebuild(options) {
   db.close()
 
   return {tasks: tasks.length, issues: issues.length}
-}
-
-function collectCodeburn(tasks, options, issues) {
-  const windows = tasks.map(task => task.raw).filter(Boolean)
-    .map(row => [row.started_at, row.ended_at]).flat().filter(Boolean)
-    .map(value => String(value).slice(0, 10)).filter(value => /^\d{4}-\d{2}-\d{2}$/.test(value))
-  if (windows.length === 0) {
-    return {available: false, detail: 'no dated task windows in the raw capture', index: null}
-  }
-  const from = windows.reduce((a, b) => (a < b ? a : b))
-  const to = windows.reduce((a, b) => (a > b ? a : b))
-  const result = runCodeburn(from, to, options.codeburnTimeoutSeconds)
-  if (!result.ok) {
-    issues.push({source: 'codeburn', task_id: null, kind: 'export-unavailable', detail: result.detail})
-    return {available: false, detail: result.detail, index: null}
-  }
-  const records = Array.isArray(result.data?.records) ? result.data.records : null
-  if (records === null) {
-    const detail = 'codeburn export carried no records array'
-    issues.push({source: 'codeburn', task_id: null, kind: 'export-shape', detail})
-    return {available: false, detail, index: null}
-  }
-  return {available: true, detail: null, index: indexCodeburnRecords(records), from, to}
-}
-
-function codeburnForTask(codeburn, task) {
-  if (!codeburn.available) return {status: 'missing', detail: codeburn.detail}
-  const row = task.raw
-  if (!row || !row.worktree) return {status: 'missing', detail: 'no worktree recorded in the raw capture'}
-  if (!row.started_at || !row.ended_at) return {status: 'missing', detail: 'no task window recorded in the raw capture'}
-  const matched = matchCodeburnProject(codeburn.index, row.worktree)
-  if (matched.match === 'none') return {status: 'missing', detail: 'no codeburn project matched this worktree'}
-  if (matched.match === 'ambiguous') return {status: 'missing', detail: 'more than one codeburn project matched this worktree'}
-  const start = Date.parse(row.started_at)
-  const end = Date.parse(row.ended_at)
-  if (!Number.isFinite(start) || !Number.isFinite(end)) {
-    return {status: 'missing', detail: 'unparsable task window in the raw capture'}
-  }
-  const records = codeburn.index.byProject.get(matched.project)
-    .filter(record => {
-      const at = Date.parse(record.timestamp)
-      return Number.isFinite(at) && at >= start && at <= end
-    })
-  const summary = summarizeCodeburnRecords(records)
-  return {
-    status: 'present',
-    detail: `${matched.match} project match, ${records.length} records in window`,
-    totals: summary.totals,
-    models: summary.models,
-  }
 }
 
 function collectGit(tasks, options, issues) {
@@ -1082,17 +1041,29 @@ function computeDurability(repo, perTask) {
   return rows
 }
 
-function writeTasks(db, tasks, codeburn, gitResults) {
+function readMergeReceipt(dataDir, taskId) {
+  if (!TASK_ID_PATTERN.test(taskId)) return null
+  const receipt = readMeta(path.join(dataDir, 'pr-merges', `${taskId}.receipt`))
+  if (!receipt || receipt.schema !== 'fm-pr-merge.v1' || receipt.task_id !== taskId || receipt.phase !== 'merged') return null
+  const epoch = Number(receipt.merged_epoch)
+  return {
+    pr_url: receipt.pr || null,
+    merged_at: Number.isInteger(epoch) && epoch >= 0 ? new Date(epoch * 1000).toISOString().replace('.000Z', 'Z') : null,
+  }
+}
+
+function writeTasks(db, tasks, usageByTask, gitResults, options) {
   const taskInsert = insert(db, 'task', [
     'task_id', 'title', 'repo', 'project_path', 'kind', 'branch', 'pr_url',
     'harness', 'model', 'effort', 'backend', 'worktree', 'dispatched_at',
     'started_at', 'ended_at', 'wall_clock_seconds', 'agent_active_seconds',
-    'first_commit_at', 'pr_opened_at', 'merged_at',
+    'first_commit_at', 'pr_opened_at', 'launch_to_pr_seconds', 'merged_at',
+    'local_landed_at', 'teardown_at',
     'files_changed', 'prod_src_files', 'distinct_areas', 'adds', 'dels',
     'import_in_degree', 'import_out_degree',
     'findings', 'review_rounds', 'ask_user_count', 'gate_failures', 'failure_mode',
     'tokens_in', 'tokens_out', 'tokens_reasoning', 'tokens_cached_read',
-    'tokens_cached_write', 'notional_cost_usd', 'api_calls',
+    'tokens_cached_write', 'notional_cost_usd', 'api_calls', 'sessions',
     'outcome', 'reverted',
   ])
   const sourceInsert = insert(db, 'task_source', ['task_id', 'source', 'status', 'detail'])
@@ -1110,23 +1081,24 @@ function writeTasks(db, tasks, codeburn, gitResults) {
   for (const task of tasks) {
     const row = task.raw
     const annotation = task.annotation
-    const burn = codeburnForTask(codeburn, task)
+    const burn = usageByTask.get(task.taskId) || {status: 'missing', detail: 'durable task usage snapshot was not consulted'}
+    const receipt = readMergeReceipt(options.dataDir, task.taskId)
     const gitResult = gitResults.results.get(task.taskId) || {status: 'missing', detail: 'git source not consulted'}
     const structure = gitResult.status === 'present' ? gitResult.structure : null
     const totals = burn.status === 'present' ? burn.totals : null
 
     taskInsert.run(
       task.taskId,
-      bind(annotation?.title),
+      bind(burn.usage?.title ?? annotation?.title),
       bind(gitResult.status === 'present' ? gitResult.repo : null),
       bind(row?.project),
       bind(row?.kind ?? annotation?.kind),
-      bind(annotation?.branch),
-      bind(annotation?.pr_url),
+      bind(row?.branch ?? annotation?.branch),
+      bind(row?.pr_url ?? receipt?.pr_url ?? annotation?.pr_url),
       bind(row?.harness),
       bind(row?.model),
       bind(row?.effort),
-      bind(annotation?.backend),
+      bind(row?.backend ?? annotation?.backend),
       bind(row?.worktree),
       bind(row?.started_at),
       bind(row?.started_at),
@@ -1134,8 +1106,11 @@ function writeTasks(db, tasks, codeburn, gitResults) {
       bind(row?.started_at && row?.ended_at ? isoSecondsBetween(row.started_at, row.ended_at) : null),
       bind(totals ? totals.agent_active_seconds : null),
       bind(gitResult.status === 'present' ? gitResult.first_commit_at : null),
-      bind(annotation?.pr_opened_at),
-      bind(annotation?.merged_at ?? (gitResult.status === 'present' ? gitResult.merged_at : null)),
+      bind(row?.pr_opened_at ?? annotation?.pr_opened_at),
+      bind(row?.started_at && row?.pr_opened_at ? isoSecondsBetween(row.started_at, row.pr_opened_at) : null),
+      bind(row?.merged_at ?? receipt?.merged_at ?? annotation?.merged_at ?? (gitResult.status === 'present' ? gitResult.merged_at : null)),
+      bind(row?.local_landed_at),
+      bind(row?.teardown_at ?? row?.ended_at),
       bind(structure?.files_changed),
       bind(structure?.prod_src_files),
       bind(structure?.distinct_areas),
@@ -1155,7 +1130,8 @@ function writeTasks(db, tasks, codeburn, gitResults) {
       bind(totals?.tokens_cached_write),
       bind(totals?.notional_cost_usd),
       bind(totals?.api_calls),
-      bind(annotation?.outcome ?? (gitResult.status === 'present' ? gitResult.outcome : null)),
+      bind(totals?.sessions),
+      bind(row?.outcome ?? (receipt ? 'pr-merged' : null) ?? annotation?.outcome ?? (gitResult.status === 'present' ? gitResult.outcome : null)),
       bind(annotation?.reverted ?? (gitResult.status === 'present' ? gitResult.reverted : null)),
     )
 
@@ -1183,9 +1159,9 @@ function writeTasks(db, tasks, codeburn, gitResults) {
     }
     if (burn.status === 'present') {
       for (const model of burn.models) {
-        modelInsert.run(task.taskId, model.provider, model.model, model.tokens_in,
-          model.tokens_out, model.tokens_reasoning, model.tokens_cached_read,
-          model.tokens_cached_write, model.notional_cost_usd, model.api_calls)
+        modelInsert.run(task.taskId, model.provider, model.model, bind(model.tokens_in),
+          bind(model.tokens_out), bind(model.tokens_reasoning), bind(model.tokens_cached_read),
+          bind(model.tokens_cached_write), bind(model.notional_cost_usd), bind(model.api_calls))
       }
     }
   }
@@ -1220,6 +1196,110 @@ function writeIssues(db, issues) {
     counters.set(issue.source, ordinal)
     statement.run(issue.source, ordinal, bind(issue.task_id), issue.kind, issue.detail)
   }
+}
+
+// --- lifecycle capture -----------------------------------------------------
+
+const CAPTURE_COLUMNS = [
+  'task', 'worktree', 'harness', 'model', 'effort', 'kind', 'project',
+  'started_at', 'ended_at', 'mode', 'backend', 'branch', 'pr_url',
+  'pr_opened_at', 'merged_at', 'local_landed_at', 'teardown_at', 'outcome',
+]
+
+function capture(options, taskId, argv) {
+  if (!TASK_ID_PATTERN.test(taskId)) throw new Error('capture needs a safe task id')
+  let outcome = null
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === '--outcome' && argv[index + 1]) {
+      outcome = argv[index + 1]
+      index += 1
+      continue
+    }
+    throw new Error(`unknown capture option '${argv[index]}'`)
+  }
+  const meta = readMeta(path.join(options.stateDir, `${taskId}.meta`))
+  if (!meta) throw new Error(`task metadata is unavailable for ${taskId}`)
+  if (!meta.teardown_at) throw new Error(`task ${taskId} has no deterministic teardown_at stamp`)
+  const row = {
+    task: taskId,
+    worktree: meta.worktree,
+    harness: meta.harness,
+    model: meta.model,
+    effort: meta.effort,
+    kind: meta.kind,
+    project: meta.project,
+    started_at: meta.spawned_at,
+    ended_at: meta.teardown_at,
+    mode: meta.mode,
+    backend: meta.backend || 'tmux',
+    branch: meta.branch || `fm/${taskId}`,
+    pr_url: meta.pr,
+    pr_opened_at: meta.pr_opened_at,
+    merged_at: meta.merged_at,
+    local_landed_at: meta.local_landed_at,
+    teardown_at: meta.teardown_at,
+    outcome: outcome || meta.outcome,
+  }
+  for (const column of CAPTURE_COLUMNS) row[column] = String(row[column] ?? '')
+  fs.mkdirSync(path.dirname(options.rawFile), {recursive: true})
+  const existing = fs.existsSync(options.rawFile) ? readRawCapture(options.rawFile, []).rows : []
+  const exact = existing.some(candidate => candidate.task === taskId
+    && CAPTURE_COLUMNS.every(column => String(candidate[column] ?? '') === row[column]))
+  if (!exact) {
+    const lines = [V2_MARKER, CAPTURE_COLUMNS.join('\t'), CAPTURE_COLUMNS.map(column => escapeRawValue(row[column])).join('\t')]
+    fs.appendFileSync(options.rawFile, `${lines.join('\n')}\n`, {mode: 0o600})
+  }
+}
+
+// --- reporting -------------------------------------------------------------
+
+function durationText(seconds) {
+  if (seconds === null || seconds === undefined) return '-'
+  const total = Math.max(0, Number(seconds))
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const remainder = Math.floor(total % 60)
+  return `${hours > 0 ? `${hours}h ` : ''}${minutes}m ${remainder}s`
+}
+
+function report(dbPath, taskId) {
+  if (!fs.existsSync(dbPath)) return null
+  const db = new DatabaseSync(dbPath, {readOnly: true})
+  const filter = taskId ? 'WHERE task_id = ?' : ''
+  const statement = db.prepare(`
+    SELECT task_id, launch_to_pr_seconds, notional_cost_usd, tokens_in, tokens_out,
+      outcome,
+      (SELECT group_concat(model, ', ') FROM (
+        SELECT model FROM task_model WHERE task_model.task_id = task.task_id ORDER BY provider, model
+      )) AS actual_models
+    FROM task ${filter}
+    ORDER BY task_id
+  `)
+  const rows = taskId ? statement.all(taskId) : statement.all()
+  const lines = ['TASK | LAUNCH->PR | COST | TOKENS | ACTUAL MODEL | OUTCOME']
+  for (const row of rows) {
+    const cost = row.notional_cost_usd === null ? '-' : `$${Number(row.notional_cost_usd).toFixed(4)}`
+    const tokens = row.tokens_in === null || row.tokens_out === null ? '-' : `${row.tokens_in} in / ${row.tokens_out} out`
+    lines.push(`${row.task_id} | ${durationText(row.launch_to_pr_seconds)} | ${cost} | ${tokens} | ${row.actual_models || '-'} | ${row.outcome || '-'}`)
+  }
+  if (!taskId) {
+    const aggregate = db.prepare(`
+      SELECT COUNT(*) AS tasks,
+        COUNT(launch_to_pr_seconds) AS pr_tasks,
+        AVG(launch_to_pr_seconds) AS average_pr,
+        COUNT(notional_cost_usd) AS cost_tasks,
+        SUM(notional_cost_usd) AS cost,
+        COUNT(tokens_in) AS token_tasks,
+        SUM(tokens_in) AS tokens_in,
+        SUM(tokens_out) AS tokens_out
+      FROM task
+    `).get()
+    const cost = aggregate.cost_tasks === 0 ? '-' : `$${Number(aggregate.cost).toFixed(4)}`
+    const tokens = aggregate.token_tasks === 0 ? '-' : `${aggregate.tokens_in ?? 0} in / ${aggregate.tokens_out ?? 0} out`
+    lines.push(`TOTAL ${aggregate.tasks} tasks | avg ${durationText(aggregate.average_pr)} (${aggregate.pr_tasks} PR) | ${cost} | ${tokens}`)
+  }
+  db.close()
+  return `${lines.join('\n')}\n`
 }
 
 // --- fingerprint ------------------------------------------------------------
@@ -1369,6 +1449,27 @@ if (command === 'rebuild') {
   }
   annotate(config.annotationsFile, record)
   process.stdout.write(`recorded ${config.taskId} in ${config.annotationsFile}\n`)
+} else if (command === 'capture') {
+  try {
+    capture(config, config.taskId, argv)
+  } catch (error) {
+    warn(error.message)
+    process.exit(2)
+  }
+  const result = rebuild(config)
+  process.stdout.write(`captured ${config.taskId}; rebuilt ${result.tasks} tasks into ${config.dbPath}\n`)
+  if (result.issues > 0) process.stdout.write(`${result.issues} ingest issues recorded in ingest_issue\n`)
+} else if (command === 'report') {
+  const output = report(config.dbPath, config.taskId)
+  if (output === null) {
+    warn('no store to report; lifecycle capture or rebuild has not run yet')
+    process.exit(1)
+  }
+  if (config.taskId && output.split('\n').filter(Boolean).length === 1) {
+    warn(`task '${config.taskId}' is absent from the effort store`)
+    process.exit(1)
+  }
+  process.stdout.write(output)
 } else {
   warn(`unknown internal command '${command}'`)
   process.exit(2)

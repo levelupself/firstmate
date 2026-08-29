@@ -109,14 +109,23 @@ STATE_DEVICE=$(fm_pr_file_device "$STATE") || exit 1
 [ "$META_DEVICE" = "$STATE_DEVICE" ] || { echo "error: task metadata is unavailable" >&2; exit 1; }
 fm_task_meta_lock_acquire "$META" || { echo "error: task metadata mutation lock is unavailable" >&2; exit 1; }
 META_TMP=$(mktemp "$STATE/.fm-pr-meta.XXXXXX") || exit 1
+EXISTING_PR=$(sed -n 's/^pr=//p' "$META" | tail -1)
+EXISTING_PR_OPENED_AT=$(sed -n 's/^pr_opened_at=//p' "$META" | tail -1)
+if [ "$EXISTING_PR" = "$URL" ] \
+  && printf '%s\n' "$EXISTING_PR_OPENED_AT" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
+  PR_OPENED_AT=$EXISTING_PR_OPENED_AT
+else
+  PR_OPENED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+fi
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
-    pr=*|pr_head=*) ;;
+    pr=*|pr_head=*|pr_opened_at=*) ;;
     *) printf '%s\n' "$line" >> "$META_TMP" || exit 1 ;;
   esac
 done < "$META"
 printf 'pr=%s\n' "$URL" >> "$META_TMP" || exit 1
 [ -z "$PR_HEAD" ] || printf 'pr_head=%s\n' "$PR_HEAD" >> "$META_TMP" || exit 1
+printf 'pr_opened_at=%s\n' "$PR_OPENED_AT" >> "$META_TMP" || exit 1
 chmod 0600 "$META_TMP" || exit 1
 fm_pr_private_file_valid "$META_TMP" 600 "$STATE_DEVICE" || exit 1
 fm_pr_metadata_identity_parse "$META_TMP" || exit 1

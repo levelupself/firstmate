@@ -2,10 +2,10 @@
 # Build and maintain the derived agentic-effort store.
 #
 # The store is the reference class for agentic engineering work: one SQLite file
-# under this home's gitignored data/, joining the separately delivered,
-# append-only teardown capture (data/cost-attribution.tsv) with codeburn spend
-# and the project's own git history. It is derived, so it is safe to delete;
-# `rebuild` recreates it exactly. It never writes the raw capture.
+# under this home's gitignored data/, joining the append-only lifecycle capture
+# (data/cost-attribution.tsv), durable task-usage snapshots, and the project's
+# own git history. It is derived, so it is safe to delete; `rebuild` recreates
+# it exactly.
 #
 # Two fields cannot be derived from any artifact and are recorded by hand
 # instead: why a task needed another round (discovery, meaning the work revealed
@@ -21,8 +21,10 @@
 #
 # Usage:
 #   fm-effort-store.sh rebuild [--db <path>] [--no-import-graph]
+#   fm-effort-store.sh report [<task-id>] [--db <path>]
 #   fm-effort-store.sh fingerprint [--db <path>]
 #   fm-effort-store.sh annotate <task-id> [annotation options]
+#   fm-effort-store.sh capture <task-id> --outcome <outcome>
 #   fm-effort-store.sh path [--db <path>]
 #   fm-effort-store.sh --help
 #
@@ -35,16 +37,18 @@
 #   --outcome merged|abandoned --reverted yes|no
 #   --pr-opened-at <iso> --merged-at <iso>
 #
+# `capture` is the lifecycle-owned append-and-rebuild path. It reads stamped
+# task metadata and the durable usage snapshot. Operators normally use `report`.
+#
 # Environment:
 #   FM_HOME                              selects the home whose data/ is used
-#   FM_CODEBURN_BIN                      codeburn executable to consult
-#   FM_EFFORT_STORE_CODEBURN_TIMEOUT     seconds to allow codeburn (default 60)
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-$FM_ROOT}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 ENGINE="$SCRIPT_DIR/fm-effort-store.mjs"
 
 usage() {
@@ -59,7 +63,7 @@ die() {
 COMMAND=${1:-}
 case "$COMMAND" in
   -h|--help|help|'') usage; exit 0 ;;
-  rebuild|fingerprint|annotate|path) shift ;;
+  rebuild|report|fingerprint|annotate|capture|path) shift ;;
   *) usage >&2; exit 2 ;;
 esac
 
@@ -91,7 +95,8 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     *)
-      if [ "$COMMAND" = annotate ] && [ -z "$TASK_ID" ]; then
+      if { [ "$COMMAND" = annotate ] || [ "$COMMAND" = capture ] || [ "$COMMAND" = report ]; } \
+        && [ -z "$TASK_ID" ]; then
         TASK_ID=$1
       else
         ARGS+=("$1")
@@ -105,15 +110,24 @@ if [ "$COMMAND" = path ]; then
   printf '%s\n' "$DB"
   exit 0
 fi
-if [ "$COMMAND" = annotate ] && [ -z "$TASK_ID" ]; then
-  die "annotate needs a task id"
+if { [ "$COMMAND" = annotate ] || [ "$COMMAND" = capture ]; } && [ -z "$TASK_ID" ]; then
+  die "$COMMAND needs a task id"
 fi
 
-CODEBURN_TIMEOUT=${FM_EFFORT_STORE_CODEBURN_TIMEOUT:-60}
-case "$CODEBURN_TIMEOUT" in ''|*[!0-9]*|0) CODEBURN_TIMEOUT=60 ;; esac
-
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/fm-effort-store.XXXXXX") || die "could not create a work directory"
-trap 'rm -rf "$WORK"' EXIT
+LOCK="$STATE/.effort-store.lock"
+LOCK_HELD=0
+cleanup() {
+  [ "$LOCK_HELD" = 0 ] || fm_lock_release "$LOCK" || true
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
+mkdir -p "$STATE"
+fm_lock_acquire_wait "$LOCK" || die "could not acquire the effort-store lock"
+LOCK_HELD=1
 
 # The config is written by node so no shell quoting can corrupt a path, and the
 # annotation arguments travel NUL-separated so a note may contain anything.
@@ -127,16 +141,17 @@ fi
 
 node -e '
 const fs = require("fs")
-const [out, dbPath, rawFile, annotationsFile, importGraph, timeout, taskId] = process.argv.slice(1)
+const [out, dbPath, rawFile, annotationsFile, dataDir, stateDir, importGraph, taskId] = process.argv.slice(1)
 fs.writeFileSync(out, JSON.stringify({
   dbPath,
   rawFile,
   annotationsFile,
+  dataDir,
+  stateDir,
   importGraph: importGraph === "true",
-  codeburnTimeoutSeconds: Number(timeout),
   taskId: taskId || null,
 }))
 ' "$CONFIG" "$DB" "$DATA/cost-attribution.tsv" "$DATA/effort-annotations.jsonl" \
-  "$IMPORT_GRAPH" "$CODEBURN_TIMEOUT" "$TASK_ID" || die "could not stage the ingestion config"
+  "$DATA" "$STATE" "$IMPORT_GRAPH" "$TASK_ID" || die "could not stage the ingestion config"
 
 node "$ENGINE" "$COMMAND" "$CONFIG" "$ARGV"
