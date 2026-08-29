@@ -1052,6 +1052,16 @@ function readMergeReceipt(dataDir, taskId) {
   }
 }
 
+function readLocalLandingReceipt(dataDir, taskId) {
+  if (!TASK_ID_PATTERN.test(taskId)) return null
+  const receipt = readMeta(path.join(dataDir, 'local-landings', `${taskId}.receipt`))
+  if (!receipt || receipt.schema !== 'fm-local-landing.v1' || receipt.task_id !== taskId || receipt.phase !== 'landed') return null
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(receipt.event_at || '')) return null
+  if (!receipt.project || receipt.branch !== `fm/${taskId}` || !receipt.default_branch) return null
+  if (!/^[0-9a-f]{40}$/.test(receipt.before_sha || '') || !/^[0-9a-f]{40}$/.test(receipt.landed_sha || '')) return null
+  return {local_landed_at: receipt.event_at, project: receipt.project}
+}
+
 function writeTasks(db, tasks, usageByTask, gitResults, options) {
   const taskInsert = insert(db, 'task', [
     'task_id', 'title', 'repo', 'project_path', 'kind', 'branch', 'pr_url',
@@ -1083,6 +1093,8 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
     const annotation = task.annotation
     const burn = usageByTask.get(task.taskId) || {status: 'missing', detail: 'durable task usage snapshot was not consulted'}
     const receipt = readMergeReceipt(options.dataDir, task.taskId)
+    const localReceiptCandidate = readLocalLandingReceipt(options.dataDir, task.taskId)
+    const localReceipt = localReceiptCandidate && row?.project === localReceiptCandidate.project ? localReceiptCandidate : null
     const gitResult = gitResults.results.get(task.taskId) || {status: 'missing', detail: 'git source not consulted'}
     const structure = gitResult.status === 'present' ? gitResult.structure : null
     const totals = burn.status === 'present' ? burn.totals : null
@@ -1109,7 +1121,7 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
       bind(row?.pr_opened_at ?? annotation?.pr_opened_at),
       bind(row?.started_at && row?.pr_opened_at ? isoSecondsBetween(row.started_at, row.pr_opened_at) : null),
       bind(row?.merged_at || receipt?.merged_at || null),
-      bind(row?.local_landed_at),
+      bind(row?.local_landed_at || localReceipt?.local_landed_at || null),
       bind(row?.teardown_at ?? row?.ended_at),
       bind(structure?.files_changed),
       bind(structure?.prod_src_files),
@@ -1131,7 +1143,7 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
       bind(totals?.notional_cost_usd),
       bind(totals?.api_calls),
       bind(totals?.sessions),
-      bind(row?.outcome || (receipt ? 'pr-merged' : null)),
+      bind(row?.outcome || (receipt ? 'pr-merged' : null) || (localReceipt ? 'local-landed' : null)),
       bind(annotation?.reverted ?? (gitResult.status === 'present' ? gitResult.reverted : null)),
     )
 

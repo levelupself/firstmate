@@ -91,4 +91,16 @@ grep -Eq '^local_landed_at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}
   "$HOME_DIR/state/local-task.meta" || fail 'local merge did not stamp local_landed_at'
 pass 'sanctioned local landing stamps its completion time'
 
+RECEIPT="$HOME_DIR/data/local-landings/local-task.receipt"
+grep -qx 'phase=landed' "$RECEIPT" || fail 'local merge did not complete its durable receipt'
+RECEIPT_TIME=$(sed -n 's/^event_at=//p' "$RECEIPT")
+[ "$(sed -n 's/^local_landed_at=//p' "$HOME_DIR/state/local-task.meta")" = "$RECEIPT_TIME" ] \
+  || fail 'local metadata did not use the receipt event time'
+sed -i '/^local_landed_at=/d' "$HOME_DIR/state/local-task.meta"
+FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
+  "$LOCAL_MERGE" local-task >/dev/null || fail 'local merge retry failed'
+[ "$(sed -n 's/^local_landed_at=//p' "$HOME_DIR/state/local-task.meta")" = "$RECEIPT_TIME" ] \
+  || fail 'local merge retry changed the completed receipt event time'
+pass 'local landing retry preserves completed receipt time'
+
 printf '# all fm-effort-lifecycle tests passed\n'
