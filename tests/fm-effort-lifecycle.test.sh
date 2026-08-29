@@ -27,7 +27,7 @@ cat > "$FAKEBIN/gh" <<'SH'
 #!/usr/bin/env bash
 case " $* " in
   *" headRefOid "*) printf '%s\n' 0123456789abcdef0123456789abcdef01234567 ;;
-  *" createdAt "*) printf '%s\n' 2026-08-22T09:08:07Z ;;
+  *" createdAt "*) printf '%s\n' 2026-08-29T10:15:00Z ;;
 esac
 SH
 cat > "$FAKEBIN/gh-axi" <<'SH'
@@ -56,7 +56,16 @@ run_pr_check() {
 run_pr_check >"$TMP_ROOT/pr-check.out" 2>"$TMP_ROOT/pr-check.err" \
   || fail "PR check failed: $(tr '\n' ' ' < "$TMP_ROOT/pr-check.err")"
 OPENED_AT=$(sed -n 's/^pr_opened_at=//p' "$HOME_DIR/state/pr-task.meta")
-[ "$OPENED_AT" = 2026-08-22T09:08:07Z ] || fail 'PR check did not preserve forge pr_opened_at'
+[ "$OPENED_AT" = 2026-08-29T10:15:00Z ] || fail 'PR check did not preserve forge pr_opened_at'
+DB="$HOME_DIR/data/effort-store.sqlite"
+ACTIVE_ROW=$(node -e '
+process.emitWarning = () => {}
+const {DatabaseSync} = require("node:sqlite")
+const row = new DatabaseSync(process.argv[1], {readOnly:true}).prepare("SELECT launch_to_pr_seconds, teardown_at FROM task WHERE task_id = ?").get("pr-task")
+process.stdout.write(`${row?.launch_to_pr_seconds}|${row?.teardown_at ?? "NULL"}\n`)
+' "$DB")
+[ "$ACTIVE_ROW" = '900|NULL' ] || fail "active PR task did not populate a partial effort row: $ACTIVE_ROW"
+pass 'active PR lifecycle populates the effort store before teardown'
 run_pr_check >"$TMP_ROOT/pr-check-repeat.out" 2>"$TMP_ROOT/pr-check-repeat.err" \
   || fail "repeated PR check failed: $(tr '\n' ' ' < "$TMP_ROOT/pr-check-repeat.err")"
 [ "$(sed -n 's/^pr_opened_at=//p' "$HOME_DIR/state/pr-task.meta")" = "$OPENED_AT" ] \

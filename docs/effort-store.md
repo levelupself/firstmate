@@ -10,9 +10,10 @@ It is not a cost tracker: spend is one column among structure, process, time, an
 ## Lifecycle and two layers
 
 The raw layer is `data/cost-attribution.tsv`.
-It is append-only and irreplaceable because it records facts that exist for a few seconds before teardown removes volatile task metadata.
+It is append-only and irreplaceable because each lifecycle producer records its current durable facts while task metadata is available.
 `fm-spawn.sh` stamps launch time, `fm-pr-check.sh` stamps the first observation of a PR, `fm-pr-merge.sh` stamps a sanctioned PR merge, and `fm-merge-local.sh` stamps a sanctioned local landing.
-`fm-teardown.sh` snapshots task usage, stamps teardown time and outcome, captures those metadata fields into the raw layer, and rebuilds the store before deleting task state.
+Launch, PR-open, sanctioned merge, sanctioned local landing, and teardown producers incrementally capture their metadata or receipts and rebuild the store.
+`fm-teardown.sh` additionally snapshots task usage, stamps teardown time and outcome, and captures the final revision before deleting task state.
 No agent or operator command is part of that lifecycle.
 
 The derived layer is one SQLite file, `data/effort-store.sqlite`, under this home's gitignored `data/`.

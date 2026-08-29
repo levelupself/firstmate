@@ -48,3 +48,12 @@ fm_task_meta_set_once() {
   fm_task_meta_lock_release || status=1
   return "$status"
 }
+
+fm_task_effort_capture_best_effort() {
+  local root=$1 id=$2
+  [ -x "$root/bin/fm-effort-store.sh" ] || return 0
+  "$root/bin/fm-effort-store.sh" capture "$id" >/dev/null 2>&1 || {
+    echo "warning: incremental effort capture failed for $id" >&2
+    return 0
+  }
+}
