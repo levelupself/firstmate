@@ -135,6 +135,10 @@ EOF
     "harness=codex" \
     "kind=ship" \
     "mode=ship"
+  mkdir -p "$home/state/usage-cache"
+  cat > "$home/state/usage-cache/ship-task.json" <<'JSON'
+{"schema":"fm-task-usage.v2","id":"ship-task","harness":"claude","actual_models":["Opus 5"],"tokens":{"input":1,"output":2,"cache_read":3,"cache_write":4},"cost_usd":0.5,"calls":6,"sessions":1,"duration_seconds":60}
+JSON
 }
 
 test_empty_fleet_json() {
@@ -174,6 +178,9 @@ test_fixture_snapshot_json() {
       and .backlog.body_excerpt == "Preserve this detail for bearings."
       and .hints.pending_decision == false
       and .paths.status_log.kind == "event_history"
+      and .usage.schema == "fm-task-usage.v2"
+      and .usage.stale == true
+      and .usage.actual_models == ["Opus 5"]
   ' >/dev/null || fail "ship task state, PR, body, and stale event hints wrong"
   printf '%s' "$out" | jq -e '
     .tasks[] | select(.id == "scout-task")
