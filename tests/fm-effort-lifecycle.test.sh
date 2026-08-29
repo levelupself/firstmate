@@ -95,6 +95,23 @@ fm_write_meta "$HOME_DIR/state/local-task.meta" \
   'kind=ship' \
   'mode=local-only' \
   'spawned_at=2026-08-29T10:00:00Z'
+FAILBIN="$TMP_ROOT/failbin"
+mkdir -p "$FAILBIN"
+REAL_GIT=$(command -v git)
+cat > "$FAILBIN/git" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = -C ] && [ "\${3:-}" = merge ] && [ "\${4:-}" = --ff-only ]; then
+  exit 1
+fi
+exec "$REAL_GIT" "\$@"
+SH
+chmod +x "$FAILBIN/git"
+if FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAILBIN:$FAKEBIN:$PATH" \
+  "$LOCAL_MERGE" local-task >/dev/null 2>&1; then
+  fail 'local merge unexpectedly succeeded through the failing merge boundary'
+fi
+PREPARED_TIME=$(sed -n 's/^event_at=//p' "$HOME_DIR/data/local-landings/local-task.receipt")
+sleep 1
 FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
   "$LOCAL_MERGE" local-task >/dev/null || fail 'local merge failed'
 grep -Eq '^local_landed_at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
@@ -104,6 +121,8 @@ pass 'sanctioned local landing stamps its completion time'
 RECEIPT="$HOME_DIR/data/local-landings/local-task.receipt"
 grep -qx 'phase=landed' "$RECEIPT" || fail 'local merge did not complete its durable receipt'
 RECEIPT_TIME=$(sed -n 's/^event_at=//p' "$RECEIPT")
+[ "$RECEIPT_TIME" != "$PREPARED_TIME" ] \
+  || fail 'successful local landing reused the failed preparation time'
 [ "$(sed -n 's/^local_landed_at=//p' "$HOME_DIR/state/local-task.meta")" = "$RECEIPT_TIME" ] \
   || fail 'local metadata did not use the receipt event time'
 sed -i '/^local_landed_at=/d' "$HOME_DIR/state/local-task.meta"

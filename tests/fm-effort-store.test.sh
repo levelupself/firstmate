@@ -114,7 +114,7 @@ write_usage() { # <task> <input> <output> <cost> <calls> <actual-model> [spawned
   local task=$1 input=$2 output=$3 cost=$4 calls=$5 actual_model=$6 spawned_at=${7:-2026-01-01T00:00:00Z}
   mkdir -p "$FM_HOME/data/$task"
   cat > "$FM_HOME/data/$task/usage.json" <<JSON
-{"schema":"fm-task-usage.v2","id":"$task","harness":"codex","configured_model":"default","actual_models":["$actual_model"],"models":[{"name":"$actual_model","calls":$calls,"input_tokens":$input,"output_tokens":$output,"cache_read_tokens":0,"cache_write_tokens":0,"cost_usd":$cost}],"tokens":{"input":$input,"output":$output,"cache_read":0,"cache_write":0},"cost_usd":$cost,"calls":$calls,"sessions":1,"spawned_at":"$spawned_at","captured_at":"2026-01-01T02:00:00Z"}
+{"schema":"fm-task-usage.v2","id":"$task","harness":"codex","configured_model":"default","actual_models":["$actual_model"],"models":[{"name":"$actual_model","calls":$calls,"input_tokens":$input,"output_tokens":$output,"cache_read_tokens":0,"cache_write_tokens":0,"cost_usd":$cost}],"tokens":{"input":$input,"output":$output,"cache_read":0,"cache_write":0},"cost_usd":$cost,"calls":$calls,"sessions":1,"spawned_at":"$spawned_at","captured_at":"2026-01-01T02:00:00Z","correlation":{"baseline":true}}
 JSON
 }
 write_usage 901-introduce-memory 110 22 0.75 2 claude-opus-5
@@ -341,6 +341,17 @@ LIFECYCLE=$(query "SELECT launch_to_pr_seconds, tokens_in, tokens_out, notional_
 [ "$LIFECYCLE" = '900|321|45|1.25|2026-06-01T10:15:00Z|2026-06-01T11:00:00Z|2026-06-01T11:05:00Z|pr-merged' ] \
   || fail "captured lifecycle fields were incomplete: $LIFECYCLE"
 pass 'lifecycle capture creates and populates the store without a remembered rebuild'
+
+sed -i 's/"baseline":true/"baseline":false/' "$FM_HOME/data/910-lifecycle/usage.json"
+"$STORE" capture 910-lifecycle --outcome pr-merged >/dev/null \
+  || fail 'unbounded usage capture failed'
+UNBOUNDED_USAGE=$(query "SELECT tokens_in, tokens_out, notional_cost_usd FROM task WHERE task_id = '910-lifecycle'")
+[ "$UNBOUNDED_USAGE" = 'NULL|NULL|NULL' ] \
+  || fail "usage without a launch baseline was accepted: $UNBOUNDED_USAGE"
+grep -q '"baseline":false' "$FM_HOME/data/910-lifecycle/usage.json" \
+  || fail 'unbounded usage snapshot was not preserved for diagnostics'
+pass 'usage without a valid launch baseline remains missing'
+sed -i 's/"baseline":false/"baseline":true/' "$FM_HOME/data/910-lifecycle/usage.json"
 
 fm_write_meta "$FM_HOME/state/911-receipt-outcome.meta" \
   "worktree=$ROOTDIR/worktrees/receipt-outcome" \

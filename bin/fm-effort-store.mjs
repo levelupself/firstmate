@@ -263,6 +263,10 @@ function readTaskUsage(dataDir, taskId, spawnedAt, issues) {
     issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-launch-identity', detail: file})
     return {status: 'missing', detail: 'durable task usage snapshot belongs to another launch'}
   }
+  if (usage.correlation?.baseline !== true) {
+    issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-unbounded-attribution', detail: file})
+    return {status: 'missing', detail: 'durable task usage snapshot lacks a valid launch baseline'}
+  }
   const totals = {
     tokens_in: finiteNonnegative(usage.tokens?.input),
     tokens_out: finiteNonnegative(usage.tokens?.output),
