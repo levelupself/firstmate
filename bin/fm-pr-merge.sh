@@ -191,8 +191,9 @@ if [ -e "$PROVENANCE_RECEIPT" ] || [ -L "$PROVENANCE_RECEIPT" ]; then
     && [ -n "$CURRENT_SPAWNED_AT" ] \
     && [ "$(receipt_value schema)" = fm-pr-merge.v1 ] \
     && [ "$(receipt_value task_id)" = "$ID" ] \
-    && [ "$(receipt_value pr)" = "$URL" ] \
     && [ "$(receipt_value phase)" = merged ] \
+    && printf '%s\n' "$(receipt_value spawned_at)" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
+    && printf '%s\n' "$(receipt_value merged_epoch)" | grep -Eq '^[0-9]+$' \
     && [ "$(receipt_value spawned_at)" != "$CURRENT_SPAWNED_AT" ]; then
     HISTORY_DIR="$PROVENANCE_DIR/history"
     [ ! -e "$HISTORY_DIR" ] || { [ -d "$HISTORY_DIR" ] && [ ! -L "$HISTORY_DIR" ]; } \

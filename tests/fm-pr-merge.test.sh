@@ -169,12 +169,14 @@ test_records_pr_and_head_before_merging() {
     "kind=ship" \
     "mode=no-mistakes" \
     "spawned_at=2026-08-30T10:00:00Z"
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/10 \
     >/dev/null 2> "$case_dir/reuse.stderr" || fail "records-before-merge: reused task merge failed"
   [ -f "$case_dir/data/pr-merges/history/task-x1.2026-08-29T10-00-00Z.receipt" ] \
     || fail "records-before-merge: reused task did not retain completed receipt history"
   assert_grep 'spawned_at=2026-08-30T10:00:00Z' "$receipt" \
     "records-before-merge: reused task did not create current launch provenance"
+  assert_grep 'pr=https://github.com/example/repo/pull/10' "$receipt" \
+    "records-before-merge: reused task retained the prior delivery identity"
   pass "fm-pr-merge records pr= and pr_head= before invoking gh-axi pr merge"
 }
 
