@@ -322,6 +322,31 @@ LIFECYCLE=$(query "SELECT launch_to_pr_seconds, tokens_in, tokens_out, notional_
   || fail "captured lifecycle fields were incomplete: $LIFECYCLE"
 pass 'lifecycle capture creates and populates the store without a remembered rebuild'
 
+fm_write_meta "$FM_HOME/state/911-receipt-outcome.meta" \
+  "worktree=$ROOTDIR/worktrees/receipt-outcome" \
+  "project=$PROJECT" \
+  "harness=codex" \
+  "model=configured-gpt" \
+  "effort=xhigh" \
+  "kind=ship" \
+  "mode=no-mistakes" \
+  "spawned_at=2026-06-02T10:00:00Z" \
+  "pr=https://github.com/example/repo/pull/11" \
+  "teardown_at=2026-06-02T11:05:00Z"
+mkdir -p "$FM_HOME/data/pr-merges"
+fm_write_meta "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" \
+  "schema=fm-pr-merge.v1" \
+  "task_id=911-receipt-outcome" \
+  "phase=merged" \
+  "pr=https://github.com/example/repo/pull/11" \
+  "merged_epoch=1780398000"
+"$STORE" capture 911-receipt-outcome >/dev/null \
+  || fail 'receipt-backed lifecycle capture failed'
+RECEIPT_OUTCOME=$(query "SELECT outcome FROM task WHERE task_id = '911-receipt-outcome'")
+[ "$RECEIPT_OUTCOME" = 'pr-merged' ] \
+  || fail "a durable sanctioned merge receipt did not supply the missing raw outcome: $RECEIPT_OUTCOME"
+pass 'durable merge receipt supplies a missing raw teardown outcome'
+
 CAPTURE_FINGERPRINT=$("$STORE" fingerprint)
 CAPTURE_RAW_SIZE=$(wc -c < "$RAW")
 "$STORE" capture 910-lifecycle --outcome pr-merged >/dev/null \
