@@ -112,6 +112,26 @@ assert_contains "$text" "codex / gpt-5.6-sol" "compact usage should identify har
 assert_contains "$text" '$1.5000 | 3 calls | 2 sessions | elapsed ' \
   "compact usage should surface cost, calls, sessions, and wall-clock duration"
 assert_present "$HOME_DIR/data/task-a/usage.json" "teardown-style snapshot was not saved"
+EFFORT_DB="$HOME_DIR/data/effort-store.sqlite"
+assert_present "$EFFORT_DB" "live usage snapshot did not populate the effort store"
+snapshot_row=$(node - "$EFFORT_DB" <<'NODE'
+process.emitWarning = () => {}
+const {DatabaseSync} = require('node:sqlite')
+const db = new DatabaseSync(process.argv[2], {readOnly: true})
+const task = db.prepare('SELECT model, tokens_in, tokens_out, tokens_cached_read, tokens_cached_write, notional_cost_usd, api_calls, sessions, teardown_at FROM task WHERE task_id = ?').get('task-a')
+const models = db.prepare('SELECT model FROM task_model WHERE task_id = ? ORDER BY model').all('task-a').map(row => row.model)
+process.stdout.write(JSON.stringify({task, models}))
+NODE
+)
+node -e '
+const row=JSON.parse(process.argv[1])
+if (!row.task || row.task.model !== "configured-model") process.exit(1)
+if (row.task.tokens_in !== 30 || row.task.tokens_out !== 60) process.exit(1)
+if (row.task.tokens_cached_read !== 90 || row.task.tokens_cached_write !== 120) process.exit(1)
+if (row.task.notional_cost_usd !== 1.5 || row.task.api_calls !== 3 || row.task.sessions !== 2) process.exit(1)
+if (row.task.teardown_at !== null || row.models.join(",") !== "gpt-5.6-sol") process.exit(1)
+' "$snapshot_row" || fail "live usage snapshot did not capture attributed effort and models: $snapshot_row"
+pass "real v2 usage snapshot incrementally populates live task effort"
 rm -f "$HOME_DIR/state/task-a.meta"
 historical=$(FM_HOME="$HOME_DIR" "$USAGE" task-a --json)
 node -e 'const u=JSON.parse(process.argv[1]); if (u.id !== "task-a" || u.cost_usd !== 1.5) process.exit(1)' "$historical" \

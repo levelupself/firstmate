@@ -22,6 +22,8 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+# shellcheck source=bin/fm-task-meta-lock-lib.sh
+. "$FM_ROOT/bin/fm-task-meta-lock-lib.sh"
 
 usage() {
   sed -n '2,11s/^# \{0,1\}//p' "$0"
@@ -309,6 +311,7 @@ fi
 if [ "$MODE" = --snapshot ]; then
   mkdir -p "$TASK_DATA"
   cp "$SUMMARY" "$SNAPSHOT"
+  fm_task_effort_capture_best_effort "$FM_ROOT" "$ID"
 fi
 
 if [ "$MODE" = --json ]; then

@@ -7,6 +7,7 @@ It uses the uniquely matched reported project name as codeburn's filter key, the
 An absent, ambiguous, or ineffective project match is an attribution error and never becomes a zero-usage report.
 `bin/fm-teardown.sh` saves the final delta as `data/<id>/usage.json` before deleting volatile task metadata.
 The durable snapshot keeps completed-task usage in `fm-fleet-snapshot.v1` after worktree return and pool reuse.
+Writing a v2 snapshot also refreshes the derived effort-store row immediately, so a live task exposes its attributed cost, tokens, calls, sessions, and actual models before teardown.
 
 The JSON contract is owned by `bin/fm-task-usage.sh` and identified by `fm-task-usage.v2`.
 It reports the task id, title, kind, project, delivery mode, dispatched harness, configured model, actual model names and per-model totals, tokens, cost, calls, sessions, spawn and capture timestamps, and wall-clock duration.
