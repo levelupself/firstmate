@@ -7,6 +7,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 CHECK="$ROOT/bin/fm-no-mistakes-required.sh"
+ATTESTATION_CHECK="$ROOT/bin/fm-no-mistakes-attestation.sh"
 TMP_ROOT=$(fm_test_tmproot fm-no-mistakes-required)
 fm_git_identity fmtest fmtest@example.invalid
 
@@ -90,6 +91,19 @@ test_rejects_claim_without_graph_proof() {
   pass 'metadata and environment claims cannot substitute for commit-graph proof'
 }
 
+test_accepts_matching_pipeline_attestation() {
+  local head=0123456789abcdef body incomplete
+  body='<!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"0123456789abcdef","steps":[{"step":"intent","status":"completed"},{"step":"rebase","status":"completed"},{"step":"review","status":"completed"},{"step":"test","status":"completed"},{"step":"document","status":"completed"},{"step":"lint","status":"completed"},{"step":"push","status":"completed"},{"step":"pr","status":"running"},{"step":"ci","status":"pending"}]} -->'
+  incomplete='<!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"0123456789abcdef","steps":[{"step":"intent","status":"completed"},{"step":"push","status":"completed"}]} -->'
+  printf '%s' "$body" | "$ATTESTATION_CHECK" "$head" \
+    || fail 'matching completed pipeline attestation was rejected'
+  ! printf '%s' "$body" | "$ATTESTATION_CHECK" deadbeef \
+    || fail 'pipeline attestation for a different head was accepted'
+  ! printf '%s' "$incomplete" | "$ATTESTATION_CHECK" "$head" \
+    || fail 'incomplete pipeline attestation was accepted'
+  pass 'pipeline attestation requires the matching head and completed phases'
+}
+
 case "${1:-all}" in
   valid)
     test_accepts_graph_proven_catchup
@@ -100,6 +114,7 @@ case "${1:-all}" in
   all)
     test_accepts_graph_proven_catchup
     test_rejects_claim_without_graph_proof
+    test_accepts_matching_pipeline_attestation
     ;;
   *)
     fail "unknown test selector: $1"
