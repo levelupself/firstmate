@@ -22,3 +22,50 @@ fm_task_meta_lock_release() {
   fm_lock_release "$FM_TASK_META_LOCK_DIR"
   FM_TASK_META_LOCK_DIR=
 }
+
+# fm_task_meta_set_once <meta-file> <key> <value>: atomically add a lifecycle
+# fact only when it is absent. Retries preserve the original event time.
+fm_task_meta_set_once() {
+  local meta=$1 key=$2 value=$3 dir tmp status=0
+  case "$key" in ''|[!A-Za-z_]*|*[!A-Za-z0-9_]*) return 2 ;; esac
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  fm_task_meta_lock_acquire "$meta" || return 1
+  if grep -q "^${key}=" "$meta" 2>/dev/null; then
+    fm_task_meta_lock_release
+    return 0
+  fi
+  dir=$(dirname "$meta")
+  tmp=$(mktemp "$dir/.fm-meta-set.XXXXXX") || status=1
+  if [ "$status" -eq 0 ]; then
+    if ! awk -F= -v key="$key" '$1 != key' "$meta" > "$tmp" \
+      || ! printf '%s=%s\n' "$key" "$value" >> "$tmp" \
+      || ! chmod 0600 "$tmp" \
+      || ! mv -f -- "$tmp" "$meta"; then
+      status=1
+    fi
+  fi
+  [ -z "${tmp:-}" ] || [ ! -e "$tmp" ] || rm -f -- "$tmp"
+  fm_task_meta_lock_release || status=1
+  return "$status"
+}
+
+fm_task_effort_capture_best_effort() {
+  local root=$1 id=$2
+  [ -x "$root/bin/fm-effort-store.sh" ] || return 0
+  "$root/bin/fm-effort-store.sh" capture "$id" >/dev/null 2>&1 || {
+    echo "warning: incremental effort capture failed for $id" >&2
+    return 0
+  }
+}
+
+fm_task_effort_capture_launch() {
+  local root=$1 id=$2
+  [ -x "$root/bin/fm-effort-store.sh" ] || {
+    echo "error: launch effort capture is unavailable for $id" >&2
+    return 1
+  }
+  "$root/bin/fm-effort-store.sh" capture "$id" >/dev/null || {
+    echo "error: launch effort capture failed for $id" >&2
+    return 1
+  }
+}

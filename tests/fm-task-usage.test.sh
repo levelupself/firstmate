@@ -112,6 +112,26 @@ assert_contains "$text" "codex / gpt-5.6-sol" "compact usage should identify har
 assert_contains "$text" '$1.5000 | 3 calls | 2 sessions | elapsed ' \
   "compact usage should surface cost, calls, sessions, and wall-clock duration"
 assert_present "$HOME_DIR/data/task-a/usage.json" "teardown-style snapshot was not saved"
+EFFORT_DB="$HOME_DIR/data/effort-store.sqlite"
+assert_present "$EFFORT_DB" "live usage snapshot did not populate the effort store"
+snapshot_row=$(node - "$EFFORT_DB" <<'NODE'
+process.emitWarning = () => {}
+const {DatabaseSync} = require('node:sqlite')
+const db = new DatabaseSync(process.argv[2], {readOnly: true})
+const task = db.prepare('SELECT model, tokens_in, tokens_out, tokens_cached_read, tokens_cached_write, notional_cost_usd, api_calls, sessions, teardown_at FROM task WHERE task_id = ?').get('task-a')
+const models = db.prepare('SELECT model FROM task_model WHERE task_id = ? ORDER BY model').all('task-a').map(row => row.model)
+process.stdout.write(JSON.stringify({task, models}))
+NODE
+)
+node -e '
+const row=JSON.parse(process.argv[1])
+if (!row.task || row.task.model !== "configured-model") process.exit(1)
+if (row.task.tokens_in !== 30 || row.task.tokens_out !== 60) process.exit(1)
+if (row.task.tokens_cached_read !== 90 || row.task.tokens_cached_write !== 120) process.exit(1)
+if (row.task.notional_cost_usd !== 1.5 || row.task.api_calls !== 3 || row.task.sessions !== 2) process.exit(1)
+if (row.task.teardown_at !== null || row.models.join(",") !== "gpt-5.6-sol") process.exit(1)
+' "$snapshot_row" || fail "live usage snapshot did not capture attributed effort and models: $snapshot_row"
+pass "real v2 usage snapshot incrementally populates live task effort"
 rm -f "$HOME_DIR/state/task-a.meta"
 historical=$(FM_HOME="$HOME_DIR" "$USAGE" task-a --json)
 node -e 'const u=JSON.parse(process.argv[1]); if (u.id !== "task-a" || u.cost_usd !== 1.5) process.exit(1)' "$historical" \
@@ -139,6 +159,86 @@ if (b.tokens.input !== 20 || b.actual_models.join(",") !== "gpt-5.6-sol") proces
 if (a.cost_usd === b.cost_usd || a.calls === b.calls || a.tokens.input === b.tokens.input) process.exit(1)
 ' "$json_a" "$json_b" || fail "different tasks were not independently attributed: a=$json_a b=$json_b"
 pass "a later pooled-worktree occupant subtracts the earlier occupant and two tasks have different totals"
+
+fm_write_meta "$HOME_DIR/state/task-zero.meta" \
+  "worktree=$POOLED_WORKTREE" \
+  "harness=codex" \
+  "model=configured-model" \
+  "kind=ship" \
+  "spawned_at=2026-07-19T14:34:56Z"
+export FM_CODEBURN_FIXTURE="$TMP_ROOT/baseline-zero.json"
+write_fixture "$FM_CODEBURN_FIXTURE" 3.25 7 4 7 11
+FM_HOME="$HOME_DIR" "$USAGE" task-zero --baseline
+zero_usage=$(FM_HOME="$HOME_DIR" "$USAGE" task-zero --json)
+node -e '
+const u=JSON.parse(process.argv[1])
+if (u.cost_usd !== 0 || u.calls !== 0 || u.sessions !== 0) process.exit(1)
+if (Object.values(u.tokens).some(value => value !== 0) || u.models.length !== 0) process.exit(1)
+' "$zero_usage" || fail "legitimate exact-zero deltas were rejected: $zero_usage"
+pass "explicit equal counters preserve legitimate exact-zero deltas"
+
+for invalid_counter in missing nonnumeric decreasing; do
+  task="invalid-$invalid_counter"
+  fm_write_meta "$HOME_DIR/state/$task.meta" \
+    "worktree=$POOLED_WORKTREE" \
+    "harness=codex" \
+    "kind=ship" \
+    "spawned_at=2026-07-19T15:34:56Z"
+  export FM_CODEBURN_FIXTURE="$TMP_ROOT/$task-baseline.json"
+  write_fixture "$FM_CODEBURN_FIXTURE" 1.25 2 1 5 8
+  FM_HOME="$HOME_DIR" "$USAGE" "$task" --baseline
+  export FM_CODEBURN_FIXTURE="$TMP_ROOT/$task-current.json"
+  write_fixture "$FM_CODEBURN_FIXTURE" 2.75 5 3 7 11
+  node - "$FM_CODEBURN_FIXTURE" "$invalid_counter" <<'NODE'
+const fs = require('fs')
+const [file, kind] = process.argv.slice(2)
+const fixture = JSON.parse(fs.readFileSync(file, 'utf8'))
+const overview = fixture.projects[0].report.overview
+if (kind === 'missing') delete overview.tokens.input
+if (kind === 'nonnumeric') overview.calls = '5'
+if (kind === 'decreasing') overview.sessions = 0
+fs.writeFileSync(file, `${JSON.stringify(fixture)}\n`)
+NODE
+  FM_HOME="$HOME_DIR" "$USAGE" "$task" --snapshot >"$TMP_ROOT/$task.out" 2>"$TMP_ROOT/$task.err"
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "$invalid_counter counter produced a usage snapshot"
+  [ ! -e "$HOME_DIR/data/$task/usage.json" ] \
+    || fail "$invalid_counter counter persisted plausible-zero attribution"
+done
+pass "missing, nonnumeric, and decreasing counters leave usage unavailable"
+
+fm_write_meta "$HOME_DIR/state/duplicate-model.meta" \
+  "worktree=$POOLED_WORKTREE" \
+  "harness=codex" \
+  "kind=ship" \
+  "spawned_at=2026-07-19T16:34:56Z"
+export FM_CODEBURN_FIXTURE="$TMP_ROOT/duplicate-model-baseline.json"
+write_fixture "$FM_CODEBURN_FIXTURE" 1.25 2 1 5 8
+node - "$FM_CODEBURN_FIXTURE" <<'NODE'
+const fs = require('fs')
+const file = process.argv[2]
+const fixture = JSON.parse(fs.readFileSync(file, 'utf8'))
+fixture.projects[0].report.models[0].provider = 'openai'
+fs.writeFileSync(file, `${JSON.stringify(fixture)}\n`)
+NODE
+FM_HOME="$HOME_DIR" "$USAGE" duplicate-model --baseline
+export FM_CODEBURN_FIXTURE="$TMP_ROOT/duplicate-model-current.json"
+write_fixture "$FM_CODEBURN_FIXTURE" 2.75 5 3 7 11
+node - "$FM_CODEBURN_FIXTURE" <<'NODE'
+const fs = require('fs')
+const file = process.argv[2]
+const fixture = JSON.parse(fs.readFileSync(file, 'utf8'))
+const model = fixture.projects[0].report.models[0]
+model.provider = 'openai'
+fixture.projects[0].report.models.push({...model, name: ` ${model.name} `, provider: ' openai '})
+fs.writeFileSync(file, `${JSON.stringify(fixture)}\n`)
+NODE
+FM_HOME="$HOME_DIR" "$USAGE" duplicate-model --snapshot >"$TMP_ROOT/duplicate-model.out" 2>"$TMP_ROOT/duplicate-model.err"
+rc=$?
+[ "$rc" -ne 0 ] || fail "duplicate current models produced a usage snapshot"
+[ ! -e "$HOME_DIR/data/duplicate-model/usage.json" ] \
+  || fail "duplicate current models persisted ambiguous attribution"
+pass "normalization-equivalent current model identities leave usage unavailable"
 
 fm_write_meta "$HOME_DIR/state/missing-project.meta" \
   "worktree=$HOME_DIR/unreported-worktree" \

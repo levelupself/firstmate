@@ -26,6 +26,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-task-meta-lock-lib.sh
+. "$SCRIPT_DIR/fm-task-meta-lock-lib.sh"
 
 if [ "$#" -lt 2 ]; then
   echo "error: invalid PR merge request" >&2
@@ -78,6 +80,7 @@ PROVENANCE_DIR="$DATA/pr-merges"
 PROVENANCE_RECEIPT="$PROVENANCE_DIR/$ID.receipt"
 MERGE_LOCK="$STATE/.pr-merge-$ID.lock"
 MERGE_LOCK_HELD=0
+CURRENT_SPAWNED_AT=$(sed -n 's/^spawned_at=//p' "$META" 2>/dev/null | tail -1)
 
 merge_lock_cleanup() {
   if [ "$MERGE_LOCK_HELD" = 1 ]; then
@@ -105,9 +108,12 @@ receipt_matches_request() {
   [ "$(grep -c '^phase=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
   [ "$(grep -c '^authorization=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
   [ "$(grep -c '^prepared_epoch=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
+  [ "$(grep -c '^spawned_at=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
   [ "$(receipt_value schema)" = fm-pr-merge.v1 ] || return 1
   [ "$(receipt_value task_id)" = "$ID" ] || return 1
   [ "$(receipt_value pr)" = "$URL" ] || return 1
+  printf '%s\n' "$(receipt_value spawned_at)" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' || return 1
+  [ -z "$CURRENT_SPAWNED_AT" ] || [ "$(receipt_value spawned_at)" = "$CURRENT_SPAWNED_AT" ] || return 1
   authorization=$(receipt_value authorization)
   [ "$authorization" = live-meta ] || [ "$authorization" = done-record ] || return 1
   prepared_epoch=$(receipt_value prepared_epoch)
@@ -169,6 +175,7 @@ write_provenance_receipt() {
       'schema=fm-pr-merge.v1' \
       "task_id=$ID" \
       "pr=$URL" \
+      "spawned_at=$CURRENT_SPAWNED_AT" \
       "phase=$phase" \
       "authorization=$authorization" \
       "prepared_epoch=$prepared_epoch"
@@ -180,22 +187,44 @@ write_provenance_receipt() {
 
 AUTHORIZATION=
 if [ -e "$PROVENANCE_RECEIPT" ] || [ -L "$PROVENANCE_RECEIPT" ]; then
+  if ! receipt_matches_request \
+    && [ -n "$CURRENT_SPAWNED_AT" ] \
+    && [ "$(receipt_value schema)" = fm-pr-merge.v1 ] \
+    && [ "$(receipt_value task_id)" = "$ID" ] \
+    && [ "$(receipt_value phase)" = merged ] \
+    && printf '%s\n' "$(receipt_value spawned_at)" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
+    && printf '%s\n' "$(receipt_value merged_epoch)" | grep -Eq '^[0-9]+$' \
+    && [ "$(receipt_value spawned_at)" != "$CURRENT_SPAWNED_AT" ]; then
+    HISTORY_DIR="$PROVENANCE_DIR/history"
+    [ ! -e "$HISTORY_DIR" ] || { [ -d "$HISTORY_DIR" ] && [ ! -L "$HISTORY_DIR" ]; } \
+      || { echo "error: merge provenance history is unavailable" >&2; exit 1; }
+    mkdir -p "$HISTORY_DIR"
+    OLD_SPAWNED_AT=$(receipt_value spawned_at)
+    HISTORY_RECEIPT="$HISTORY_DIR/$ID.${OLD_SPAWNED_AT//:/-}.receipt"
+    [ ! -e "$HISTORY_RECEIPT" ] || { echo "error: merge provenance history conflicts" >&2; exit 1; }
+    mv "$PROVENANCE_RECEIPT" "$HISTORY_RECEIPT"
+  fi
+fi
+if [ -e "$PROVENANCE_RECEIPT" ] || [ -L "$PROVENANCE_RECEIPT" ]; then
   receipt_matches_request || {
     echo "error: merge provenance conflicts with this task and PR" >&2
     exit 1
   }
+  CURRENT_SPAWNED_AT=$(receipt_value spawned_at)
   AUTHORIZATION=$(receipt_value authorization)
 elif [ -f "$META" ] && [ ! -L "$META" ]; then
+  printf '%s\n' "$CURRENT_SPAWNED_AT" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' || {
+    echo "error: task launch identity is unavailable" >&2
+    exit 1
+  }
   "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
   grep -qxF "pr=$URL" "$META" || {
     echo "error: PR metadata recording failed" >&2
     exit 1
   }
   AUTHORIZATION=live-meta
-elif done_history_matches_request; then
-  AUTHORIZATION=done-record
 else
-  echo "error: task metadata is unavailable and no delivered-task PR provenance matches" >&2
+  echo "error: task metadata is unavailable and no launch-bound merge receipt exists" >&2
   exit 1
 fi
 
@@ -212,6 +241,14 @@ fi
 
 gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
 write_provenance_receipt merged "$AUTHORIZATION" "$PREPARED_EPOCH" "$(date +%s)"
+fm_task_effort_capture_best_effort "$FM_ROOT" "$ID"
+if [ -f "$META" ]; then
+  fm_task_meta_set_once "$META" merged_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || {
+    echo "error: merged PR succeeded but its lifecycle stamp could not be recorded" >&2
+    exit 1
+  }
+  fm_task_effort_capture_best_effort "$FM_ROOT" "$ID"
+fi
 
 # The merge has landed. Record that outcome in Linear - Done, plus the pull
 # request as an attachment - because this is the last moment the task id and the

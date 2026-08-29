@@ -85,7 +85,8 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   captain.md         this home's domain-local captain preferences and working style; LOCAL, gitignored, canonical even if harness memory mirrors it, and updated with inspect-then-update
   captain-shared.md  main-authoritative shared captain preferences propagated read-only to secondmate homes; LOCAL, gitignored, owned by secondmate-provisioning
   effort-annotations.jsonl  per-task round reasons (discovery vs churn) and the loud-vs-quiet failure bit; firstmate-private, append-only, recorded by hand through fm-effort-store.sh because nothing derives them, and an ingestion input rather than store content so it outlives the store (docs/effort-store.md)
-  effort-store.sqlite  derived per-task effort store joining the teardown capture, codeburn, and git; firstmate-private, fully rebuildable by fm-effort-store.sh and safe to delete (docs/effort-store.md)
+  cost-attribution.tsv  append-only deterministic capture written incrementally by lifecycle producers before volatile task metadata is removed; an ingestion input for the effort store (docs/effort-store.md)
+  effort-store.sqlite  derived per-task effort store joining lifecycle capture, codeburn, and git; firstmate-private, fully rebuildable by fm-effort-store.sh and safe to delete (docs/effort-store.md)
   learnings.md       fleet-local operational facts and gotchas; LOCAL, gitignored; dated, evidence-backed, curated, and updated with inspect-then-update - rewrite and prune rather than append forever, the same contract as captain.md; created lazily, absent until this home has a learning to store
   projects.md        thin fleet navigation registry recording each project's standing delivery posture; firstmate-private, parsed for mechanical sync and seeding by fm-project-mode.sh (section 6)
   secondmates.md      local and remote secondmate routing table; firstmate-private, maintained by the secondmate seed helpers (section 6)

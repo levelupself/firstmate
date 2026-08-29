@@ -577,7 +577,8 @@ new_merge_home() {
   new_home "$1"
   printf 'LINEAR_API_KEY=lin_api_test\n' > "$HOME_DIR/.env"
   printf 'pipeline body\n' > "$FAKE_DIR/pr-body"
-  fm_write_meta "$HOME_DIR/state/t1.meta" "window=fm-t1" "worktree=$HOME_DIR"
+  fm_write_meta "$HOME_DIR/state/t1.meta" "window=fm-t1" "worktree=$HOME_DIR" \
+    "spawned_at=2026-08-20T12:00:00Z"
   jq -cn --arg st "${2:-backlog}" --argjson att "${3:-[]}" \
     '{data:{issues:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
       {id:"uuid-42",identifier:"PSY-42",url:"https://linear.app/x/issue/PSY-42",

@@ -40,7 +40,8 @@ make_case() {
     "worktree=$case_dir/wt" \
     "project=$case_dir/project" \
     "kind=ship" \
-    "mode=no-mistakes"
+    "mode=no-mistakes" \
+    "spawned_at=2026-08-29T10:00:00Z"
   # No worktree/project on disk; fm-pr-check.sh tolerates a worktree it cannot
   # stat and simply skips the pr_head lookup via `gh` in that case, so give it
   # one that resolves for cases that want pr_head recorded.
@@ -106,7 +107,7 @@ run_pr_merge() {
 }
 
 test_torn_down_delivered_task_merges_with_durable_provenance() {
-  local case_dir fakebin rc receipt
+  local case_dir fakebin rc
   case_dir="$TMP_ROOT/torn-down-delivered"
   fakebin="$case_dir/fakebin"
   mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
@@ -129,22 +130,11 @@ MD
   rc=$?
   set -e
 
-  expect_code 0 "$rc" \
-    "torn-down-delivered: fm-pr-merge should succeed; stderr: $(tr '\n' ' ' < "$case_dir/stderr")"
-  grep -qxF 'pr merge 21 --repo example/repo --squash' "$case_dir/gh-axi.log" \
-    || fail "torn-down-delivered: gh-axi pr merge was not invoked"
-  receipt="$case_dir/data/pr-merges/delivered-x1.receipt"
-  assert_grep 'schema=fm-pr-merge.v1' "$receipt" \
-    "torn-down-delivered: durable receipt has the wrong schema"
-  assert_grep 'task_id=delivered-x1' "$receipt" \
-    "torn-down-delivered: durable receipt lost the task identity"
-  assert_grep 'pr=https://github.com/example/repo/pull/21' "$receipt" \
-    "torn-down-delivered: durable receipt lost the PR identity"
-  assert_grep 'phase=merged' "$receipt" \
-    "torn-down-delivered: durable receipt did not record the merge outcome"
-  assert_grep 'authorization=done-record' "$receipt" \
-    "torn-down-delivered: durable receipt lost its Done-record authorization"
-  pass "fm-pr-merge merges a torn-down delivered task with durable provenance"
+  expect_code 1 "$rc" "torn-down-delivered: merge without launch identity should refuse"
+  [ ! -s "$case_dir/gh-axi.log" ] || fail "torn-down-delivered: gh-axi pr merge was invoked"
+  assert_absent "$case_dir/data/pr-merges/delivered-x1.receipt" \
+    "torn-down-delivered: an unbound merge receipt was created"
+  pass "fm-pr-merge refuses new provenance without launch identity"
 }
 
 test_records_pr_and_head_before_merging() {
@@ -172,6 +162,21 @@ test_records_pr_and_head_before_merging() {
     "records-before-merge: durable receipt lost its live-task authorization"
   grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "records-before-merge: gh-axi pr merge was not invoked with number, --repo, and default --squash"
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=fm-task-x1" \
+    "worktree=$case_dir/wt" \
+    "project=$case_dir/project" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "spawned_at=2026-08-30T10:00:00Z"
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/10 \
+    >/dev/null 2> "$case_dir/reuse.stderr" || fail "records-before-merge: reused task merge failed"
+  [ -f "$case_dir/data/pr-merges/history/task-x1.2026-08-29T10-00-00Z.receipt" ] \
+    || fail "records-before-merge: reused task did not retain completed receipt history"
+  assert_grep 'spawned_at=2026-08-30T10:00:00Z' "$receipt" \
+    "records-before-merge: reused task did not create current launch provenance"
+  assert_grep 'pr=https://github.com/example/repo/pull/10' "$receipt" \
+    "records-before-merge: reused task retained the prior delivery identity"
   pass "fm-pr-merge records pr= and pr_head= before invoking gh-axi pr merge"
 }
 
@@ -226,7 +231,7 @@ test_missing_meta_refuses_before_merge() {
   set -e
 
   expect_code 1 "$rc" "missing-meta: fm-pr-merge should refuse"
-  assert_grep 'error: task metadata is unavailable' "$case_dir/stderr" \
+  assert_grep 'no launch-bound merge receipt exists' "$case_dir/stderr" \
     "missing-meta: refusal did not explain missing meta"
   [ ! -s "$case_dir/gh-axi.log" ] || fail "missing-meta: gh-axi pr merge was invoked"
   assert_absent "$case_dir/state/missing-x1.check.sh" \
@@ -257,7 +262,7 @@ MD
   set -e
 
   expect_code 1 "$rc" "wrong-done-pr: fm-pr-merge should refuse"
-  assert_grep 'no delivered-task PR provenance matches' "$case_dir/stderr" \
+  assert_grep 'no launch-bound merge receipt exists' "$case_dir/stderr" \
     "wrong-done-pr: refusal did not explain the missing exact provenance"
   [ ! -s "$case_dir/gh-axi.log" ] || fail "wrong-done-pr: gh-axi pr merge was invoked"
   assert_absent "$case_dir/data/pr-merges/delivered-x1.receipt" \
@@ -277,6 +282,7 @@ test_prepared_receipt_allows_same_pr_retry() {
 schema=fm-pr-merge.v1
 task_id=delivered-x1
 pr=https://github.com/example/repo/pull/21
+spawned_at=2026-08-29T10:00:00Z
 phase=prepared
 authorization=done-record
 prepared_epoch=1770000000

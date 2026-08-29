@@ -220,6 +220,30 @@ FM_LOCK_LOG_PREFIX=teardown
 
 META="$STATE/$ID.meta"
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
+
+teardown_meta_set_once_locked() { # <key> <value>
+  local key=$1 value=$2 tmp
+  grep -q "^${key}=" "$META" 2>/dev/null && return 0
+  tmp=$(mktemp "$STATE/.fm-teardown-meta.XXXXXX") || return 1
+  if ! awk -F= -v key="$key" '$1 != key' "$META" > "$tmp" \
+    || ! printf '%s=%s\n' "$key" "$value" >> "$tmp" \
+    || ! chmod 0600 "$tmp" \
+    || ! mv -f -- "$tmp" "$META"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+teardown_meta_replace_locked() { # <key> [value]
+  local key=$1 value=${2-} tmp
+  tmp=$(mktemp "$STATE/.fm-teardown-meta.XXXXXX") || return 1
+  if ! awk -F= -v key="$key" '$1 != key' "$META" > "$tmp" \
+    || ! { [ -z "$value" ] || printf '%s=%s\n' "$key" "$value" >> "$tmp"; } \
+    || ! chmod 0600 "$tmp" \
+    || ! mv -f -- "$tmp" "$META"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
 META_LOCK=$(fm_meta_lock_path "$META") || exit 1
 fm_lock_acquire_wait "$META_LOCK"
 META_LOCK_HELD=1
@@ -2447,6 +2471,36 @@ if [ "$KIND" != secondmate ]; then
     || echo "teardown: warning: could not snapshot codeburn usage for $ID" >&2
 fi
 
+# This is the last non-destructive point at which volatile task metadata and
+# the final durable usage snapshot coexist. Stamp once, capture the raw row,
+# and rebuild before returning the worktree or deleting task state.
+if [ "$KIND" != secondmate ]; then
+  if [ "$FORCE" = --force ]; then
+    TEARDOWN_OUTCOME=forced
+  elif [ "$KIND" = scout ]; then
+    TEARDOWN_OUTCOME=scout-complete
+  elif grep -q '^local_landed_at=' "$META"; then
+    TEARDOWN_OUTCOME=local-landed
+  elif grep -q '^merged_at=' "$META"; then
+    TEARDOWN_OUTCOME='pr-merged'
+  else
+    TEARDOWN_OUTCOME=
+  fi
+  teardown_meta_set_once_locked teardown_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    || { echo "error: could not stamp deterministic teardown time for $ID" >&2; exit 1; }
+  if [ -n "$TEARDOWN_OUTCOME" ]; then
+    teardown_meta_replace_locked outcome "$TEARDOWN_OUTCOME" \
+      || { echo "error: could not stamp deterministic teardown outcome for $ID" >&2; exit 1; }
+    "$FM_ROOT/bin/fm-effort-store.sh" capture "$ID" --outcome "$TEARDOWN_OUTCOME" \
+      || { echo "error: could not capture deterministic effort for $ID; retaining task state" >&2; exit 1; }
+  else
+    teardown_meta_replace_locked outcome \
+      || { echo "error: could not preserve missing teardown outcome for $ID" >&2; exit 1; }
+    "$FM_ROOT/bin/fm-effort-store.sh" capture "$ID" \
+      || { echo "error: could not capture deterministic effort for $ID; retaining task state" >&2; exit 1; }
+  fi
+fi
+
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
@@ -2586,6 +2640,10 @@ rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.control-relaunch" "$STATE/$ID.control-relaunch.meta-prior" \
   "$STATE/$ID.control-relaunch.brief-prior" "$STATE/$ID.control-relaunch.note" \
   "$STATE/usage-cache/$ID.json"
+if [ "$KIND" != secondmate ]; then
+  "$FM_ROOT/bin/fm-effort-store.sh" rebuild \
+    || echo "teardown: warning: could not finalize deterministic effort for $ID" >&2
+fi
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
