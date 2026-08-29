@@ -284,31 +284,40 @@ if (!Array.isArray(baseline.models) || !Array.isArray(current.models)) {
   process.exit(1)
 }
 const modelKeys = ['calls', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'cost']
+const normalizedModel = model => {
+  const name = typeof model?.name === 'string' ? model.name.trim() : ''
+  const provider = typeof model?.provider === 'string' ? model.provider.trim() : ''
+  return {name, provider, identity: `${provider}\u0000${name}`}
+}
 const beforeModels = new Map()
 for (const model of baseline.models) {
-  if (!model || typeof model.name !== 'string' || !model.name || beforeModels.has(model.name)) {
+  const normalized = normalizedModel(model)
+  if (!normalized.name || beforeModels.has(normalized.identity)) {
     console.error('fm-task-usage: invalid baseline model identity; refusing plausible-zero attribution')
     process.exit(1)
   }
   for (const key of modelKeys) counter(model, key, `baseline model ${model.name} ${key}`)
-  beforeModels.set(model.name, model)
+  beforeModels.set(normalized.identity, model)
 }
-const currentModelNames = new Set()
+const currentModelIdentities = new Set()
 for (const model of current.models) {
-  if (!model || typeof model.name !== 'string' || !model.name || currentModelNames.has(model.name)) {
+  const normalized = normalizedModel(model)
+  if (!normalized.name || currentModelIdentities.has(normalized.identity)) {
     console.error('fm-task-usage: duplicate or invalid current model identity; refusing attribution')
     process.exit(1)
   }
-  currentModelNames.add(model.name)
+  currentModelIdentities.add(normalized.identity)
 }
 const models = (current.models || []).map(model => {
-  const old = beforeModels.get(model.name)
+  const normalized = normalizedModel(model)
+  const old = beforeModels.get(normalized.identity)
   if (!old) {
     console.error(`fm-task-usage: model ${model.name} lacks baseline counters; refusing plausible-zero attribution`)
     process.exit(1)
   }
   return {
-    name: model.name,
+    name: normalized.name,
+    provider: normalized.provider,
     calls: diff(model, old, 'calls', `model ${model.name} calls`),
     input_tokens: diff(model, old, 'inputTokens', `model ${model.name} input tokens`),
     output_tokens: diff(model, old, 'outputTokens', `model ${model.name} output tokens`),

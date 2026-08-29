@@ -214,6 +214,13 @@ fm_write_meta "$HOME_DIR/state/duplicate-model.meta" \
   "spawned_at=2026-07-19T16:34:56Z"
 export FM_CODEBURN_FIXTURE="$TMP_ROOT/duplicate-model-baseline.json"
 write_fixture "$FM_CODEBURN_FIXTURE" 1.25 2 1 5 8
+node - "$FM_CODEBURN_FIXTURE" <<'NODE'
+const fs = require('fs')
+const file = process.argv[2]
+const fixture = JSON.parse(fs.readFileSync(file, 'utf8'))
+fixture.projects[0].report.models[0].provider = 'openai'
+fs.writeFileSync(file, `${JSON.stringify(fixture)}\n`)
+NODE
 FM_HOME="$HOME_DIR" "$USAGE" duplicate-model --baseline
 export FM_CODEBURN_FIXTURE="$TMP_ROOT/duplicate-model-current.json"
 write_fixture "$FM_CODEBURN_FIXTURE" 2.75 5 3 7 11
@@ -221,7 +228,9 @@ node - "$FM_CODEBURN_FIXTURE" <<'NODE'
 const fs = require('fs')
 const file = process.argv[2]
 const fixture = JSON.parse(fs.readFileSync(file, 'utf8'))
-fixture.projects[0].report.models.push({...fixture.projects[0].report.models[0]})
+const model = fixture.projects[0].report.models[0]
+model.provider = 'openai'
+fixture.projects[0].report.models.push({...model, name: ` ${model.name} `, provider: ' openai '})
 fs.writeFileSync(file, `${JSON.stringify(fixture)}\n`)
 NODE
 FM_HOME="$HOME_DIR" "$USAGE" duplicate-model --snapshot >"$TMP_ROOT/duplicate-model.out" 2>"$TMP_ROOT/duplicate-model.err"
@@ -229,7 +238,7 @@ rc=$?
 [ "$rc" -ne 0 ] || fail "duplicate current models produced a usage snapshot"
 [ ! -e "$HOME_DIR/data/duplicate-model/usage.json" ] \
   || fail "duplicate current models persisted ambiguous attribution"
-pass "duplicate current model identities leave usage unavailable"
+pass "normalization-equivalent current model identities leave usage unavailable"
 
 fm_write_meta "$HOME_DIR/state/missing-project.meta" \
   "worktree=$HOME_DIR/unreported-worktree" \
