@@ -839,9 +839,9 @@ function rebuild(options) {
   const raw = readRawCapture(options.rawFile, issues)
   const annotations = readAnnotations(options.annotationsFile, issues)
 
-  // A task can enter the store from the raw layer or from an annotation alone,
-  // so work that never reached teardown is still visible as a task with its raw
-  // source recorded missing.
+  // A task can enter the store from the raw layer, a durable usage snapshot, or
+  // an annotation alone, so partial lifecycle records remain visible with each
+  // absent source recorded missing.
   const taskIds = new Set([
     ...raw.rows.map(row => row.task),
     ...annotations.byTask.keys(),
@@ -1259,7 +1259,7 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
     )
 
     sourceInsert.run(task.taskId, 'raw', row ? 'present' : 'missing',
-      row ? null : 'no teardown row in the raw capture')
+      row ? null : 'no lifecycle row in the raw capture')
     sourceInsert.run(task.taskId, 'annotation', annotation ? 'present' : 'missing',
       annotation ? null : 'nothing recorded by hand for this task')
     sourceInsert.run(task.taskId, 'codeburn', burn.status, bind(burn.detail))

@@ -25,7 +25,7 @@ Nothing in the derived layer is ever written back to the raw layer.
 
 | Source | Origin | Contributes |
 |---|---|---|
-| raw | `data/cost-attribution.tsv` | identity, dispatch axes, and the task's time window |
+| raw | `data/cost-attribution.tsv` | identity, dispatch axes, lifecycle timestamps, configured model, and outcome stamps |
 | codeburn | `data/<task>/usage.json` | tokens, notional cost, calls, sessions, and actual-model split |
 | git | the project clone named in the raw row | structure, commit link, and the durability relation |
 | annotation | `data/effort-annotations.jsonl` | the posterior that no artifact records |
@@ -94,7 +94,7 @@ Event times are written once by the lifecycle edge that observed them and become
 ## Deterministic limits
 
 Launch time, PR-open time, sanctioned merge or local landing time, teardown time, outcome, cost, tokens, calls, sessions, configured model, and actual models are deterministic lifecycle or snapshot facts.
-A task completed before its lifecycle row or usage snapshot existed remains visible with NULL measurements and a `missing` `task_source` row.
+A task discovered from any durable raw row, usage snapshot, or annotation remains visible when another source is absent, with that source's measurements NULL and its `task_source` row marked `missing`.
 Legacy `fm-task-usage.v1` snapshots are discovered but treated as missing because they predate deterministic reported-project attribution and may contain the broken plausible-zero result.
 No value is reconstructed from a guess.
 The separate discovery-versus-churn and loud-versus-quiet research annotations remain manual because no durable artifact contains those judgments.
