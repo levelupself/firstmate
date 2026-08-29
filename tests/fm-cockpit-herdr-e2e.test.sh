@@ -183,7 +183,6 @@ printf 'Run the supplied verification command and stop.\nDelivery contract: mode
   > "$HOME_DIR/data/cockpit-three/brief.md"
 spawn_real cockpit-three cockpit-three-ok >/dev/null \
   || fail "third executable-path cockpit spawn failed"
-THIRD_PANE=$(grep '^herdr_pane_id=' "$HOME_DIR/state/cockpit-three.meta" | cut -d= -f2-)
 [ "$(viewport_workers | wc -l | tr -d ' ')" = 1 ] \
   || fail "three placed workers left more than one agent in the viewport slot"
 [ "$(viewport_workers | tr -d '\n')" = "$SECOND_PANE" ] \
