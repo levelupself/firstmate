@@ -805,6 +805,70 @@ test_no_run_busy_pane() {
   pass "no run + a busy semantic record reads working, attributed to its source"
 }
 
+# The captain-facing regression for the 2026-08-29 report "every running worker
+# reads state unavailable": a live codex crew with an open turn in its own
+# rollout log must read WORKING, and one whose rollout cannot be resolved must
+# still read unknown with a detail that names why, never a confident state.
+test_no_run_codex_rollout_reads_working() {
+  reset_fakes
+  local d out sessions day
+  d=$(new_case codex-rollout)
+  make_repo_on_branch "$d/wt" fm/feat-cx
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cx.meta" "window=fm:fm-feat-cx" "worktree=$d/wt" \
+    "kind=ship" "harness=codex"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  sessions="$d/codex-sessions"
+  day="$sessions/2026/08/29"
+  mkdir -p "$day"
+  {
+    printf '{"type":"session_meta","payload":{"cwd":"%s","originator":"codex-tui","source":"cli"}}\n' "$d/wt"
+    printf '{"type":"event_msg","payload":{"type":"task_started"}}\n'
+  } > "$day/rollout-2026-08-29T15-00-00-s-live.jsonl"
+  printf 'sessions_root=%s\nworkspace_root=%s\n' "$sessions" "$d/wt" \
+    > "$d/state/feat-cx.codex-session"
+  out=$(run_crew_state "$d" feat-cx)
+  assert_contains "$out" "state: working" "an open codex turn must read working"
+  assert_contains "$out" "source: pane" "the codex verdict comes from the pane source"
+  assert_contains "$out" "codex-rollout" "the working verdict must name its semantic source"
+  assert_not_contains "$out" "state unavailable" \
+    "a demonstrably working codex crew must never report state unavailable"
+
+  # Closing that turn settles it, so the crew stops reading working.
+  printf '{"type":"event_msg","payload":{"type":"task_complete"}}\n' \
+    >> "$day/rollout-2026-08-29T15-00-00-s-live.jsonl"
+  printf 'done: implemented, ready to validate\n' > "$d/state/feat-cx.status"
+  out=$(run_crew_state "$d" feat-cx)
+  assert_contains "$out" "source: status-log" "a settled codex turn falls through to the log verb"
+  assert_contains "$out" "state: done" "a settled codex turn reports the log's own state"
+  pass "a live codex crew reads working from its own rollout log, and settles when the turn closes"
+}
+
+test_codex_without_a_readable_rollout_stays_unknown_and_says_so() {
+  reset_fakes
+  local d out
+  d=$(new_case codex-unreadable)
+  make_repo_on_branch "$d/wt" fm/feat-cx2
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cx2.meta" "window=fm:fm-feat-cx2" "worktree=$d/wt" \
+    "kind=ship" "harness=codex"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  printf 'done: stale completion event\n' > "$d/state/feat-cx2.status"
+  out=$(run_crew_state "$d" feat-cx2)
+  assert_contains "$out" "state: unknown" "an unresolvable codex rollout must stay unknown"
+  # Unknown has to LOOK unlike a known state and name the source that could not
+  # be read, so the captain can tell it apart from a worker that really stopped.
+  assert_contains "$out" "harness state unavailable (unknown codex-rollout)" \
+    "an unreadable codex state must say which source could not be read"
+  assert_not_contains "$out" "source: status-log" \
+    "unknown semantic state must not fall through to a stale log"
+  pass "a codex crew with no readable rollout reports unknown and names the unreadable source"
+}
+
 # A converted adapter must NOT read working from rendered footer text: the
 # redesign removed that dependency, so a pane painting "esc to interrupt" with
 # no semantic record is unknown, never working and never silently idle.
@@ -1334,6 +1398,8 @@ test_cross_branch_attribution_picks_most_recent_row
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status
 test_other_branch_run_ignored
 test_no_run_busy_pane
+test_no_run_codex_rollout_reads_working
+test_codex_without_a_readable_rollout_stays_unknown_and_says_so
 test_no_run_footer_text_alone_is_not_working
 test_no_run_grok_uses_isolated_fallback
 test_no_run_herdr_unknown_uses_backend_capture

@@ -539,6 +539,99 @@ EOF
   pass "registry entry without (home: ...) fails cleanly with has no home"
 }
 
+# A handed-off item's open captain decisions must travel with it.
+# fm-decision-hold.sh files each decision as its own backlog item
+# <origin>-decision-<key> with no dependency edge back to the origin, so before
+# this contract they stayed behind in the originating home: unresolvable there
+# (their origin was gone) and permanently visible in that home's decisions
+# panel. That is the 2026-08-29 "the panel shows work that left this home"
+# report.
+test_open_decision_holds_travel_with_their_origin() {
+  local home="$TMP_ROOT/decision-holds-main"
+  local sub="$TMP_ROOT/decision-holds-sub"
+  setup_homes "$home" "$sub"
+
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] compat-matrix - Model compatibility matrix (repo: alpha)
+  The work itself.
+- [ ] compat-matrix-decision-vendor-list - Choose the vendor list (repo: alpha) (kind: captain) (hold: needs the captain) (hold-kind: captain)
+  Origin: compat-matrix
+  Decision key: vendor-list
+  State: awaiting captain decision.
+- [ ] compat-matrix-decision-fallback - Choose the fallback policy (repo: alpha) (kind: captain) (hold: needs the captain) (hold-kind: captain)
+  Origin: compat-matrix
+  Decision key: fallback
+  State: awaiting captain decision.
+- [ ] other-decision-vendor-list - Unrelated decision (repo: alpha) (kind: captain) (hold: needs the captain) (hold-kind: captain)
+  Origin: other
+  Decision key: vendor-list
+  State: awaiting captain decision.
+- [ ] compat-matrix-decision-impostor - Shares the prefix but not the origin (repo: alpha) (kind: captain) (hold: needs the captain) (hold-kind: captain)
+  Origin: something-else
+  Decision key: impostor
+  State: awaiting captain decision.
+EOF
+
+  local out
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" design compat-matrix 2>&1) \
+    || fail "handoff failed: $out"
+
+  # Every decision that belongs to the moved origin left with it.
+  local id
+  for id in compat-matrix compat-matrix-decision-vendor-list compat-matrix-decision-fallback; do
+    grep -q -- "- \[ \] $id -" "$sub/data/backlog.md" \
+      || fail "$id did not reach the secondmate backlog"
+    grep -q -- "- \[ \] $id -" "$home/data/backlog.md" \
+      && fail "$id is still visible in the originating home after the handoff"
+  done
+  # The moved decisions kept their bodies, so the captain can still read them.
+  grep -q '^  Decision key: vendor-list$' "$sub/data/backlog.md" \
+    || fail "a moved decision hold lost its body"
+  # A decision belonging to different work stays put, and so does an item that
+  # merely shares the id prefix without recording this origin.
+  for id in other-decision-vendor-list compat-matrix-decision-impostor; do
+    grep -q -- "- \[ \] $id -" "$home/data/backlog.md" \
+      || fail "$id must not be swept out of the originating home"
+    grep -q -- "- \[ \] $id -" "$sub/data/backlog.md" \
+      && fail "$id must not be carried to the secondmate backlog"
+  done
+  # The operator is told what travelled, rather than finding it later.
+  case "$out" in
+    *compat-matrix-decision-vendor-list*) ;;
+    *) fail "the handoff did not report the decisions it carried: $out" ;;
+  esac
+  pass "a handed-off item carries its own open captain decisions and nothing else"
+}
+
+# Re-running the same handoff must converge rather than duplicate or fail once
+# the decisions have already travelled.
+test_decision_hold_handoff_is_idempotent() {
+  local home="$TMP_ROOT/decision-holds-idem-main"
+  local sub="$TMP_ROOT/decision-holds-idem-sub"
+  setup_homes "$home" "$sub"
+
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] idem-origin - Origin work (repo: alpha)
+- [ ] idem-origin-decision-scope - Choose the scope (repo: alpha) (kind: captain) (hold: needs the captain) (hold-kind: captain)
+  Origin: idem-origin
+  Decision key: scope
+  State: awaiting captain decision.
+EOF
+
+  FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" design idem-origin >/dev/null \
+    || fail "first handoff failed"
+  local out
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" design idem-origin 2>&1) \
+    || fail "repeat handoff failed: $out"
+  [ "$(grep -c -- '- \[ \] idem-origin-decision-scope -' "$sub/data/backlog.md")" = 1 ] \
+    || fail "the repeat handoff duplicated the decision hold"
+  pass "handing off an item whose decisions already travelled converges"
+}
+
+test_open_decision_holds_travel_with_their_origin
+test_decision_hold_handoff_is_idempotent
 test_body_moves_when_followed_by_another_item
 test_body_moves_when_followed_by_section_heading
 test_multi_paragraph_body_with_internal_blanks_moves_whole

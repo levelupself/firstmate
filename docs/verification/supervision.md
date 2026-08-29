@@ -181,7 +181,7 @@ Each pass polled `state/<id>.busy-state` while a real turn ran.
 | Pi | 0.82.0 | Extension `agent_start` / `agent_settled` with `ctx.isIdle()` | The spawn seed `busy source=fm-spawn`, then `busy source=pi-ext event=agent-start`, then `idle source=pi-ext event=agent-settled`; the turn-end marker was still touched. |
 | OpenCode | 1.17.18 | Plugin `session.status` | In a real TUI pane: seed, then `busy source=opencode-plugin event=session-busy`, then `idle source=opencode-plugin event=session-status-idle`. |
 | Claude | 2.1.220 (Claude Code) | Hooks `UserPromptSubmit`, `Stop`, `StopFailure`, `SessionEnd` | `UserPromptSubmit` fired for the argv launch prompt and each steer, and `Stop` closed every completed turn. A mid-stream Escape interrupt fired no closing hook, which is why the firstmate-controlled clear exists. `StopFailure` and `SessionEnd` are wired from the four hook names present in the installed binary; only the abnormal paths they cover were not reproduced live. |
-| Codex | codex-cli 0.145.0 | None usable | See below; classifies `unknown codex-unverified`. |
+| Codex | codex-cli 0.145.0 | Its own session rollout log, folded on demand | Neither push surface is usable (see below), so the classifier folds codex's durable rollout instead; verified 2026-08-29 and recorded under [Codex rollout turn bracket](#codex-rollout-turn-bracket-2026-08-29). |
 | Kimi (standalone) | not installed | None usable | No binary on `PATH`, so the gate stays closed and it classifies `unknown kimi-unverified`. |
 | Grok | 0.2.112 | Isolated rendered-tail fallback | Retained unconverted; the approved audit could not credit a live structured-lifecycle run. |
 
@@ -197,12 +197,64 @@ In this 2026-07-28 Codex 0.145.0 semantic-busy probe, Firstmate-written lifecycl
 Codex also exposes no `StopFailure` hook, so an API-error turn end would need separate coverage even after hook discovery works.
 The app-server protocol schema does define the required lifecycle (`turn/started`, plus a `turn/completed` status of `completed`, `interrupted`, `failed`, or `inProgress`), so the gate is a reachability problem rather than a protocol gap.
 
+### Codex rollout turn bracket, 2026-08-29
+
+Both Codex push probes above stay refused, so Codex takes the same pull route as muse and cursor: it writes its own durable per-session rollout log and brackets every turn there.
+Verified on 2026-08-29 against codex-cli 0.145.0 on Linux, with a real interactive worker launched into a throwaway working directory on a private tmux socket.
+
+The worker's own rollout under `~/.codex/sessions/2026/08/29/` recorded these lines, read back with `jq`:
+
+```sh
+$ head -1 "$rollout" | jq -c '.payload | {cwd, originator, source, cli_version}'
+{"cwd":"<the worker's directory>","originator":"codex-tui","source":"cli","cli_version":"0.145.0"}
+$ jq -r 'select(.type=="event_msg")|select(.payload.type|test("task_"))|"\(.timestamp) \(.payload.type)"' "$rollout"
+2026-08-29T15:01:05.147Z task_started
+2026-08-29T15:01:09.683Z task_complete
+2026-08-29T15:02:03.481Z task_started
+2026-08-29T15:02:19.565Z task_complete
+```
+
+Mid-turn the log held `task_started` with no matching close, which is the positive busy proof the fold needs.
+The interrupt path was then driven on a long turn still streaming its output:
+
+```sh
+$ jq -c 'select(.type=="event_msg")|{ts:.timestamp,t:.payload.type}' "$rollout" | tail -1
+{"ts":"2026-08-29T15:04:26.573Z","t":"turn_aborted"}
+```
+
+So an interrupted turn closes with `turn_aborted`, which is the bar a pull source has to clear here and the case Claude's `Stop` hook misses.
+
+The whole path was then driven end to end, with a real crewmate spawned by `bin/fm-spawn.sh` into its own worktree and read back through the public helper:
+
+```sh
+$ bin/fm-spawn.sh e2e-codex "$project" --mode local-only --yolo off --harness codex --backend tmux
+spawned e2e-codex harness=codex kind=ship mode=local-only yolo=off window=firstmate:fm-e2e-codex worktree=…
+$ bin/fm-crew-state.sh e2e-codex
+state: unknown · source: pane · harness state unavailable (unknown codex-rollout)
+$ bin/fm-crew-state.sh e2e-codex          # once the launch-brief turn opened
+state: working · source: pane · harness busy (codex-rollout)
+```
+
+The first reading is from before the worker's first turn opened, and is the deliberate shape of an unreadable state: it says so, and it names the source it could not read.
+The second was taken while the pane was demonstrably producing output.
+Two independent metadata fields, `originator` and `source`, identify the interactive session, so neither one alone is load-bearing when separating a pane worker's rollout from a `codex exec` run that shares the tree.
+
+One incidental fact observed in the same runs and NOT acted on here: a single `Escape` did not interrupt a running turn in that headless pane while `Ctrl+C` did, and Codex reported `Conversation interrupted`.
+[`bin/fm-control-lib.sh`](../../bin/fm-control-lib.sh) still records `Escape` as Codex's interrupt key; reconciling that belongs with the control-mechanics matrix, not with this source.
+
 Deterministic entry points:
 
 ```sh
 tests/fm-busy-state.test.sh
 tests/fm-busy-adapter-wiring.test.sh
+tests/fm-codex-harness.test.sh
 tests/fm-crew-state.test.sh
+```
+
+The Codex rollout bracket above is refreshed by the opt-in live guard, which exercises a real codex worker end to end and fails naming the harness and version:
+
+```sh
+FM_CODEX_BUSY_LIVE_E2E=1 tests/fm-codex-busy-live-e2e.test.sh
 ```
 
 ## Turn-end guard

@@ -23,6 +23,10 @@
 # Visible work is grouped under compact project headers in every live section.
 # Each project receives the same row cap for the available pane height, and its
 # header reports that project's hidden count instead of one global list tail.
+# An authoritative drawn rectangle bounds the frame together with the pane's own
+# pty rather than instead of it: the drawn rectangle is what the operator can
+# see and the pty is where text wraps, so the frame honours whichever is
+# smaller.
 # Watch mode uses only bash, jq, terminal control sequences, and sleep; a failed
 # snapshot or render prints an explicit degraded panel and retries next redraw.
 set -u
@@ -43,7 +47,8 @@ Use --json to print the complete underlying snapshot.
 Use --watch to redraw every 5 seconds, or provide a positive interval in seconds.
 Use --geometry-command to read "<columns> <lines>" from an executable before
 every redraw when an embedding surface has geometry more authoritative than
-the pane pty.
+the pane pty. The frame is bounded by the smaller of that rectangle and the
+pane's own measurable size, because exceeding either one wraps and scrolls it.
 Use --section to render a subset of: waiting, ready, in-flight, blocked,
 finished, failed. The flag may be repeated and accepts a comma-separated list;
 the sections are always rendered in that priority order, whatever order they
@@ -202,6 +207,29 @@ EOF
   printf '%s %s\n' "$width" "$height"
 }
 
+# The drawn rectangle and the pty are two different boundaries, and a frame has
+# to respect both. The drawn rectangle says how much of the pane is actually
+# shown, so it wins when the pty reports a larger size - that is the Herdr
+# defect --geometry-command exists for. But WRAPPING happens at the pty, so a
+# drawn rectangle wider or taller than the pty (measured live on herdr 0.8.0: a
+# 54-column drawn rectangle over a 53-column pty) would wrap every full-width
+# row, multiply the frame's physical height, scroll the pane, and leave
+# fragments of consecutive redraws on screen at once. Taking the smaller of the
+# two is correct in both directions: over-clipping only narrows the content,
+# while exceeding either boundary destroys the frame.
+#
+# Only a real measurement clamps. fm_terminal_dimension fails rather than
+# guessing when it cannot read the pane, and a built-in default must never
+# override the authoritative drawn budget.
+clamp_to_pty() {  # <drawn> <lines|cols> -> the value to paint to
+  local drawn=$1 pty
+  if pty=$(fm_terminal_dimension "$2") && [ "$pty" -gt 0 ] && [ "$pty" -lt "$drawn" ]; then
+    printf '%s\n' "$pty"
+  else
+    printf '%s\n' "$drawn"
+  fi
+}
+
 render_once() {
   local width height snapshot rendered geometry
   if [ -n "$GEOMETRY_COMMAND" ]; then
@@ -210,8 +238,8 @@ render_once() {
         "Drawn pane geometry unavailable; retrying on the next redraw."
       return 1
     fi
-    width=${geometry%% *}
-    height=${geometry#* }
+    width=$(clamp_to_pty "${geometry%% *}" cols)
+    height=$(clamp_to_pty "${geometry#* }" lines)
   else
     width=$(terminal_width)
     height=$(terminal_height)
