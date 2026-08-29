@@ -1078,13 +1078,16 @@ function readMergeReceipt(dataDir, taskId, spawnedAt) {
   if (!TASK_ID_PATTERN.test(taskId)) return null
   const receipt = readMeta(path.join(dataDir, 'pr-merges', `${taskId}.receipt`))
   if (!receipt || receipt.schema !== 'fm-pr-merge.v1' || receipt.task_id !== taskId || receipt.spawned_at !== spawnedAt || receipt.phase !== 'merged') return null
+  if (!/^(0|[1-9]\d*)$/.test(receipt.merged_epoch || '')) return null
   const epoch = Number(receipt.merged_epoch)
   const milliseconds = epoch * 1000
   const merged = Number.isInteger(epoch) && epoch >= 0 && Number.isFinite(milliseconds)
     && milliseconds <= 8640000000000000 ? new Date(milliseconds) : null
+  const mergedAt = merged && Number.isFinite(merged.getTime())
+    ? validatedLifecycleTimestamp(merged.toISOString().replace('.000Z', 'Z'), spawnedAt) : null
   return {
     pr_url: receipt.pr || null,
-    merged_at: merged && Number.isFinite(merged.getTime()) ? merged.toISOString().replace('.000Z', 'Z') : null,
+    merged_at: mergedAt,
   }
 }
 
@@ -1092,10 +1095,11 @@ function readLocalLandingReceipt(dataDir, taskId, spawnedAt) {
   if (!TASK_ID_PATTERN.test(taskId)) return null
   const receipt = readMeta(path.join(dataDir, 'local-landings', `${taskId}.receipt`))
   if (!receipt || receipt.schema !== 'fm-local-landing.v1' || receipt.task_id !== taskId || receipt.spawned_at !== spawnedAt || receipt.phase !== 'landed') return null
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(receipt.event_at || '')) return null
+  const landedAt = validatedLifecycleTimestamp(receipt.event_at, spawnedAt)
+  if (!landedAt) return null
   if (!receipt.project || receipt.branch !== `fm/${taskId}` || !receipt.default_branch) return null
   if (!/^[0-9a-f]{40}$/.test(receipt.before_sha || '') || !/^[0-9a-f]{40}$/.test(receipt.landed_sha || '')) return null
-  return {local_landed_at: receipt.event_at, project: receipt.project}
+  return {local_landed_at: landedAt, project: receipt.project}
 }
 
 function writeTasks(db, tasks, usageByTask, gitResults, options) {

@@ -482,6 +482,20 @@ MALFORMED_MERGE=$(query "SELECT merged_at, outcome FROM task WHERE task_id = '91
 pass 'out-of-range merge receipt timestamps remain missing'
 sed -i 's/merged_epoch=9007199254740991/merged_epoch=1780398000/' "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt"
 
+for malformed_epoch in missing empty prelaunch; do
+  case "$malformed_epoch" in
+    missing) sed -i '/^merged_epoch=/d' "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" ;;
+    empty) printf '%s\n' 'merged_epoch=' >> "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" ;;
+    prelaunch) sed -i 's/^merged_epoch=$/merged_epoch=1780307999/' "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" ;;
+  esac
+  "$STORE" capture 911-receipt-outcome >/dev/null || fail "$malformed_epoch merge receipt aborted capture"
+  MALFORMED_MERGE=$(query "SELECT merged_at, outcome FROM task WHERE task_id = '911-receipt-outcome'")
+  [ "$MALFORMED_MERGE" = 'NULL|NULL' ] \
+    || fail "$malformed_epoch merge receipt proved landing: $MALFORMED_MERGE"
+done
+sed -i 's/merged_epoch=1780307999/merged_epoch=1780398000/' "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt"
+pass 'absent, empty, and pre-launch merge timestamps remain missing'
+
 fm_write_meta "$FM_HOME/state/912-local-receipt.meta" \
   "worktree=$ROOTDIR/worktrees/local-receipt" \
   "project=$PROJECT" \
@@ -510,6 +524,16 @@ LOCAL_RECEIPT_OUTCOME=$(query "SELECT local_landed_at, outcome FROM task WHERE t
 [ "$LOCAL_RECEIPT_OUTCOME" = '2026-06-03T11:00:00Z|local-landed' ] \
   || fail "a completed local receipt did not supply lifecycle proof: $LOCAL_RECEIPT_OUTCOME"
 pass 'completed local receipt supplies local landing lifecycle proof'
+
+for malformed_event_at in '2026-02-30T11:00:00Z' '2026-06-03T09:59:59Z' ''; do
+  sed -i "s/^event_at=.*/event_at=$malformed_event_at/" "$FM_HOME/data/local-landings/912-local-receipt.receipt"
+  "$STORE" capture 912-local-receipt >/dev/null || fail 'malformed local receipt aborted capture'
+  MALFORMED_LOCAL=$(query "SELECT local_landed_at, outcome FROM task WHERE task_id = '912-local-receipt'")
+  [ "$MALFORMED_LOCAL" = 'NULL|NULL' ] \
+    || fail "malformed local receipt proved landing: $malformed_event_at: $MALFORMED_LOCAL"
+done
+sed -i 's/^event_at=$/event_at=2026-06-03T11:00:00Z/' "$FM_HOME/data/local-landings/912-local-receipt.receipt"
+pass 'impossible, pre-launch, and empty local timestamps remain missing'
 
 fm_write_meta "$FM_HOME/state/913-prepared-local.meta" \
   "worktree=$ROOTDIR/worktrees/prepared-local" \
