@@ -26,7 +26,7 @@ Nothing in the derived layer is ever written back to the raw layer.
 |---|---|---|
 | raw | `data/cost-attribution.tsv` | identity, dispatch axes, and the task's time window |
 | codeburn | `data/<task>/usage.json` | tokens, notional cost, calls, sessions, and actual-model split |
-| git | the project clone named in the raw row | structure, commit link, landing, the durability relation |
+| git | the project clone named in the raw row | structure, commit link, and the durability relation |
 | annotation | `data/effort-annotations.jsonl` | the posterior that no artifact records |
 
 Records are keyed by task, so any later source that can name a task contributes with no schema change.
