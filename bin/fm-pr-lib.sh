@@ -315,6 +315,15 @@ fm_pr_metadata_identity_parse() {
           fm_pr_head_valid "$value" || post_pr_invalid=1
         fi
         ;;
+      pr_opened_at=*|merged_at=*|local_landed_at=*|teardown_at=*)
+        value=${line#*=}
+        [[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+          || post_pr_invalid=1
+        ;;
+      outcome=*)
+        value=${line#outcome=}
+        case "$value" in pr-merged|local-landed|scout-complete|landed|forced|abandoned) ;; *) post_pr_invalid=1 ;; esac
+        ;;
       x_request=*|x_request_ts=*|x_followups=*|x_platform=*|x_reply_max_chars=*)
         ;;
       *)

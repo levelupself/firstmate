@@ -545,6 +545,7 @@ run_teardown() {
   local case_dir=$1; shift
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   FM_CONFIG_OVERRIDE="$case_dir/config" \
   PATH="$case_dir/fakebin:${FM_TEARDOWN_TEST_PATH:-$PATH}" \
     "$TEARDOWN" task-x1 "$@"
@@ -1429,6 +1430,60 @@ test_teardown_removes_usage_cache_entry() {
   [ ! -e "$case_dir/state/usage-cache/task-x1.json" ] \
     || fail "usage-cache-cleanup: teardown left the volatile usage-cache entry behind"
   pass "teardown removes the task's volatile state/usage-cache entry"
+}
+
+test_teardown_captures_effort_before_removing_meta() {
+  local case_dir rc first second row db query
+  case_dir=$(make_case effort-capture)
+  write_meta "$case_dir" local-only ship
+  printf '%s\n' \
+    'harness=codex' \
+    'model=configured-gpt' \
+    'effort=xhigh' \
+    'spawned_at=2026-08-29T10:00:00Z' >> "$case_dir/state/task-x1.meta"
+  wt_commit "$case_dir" 'land task-x1 effort capture'
+  local wt_head
+  wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/project" update-ref refs/heads/main "$wt_head"
+  mkdir -p "$case_dir/data/task-x1"
+  cat > "$case_dir/fakebin/codeburn" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$case_dir/fakebin/codeburn"
+  cat > "$case_dir/data/task-x1/usage.json" <<'JSON'
+{"schema":"fm-task-usage.v2","id":"task-x1","harness":"codex","configured_model":"configured-gpt","actual_models":["gpt-5.6-sol"],"models":[{"name":"gpt-5.6-sol","calls":4,"input_tokens":120,"output_tokens":30,"cache_read_tokens":0,"cache_write_tokens":0,"cost_usd":0.75}],"tokens":{"input":120,"output":30,"cache_read":0,"cache_write":0},"cost_usd":0.75,"calls":4,"sessions":1,"spawned_at":"2026-08-29T10:00:00Z","captured_at":"2026-08-29T11:00:00Z"}
+JSON
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "effort-capture: teardown should succeed: $(tr '\n' ' ' < "$case_dir/stderr")"
+  db="$case_dir/data/effort-store.sqlite"
+  assert_present "$db" 'effort-capture: teardown did not create the effort store'
+  query="$case_dir/query.mjs"
+  cat > "$query" <<'NODE'
+process.emitWarning = () => {}
+const {DatabaseSync} = await import('node:sqlite')
+const db = new DatabaseSync(process.argv[2], {readOnly: true})
+const row = db.prepare("SELECT tokens_in, tokens_out, notional_cost_usd, outcome, teardown_at FROM task WHERE task_id='task-x1'").get()
+process.stdout.write([row?.tokens_in, row?.tokens_out, row?.notional_cost_usd, row?.outcome, row?.teardown_at].join('|') + '\n')
+NODE
+  row=$(node "$query" "$db")
+  case "$row" in
+    120\|30\|0.75\|local-landed\|????-??-??T??:??:??Z) ;;
+    *) fail "effort-capture: teardown store row was incomplete: $row" ;;
+  esac
+  first=$(FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    "$ROOT/bin/fm-effort-store.sh" fingerprint)
+  rm -f "$db"
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    "$ROOT/bin/fm-effort-store.sh" rebuild >/dev/null || fail 'effort-capture: rebuild failed after deleting the store'
+  second=$(FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    "$ROOT/bin/fm-effort-store.sh" fingerprint)
+  [ "$first" = "$second" ] || fail 'effort-capture: delete-and-rebuild changed the store'
+  pass 'teardown captures effort before volatile metadata removal and rebuild reproduces it'
 }
 
 # Flat (non-projected) Herdr endpoint whose fake pane exists until a locked
@@ -2674,6 +2729,7 @@ test_local_only_force_overrides_unpushed
 test_teardown_missing_busy_sidecar_completes
 test_herdr_teardown_clears_escalation_marker
 test_teardown_removes_usage_cache_entry
+test_teardown_captures_effort_before_removing_meta
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence
 test_herdr_flat_teardown_preflight_refuses_before_changes

@@ -526,7 +526,7 @@ test_invalid_entrypoints_have_zero_side_effects() {
 }
 
 test_valid_recording_and_merge_derivation() {
-  local dir expected sidecar count rc
+  local dir expected sidecar count rc opened_at
   dir=$(make_case valid-recording)
   write_task_meta "$dir"
   expected=0123456789abcdef0123456789abcdef01234567
@@ -536,6 +536,9 @@ test_valid_recording_and_merge_derivation() {
   grep -qxF 'pr=https://github.com/my-org/repo_name.with-dots/pull/37' "$dir/home/state/task-a.meta" \
     || fail "canonical pr metadata was not exact"
   grep -qxF "pr_head=$expected" "$dir/home/state/task-a.meta" || fail "PR head metadata was not exact"
+  opened_at=$(sed -n 's/^pr_opened_at=//p' "$dir/home/state/task-a.meta")
+  [[ "$opened_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+    || fail "PR-open lifecycle time was not stamped"
   cmp -s "$POLL" "$dir/home/state/task-a.check.sh" || fail "published check was not byte-for-byte static"
   [ "$(file_mode "$dir/home/state/task-a.check.sh")" = 600 ] || fail "published check mode was not 0600"
   [ "$(file_mode "$dir/home/state/task-a.pr-poll")" = 600 ] || fail "published sidecar mode was not 0600"
@@ -557,12 +560,16 @@ test_valid_recording_and_merge_derivation() {
   [ "$count" -eq 1 ] || fail "duplicate pr metadata was appended"
   count=$(grep -c '^pr_head=' "$dir/home/state/task-a.meta")
   [ "$count" -eq 1 ] || fail "duplicate pr_head metadata was appended"
+  [ "$(sed -n 's/^pr_opened_at=//p' "$dir/home/state/task-a.meta")" = "$opened_at" ] \
+    || fail "duplicate PR recording changed the original PR-open time"
 
   : > "$dir/gh-axi.log"
   run_merge_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 -- --merge \
     >/dev/null 2>/dev/null || fail "valid merge wrapper failed"
   grep -qxF 'pr merge 37 --repo my-org/repo_name.with-dots --merge' "$dir/gh-axi.log" \
     || fail "merge wrapper did not preserve repository derivation and method"
+  grep -Eq '^merged_at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
+    "$dir/home/state/task-a.meta" || fail "successful PR merge did not stamp its lifecycle time"
   set +e
   FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/merged-watch.out" 2> "$dir/merged-watch.err"
   rc=$?

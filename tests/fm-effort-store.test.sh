@@ -14,7 +14,7 @@ fm_git_identity
 
 export FM_HOME="$ROOTDIR/home"
 export FM_EFFORT_STORE_CODEBURN_TIMEOUT=30
-mkdir -p "$FM_HOME/data"
+mkdir -p "$FM_HOME/data" "$FM_HOME/state"
 
 PROJECT="$ROOTDIR/project"
 WT_A="$ROOTDIR/worktrees/a"
@@ -90,6 +90,7 @@ RAW="$FM_HOME/data/cost-attribution.tsv"
 FAKEBIN=$(fm_fakebin "$ROOTDIR")
 cat > "$FAKEBIN/codeburn" <<EOF
 #!/usr/bin/env bash
+touch "$ROOTDIR/codeburn-called"
 out=
 while [ \$# -gt 0 ]; do
   case "\$1" in -o) out=\$2; shift 2 ;; *) shift ;; esac
@@ -106,6 +107,24 @@ JSON
 EOF
 chmod +x "$FAKEBIN/codeburn"
 export FM_CODEBURN_BIN="$FAKEBIN/codeburn"
+
+# Durable task-usage snapshots are the cost source. Rebuilds must not consult
+# mutable account-wide codeburn history after teardown.
+write_usage() { # <task> <input> <output> <cost> <calls> <actual-model>
+  local task=$1 input=$2 output=$3 cost=$4 calls=$5 actual_model=$6
+  mkdir -p "$FM_HOME/data/$task"
+  cat > "$FM_HOME/data/$task/usage.json" <<JSON
+{"schema":"fm-task-usage.v2","id":"$task","harness":"codex","configured_model":"default","actual_models":["$actual_model"],"models":[{"name":"$actual_model","calls":$calls,"input_tokens":$input,"output_tokens":$output,"cache_read_tokens":0,"cache_write_tokens":0,"cost_usd":$cost}],"tokens":{"input":$input,"output":$output,"cache_read":0,"cache_write":0},"cost_usd":$cost,"calls":$calls,"sessions":1,"spawned_at":"2026-01-01T00:00:00Z","captured_at":"2026-01-01T02:00:00Z"}
+JSON
+}
+write_usage 901-introduce-memory 110 22 0.75 2 claude-opus-5
+write_usage 902-extend-memory 7 3 0.01 1 gpt-x
+write_usage 903-unlinked-scout 0 0 0 0 none
+write_usage 904-later-occupant 42 8 0.02 1 claude-opus-5
+mkdir -p "$FM_HOME/data/900-broken-cycle"
+cat > "$FM_HOME/data/900-broken-cycle/usage.json" <<'JSON'
+{"schema":"fm-task-usage.v1","id":"900-broken-cycle","harness":"codex","configured_model":"default","actual_models":[],"models":[],"tokens":{"input":0,"output":0,"cache_read":0,"cache_write":0},"cost_usd":0,"calls":0,"spawned_at":"2026-08-10T00:00:00Z","captured_at":"2026-08-10T01:00:00Z"}
+JSON
 
 # --- query helper -----------------------------------------------------------
 #
@@ -142,16 +161,19 @@ query() {  # <sql>
 # --- rebuild ----------------------------------------------------------------
 
 REBUILD_OUT=$("$STORE" rebuild 2>&1) || fail "rebuild failed: $REBUILD_OUT"
-assert_contains "$REBUILD_OUT" 'rebuilt 8 tasks' 'rebuild should report every task it ingested'
+assert_contains "$REBUILD_OUT" 'rebuilt 9 tasks' 'rebuild should report every task it discovered'
 assert_present "$DB" 'rebuild should create the store'
-pass 'rebuild builds the store from the raw capture, codeburn, and git'
+pass 'rebuild builds the store from raw lifecycle capture, durable task usage, and git'
+
+# Rebuild consumed the durable snapshots and never queried account-wide logs.
+[ ! -e "$ROOTDIR/codeburn-called" ] || fail 'rebuild unexpectedly queried mutable codeburn history'
 
 # --- the join ---------------------------------------------------------------
 
 ROW=$(query "SELECT harness, effort, kind, files_changed, prod_src_files, distinct_areas, tokens_in, notional_cost_usd, wall_clock_seconds FROM task WHERE task_id = '901-introduce-memory'")
 [ "$ROW" = 'claude|xhigh|ship|2|2|1|110|0.75|7200' ] \
   || fail "the three sources should join on one task row, got: $ROW"
-pass 'ingestion joins raw dispatch, git structure, and codeburn effort on one task'
+pass 'ingestion joins raw dispatch, git structure, and durable codeburn effort on one task'
 
 PREFIX_LINKS=$(query "SELECT task_id, sha FROM task_commit WHERE task_id IN ('907-prefix','907-prefix-more') ORDER BY task_id, sha")
 [ "$PREFIX_LINKS" = "907-prefix|$PREFIX_COMMIT
@@ -168,7 +190,12 @@ POOLED=$(query "SELECT task_id, tokens_in, api_calls FROM task WHERE task_id IN 
 [ "$POOLED" = '903-unlinked-scout|0|0
 904-later-occupant|42|1' ] \
   || fail "a pooled worktree should attribute spend by window, got: $POOLED"
-pass 'codeburn spend is windowed per task, so a pooled worktree is not double-counted'
+pass 'task-bounded usage snapshots keep pooled-worktree occupants distinct'
+
+ACTUAL_MODEL=$(query "SELECT model, tokens_in, notional_cost_usd FROM task_model WHERE task_id = '901-introduce-memory'")
+[ "$ACTUAL_MODEL" = 'claude-opus-5|110|0.75' ] \
+  || fail "the actual model should come from the durable usage snapshot, got: $ACTUAL_MODEL"
+pass 'actual model, tokens, and cost come from the durable task snapshot'
 
 # --- missing is not zero ----------------------------------------------------
 
@@ -185,6 +212,20 @@ ZEROED=$(query "SELECT tokens_in, tokens_out, api_calls FROM task WHERE task_id 
 [ "$ZEROED" = '0|0|0' ] \
   || fail "a present source that found nothing must record real zeros, got: $ZEROED"
 pass 'an absent source records NULL and missing; a present source that found nothing records zero'
+
+BROKEN_USAGE=$(query "SELECT tokens_in, tokens_out, notional_cost_usd FROM task WHERE task_id = '905-modify-memory'")
+[ "$BROKEN_USAGE" = 'NULL|NULL|NULL' ] \
+  || fail "a historical task without a durable usage snapshot must be missing, got: $BROKEN_USAGE"
+[ "$(query "SELECT status FROM task_source WHERE task_id = '905-modify-memory' AND source = 'codeburn'")" = missing ] \
+  || fail 'a historical task without a usage snapshot did not record the source as missing'
+pass 'tasks that ran during broken attribution are visibly missing rather than silently zero'
+
+BROKEN_CYCLE=$(query "SELECT tokens_in, tokens_out, notional_cost_usd FROM task WHERE task_id = '900-broken-cycle'")
+[ "$BROKEN_CYCLE" = 'NULL|NULL|NULL' ] \
+  || fail "a discovered legacy zero snapshot must not become a real zero, got: $BROKEN_CYCLE"
+[ "$(query "SELECT status FROM task_source WHERE task_id = '900-broken-cycle' AND source = 'raw'")" = missing ] \
+  || fail 'a task discovered only from a usage artifact did not show its missing lifecycle row'
+pass 'legacy broken-attribution snapshots are discovered but their zero totals remain missing'
 
 # --- nothing is silently dropped -------------------------------------------
 
@@ -255,12 +296,56 @@ AFTER=$(query "SELECT failure_mode FROM task WHERE task_id = '901-introduce-memo
 [ "$AFTER" = 'quietly' ] || fail 'a recorded-by-hand field must survive deleting the store'
 pass 'recorded-by-hand fields survive a delete and rebuild'
 
-# --- no reporting surface ---------------------------------------------------
+# --- lifecycle capture and one-command reporting ---------------------------
+
+fm_write_meta "$FM_HOME/state/910-lifecycle.meta" \
+  "worktree=$ROOTDIR/worktrees/lifecycle" \
+  "project=$PROJECT" \
+  "harness=codex" \
+  "model=configured-gpt" \
+  "effort=xhigh" \
+  "kind=ship" \
+  "mode=no-mistakes" \
+  "spawned_at=2026-06-01T10:00:00Z" \
+  "pr=https://github.com/example/repo/pull/10" \
+  "pr_opened_at=2026-06-01T10:15:00Z" \
+  "merged_at=2026-06-01T11:00:00Z" \
+  "teardown_at=2026-06-01T11:05:00Z"
+write_usage 910-lifecycle 321 45 1.25 6 gpt-5.6-sol
+
+rm -f "$DB"
+CAPTURE_OUT=$("$STORE" capture 910-lifecycle --outcome pr-merged 2>&1) \
+  || fail "lifecycle capture failed: $CAPTURE_OUT"
+assert_present "$DB" 'a lifecycle capture should create the store automatically'
+LIFECYCLE=$(query "SELECT launch_to_pr_seconds, tokens_in, tokens_out, notional_cost_usd, pr_opened_at, merged_at, teardown_at, outcome FROM task WHERE task_id = '910-lifecycle'")
+[ "$LIFECYCLE" = '900|321|45|1.25|2026-06-01T10:15:00Z|2026-06-01T11:00:00Z|2026-06-01T11:05:00Z|pr-merged' ] \
+  || fail "captured lifecycle fields were incomplete: $LIFECYCLE"
+pass 'lifecycle capture creates and populates the store without a remembered rebuild'
+
+CAPTURE_FINGERPRINT=$("$STORE" fingerprint)
+CAPTURE_RAW_SIZE=$(wc -c < "$RAW")
+"$STORE" capture 910-lifecycle --outcome pr-merged >/dev/null \
+  || fail 'repeating an identical lifecycle capture failed'
+[ "$("$STORE" fingerprint)" = "$CAPTURE_FINGERPRINT" ] \
+  || fail 'an idempotent lifecycle retry changed the logical store'
+[ "$(wc -c < "$RAW")" -eq "$CAPTURE_RAW_SIZE" ] \
+  || fail 'an idempotent lifecycle retry appended a duplicate raw row'
+rm -f "$DB"
+"$STORE" rebuild >/dev/null || fail 'durable-record rebuild after lifecycle capture failed'
+[ "$("$STORE" fingerprint)" = "$CAPTURE_FINGERPRINT" ] \
+  || fail 'delete-and-rebuild lost lifecycle fields or usage'
+pass 'lifecycle capture is idempotent and delete-and-rebuild reproduces it'
+
+REPORT=$("$STORE" report 910-lifecycle) || fail 'single-task report failed'
+assert_contains "$REPORT" '910-lifecycle' 'report should identify the task'
+assert_contains "$REPORT" '15m 0s' 'report should surface launch-to-PR duration'
+# shellcheck disable=SC2016 # Literal currency amount, not shell expansion.
+assert_contains "$REPORT" '$1.2500' 'report should surface cost'
+assert_contains "$REPORT" '321 in / 45 out' 'report should surface tokens'
+assert_contains "$REPORT" 'gpt-5.6-sol' 'report should surface the actual model'
+ALL_REPORT=$("$STORE" report) || fail 'cross-task report failed'
+assert_contains "$ALL_REPORT" 'TOTAL' 'cross-task report should include aggregate totals'
 
 USAGE=$("$STORE" --help)
-assert_contains "$USAGE" 'rebuild' 'help should document rebuild'
-assert_contains "$USAGE" 'annotate' 'help should document annotate'
-for forbidden in report summary chart dashboard; do
-  assert_not_contains "$USAGE" "  fm-effort-store.sh $forbidden" "the store must not grow a $forbidden command"
-done
-pass 'the store exposes ingestion and verification only, with no reporting surface'
+assert_contains "$USAGE" 'report [<task-id>]' 'help should document the one reporting command'
+pass 'one documented report command answers per-task and cross-task effort'

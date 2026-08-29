@@ -7,11 +7,13 @@ It is not a cost tracker: spend is one column among structure, process, time, an
 [`bin/fm-effort-store.sh`](../bin/fm-effort-store.sh) is the entry point and owns the command contract; run it with `--help`.
 [`bin/fm-effort-store.mjs`](../bin/fm-effort-store.mjs) owns the schema, the join, and the missing-source contract.
 
-## Two layers
+## Lifecycle and two layers
 
-The required raw layer is `data/cost-attribution.tsv`, produced by the separately delivered teardown capture.
-It is append-only and irreplaceable, because it records facts that exist for a few seconds before teardown removes the volatile task metadata.
-This derived-store change consumes that file but does not add or modify its producer.
+The raw layer is `data/cost-attribution.tsv`.
+It is append-only and irreplaceable because it records facts that exist for a few seconds before teardown removes volatile task metadata.
+`fm-spawn.sh` stamps launch time, `fm-pr-check.sh` stamps the first observation of a PR, `fm-pr-merge.sh` stamps a sanctioned PR merge, and `fm-merge-local.sh` stamps a sanctioned local landing.
+`fm-teardown.sh` snapshots task usage, stamps teardown time and outcome, captures those metadata fields into the raw layer, and rebuilds the store before deleting task state.
+No agent or operator command is part of that lifecycle.
 
 The derived layer is one SQLite file, `data/effort-store.sqlite`, under this home's gitignored `data/`.
 It is recomputed from its sources and is safe to delete; `fm-effort-store.sh rebuild` recreates it.
@@ -22,13 +24,22 @@ Nothing in the derived layer is ever written back to the raw layer.
 | Source | Origin | Contributes |
 |---|---|---|
 | raw | `data/cost-attribution.tsv` | identity, dispatch axes, and the task's time window |
-| codeburn | `codeburn export --format json` | tokens, notional cost, per-model split, active time |
+| codeburn | `data/<task>/usage.json` | tokens, notional cost, calls, sessions, and actual-model split |
 | git | the project clone named in the raw row | structure, commit link, landing, the durability relation |
 | annotation | `data/effort-annotations.jsonl` | the posterior that no artifact records |
 
 Records are keyed by task, so any later source that can name a task contributes with no schema change.
-Codeburn records are matched to the recorded worktree exactly first and then by a normalized project key.
-An ambiguous normalized match is recorded as missing instead of attributing spend to a guess, and records are included only inside the task's exact timestamp window.
+The codeburn input is the durable task-bounded snapshot written while the task still owns its worktree and baseline.
+Rebuild never re-queries mutable account-wide history.
+The task-usage producer owns project-key matching and baseline subtraction, as documented in [`task-usage.md`](task-usage.md).
+
+## Reading the headline numbers
+
+Run `bin/fm-effort-store.sh report` to list every task and aggregate totals.
+Run `bin/fm-effort-store.sh report <task-id>` for one task.
+The report shows launch-to-PR duration, cost, input and output tokens, actual models, and outcome.
+A dash means the durable source is missing.
+It never prints a plausible zero for an absent source.
 
 ## The two fields that are not automatic
 
@@ -74,23 +85,24 @@ Import degree is parsed for the TypeScript and JavaScript family, Python, and sh
 
 ## Determinism
 
-No wall-clock value is written to the database, so two rebuilds over the same inputs produce identical content.
+Rebuild writes no current wall-clock value, so two rebuilds over the same inputs produce identical content.
+Event times are written once by the lifecycle edge that observed them and become durable raw input before volatile metadata is removed.
 `fm-effort-store.sh fingerprint` hashes a canonical dump of every table, which is what proves the rebuild contract; SQLite is free to lay out pages differently for identical logical content, so the file bytes are not the thing being compared.
 
-## Scope
+## Deterministic limits
 
-The store and its ingestion only.
-There is no reporting or analysis surface, because the questions worth asking are not settled and it is not yet known which factors matter.
-Recording generously now is deliberate: a factor cannot be discovered in data that was discarded.
-
-Spend on sessions Firstmate holds no task records for is out of scope, since it would be spend with nothing to attribute it to.
-The task key is the seam that keeps that decision reversible.
+Launch time, PR-open time, sanctioned merge or local landing time, teardown time, outcome, cost, tokens, calls, sessions, configured model, and actual models are deterministic lifecycle or snapshot facts.
+A task completed before its lifecycle row or usage snapshot existed remains visible with NULL measurements and a `missing` `task_source` row.
+Legacy `fm-task-usage.v1` snapshots are discovered but treated as missing because they predate deterministic reported-project attribution and may contain the broken plausible-zero result.
+No value is reconstructed from a guess.
+The separate discovery-versus-churn and loud-versus-quiet research annotations remain manual because no durable artifact contains those judgments.
 
 ## Verification
 
+The suites drive public lifecycle and store entry points and read results back through SQL only.
+They cover automatic lifecycle capture, launch-to-PR duration, durable usage and actual models, missing-versus-zero behavior, both recorded-by-hand fields, the durability link across a file rename, one-command reporting, and delete-and-rebuild identity.
+
 ```sh
+tests/fm-effort-lifecycle.test.sh
 tests/fm-effort-store.test.sh
 ```
-
-The suite drives the CLI and reads the result back through SQL only.
-It covers the three-source join, the missing-versus-zero rule, per-task windowing across a reused worktree, both recorded-by-hand fields, the durability link across a file rename, and a delete-and-rebuild that must reproduce an identical fingerprint.

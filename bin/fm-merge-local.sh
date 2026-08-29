@@ -16,6 +16,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+# shellcheck source=bin/fm-task-meta-lock-lib.sh
+. "$SCRIPT_DIR/fm-task-meta-lock-lib.sh"
 "$FM_ROOT/bin/fm-guard.sh" || true
 ID=${1:?usage: fm-merge-local.sh <task-id>}
 META="$STATE/$ID.meta"
@@ -65,4 +67,8 @@ fi
 before=$(git -C "$PROJ" rev-parse --short "$DEFAULT")
 git -C "$PROJ" merge --ff-only "$BRANCH" >/dev/null
 after=$(git -C "$PROJ" rev-parse --short "$DEFAULT")
+fm_task_meta_set_once "$META" local_landed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || {
+  echo "error: local landing succeeded but its lifecycle stamp could not be recorded" >&2
+  exit 1
+}
 echo "merged $BRANCH into local $DEFAULT ($before -> $after) in $PROJ"
