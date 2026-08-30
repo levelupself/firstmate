@@ -67,6 +67,7 @@ db.prepare('INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?)').run(
 )
 const step = db.prepare('INSERT INTO step_results VALUES (?, ?, ?, ?)')
 for (const [id, name, status] of [
+  ['rebase', 'rebase', 'completed'],
   ['review', 'review', 'completed'],
   ['test', 'test', 'completed'],
   ['document', 'document', 'completed'],
@@ -131,6 +132,57 @@ grep -qx 'merged_at=2026-08-29T10:20:00Z' "$HOME_DIR/state/pr-task.meta" \
   || fail 'PR merge did not stamp the forge merge time'
 grep -qx 'outcome=pr-merged' "$HOME_DIR/state/pr-task.meta" \
   || fail 'PR merge did not stamp its lifecycle outcome'
+MERGED_ROW=$(node - "$DB" <<'NODE'
+process.emitWarning = () => {}
+const {DatabaseSync} = require('node:sqlite')
+const row = new DatabaseSync(process.argv[2], {readOnly:true}).prepare(`
+  SELECT merged_at, outcome, findings, review_rounds, ask_user_count, gate_failures
+  FROM task WHERE task_id = ?
+`).get('pr-task')
+process.stdout.write(Object.values(row || {}).map(value => value ?? 'NULL').join('|') + '\n')
+NODE
+)
+[ "$MERGED_ROW" = '2026-08-29T10:20:00Z|merged|NULL|NULL|NULL|NULL' ] \
+  || fail "unsettled pipeline produced process counts: $MERGED_ROW"
+pass 'sanctioned PR merge preserves missing process cost for an unsettled run'
+
+node --no-warnings - "$NM_DB" <<'NODE'
+const {DatabaseSync} = require('node:sqlite')
+const db = new DatabaseSync(process.argv[2])
+db.prepare("UPDATE step_results SET status = 'completed' WHERE id = 'ci'").run()
+db.prepare("UPDATE step_rounds SET findings_json = NULL WHERE id = 'review-2'").run()
+db.close()
+NODE
+FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
+  FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
+  "$PR_MERGE" pr-task https://github.com/example/repo/pull/9 >/dev/null \
+  || fail 'repeated PR merge with incomplete findings failed'
+INCOMPLETE_ROW=$(node - "$DB" <<'NODE'
+process.emitWarning = () => {}
+const {DatabaseSync} = require('node:sqlite')
+const row = new DatabaseSync(process.argv[2], {readOnly:true}).prepare(`
+  SELECT findings, review_rounds, ask_user_count, gate_failures
+  FROM task WHERE task_id = ?
+`).get('pr-task')
+process.stdout.write(Object.values(row || {}).map(value => value ?? 'NULL').join('|') + '\n')
+NODE
+)
+[ "$INCOMPLETE_ROW" = 'NULL|NULL|NULL|NULL' ] \
+  || fail "incomplete findings record produced process counts: $INCOMPLETE_ROW"
+pass 'sanctioned PR merge preserves missing process cost for incomplete findings'
+
+node --no-warnings - "$NM_DB" <<'NODE'
+const {DatabaseSync} = require('node:sqlite')
+const db = new DatabaseSync(process.argv[2])
+db.prepare('UPDATE step_rounds SET findings_json = ? WHERE id = ?').run(
+  JSON.stringify({findings: []}), 'review-2',
+)
+db.close()
+NODE
+FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
+  FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
+  "$PR_MERGE" pr-task https://github.com/example/repo/pull/9 >/dev/null \
+  || fail 'repeated PR merge with settled pipeline failed'
 MERGED_ROW=$(node - "$DB" <<'NODE'
 process.emitWarning = () => {}
 const {DatabaseSync} = require('node:sqlite')

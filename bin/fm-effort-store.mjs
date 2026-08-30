@@ -153,7 +153,7 @@ function git(repo, args, {timeoutMs = 20000} = {}) {
 }
 
 const PIPELINE_GATE_STEPS = new Set(['rebase', 'test', 'document', 'lint', 'ci'])
-const PIPELINE_SETTLED_STEPS = new Set(['review', 'test', 'document', 'lint'])
+const PIPELINE_SETTLED_STEPS = new Set(['rebase', 'review', 'test', 'document', 'lint', 'ci'])
 
 function readPipelineMetrics(dbPath, identity) {
   if (!dbPath || !identity.project || !identity.branch || !identity.prUrl) return null
@@ -198,16 +198,15 @@ function readPipelineMetrics(dbPath, identity) {
       let gateFailures = 0
       let valid = true
       for (const round of rounds) {
-        let reported = []
-        if (round.findings_json !== null) {
-          try {
-            const parsed = JSON.parse(round.findings_json)
-            if (!Array.isArray(parsed?.findings)) throw new Error('missing findings array')
-            reported = parsed.findings
-          } catch {
-            valid = false
-            break
-          }
+        let reported
+        try {
+          if (round.findings_json === null) throw new Error('missing findings record')
+          const parsed = JSON.parse(round.findings_json)
+          if (!Array.isArray(parsed?.findings)) throw new Error('missing findings array')
+          reported = parsed.findings
+        } catch {
+          valid = false
+          break
         }
         findings += reported.length
         askUserCount += reported.filter(finding => finding?.action === 'ask-user').length
