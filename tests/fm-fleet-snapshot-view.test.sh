@@ -138,6 +138,10 @@ EOF
     "harness=codex" \
     "kind=ship" \
     "mode=ship"
+  mkdir -p "$home/state/usage-cache"
+  cat > "$home/state/usage-cache/ship-task.json" <<'JSON'
+{"schema":"fm-task-usage.v2","id":"ship-task","harness":"claude","actual_models":["Opus 5"],"tokens":{"input":1,"output":2,"cache_read":3,"cache_write":4},"cost_usd":0.5,"calls":6,"sessions":1,"duration_seconds":60}
+JSON
 }
 
 test_empty_fleet_json() {
@@ -177,6 +181,9 @@ test_fixture_snapshot_json() {
       and .backlog.body_excerpt == "Preserve this detail for bearings."
       and .hints.pending_decision == false
       and .paths.status_log.kind == "event_history"
+      and .usage.schema == "fm-task-usage.v2"
+      and .usage.stale == true
+      and .usage.actual_models == ["Opus 5"]
   ' >/dev/null || fail "ship task state, PR, body, and stale event hints wrong"
   printf '%s' "$out" | jq -e '
     .tasks[] | select(.id == "scout-task")
@@ -1283,9 +1290,9 @@ test_secondmate_open_decision_survives_live_endpoint() {
   pass "a live secondmate endpoint preserves unrelated open decisions"
 }
 
-# An open decision clears ONLY on an explicit resolution referencing its key, never
-# on an unrelated terminal line.
-test_open_decision_transfers_to_captain_hold() {
+# A captain-held parking line never closes an open decision, even when it names
+# the same key and says a backlog item tracks it.
+test_open_decision_survives_captain_held_parking() {
   local home fakebin out
   home=$(make_home captain-held-transfer)
   mkdir -p "$home/secondmate-home"
@@ -1304,10 +1311,11 @@ test_open_decision_transfers_to_captain_hold() {
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
   printf '%s' "$out" | jq -e '
     .tasks[] | select(.id == "transferred-decision")
-    | .hints.pending_decision == false
-      and (.hints.open_decisions | length) == 0
-  ' >/dev/null || fail "captain-held transfer must close only the duplicate status copy: $out"
-  pass "durable captain-held transfer closes the duplicate live status decision"
+    | .hints.pending_decision == true
+      and (.hints.open_decisions | length) == 1
+      and .hints.open_decisions[0].key == "route"
+  ' >/dev/null || fail "captain-held parking hid the unresolved status decision: $out"
+  pass "captain-held parking preserves the unresolved live status decision"
 }
 
 test_open_decision_clears_on_keyed_resolution() {
@@ -1407,28 +1415,29 @@ test_parked_scout_decision_stays_pending() {
 # HERDR_* pane identity a real fleet pane is launched with, so they exercise
 # the ownership contract through the view's own executable interface.
 
-# The real bin directory, deliberately: ownership is resolved through the herdr
-# adapter's own frame reader, which a symlinked stand-in directory would not
-# carry. The homes below are empty, so the real snapshot renders an empty board.
+# The production tracked bin directory, deliberately: current isolated homes do
+# not carry their own bin/, so ownership must combine that executable with the
+# running pane's authoritative foreground cwd. The homes below are empty, so
+# the real snapshot renders an empty board.
 painter_bin() {  # <home> -> the bin dir the banner runs from
   local home=$1 fakebin="$1/fakebin"
   mkdir -p "$fakebin"
-  ln -s "$ROOT/bin" "$home/bin"
   cat > "$fakebin/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
 mode=${PAINTER_REPORTED_MODE:-live}
-script=${PAINTER_HOME:?}/bin/fm-fleet-view.sh
+script=${PAINTER_VIEW:?}
 if [ "${1:-}" = pane ] && [ "${2:-}" = get ]; then
   tab=$(cat "$PAINTER_HOME/reported-tab" 2>/dev/null || printf 'w9:t1')
-  jq -cn --arg pane "${HERDR_PANE_ID:?}" --arg tab "$tab" \
-    '{result:{pane:{pane_id:$pane,workspace_id:"w9",tab_id:$tab}}}'
+  cwd=$PAINTER_HOME
+  [ "$mode" != home ] || cwd=/wrong/home
+  jq -cn --arg pane "${HERDR_PANE_ID:?}" --arg tab "$tab" --arg cwd "$cwd" \
+    '{result:{pane:{pane_id:$pane,workspace_id:"w9",tab_id:$tab,foreground_cwd:$cwd}}}'
   exit 0
 fi
 case "$mode" in
   executable) script=/wrong/checkout/bin/not-fleet-view.sh ;;
   basename) script=/wrong/checkout/bin/fm-fleet-view.sh ;;
-  home) script=/wrong/home/bin/fm-fleet-view.sh ;;
 esac
 if [ "$mode" = watch ]; then
   argv=$(jq -cn --arg script "$script" '["bash",$script]')
@@ -1441,7 +1450,7 @@ jq -cn --arg pane "${HERDR_PANE_ID:?}" --argjson argv "$argv" '
   {result:{type:"pane_process_info",process_info:{pane_id:$pane,foreground_processes:[{argv:$argv}]}}}'
 SH
   chmod +x "$fakebin/herdr"
-  printf '%s\n' "$home/bin"
+  printf '%s\n' "$ROOT/bin"
 }
 
 write_cockpit_record() {  # <home> <fleet-pane-ids> <fleet-pane-sections>
@@ -1725,7 +1734,7 @@ test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state
 test_open_decision_survives_later_unrelated_event
 test_secondmate_open_decision_survives_live_endpoint
-test_open_decision_transfers_to_captain_hold
+test_open_decision_survives_captain_held_parking
 test_open_decision_clears_on_keyed_resolution
 test_completed_scout_report_is_pointer_not_pending
 test_parked_scout_decision_stays_pending

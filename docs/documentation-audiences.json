@@ -181,6 +181,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/surface/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/stuck-crewmate-recovery/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -326,6 +330,10 @@
     },
     {
       "path": "docs/supervision-protocols/codex.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/supervision-protocols/cursor.md",
       "audience": "agent-runtime"
     },
     {

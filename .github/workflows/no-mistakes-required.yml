@@ -1,5 +1,5 @@
 name: Require no-mistakes
-run-name: "PR #${{ github.event.pull_request.number }} body compliance - ${{ github.event.action }} - event ${{ github.run_number }} (run ${{ github.run_id }})"
+run-name: "PR #${{ github.event.pull_request.number }} submission compliance - ${{ github.event.action }} - event ${{ github.run_number }} (run ${{ github.run_id }})"
 
 on:
   pull_request:
@@ -20,35 +20,68 @@ concurrency:
 
 jobs:
   check:
-    name: PR must be raised via no-mistakes
+    name: PR must be raised via no-mistakes or prove an upstream catch-up
     runs-on: ubuntu-latest
     if: >-
       github.event.pull_request.user.login != 'github-actions[bot]' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
       - name: Verify no-mistakes signature in PR body
+        id: signature
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -eu
-          marker='Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)'
-          if printf '%s' "${PR_BODY:-}" | grep -qF -- "$marker"; then
+          legacy_marker='Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)'
+          attestation_marker='<!-- no-mistakes-pipeline-attestation:v1 '
+          if printf '%s' "${PR_BODY:-}" | grep -qF -- "$legacy_marker" ||
+            printf '%s' "${PR_BODY:-}" | grep -qF -- "$attestation_marker"; then
             echo "Found no-mistakes signature in PR #${PR_NUMBER} body."
+            echo 'found=true' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          {
-            echo "::error::This PR was not raised through no-mistakes."
-            echo
-            echo "Contributions to this repository must be submitted via 'git push no-mistakes'."
-            echo "That pipeline runs the required review/test/lint/CI steps and writes a"
-            echo "deterministic '## Pipeline' section into the PR body containing:"
-            echo
-            echo "    $marker"
-            echo
-            echo "See CONTRIBUTING.md for setup and the full workflow."
-            echo
-            echo "PR author: ${PR_AUTHOR}"
-          } >&2
-          exit 1
+          echo 'found=false' >> "$GITHUB_OUTPUT"
+
+      # The checker must come from the trusted base, not from author-controlled
+      # pull request content. Signed pipeline PRs skip this checkout entirely,
+      # which lets the change introducing the checker bootstrap normally.
+      - name: Check out trusted gate implementation
+        if: steps.signature.outputs.found != 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify upstream catch-up from the commit graph
+        if: steps.signature.outputs.found != 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          repository_json=$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY")
+          upstream_url=$(printf '%s' "$repository_json" | jq -er '.parent.clone_url // empty') || upstream_url=
+          upstream_default_branch=$(printf '%s' "$repository_json" | jq -er '.parent.default_branch // empty') || upstream_default_branch=
+          if [ -z "$upstream_url" ] || [ -z "$upstream_default_branch" ]; then
+            echo '::error::This PR has no no-mistakes signature, and the repository has no configured fork parent whose history can prove an upstream catch-up.' >&2
+            exit 1
+          fi
+          git fetch --no-tags origin \
+            "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/${PR_NUMBER}/head"
+          fetched_head=$(git rev-parse "refs/remotes/pull/${PR_NUMBER}/head^{commit}")
+          if [ "$fetched_head" != "$HEAD_SHA" ]; then
+            echo "::error::Fetched PR head $fetched_head does not match event head $HEAD_SHA." >&2
+            exit 1
+          fi
+          git remote add upstream "$upstream_url"
+          git fetch --no-tags upstream \
+            "+refs/heads/${upstream_default_branch}:refs/remotes/upstream/${upstream_default_branch}"
+          bin/fm-no-mistakes-required.sh . "$BASE_SHA" "$HEAD_SHA" \
+            "refs/remotes/upstream/${upstream_default_branch}"

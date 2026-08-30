@@ -67,18 +67,39 @@ fi
 "$FM_ROOT/bin/fm-guard.sh" || true
 
 # pr_head is recorded only when the forge's CLI can supply it. gh exposes the
-# head commit as a selectable field; plain glab exposes it only inside its JSON
-# output, which would need a JSON processor firstmate does not require, so a
-# GitLab task records no pr_head. Both consumers already treat it as optional:
+# head commit as a selectable field; a GitLab task records no pr_head. Both
+# consumers already treat it as optional:
 # bin/fm-teardown.sh reads the head from the forge at teardown rather than from
 # metadata and falls back to its provider-agnostic content check, and
 # bin/fm-review-diff.sh resolves the head from the remote when none is recorded.
 WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_HEAD=
+PR_OPENED_AT=
 if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/dev/null 2>&1; then
   if REMOTE_HEAD=$(cd "$WT" && gh pr view "$URL" --json headRefOid -q .headRefOid 2>/dev/null) \
     && fm_pr_head_valid "$REMOTE_HEAD"; then
     PR_HEAD=$REMOTE_HEAD
+  fi
+  if REMOTE_OPENED_AT=$(cd "$WT" && gh pr view "$URL" --json createdAt -q .createdAt 2>/dev/null) \
+    && printf '%s\n' "$REMOTE_OPENED_AT" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
+    PR_OPENED_AT=$REMOTE_OPENED_AT
+  fi
+fi
+if [ "$PROVIDER" = gitlab ]; then
+  if REMOTE_OPENED_AT=$(glab mr view "$NUMBER" -R "https://$HOST/$PROJECT_PATH" --output json 2>/dev/null \
+    | node -e '
+      let input = ""
+      process.stdin.setEncoding("utf8")
+      process.stdin.on("data", chunk => { input += chunk })
+      process.stdin.on("end", () => {
+        try {
+          const value = JSON.parse(input).created_at
+          if (typeof value === "string") process.stdout.write(value)
+        } catch {}
+      })
+    ') && printf '%s\n' "$REMOTE_OPENED_AT" \
+      | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
+    PR_OPENED_AT=$REMOTE_OPENED_AT
   fi
 fi
 
@@ -109,14 +130,21 @@ STATE_DEVICE=$(fm_pr_file_device "$STATE") || exit 1
 [ "$META_DEVICE" = "$STATE_DEVICE" ] || { echo "error: task metadata is unavailable" >&2; exit 1; }
 fm_task_meta_lock_acquire "$META" || { echo "error: task metadata mutation lock is unavailable" >&2; exit 1; }
 META_TMP=$(mktemp "$STATE/.fm-pr-meta.XXXXXX") || exit 1
+EXISTING_PR=$(sed -n 's/^pr=//p' "$META" | tail -1)
+EXISTING_PR_OPENED_AT=$(sed -n 's/^pr_opened_at=//p' "$META" | tail -1)
+if [ "$EXISTING_PR" = "$URL" ] \
+  && printf '%s\n' "$EXISTING_PR_OPENED_AT" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
+  PR_OPENED_AT=$EXISTING_PR_OPENED_AT
+fi
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
-    pr=*|pr_head=*) ;;
+    pr=*|pr_head=*|pr_opened_at=*) ;;
     *) printf '%s\n' "$line" >> "$META_TMP" || exit 1 ;;
   esac
 done < "$META"
 printf 'pr=%s\n' "$URL" >> "$META_TMP" || exit 1
 [ -z "$PR_HEAD" ] || printf 'pr_head=%s\n' "$PR_HEAD" >> "$META_TMP" || exit 1
+[ -z "$PR_OPENED_AT" ] || printf 'pr_opened_at=%s\n' "$PR_OPENED_AT" >> "$META_TMP" || exit 1
 chmod 0600 "$META_TMP" || exit 1
 fm_pr_private_file_valid "$META_TMP" 600 "$STATE_DEVICE" || exit 1
 fm_pr_metadata_identity_parse "$META_TMP" || exit 1
@@ -139,6 +167,7 @@ fm_pr_poll_publish_prepared || {
   echo "error: could not publish PR poll" >&2
   exit 1
 }
+fm_task_effort_capture_best_effort "$FM_ROOT" "$ID"
 printf 'armed: state/%s.check.sh\n' "$ID"
 
 # Best-effort Linear linking runs last so it can never prevent metadata or poll publication.

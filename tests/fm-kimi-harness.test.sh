@@ -128,6 +128,7 @@ SH
   fm_fake_exit0 "$fakebin" treehouse gh-axi gh
   fm_fake_exit0 "$fakebin" kimi
   ln -s "$JQ_BIN" "$fakebin/jq"
+  ln -s "$(command -v node)" "$fakebin/node"
   printf '%s\n' "$fakebin"
 }
 
@@ -416,7 +417,7 @@ test_kimi_spawn_refuses_unsafe_global_config_before_pane_creation() {
 }
 
 test_kimi_teardown_removes_pointer_and_registry_token() {
-  local id rec out rc token
+  local id rec out rc token lifecycle_root helper
   id=kimi-teardown-z8
   rec=$(make_spawn_case teardown "$id")
   read_spawn_record "$rec"
@@ -425,7 +426,13 @@ test_kimi_teardown_removes_pointer_and_registry_token() {
   expect_code 0 "$rc" "Kimi spawn should succeed before teardown"
   token=$(sed -n 's/^token=//p' "$WT_DIR/.fm-kimi-turnend")
 
-  HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$HOME_DIR" \
+  lifecycle_root="$CASE_DIR/lifecycle-root"
+  mkdir -p "$lifecycle_root/bin"
+  for helper in fm-guard.sh fm-task-usage.sh fm-effort-store.sh fm-fleet-sync.sh; do
+    fm_fake_exit0 "$lifecycle_root/bin" "$helper"
+  done
+
+  HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$lifecycle_root" FM_HOME="$HOME_DIR" \
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
     FM_SPAWN_NO_GUARD=1 PATH="$FAKEBIN_DIR:$BASE_PATH" \

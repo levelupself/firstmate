@@ -26,6 +26,7 @@ REAL_MV=$(command -v mv)
 REAL_STAT=$(command -v stat)
 REAL_CHMOD=$(command -v chmod)
 REAL_BASENAME=$(command -v basename)
+REAL_NODE=$(command -v node)
 
 ack_watcher_cycle() {  # <state>
   local state=$1 err sequence generation
@@ -70,14 +71,25 @@ make_case() {
   mkdir -p "$dir/home/state" "$dir/home/data" "$dir/home/config" "$dir/wt" "$fakebin" "$fake_root/bin"
   cat > "$fake_root/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
-printf 'guard\n' >> "$FM_TEST_GUARD_LOG"
+printf 'guard\n' >> "${FM_TEST_GUARD_LOG:-/dev/null}"
 SH
   chmod +x "$fake_root/bin/fm-guard.sh"
+  for helper in fm-task-usage.sh fm-effort-store.sh fm-fleet-sync.sh; do
+    cat > "$fake_root/bin/$helper" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+    chmod +x "$fake_root/bin/$helper"
+  done
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
 case " $* " in
   *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;
+  *" createdAt "*)
+    [ "${FM_TEST_GH_CREATED_FAIL:-0}" = 0 ] || exit 1
+    printf '%s\n' "${FM_TEST_GH_CREATED_AT:-2026-08-20T12:34:56Z}"
+    ;;
   *" state "*)
     [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
     [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
@@ -97,9 +109,16 @@ SH
 printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
 [ "${FM_TEST_GLAB_FAIL:-0}" = 0 ] || exit 1
 [ "${FM_TEST_GLAB_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GLAB_SLEEP"
+case " $* " in
+  *" --output json "*)
+    printf '{"created_at":"%s"}\n' "${FM_TEST_GLAB_CREATED_AT:-2026-08-21T13:45:00Z}"
+    exit 0
+    ;;
+esac
 printf 'title:\tfixture merge request\nstate:\t%s\nauthor:\tsomeone\n' "${FM_TEST_GLAB_STATE:-opened}"
 SH
   chmod +x "$fakebin/gh" "$fakebin/gh-axi" "$fakebin/glab"
+  ln -s "$REAL_NODE" "$fakebin/node"
   : > "$dir/gh.log"
   : > "$dir/gh-axi.log"
   : > "$dir/glab.log"
@@ -115,7 +134,8 @@ write_task_meta() {
     "worktree=$dir/wt" \
     "project=$dir/project" \
     "kind=ship" \
-    "mode=no-mistakes"
+    "mode=no-mistakes" \
+    "spawned_at=2026-08-20T12:00:00Z"
 }
 
 write_poll_meta() {
@@ -526,7 +546,7 @@ test_invalid_entrypoints_have_zero_side_effects() {
 }
 
 test_valid_recording_and_merge_derivation() {
-  local dir expected sidecar count rc
+  local dir expected sidecar count rc opened_at
   dir=$(make_case valid-recording)
   write_task_meta "$dir"
   expected=0123456789abcdef0123456789abcdef01234567
@@ -536,6 +556,8 @@ test_valid_recording_and_merge_derivation() {
   grep -qxF 'pr=https://github.com/my-org/repo_name.with-dots/pull/37' "$dir/home/state/task-a.meta" \
     || fail "canonical pr metadata was not exact"
   grep -qxF "pr_head=$expected" "$dir/home/state/task-a.meta" || fail "PR head metadata was not exact"
+  opened_at=$(sed -n 's/^pr_opened_at=//p' "$dir/home/state/task-a.meta")
+  [ "$opened_at" = 2026-08-20T12:34:56Z ] || fail "forge PR-open lifecycle time was not preserved"
   cmp -s "$POLL" "$dir/home/state/task-a.check.sh" || fail "published check was not byte-for-byte static"
   [ "$(file_mode "$dir/home/state/task-a.check.sh")" = 600 ] || fail "published check mode was not 0600"
   [ "$(file_mode "$dir/home/state/task-a.pr-poll")" = 600 ] || fail "published sidecar mode was not 0600"
@@ -557,12 +579,16 @@ test_valid_recording_and_merge_derivation() {
   [ "$count" -eq 1 ] || fail "duplicate pr metadata was appended"
   count=$(grep -c '^pr_head=' "$dir/home/state/task-a.meta")
   [ "$count" -eq 1 ] || fail "duplicate pr_head metadata was appended"
+  [ "$(sed -n 's/^pr_opened_at=//p' "$dir/home/state/task-a.meta")" = "$opened_at" ] \
+    || fail "duplicate PR recording changed the original PR-open time"
 
   : > "$dir/gh-axi.log"
   run_merge_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 -- --merge \
     >/dev/null 2>/dev/null || fail "valid merge wrapper failed"
   grep -qxF 'pr merge 37 --repo my-org/repo_name.with-dots --merge' "$dir/gh-axi.log" \
     || fail "merge wrapper did not preserve repository derivation and method"
+  grep -Eq '^merged_at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
+    "$dir/home/state/task-a.meta" || fail "successful PR merge did not stamp its lifecycle time"
   set +e
   FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/merged-watch.out" 2> "$dir/merged-watch.err"
   rc=$?
@@ -582,6 +608,13 @@ test_valid_recording_and_merge_derivation() {
   assert_no_grep 'pr_head=' "$dir/home/state/task-a.meta" "multiline PR head reached metadata"
   assert_no_grep 'window=unexpected' "$dir/home/state/task-a.meta" "newline metadata key was injected"
 
+  dir=$(make_case unavailable-open-time)
+  write_task_meta "$dir"
+  FM_TEST_GH_CREATED_FAIL=1 run_check_entry "$dir" task-a https://github.com/o/r/pull/3 \
+    >/dev/null 2>/dev/null || fail "PR check failed when forge creation time was unavailable"
+  assert_no_grep '^pr_opened_at=' "$dir/home/state/task-a.meta" \
+    "PR check invented an open time when the forge timestamp was unavailable"
+
   dir=$(make_case lifecycle-compatible-id)
   write_task_meta "$dir" Task_A.1
   run_merge_entry "$dir" Task_A.1 https://github.com/o/r/pull/3 \
@@ -596,9 +629,9 @@ exit 0
 SH
   chmod 0700 "$dir/fakebin/tmux"
   touch "$dir/home/state/.last-watcher-beat"
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$dir/fakebin:$BASE_PATH" \
     "$TEARDOWN" Task_A.1 --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
-    || fail "safe lifecycle-compatible task ID could not be torn down"
+    || fail "safe lifecycle-compatible task ID could not be torn down: $(tr '\n' ' ' < "$dir/teardown.err")"
   [ ! -e "$dir/home/state/Task_A.1.meta" ] \
     || fail "safe lifecycle-compatible task teardown retained metadata"
 
@@ -610,7 +643,8 @@ SH
       "worktree=$dir/missing-worktree" \
       "project=$dir/project" \
       'kind=ship' \
-      'mode=local-only'
+      'mode=local-only' \
+      'spawned_at=2026-08-20T12:00:00Z'
     mkdir -p "$dir/home/state/.pr-check-quarantine"
     chmod 0700 "$dir/home/state/.pr-check-quarantine"
     printf 'reserved migration evidence\n' \
@@ -624,7 +658,7 @@ SH
     touch "$dir/home/state/.last-watcher-beat"
     mkdir "$dir/home/state/$id.check.sh"
     set +e
-    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$dir/fakebin:$BASE_PATH" \
       "$TEARDOWN" "$id" --force > "$dir/unsafe-teardown.out" 2> "$dir/unsafe-teardown.err"
     rc=$?
     set -e
@@ -643,7 +677,7 @@ SH
       || fail "path-safe legacy task ID could not use the PR merge flow"
     fm_pr_poll_artifacts_valid "$dir/home/state" "$id" "$POLL" \
       || fail "path-safe legacy task ID did not publish an authenticated poll"
-    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$dir/fakebin:$BASE_PATH" \
       "$TEARDOWN" "$id" --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
       || fail "legacy path-safe task ID could not be torn down"
     [ ! -e "$dir/home/state/$id.meta" ] || fail "legacy task teardown retained metadata"
@@ -651,6 +685,25 @@ SH
       || fail "legacy task teardown changed the reserved migration namespace"
   done
   pass "valid direct and merge flows record exact metadata and reject multiline head metadata"
+}
+
+test_gitlab_records_forge_open_time() {
+  local dir url
+  dir=$(make_case gitlab-open-time)
+  write_task_meta "$dir"
+  url=https://gitlab.example/group/project/-/merge_requests/7
+  run_check_entry "$dir" task-a "$url" >/dev/null 2>/dev/null \
+    || fail "GitLab PR check failed"
+  [ "$(sed -n 's/^pr_opened_at=//p' "$dir/home/state/task-a.meta")" = 2026-08-21T13:45:00Z ] \
+    || fail "GitLab forge creation time was not recorded"
+
+  dir=$(make_case gitlab-invalid-open-time)
+  write_task_meta "$dir"
+  FM_TEST_GLAB_CREATED_AT=not-a-time run_check_entry "$dir" task-a "$url" >/dev/null 2>/dev/null \
+    || fail "GitLab PR check failed when forge creation time was invalid"
+  assert_no_grep '^pr_opened_at=' "$dir/home/state/task-a.meta" \
+    "GitLab PR check invented an open time from an invalid forge timestamp"
+  pass "GitLab PR checks preserve only valid forge creation times"
 }
 
 run_watcher_bounded() {
@@ -1464,7 +1517,7 @@ test_ambiguous_failure_accepts_validated_replacement() {
     || fail "ambiguous partial migration did not persist recovery obligations"
 
   rmdir "$state/task-a.pr-poll"
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_CHECK" task-a https://github.com/o/r/pull/10 >/dev/null \
     || fail "validated replacement poll could not be published"
   fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
@@ -1709,7 +1762,7 @@ SH
   chmod +x "$fakebin/tmux"
   touch "$state/.last-watcher-beat"
   set +e
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$fakebin:$BASE_PATH" \
     "$TEARDOWN" task-a --force > "$dir/teardown.out" 2> "$dir/teardown.err"
   rc=$?
   set -e
@@ -1864,7 +1917,7 @@ SH
   chmod 0700 "$dir/fakebin/tmux"
   touch "$state/.last-watcher-beat"
   set +e
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$dir/fakebin:$BASE_PATH" \
     "$TEARDOWN" _noncanonical --force > "$dir/teardown.out" 2> "$dir/teardown.err"
   rc=$?
   set -e
@@ -1886,7 +1939,7 @@ SH
   [ -f "$state/.pr-check-quarantine/!noncanonical.check.abc123" ] \
     || fail "legacy reserved retry did not migrate its quarantined evidence"
   assert_valid_migration_marker "$state/.pr-check-migration-v1"
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$dir/fakebin:$BASE_PATH" \
     "$TEARDOWN" _noncanonical --force > "$dir/teardown-2.out" 2> "$dir/teardown-2.err" \
     || fail "task teardown did not recover after legacy namespace migration"
   [ ! -e "$state/_noncanonical.meta" ] \
@@ -2642,7 +2695,7 @@ SH
   chmod +x "$fakebin/tmux"
   touch "$dir/home/state/.last-watcher-beat"
 
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$fakebin:$BASE_PATH" \
     "$TEARDOWN" task-a --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
     || fail "teardown cleanup fixture failed"
   [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "teardown left the runnable check"
@@ -2674,7 +2727,7 @@ exit 0
 SH
   chmod +x "$fakebin/tmux"
   touch "$dir/home/state/.last-watcher-beat"
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$fakebin:$BASE_PATH" \
     "$TEARDOWN" task-a --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
     || fail "teardown could not finish a valid crash-left retirement receipt"
   assert_poll_absent "$dir/home/state" task-a
@@ -2702,7 +2755,7 @@ SH
   chmod +x "$fakebin/tmux"
   touch "$dir/home/state/.last-watcher-beat"
 
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$fakebin:$BASE_PATH" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$fakebin:$BASE_PATH" \
     "$TEARDOWN" invalid --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
     || fail "valid invalid task teardown failed"
   [ ! -e "$dir/home/state/.pr-check-quarantine/invalid.check.abc123" ] \
@@ -2736,7 +2789,7 @@ SH
     chmod +x "$fakebin/tmux"
     touch "$dir/home/state/.last-watcher-beat"
     set +e
-    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_FAKE_TMUX_LOG="$dir/tmux.log" \
+    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" FM_FAKE_TMUX_LOG="$dir/tmux.log" \
       PATH="$fakebin:$BASE_PATH" "$TEARDOWN" task-a --force \
       > "$dir/teardown.out" 2> "$dir/teardown.err"
     rc=$?
@@ -2775,7 +2828,7 @@ SH
     chmod +x "$fakebin/tmux"
     touch "$dir/home/state/.last-watcher-beat"
     set +e
-    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$fakebin:$BASE_PATH" \
+    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" PATH="$fakebin:$BASE_PATH" \
       "$TEARDOWN" task-a --force > "$dir/teardown.out" 2> "$dir/teardown.err"
     rc=$?
     set -e
@@ -3358,6 +3411,7 @@ test_gitlab_merged_poll_retires() {
 
 test_parser_matrix
 test_gitlab_merge_watch
+test_gitlab_records_forge_open_time
 test_merged_poll_retires_once
 test_persistent_secondmate_retirement_is_poll_only
 test_retirement_crash_recovery

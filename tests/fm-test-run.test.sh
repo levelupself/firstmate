@@ -58,6 +58,32 @@ test_family_selection() {
   pass "family selection returns a proper subset of the suite"
 }
 
+test_optional_gate_family_declarations() {
+  local tmp pi_types calm claude out
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-optional-gates.XXXXXX")
+  pi_types="$tmp/fm-pi-primary-types.test.sh"
+  calm="$tmp/fm-calm-pi-extension.test.sh"
+  claude="$tmp/fm-claude-stop-autoarm-live-e2e.test.sh"
+  for fixture in "$pi_types" "$calm" "$claude"; do
+    cat >"$fixture" <<'SH'
+#!/usr/bin/env bash
+echo "skip: fixture gate"
+exit 0
+SH
+    chmod +x "$fixture"
+  done
+
+  out=$(
+    "$RUNNER" "$pi_types" "$calm" "$claude" 2>"$tmp/err"
+  ) || { rm -rf "$tmp"; fail "declared optional gate fixtures must remain successful"; }
+  [ "$(grep -Ec '^FM_TEST_BEGIN .+ family=pi expected_gate_skip=optional-binary$' <<<"$out")" -eq 2 ] \
+    || { rm -rf "$tmp"; fail "both Pi-dependent tests must declare optional-binary: $out"; }
+  grep -Eq '^FM_TEST_BEGIN .+ family=live-harness-optin expected_gate_skip=optin-env$' <<<"$out" \
+    || { rm -rf "$tmp"; fail "Claude live auto-arm must declare optin-env: $out"; }
+  rm -rf "$tmp"
+  pass "Pi binary gates and Claude live opt-in gate are explicitly declared"
+}
+
 test_single_script_selection() {
   local listed
   listed=$("$RUNNER" --list tests/fm-lint.test.sh)
@@ -283,10 +309,10 @@ SH
   pass "aggregate exit reflects any script failure"
 }
 
-test_gate_skip_accounting() {
-  local tmp skip_f out json
+test_undeclared_gate_skip_fails() {
+  local tmp skip_f out json rc
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-skip.XXXXXX")
-  skip_f="$tmp/skip.test.sh"
+  skip_f="$tmp/fm-operational-input.test.sh"
   out="$tmp/out.txt"
   json="$tmp/timing.json"
   cat >"$skip_f" <<'SH'
@@ -295,21 +321,64 @@ echo "skip: herdr not found"
 exit 0
 SH
   chmod +x "$skip_f"
-  "$RUNNER" --json "$json" "$skip_f" >"$out" 2>"$tmp/err.txt" \
-    || fail "gate-skip fixture must exit 0 from the runner"
-  grep -Eq '^FM_TEST_END .+ exit=0 duration_ms=[0-9]+ gate_skip=true$' "$out" \
-    || fail "END must mark gate_skip=true: $(grep '^FM_TEST_END' "$out")"
-  grep -q 'FM_TEST_SUMMARY total=1 failed=0 skipped_gate=1' "$out" \
-    || fail "summary must count skipped_gate=1: $(grep FM_TEST_SUMMARY "$out")"
+  set +e
+  "$RUNNER" --json "$json" "$skip_f" >"$out" 2>"$tmp/err.txt"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "undeclared gate skip must fail when its family declares expected_gate_skip=none"
+  grep -Eq '^FM_TEST_BEGIN .+ family=pure-contract-unit expected_gate_skip=none$' "$out" \
+    || fail "BEGIN must record the existing pure-contract-unit no-skip declaration"
+  grep -Eq '^FM_TEST_END .+ exit=1 duration_ms=[0-9]+ gate_skip=true$' "$out" \
+    || fail "END must retain gate_skip=true and report exit=1: $(grep '^FM_TEST_END' "$out")"
+  grep -q 'FM_TEST_SUMMARY total=1 failed=1 skipped_gate=1' "$out" \
+    || fail "summary must count the undeclared gate skip as failed: $(grep FM_TEST_SUMMARY "$out")"
+  grep -Fq "undeclared gate skip in $skip_f: family pure-contract-unit declares expected_gate_skip=none; reason: skip: herdr not found" "$tmp/err.txt" \
+    || fail "runner must explain the undeclared gate skip and preserve its reason: $(cat "$tmp/err.txt")"
   python3 -c '
 import json, sys
 doc = json.load(open(sys.argv[1]))
 assert doc["scripts"][0]["gate_skip"] is True
+assert doc["scripts"][0]["expected_gate_skip"] == "none"
+assert doc["scripts"][0]["exit"] == 1
 assert doc["summary"]["skipped_gate"] == 1
-assert doc["summary"]["failed"] == 0
+assert doc["summary"]["failed"] == 1
 ' "$json" || { rm -rf "$tmp"; fail "JSON gate_skip accounting is wrong"; }
   rm -rf "$tmp"
-  pass "gate-skip accounting is honest and non-failing"
+  pass "undeclared gate skip fails and remains honestly recorded"
+}
+
+test_declared_gate_skip_stays_successful() {
+  local tmp skip_f out json
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-declared-skip.XXXXXX")
+  skip_f="$tmp/fm-backend-cmux.test.sh"
+  out="$tmp/out.txt"
+  json="$tmp/timing.json"
+  cat >"$skip_f" <<'SH'
+#!/usr/bin/env bash
+echo "skip: cmux not found"
+exit 0
+SH
+  chmod +x "$skip_f"
+  "$RUNNER" --json "$json" "$skip_f" >"$out" 2>"$tmp/err.txt" \
+    || fail "declared optional-binary gate skip must remain successful"
+  grep -Eq '^FM_TEST_BEGIN .+ family=cmux expected_gate_skip=optional-binary$' "$out" \
+    || fail "BEGIN must record the declared optional-binary skip class"
+  grep -Eq '^FM_TEST_END .+ exit=0 duration_ms=[0-9]+ gate_skip=true$' "$out" \
+    || fail "declared gate skip must remain successful: $(grep '^FM_TEST_END' "$out")"
+  grep -q 'FM_TEST_SUMMARY total=1 failed=0 skipped_gate=1' "$out" \
+    || fail "summary must retain a successful declared gate skip: $(grep FM_TEST_SUMMARY "$out")"
+  python3 -c '
+import json, sys
+doc = json.load(open(sys.argv[1]))
+assert doc["scripts"][0]["family"] == "cmux"
+assert doc["scripts"][0]["expected_gate_skip"] == "optional-binary"
+assert doc["scripts"][0]["gate_skip"] is True
+assert doc["scripts"][0]["exit"] == 0
+assert doc["summary"]["skipped_gate"] == 1
+assert doc["summary"]["failed"] == 0
+' "$json" || { rm -rf "$tmp"; fail "declared gate-skip JSON accounting is wrong"; }
+  rm -rf "$tmp"
+  pass "declared optional-binary gate skip stays successful"
 }
 
 test_fail_on_gate_skip_token() {
@@ -347,6 +416,8 @@ test_exclude_family() {
   listed=$("$RUNNER" --list --family real-herdr-gated)
   printf '%s\n' "$listed" | grep -Fq 'tests/fm-backend-herdr-smoke.test.sh' \
     || fail "family real-herdr-gated must list smoke test"
+  printf '%s\n' "$listed" | grep -Fq 'tests/fm-cockpit-herdr-e2e.test.sh' \
+    || fail "family real-herdr-gated must list cockpit end-to-end test"
   pass "exclude-family drops the named primary family after selection"
 }
 
@@ -370,6 +441,10 @@ test_portable_shard_union_and_coverage_guard() {
     && fail "portable lanes must not include real-herdr-gated smoke"
   printf '%s\n' "$herdr" | grep -Fq 'tests/fm-backend-herdr-smoke.test.sh' \
     || fail "herdr family must include smoke"
+  printf '%s\n' "$s1" "$s2" "$serial" | grep -Fq 'tests/fm-cockpit-herdr-e2e.test.sh' \
+    && fail "portable lanes must not include cockpit end-to-end test"
+  printf '%s\n' "$herdr" | grep -Fq 'tests/fm-cockpit-herdr-e2e.test.sh' \
+    || fail "herdr family must include cockpit end-to-end test"
   out=$("$RUNNER" --check-coverage)
   assert_contains "$out" "FM_TEST_COVERAGE ok" "coverage guard success marker"
   all_count=$("$RUNNER" --list --all | wc -l | tr -d ' ')
@@ -384,6 +459,23 @@ test_portable_shard_union_and_coverage_guard() {
   [ "$first" = "tests/fm-x-mode.test.sh" ] \
     || fail "shard 1 must start with the longest proven script, got $first"
   pass "portable shard union, disjointness, and coverage guard hold"
+}
+
+test_real_cockpit_e2e_is_owned_by_required_herdr_lane() {
+  local portable herdr
+  portable=$(
+    {
+      "$RUNNER" --list --lane portable-parallel-1
+      "$RUNNER" --list --lane portable-parallel-2
+      "$RUNNER" --list --lane portable-serial
+    } | LC_ALL=C sort -u
+  )
+  herdr=$("$RUNNER" --list --lane real-herdr-gated)
+  printf '%s\n' "$portable" | grep -Fxq 'tests/fm-cockpit-herdr-e2e.test.sh' \
+    && fail "real cockpit end-to-end test must not run in a portable lane that can skip Herdr"
+  printf '%s\n' "$herdr" | grep -Fxq 'tests/fm-cockpit-herdr-e2e.test.sh' \
+    || fail "required Herdr lane does not own the real cockpit end-to-end test"
+  pass "required Herdr lane exclusively owns the real cockpit end-to-end test"
 }
 
 test_portable_serial_shards_partition_the_serial_lane() {
@@ -616,15 +708,57 @@ SH
   grep -q 'FM_TEST_SUMMARY total=1 failed=1' "$tmp/out5" \
     || { rm -rf "$tmp"; fail "parallel stderr hard-fail summary wrong: $(grep FM_TEST_SUMMARY "$tmp/out5")"; }
 
-  "$runner" --jobs 2 "$d" >"$tmp/out6" 2>"$tmp/err6" \
-    || { rm -rf "$tmp"; fail "ordinary parallel stderr gate skip must remain successful"; }
-  grep -Eq '^FM_TEST_END .+ exit=0 duration_ms=[0-9]+ gate_skip=true$' "$tmp/out6" \
+  set +e
+  "$runner" --jobs 2 "$d" >"$tmp/out6" 2>"$tmp/err6"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] \
+    || { rm -rf "$tmp"; fail "parallel undeclared gate skip must fail"; }
+  grep -Eq '^FM_TEST_END .+ exit=1 duration_ms=[0-9]+ gate_skip=true$' "$tmp/out6" \
     || { rm -rf "$tmp"; fail "parallel stderr gate skip was not recorded"; }
-  grep -q 'FM_TEST_SUMMARY total=1 failed=0 skipped_gate=1' "$tmp/out6" \
+  grep -q 'FM_TEST_SUMMARY total=1 failed=1 skipped_gate=1' "$tmp/out6" \
     || { rm -rf "$tmp"; fail "parallel stderr skip summary wrong: $(grep FM_TEST_SUMMARY "$tmp/out6")"; }
+  grep -Fq 'undeclared gate skip' "$tmp/err6" \
+    || { rm -rf "$tmp"; fail "parallel undeclared gate skip explanation missing"; }
 
   rm -rf "$tmp"
   pass "jobs scheduler runs proven scripts; failure propagates; non-proven refused"
+}
+
+test_herdr_ci_family_run_has_a_step_timeout() {
+  # The required Herdr lane's hang tripwire is the family-run *step* bound, not
+  # the 75-minute job cap. The checker parses YAML structure so nested keys
+  # cannot masquerade as the named step contract.
+  "$ROOT/bin/fm-herdr-ci-timeout-check.mjs" "$ROOT/.github/workflows/ci.yml" \
+    || fail "could not verify tests-herdr timeouts from ci.yml"
+  pass "Herdr CI family-run step times out at 20 min under a 75 min job backstop"
+}
+
+test_herdr_ci_nested_with_name_is_not_a_step() {
+  local tmp workflow out rc
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-herdr-timeout.XXXXXX")
+  workflow="$tmp/ci.yml"
+  out="$tmp/out"
+  cat > "$workflow" <<'YAML'
+jobs:
+  tests-herdr:
+    timeout-minutes: 75
+    steps:
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Run real-Herdr family (serial, required)
+          timeout-minutes: 20
+YAML
+  set +e
+  "$ROOT/bin/fm-herdr-ci-timeout-check.mjs" "$workflow" >"$out" 2>&1
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] \
+    || { rm -rf "$tmp"; fail "nested with.name must not satisfy the family-run step contract"; }
+  grep -Fq 'missing step named Run real-Herdr family (serial, required)' "$out" \
+    || { rm -rf "$tmp"; fail "nested with.name refusal was not explicit: $(cat "$out")"; }
+  rm -rf "$tmp"
+  pass "nested with.name cannot masquerade as the Herdr family-run step"
 }
 
 test_aggregate_json() {
@@ -671,18 +805,23 @@ assert len(doc["scripts"])==3
 
 test_list_all_exact_suite_coverage
 test_family_selection
+test_optional_gate_family_declarations
 test_single_script_selection
 test_changed_file_selection_is_conservative
 test_changed_dependency_selection_and_unmapped_failure
 test_empty_selection_emits_summary
 test_timing_markers_and_json
 test_aggregate_exit_behavior
-test_gate_skip_accounting
+test_undeclared_gate_skip_fails
+test_declared_gate_skip_stays_successful
 test_fail_on_gate_skip_token
 test_exclude_family
 test_portable_shard_union_and_coverage_guard
+test_real_cockpit_e2e_is_owned_by_required_herdr_lane
 test_portable_serial_shards_partition_the_serial_lane
 test_portable_serial_shard_lane_refusals
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
+test_herdr_ci_family_run_has_a_step_timeout
+test_herdr_ci_nested_with_name_is_not_a_step
 test_aggregate_json

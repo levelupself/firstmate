@@ -18,15 +18,26 @@ A post-teardown visual review can complete against the surviving report and dura
 It accepts `--none` as an explicit semantic inventory result, not as inferred absence.
 It verifies every listed identity against tasks-axi before recording completion.
 For an open keyed status decision, it appends a `captain-held [key=<key>]: ...` transfer event only after the matching backlog hold is durable.
-`bin/fm-classify-lib.sh` recognizes that transfer as closing the live status copy without claiming that the captain has answered it.
+The pure status fold cannot verify that separate backlog state, so `bin/fm-classify-lib.sh` treats the event only as parking and keeps the live status decision open until an explicit resolution.
 
 Scout teardown calls the script's read-only `verify` subcommand after checking for the report and before removing any source state.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
-The `resolve` subcommand requires a decision file and at least one existing dependent task whose structured `blocked-by` edge points to the hold.
-It records the decision digest and routed task identities as a retry identity in the hold body, clears each dependency edge through tasks-axi, and marks the hold Done only after those writes succeed.
-An exact retry can finish a partial routing operation, while a changed decision or routed-task set is rejected.
-A failed intermediate step leaves the hold open.
+The `resolve` and `decline` subcommands close active holds, while `repair` attests a hold already closed outside the script.
+All three require a non-empty captain decision file and record the same resolution block in the hold body with the decision digest, routed identities, and a `Resolution mode:` naming the path.
+An exact retry is idempotent, while a changed decision or, for `resolve`, a changed routed-task set is rejected.
+
+The `resolve` subcommand is the routed path and additionally requires at least one existing dependent task whose structured `blocked-by` edge points to the hold.
+It clears each dependency edge through tasks-axi and marks the hold Done only after those writes succeed.
+An exact retry can finish a partial routing operation, and a failed intermediate step leaves the hold open.
+
+The `decline` subcommand closes a hold whose captain answer routes no follow-up work, recording `(none)` as the routed identities.
+It refuses while any task in the same backlog is still blocked by the hold, because releasing routed work without recording it is `resolve`'s job.
+Every candidate found in the listing prefilter is confirmed against its own structured record before the refusal is reported.
+
+The `repair` subcommand records the resolution block on a hold that was already closed outside the script, such as by a direct `tasks-axi done`, so an origin whose decision was genuinely answered stops failing `verify`.
+It refuses a hold that is still actively held, never reopens a closed hold, and never clears a dependency edge, so an unanswered decision keeps blocking teardown until the captain's word closes it.
+It also requires the identity to carry the captain-hold provenance that tasks-axi preserves through a close, so an ordinary captain-kind task that was never held cannot be repaired into a resolved decision.
 
 ## Structured read surfaces
 
@@ -44,11 +55,24 @@ The projection remains read-only and does not inspect historical prose.
 Verification date: 2026-07-14.
 Additional quoted `blocked_by` regression verification date: 2026-07-17.
 Plural blocker-readiness and mixed-home projection verification date: 2026-07-22.
+Unrouted close-path verification date: 2026-08-13.
+Status-fold parking safety verification date: 2026-08-17.
 
 The focused end-to-end regression uses only synthetic `sample` identities and decision text.
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
 The initial Bearings snapshot correctly has no open decision, and the new teardown gate refuses to erase the source.
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
+
+Three further regressions cover the close paths that route no work.
+A declined decision closes with a recorded answer, satisfies `verify`, leaves Bearings' Captain's Call, and is refused while the hold still blocks routed work.
+A hold closed by a direct `tasks-axi done` reproduces the shape that fails `verify` and blocks teardown, and `repair` with a captain decision file clears both.
+An unanswered decision still blocks completion and teardown, and neither `decline` nor `repair` can close a hold that is still actively held or supply an answer with a missing or empty decision file.
+`repair` also refuses a closed captain-kind task that was never held for the captain.
+
+Two status-fold regressions reproduce a keyed `needs-decision` followed by a keyed `captain-held` parking line.
+The fleet-wide OPEN DECISIONS drain keeps the decision visible, and the cursor-backed path rebuilds a version-4 cache that had persisted the older hidden result.
+The pre-fix four-way run produced `hidden`, `visible`, `hidden`, `visible` for needs-decision/captain-held positions before-colon/before-colon, before-colon/note-head, note-head/before-colon, and note-head/note-head respectively.
+That result established that the `captain-held` key position controlled closure under the old fold, independently of the `needs-decision` key position.
 
 The final verification commands and their exact summarized outputs follow.
 
@@ -56,6 +80,9 @@ The final verification commands and their exact summarized outputs follow.
 $ bash tests/fm-decision-hold-lifecycle.test.sh
 ok - report-only unresolved decision is reproduced and completion refuses before loss
 ok - non-forced scout teardown always requires durable inventory verification
+ok - a declined decision closes with a recorded answer and no routed work
+ok - a decision closed outside the script is repairable and then clears teardown
+ok - an unanswered decision still blocks completion and resists both unrouted close paths
 ok - captain holds are idempotent, distinct, teardown-safe, Bearings-visible, and durably routed before close
 ok - completion and verification validate origins before constructing paths
 ok - ended visual review follows the same decision-hold completion owner
@@ -66,28 +93,36 @@ ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuin
 
 $ bash tests/fm-fleet-snapshot-view.test.sh
 ok - backlog normalization takes readiness, holds, and blockers from tasks-axi
-ok - durable captain-held transfer closes the duplicate live status decision
+ok - captain-held parking preserves the unresolved live status decision
 ok - snapshot parses tasks-axi rows and respects operational overrides
 ok - fleet snapshot and panel ready sets agree exactly with tasks-axi
 
+$ bash tests/fm-wake-drain-open-decisions.test.sh
+ok - an explicit resolved [key=X] closes the keyed decision
+ok - all four keyed parking position combinations leave the decision visible
+
+$ bash tests/fm-wake-drain-open-decisions-cursor.test.sh
+ok - a version-4 fold cache is rebuilt so captain-held parking cannot hide a decision
+ok - a buried decision survives many growing drains with bounded read cost, and resolution durably clears it at bounded cost too
+
 $ bash tests/fm-bearings-snapshot.test.sh
 ok - a completed scout with decision-like report prose is a pointer, not pending
+ok - an authoritative captain hold surfaces end-to-end
 ok - action-free items (working/done/queued/landed) do not leak into Captain's Call
-ok - mixed secondmate roles, partial state, and captain readiness project independently
 ok - main and secondmate captain actionability use the same blocker readiness
 
 $ bash tests/fm-brief.test.sh
 ok - fm-brief.sh: investigation and visual-review completions load the shared decision policy
 
 $ bash tests/fm-teardown.test.sh
-all teardown safety cases passed
+ok - the run abort and the leaked-process reap both complete before the destructive worktree return
 
 $ bin/fm-lint.sh
 fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
 
+$ bin/fm-doc-audience-check.sh
+fm-doc-audience-check: ok surfaces=67 local_links=243
+
 $ git diff --check
 (no output)
-
-$ for test_script in tests/*.test.sh; do bash "$test_script"; done
-ALL 71 TEST SCRIPTS PASSED
 ```

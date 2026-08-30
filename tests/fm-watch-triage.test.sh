@@ -229,9 +229,21 @@ test_classifier_primitives() {
   open=$(status_open_decisions "$state/parked-decision.status")
   printf '%s' "$open" | grep -F $'default\tneeds-decision\tchoose a release route' >/dev/null \
     || fail "worker captain-held parking closed the still-open decision"
+  printf 'needs-decision [key=x]: choose a release route\ncaptain-held [key=x]: parked at the review gate\n' > "$state/keyed-parked-decision.status"
+  open=$(status_open_decisions "$state/keyed-parked-decision.status")
+  printf '%s' "$open" | grep -F $'x\tneeds-decision\tchoose a release route' >/dev/null \
+    || fail "keyed worker captain-held parking silently closed the still-open decision"
+  printf 'captain-held: [key=x] parked at the review gate\n' >> "$state/keyed-parked-decision.status"
+  open=$(status_open_decisions "$state/keyed-parked-decision.status")
+  printf '%s' "$open" | grep -F $'x\tneeds-decision\tchoose a release route' >/dev/null \
+    || fail "note-head keyed captain-held parking closed the still-open decision"
   printf 'captain-held [key=default]: tracked by parked-decision-default\n' >> "$state/parked-decision.status"
   open=$(status_open_decisions "$state/parked-decision.status")
-  [ -z "$open" ] || fail "verified keyed captain-held transfer did not close the decision: $open"
+  printf '%s' "$open" | grep -F $'default\tneeds-decision\tchoose a release route' >/dev/null \
+    || fail "captain-held backlog bookkeeping closed the unresolved status decision"
+  printf 'resolved [key=default]: captain chose the release route\n' >> "$state/parked-decision.status"
+  open=$(status_open_decisions "$state/parked-decision.status")
+  [ -z "$open" ] || fail "explicit keyed resolution did not close the decision: $open"
   cat > "$state/activity.status" <<'EOF'
 working [key=phase7]: Phase 7 started
 working [key=phase6]: Phase 6 started

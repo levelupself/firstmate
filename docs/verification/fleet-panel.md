@@ -4,8 +4,9 @@ Audience: maintainer verification.
 
 This record holds reusable evidence for the fleet panel projection and watch-mode repaint guarantees.
 The implementation is shared by `bin/fm-fleet-view.sh` and `bin/fm-cockpit.sh`, while `tests/fm-fleet-snapshot-view.test.sh` owns automated readiness agreement, section ordering, height truncation, independent section rendering, and residual-line coverage.
+`tests/fm-fleet-view-project-groups.test.sh` owns project grouping, fair per-project truncation, distinguishing id tails, and the stable no-repository group.
 `tests/fm-fleet-view-pane-fit-smoke.test.sh` owns the real-pane fit that a `LINES`-driven fixture cannot reach, because supplying `LINES` takes the explicit-override branch and never measures anything.
-`tests/fm-cockpit.test.sh` owns the generated Herdr pane-command guarantee that every section watcher resolves through the durable Firstmate home rather than the launcher's checkout.
+`tests/fm-cockpit.test.sh` owns the generated Herdr pane-command guarantee that every section watcher resolves through the tracked code root while receiving the operational home separately through `FM_HOME`.
 
 The read-only snapshot calls `tasks-axi list` and `tasks-axi ready` once each for the primary home and once each for every readable registered secondmate home during a redraw.
 The two primary-home calls measured about 92 ms together locally, so the redraw cost scales as `2 * (1 + readable secondmate homes)` tasks-axi invocations.
@@ -62,6 +63,23 @@ done
 
 The observed pane changed directly between complete frames without a visible blank refresh.
 
+## Project groups and fair row limits
+
+Verified on 2026-08-29 with the production fleet renderer against a three-project snapshot fixture.
+
+```sh
+bash tests/fm-fleet-view-project-groups.test.sh
+```
+
+The eleven-row decision pane showed Firstmate, mtg, and psychogenesis headers together.
+The noisy psychogenesis group received the same two-row cap as its peers, reported four hidden rows on its own header, and preserved the `alt-cost-rule` and `communal-zone-lifecycle` tails from ids with a long shared prefix.
+The quiet mtg group retained its only row.
+The same executable check covered READY, IN FLIGHT, and BLOCKED grouping and assigned a record with no repository value to the stable `No repository` group.
+
+```text
+ok - narrow fleet decisions group three projects, preserve id tails, and truncate fairly
+```
+
 ## Stable generated watcher command
 
 Verified on 2026-08-13 through both the isolated Herdr cockpit command path and the affected real Herdr frame.
@@ -70,12 +88,12 @@ Verified on 2026-08-13 through both the isolated Herdr cockpit command path and 
 bash tests/fm-cockpit.test.sh
 ```
 
-The executable regression created the default three-pane region from a launcher checkout distinct from the durable home, captured the commands accepted by the fake Herdr CLI, and observed a home-relative watcher for every configured section with no launcher-checkout path.
+The executable regression created the default three-pane region with a tracked code root distinct from an isolated operational home, captured the commands accepted by the fake Herdr CLI, and observed a tracked-root watcher and geometry helper for every configured section with no operational-home code path.
 The result repeated on every isolated run with the same home and launcher inputs.
 In the real frame, panes `w5:p3B` (`waiting`), `w5:p3C` (`ready`), and `w5:p3D` (`in-flight,blocked`) reached bash prompts after restart because `/home/fungiman/.treehouse/firstmate-5ccb57/4/firstmate/.lab/tools/uvbin/env` no longer existed.
 That retained lab still contained `uvcache` but no `uvbin`, tying the failure to the captured disposable-checkout executable path rather than loss of the entire lab.
-From the durable home, running `hash -r` followed by `bin/fm-fleet-view.sh --watch --section <names>` in those same panes restored all three immediately without changing layout or focus.
-Replacing only the unavailable captured path with the durable home-relative command supplied the counterfactual, while clearing the shell command cache before the restoration disconfirmed cached resolution as the cause.
+Running `hash -r` followed by the stable tracked root's `bin/fm-fleet-view.sh --watch --section <names>` in those same panes restored all three immediately without changing layout or focus.
+Replacing only the unavailable captured path with the stable tracked-root command supplied the counterfactual, while clearing the shell command cache before the restoration disconfirmed cached resolution as the cause.
 
 ```text
 ok - the default region is three equal decisions-first panes announced once before they are applied

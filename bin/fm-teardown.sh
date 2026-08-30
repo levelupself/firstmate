@@ -155,6 +155,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-lock-lib.sh
 . "$SCRIPT_DIR/fm-lock-lib.sh"
+# shellcheck source=bin/fm-classify-lib.sh
+. "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
@@ -218,6 +220,30 @@ FM_LOCK_LOG_PREFIX=teardown
 
 META="$STATE/$ID.meta"
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
+
+teardown_meta_set_once_locked() { # <key> <value>
+  local key=$1 value=$2 tmp
+  grep -q "^${key}=" "$META" 2>/dev/null && return 0
+  tmp=$(mktemp "$STATE/.fm-teardown-meta.XXXXXX") || return 1
+  if ! awk -F= -v key="$key" '$1 != key' "$META" > "$tmp" \
+    || ! printf '%s=%s\n' "$key" "$value" >> "$tmp" \
+    || ! chmod 0600 "$tmp" \
+    || ! mv -f -- "$tmp" "$META"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+teardown_meta_replace_locked() { # <key> [value]
+  local key=$1 value=${2-} tmp
+  tmp=$(mktemp "$STATE/.fm-teardown-meta.XXXXXX") || return 1
+  if ! awk -F= -v key="$key" '$1 != key' "$META" > "$tmp" \
+    || ! { [ -z "$value" ] || printf '%s=%s\n' "$key" "$value" >> "$tmp"; } \
+    || ! chmod 0600 "$tmp" \
+    || ! mv -f -- "$tmp" "$META"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
 META_LOCK=$(fm_meta_lock_path "$META") || exit 1
 fm_lock_acquire_wait "$META_LOCK"
 META_LOCK_HELD=1
@@ -395,6 +421,7 @@ remote_secondmate_teardown() {
   tmp="$SECONDMATE_REG.tmp.$$"
   grep -vE "^- $ID( |$)" "$SECONDMATE_REG" > "$tmp" || true
   mv -f -- "$tmp" "$SECONDMATE_REG"
+  status_retire_presentation_task "$STATE" "$ID" || return 1
   rm -f -- "$STATE/$ID.status" "$STATE/$ID.meta" "$STATE/$ID.turn-ended" \
     "$STATE/.$ID.open-decisions-cursor"
   printf 'teardown %s complete (remote %s:%s)\n' "$ID" "$remote_host" "$remote_home"
@@ -2284,7 +2311,8 @@ cleanup_firstmate_home_children() {
       child_busy_gen=$(cat "$sub_state/$child_id.busy-gen" 2>/dev/null || true)
     fi
     retire_busy_state "$sub_state" "$child_id" "$child_busy_gen" || return 1
-    rm -f "$sub_state/$child_id.status" "$sub_state/$child_id.turn-ended" \
+    status_retire_presentation_task "$sub_state" "$child_id" || return 1
+    rm -f "$sub_state/$child_id.turn-ended" \
       "$sub_state/$child_id.meta" "$sub_state/$child_id.pi-ext.ts" \
       "$sub_state/$child_id.grok-turnend-token" "$sub_state/$child_id.kimi-turnend-token" \
       "$sub_state/$child_id.muse-session" "$sub_state/$child_id.muse-session-current" \
@@ -2434,12 +2462,43 @@ if [ "$BACKEND" = herdr ]; then
 fi
 
 # Snapshot codeburn usage before the worktree is released back to the pool or
-# removed: fm-task-usage.sh correlates purely by worktree path + time range, so a
-# concurrent spawn that reclaims this worktree after release could otherwise have
-# its early activity double-counted into this task's final usage.json.
+# removed: fm-task-usage.sh resolves the worktree to codeburn's reported project
+# key and subtracts its pre-launch baseline, so a concurrent spawn that reclaims
+# this worktree after release could otherwise have its early activity counted in
+# this task's final usage.json.
 if [ "$KIND" != secondmate ]; then
   "$FM_ROOT/bin/fm-task-usage.sh" "$ID" --snapshot \
     || echo "teardown: warning: could not snapshot codeburn usage for $ID" >&2
+fi
+
+# This is the last non-destructive point at which volatile task metadata and
+# the final durable usage snapshot coexist. Stamp once, capture the raw row,
+# and rebuild before returning the worktree or deleting task state.
+if [ "$KIND" != secondmate ]; then
+  if [ "$FORCE" = --force ]; then
+    TEARDOWN_OUTCOME=forced
+  elif [ "$KIND" = scout ]; then
+    TEARDOWN_OUTCOME=scout-complete
+  elif grep -q '^local_landed_at=' "$META"; then
+    TEARDOWN_OUTCOME=local-landed
+  elif grep -q '^merged_at=' "$META"; then
+    TEARDOWN_OUTCOME='pr-merged'
+  else
+    TEARDOWN_OUTCOME=
+  fi
+  teardown_meta_set_once_locked teardown_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    || { echo "error: could not stamp deterministic teardown time for $ID" >&2; exit 1; }
+  if [ -n "$TEARDOWN_OUTCOME" ]; then
+    teardown_meta_replace_locked outcome "$TEARDOWN_OUTCOME" \
+      || { echo "error: could not stamp deterministic teardown outcome for $ID" >&2; exit 1; }
+    "$FM_ROOT/bin/fm-effort-store.sh" capture "$ID" --outcome "$TEARDOWN_OUTCOME" \
+      || { echo "error: could not capture deterministic effort for $ID; retaining task state" >&2; exit 1; }
+  else
+    teardown_meta_replace_locked outcome \
+      || { echo "error: could not preserve missing teardown outcome for $ID" >&2; exit 1; }
+    "$FM_ROOT/bin/fm-effort-store.sh" capture "$ID" \
+      || { echo "error: could not capture deterministic effort for $ID; retaining task state" >&2; exit 1; }
+  fi
 fi
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
@@ -2572,7 +2631,8 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 [ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
-rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
+status_retire_presentation_task "$STATE" "$ID" || exit 1
+rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
   "$STATE/$ID.muse-session-current" "$STATE/$ID.cursor-session" \
@@ -2580,6 +2640,10 @@ rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.control-relaunch" "$STATE/$ID.control-relaunch.meta-prior" \
   "$STATE/$ID.control-relaunch.brief-prior" "$STATE/$ID.control-relaunch.note" \
   "$STATE/usage-cache/$ID.json"
+if [ "$KIND" != secondmate ]; then
+  "$FM_ROOT/bin/fm-effort-store.sh" rebuild \
+    || echo "teardown: warning: could not finalize deterministic effort for $ID" >&2
+fi
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then

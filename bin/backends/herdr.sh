@@ -2259,8 +2259,15 @@ fm_backend_herdr_cockpit_binding_live() {  # <state-dir> <home> [<session>]
 # keeps the original check exactly: a version 2 banner was launched before the
 # flag existed and is not made suspicious by the absence of an argument it never
 # had.
+#
+# Strict painter ownership proves both identities from live process properties:
+# the exact tracked fleet-view executable in argv and the pane's authoritative
+# foreground cwd resolved against the operational home. The cwd is durable
+# across the env launcher that Herdr uses even though FM_HOME itself is not
+# retained in the foreground process argv.
 fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane> [<home>] [<sections>] [<identity>]
-  local session=$1 pane=$2 home=${3:-} sections=${4:-} identity=${5:-compatible} info
+  local session=$1 pane=$2 home=${3:-} sections=${4:-} identity=${5:-compatible} info pane_info
+  local process_home exact_home exact_process_home
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || {
     printf 'no-process-info'
     return 0
@@ -2274,8 +2281,24 @@ fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane> [<home>] [<sections
     return 0
   fi
   if [ "$identity" = strict ]; then
-    if printf '%s' "$info" | jq -e \
-      --arg script "$home/bin/fm-fleet-view.sh" \
+    exact_home=$(fm_backend_herdr_cockpit_home_identity "$home") || {
+      printf 'no-fleet-process'
+      return 0
+    }
+    pane_info=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null) || {
+      printf 'no-fleet-process'
+      return 0
+    }
+    process_home=$(printf '%s' "$pane_info" | jq -r --arg pane "$pane" '
+      select(.result.pane.pane_id == $pane)
+      | .result.pane.foreground_cwd // empty
+    ' 2>/dev/null) || process_home=
+    exact_process_home=$(fm_backend_herdr_cockpit_home_identity "$process_home") || {
+      printf 'no-fleet-process'
+      return 0
+    }
+    if [ "$exact_process_home" = "$exact_home" ] && printf '%s' "$info" | jq -e \
+      --arg script "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" \
       --arg sections "$sections" '
       def words: (.argv // (if (.argv0 // "") == "" then [] else [.argv0] end));
       any(.result.process_info.foreground_processes[]?;
@@ -2756,15 +2779,17 @@ fm_backend_herdr_cockpit_create_fleet_panes() {  # <session> <workspace> <tab> <
     [ -n "$spec" ] || continue
     index=$((index + 1))
     pane=$(printf '%s' "$created" | cut -d, -f"$index")
-    # Each split above fixes its cwd at the durable home. Resolve both watcher
-    # executables through that home so a disposable launcher checkout is never captured.
+    # Each split above fixes its cwd and private state at the operational home,
+    # while executables still come from the tracked code root that loaded this
+    # adapter. Never infer code paths from FM_HOME: supported isolated homes do
+    # not contain bin/.
     if ! fm_backend_herdr_cli "$session" pane rename "$pane" "firstmate-fleet-$spec" >/dev/null 2>&1 \
        || ! fm_backend_herdr_cli "$session" pane run "$pane" \
          env "FM_HOME=$home" \
          "FM_HERDR_LAB_HELPER=${FM_COCKPIT_LAB_HELPER:-}" \
          "FM_HERDR_LAB_SESSION=${FM_COCKPIT_LAB_SESSION:-}" \
-         "$home/bin/fm-fleet-view.sh" \
-         --geometry-command "$home/bin/$FM_BACKEND_HERDR_COCKPIT_GEOMETRY_SCRIPT" \
+         "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" \
+         --geometry-command "$FM_BACKEND_HERDR_ROOT/bin/$FM_BACKEND_HERDR_COCKPIT_GEOMETRY_SCRIPT" \
          --watch --section "$spec" >/dev/null 2>&1; then
       fm_backend_herdr_cockpit_report_fleet_rollback "$session" "$workspace" "$tab" "$created" \
         "could not launch the fleet banner" || true
@@ -3275,6 +3300,16 @@ EOF
     if [ -z "$pane_id" ] || [ -z "$actual_tab" ] || [ "$actual_workspace" != "$workspace" ] \
       || [ "$pane_workspace" != "$workspace" ] || [ "$pane_tab" != "$actual_tab" ] || [ "$actual_tab" = "$tab" ]; then
       echo "error: herdr cockpit peer tab returned an incomplete or cross-frame pane identity" >&2
+      return 1
+    fi
+    # Herdr applies tab create's label to the tab but leaves its root pane
+    # unlabelled. The pane label is the identity used by cockpit ownership,
+    # rotation, focus placement, and panel rendering, so publish it explicitly.
+    if ! fm_backend_herdr_cli "$session" pane rename "$pane_id" "$label" >/dev/null 2>&1; then
+      if ! fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane_id"; then
+        echo "COCKPIT: NOT-RESTORED: could not label new herdr cockpit peer pane '$label'; added peer pane $pane_id could not be removed, and the screen still carries it for direct cleanup." >&2
+      fi
+      echo "error: could not label new herdr cockpit peer pane '$label'" >&2
       return 1
     fi
   fi

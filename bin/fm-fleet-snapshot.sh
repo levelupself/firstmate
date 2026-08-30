@@ -640,13 +640,13 @@ usage_json_for_id() {  # <id> <harness> <collected-dir>
   if [ -n "$dir" ] && [ -f "$dir/$id.json" ]; then
     raw=$(cat "$dir/$id.json" 2>/dev/null || true)
   fi
-  if printf '%s' "$raw" | jq -e 'type == "object" and .schema == "fm-task-usage.v1"' >/dev/null 2>&1; then
+  if printf '%s' "$raw" | jq -e 'type == "object" and (.schema == "fm-task-usage.v1" or .schema == "fm-task-usage.v2")' >/dev/null 2>&1; then
     printf '%s' "$raw"
     return 0
   fi
   if [ -f "$cache" ]; then
     cached=$(cat "$cache" 2>/dev/null || true)
-    if printf '%s' "$cached" | jq -e 'type == "object" and .schema == "fm-task-usage.v1"' >/dev/null 2>&1; then
+    if printf '%s' "$cached" | jq -e 'type == "object" and (.schema == "fm-task-usage.v1" or .schema == "fm-task-usage.v2")' >/dev/null 2>&1; then
       printf '%s' "$cached" | jq -c '. + {stale:true}'
       return 0
     fi
