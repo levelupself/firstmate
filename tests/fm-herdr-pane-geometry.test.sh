@@ -35,11 +35,12 @@ case "${1:-} ${2:-}" in
     case "${FM_TEST_LAYOUT_STATE:-live}" in
       live)
         jq -cn --arg pane "${HERDR_PANE_ID:?}" \
-          '{result:{layout:{panes:[{pane_id:$pane,rect:{width:45,height:20}}]}}}'
+          '{result:{layout:{panes:[{pane_id:$pane,rect:{x:0,y:0,width:45,height:20}}]}}}'
         ;;
       omitted)
-        jq -cn '{result:{layout:{panes:[{pane_id:"w1:p9",rect:{width:45,height:20}}]}}}'
+        jq -cn '{result:{layout:{panes:[{pane_id:"w1:p9",rect:{x:0,y:0,width:45,height:20}}]}}}'
         ;;
+      incomplete) jq -cn '{result:{layout:{panes:[{}]}}}' ;;
       malformed)
         printf '%s\n' '{"result":{"layout":'
         ;;
@@ -93,6 +94,13 @@ test_malformed_layout_is_transient() {
   pass "a malformed authoritative layout read is classified as transient"
 }
 
+test_incomplete_layout_inventory_is_transient() {
+  local rc=0
+  run_probe "$PANE_HOME" incomplete >/dev/null 2>&1 || rc=$?
+  expect_code 75 "$rc" "an incomplete pane inventory must remain transient"
+  pass "an incomplete layout inventory is classified as transient"
+}
+
 test_malformed_pane_get_is_transient() {
   local rc=0
   run_probe "$PANE_HOME" live malformed >/dev/null 2>&1 || rc=$?
@@ -119,6 +127,7 @@ test_missing_cwd_is_permanent
 test_healthy_pane_layout_failure_is_transient
 test_successful_layout_omitting_exact_pane_is_permanent
 test_malformed_layout_is_transient
+test_incomplete_layout_inventory_is_transient
 test_malformed_pane_get_is_transient
 test_wrong_pane_identity_is_transient
 test_incomplete_pane_get_is_transient

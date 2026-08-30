@@ -9,13 +9,31 @@ TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-public-followup-herdr.XXXXXX")
 FAKEBIN="$TMP_ROOT/fakebin"
 CLEANED=0
 
+cleanup_targets() {
+  local helper=$1 session=$2 fixture=$3
+  "$helper" teardown "$session" || return $?
+  rm -rf "$fixture"
+}
+
 cleanup() {
-  local status=0
   [ "$CLEANED" -eq 0 ] || return 0
+  cleanup_targets "$LAB_HELPER" "$SESSION" "$TMP_ROOT" || return $?
   CLEANED=1
-  "$LAB_HELPER" teardown "$SESSION" || status=$?
-  rm -rf "$TMP_ROOT"
-  return "$status"
+}
+
+test_failed_teardown_preserves_fixture() {
+  local fixture="$TMP_ROOT/teardown-failure-fixture" helper="$TMP_ROOT/failing-lab-helper" rc=0
+  mkdir -p "$fixture"
+  printf '%s\n' diagnostic > "$fixture/evidence"
+  cat > "$helper" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = teardown ] || exit 2
+exit 19
+SH
+  chmod +x "$helper"
+  cleanup_targets "$helper" fm-lab-cleanup-test "$fixture" || rc=$?
+  [ "$rc" -eq 19 ] || fail "the teardown-failure fixture returned $rc instead of 19"
+  [ -f "$fixture/evidence" ] || fail "failed teardown removed diagnostic fixture state"
 }
 
 on_exit() {
@@ -38,6 +56,7 @@ command -v herdr >/dev/null 2>&1 || { echo "skip: herdr not found"; exit 0; }
 command -v jq >/dev/null 2>&1 || fail "jq not found"
 
 trap on_exit EXIT
+test_failed_teardown_preserves_fixture
 "$LAB_HELPER" provision "$SESSION" || fail "could not provision the guarded Herdr lab"
 lab() { "$LAB_HELPER" run "$SESSION" "$@"; }
 

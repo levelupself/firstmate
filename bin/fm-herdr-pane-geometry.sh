@@ -48,7 +48,21 @@ PANE_CWD=$(printf '%s' "$PANE_OUT" | jq -r --arg pane "$PANE" '
 
 OUT=$(herdr_call pane layout --pane "$PANE") || exit 75
 
-printf '%s' "$OUT" | jq -e '.result.layout.panes | type == "array"' >/dev/null 2>&1 || exit 75
+printf '%s' "$OUT" | jq -e '
+  .result.layout.panes
+  | type == "array"
+    and all(.[ ];
+      type == "object"
+      and (.pane_id | type) == "string"
+      and (.pane_id | length) > 0
+      and (.rect | type) == "object"
+      and (.rect.x | type) == "number"
+      and (.rect.y | type) == "number"
+      and (.rect.width | type) == "number"
+      and (.rect.height | type) == "number"
+      and .rect.width > 0
+      and .rect.height > 0)
+' >/dev/null 2>&1 || exit 75
 printf '%s' "$OUT" | jq -e --arg pane "$PANE" '
   any(.result.layout.panes[]; .pane_id == $pane)
 ' >/dev/null 2>&1 || exit 64
