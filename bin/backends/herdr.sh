@@ -2308,24 +2308,17 @@ fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane> [<home>] [<sections
     }
     if [ "$exact_process_home" = "$exact_home" ] && printf '%s' "$info" | jq -e \
       --arg script "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" \
-      --arg geometry "$FM_BACKEND_HERDR_COCKPIT_GEOMETRY_SCRIPT" \
-      --arg sections "$sections" '
+      '
       def words: (.argv // (if (.argv0 // "") == "" then [] else [.argv0] end));
       any(.result.process_info.foreground_processes[]?;
         (words | index($script)) != null
-        and (words | index("--watch")) != null
-        and ((words | index("--geometry-command")) as $at
-             | $at != null
-               and ((words[$at + 1] // "") | split("/") | last) == $geometry)
-        and ($sections == ""
-             or ((words | index("--section")) as $at
-                 | $at != null and words[$at + 1] == $sections)))
+        and (words | index("--watch")) != null)
     ' >/dev/null 2>&1; then
-      printf 'live'
+      :
     else
       printf 'no-fleet-process'
+      return 0
     fi
-    return 0
   fi
   if ! printf '%s' "$info" | jq -e \
     --arg script "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" \
@@ -2415,7 +2408,7 @@ fm_backend_herdr_cockpit_binding_diagnose() {  # <state-dir> <home> [<session>]
       fleet=$(fm_backend_herdr_cockpit_fleet_state \
         "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$pane" \
         "$FM_BACKEND_HERDR_COCKPIT_HOME" \
-        "$(fm_backend_herdr_cockpit_fleet_pane_section "$index")")
+        "$(fm_backend_herdr_cockpit_fleet_pane_section "$index")" strict)
       if [ "$fleet" != live ]; then
         reason="fleet-$fleet"
       elif ! fm_backend_herdr_cockpit_pane_matches \

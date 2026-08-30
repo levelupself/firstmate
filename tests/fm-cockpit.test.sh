@@ -128,9 +128,20 @@ case "${1:-} ${2:-}" in
     if [ -z "$row" ]; then
       printf '%s\n' '{"error":{"code":"pane_not_found"}}'
     else
+      workspace=$(pane_field "$row" 4)
+      cwd=${FM_FAKE_FLEET_CWD:-}
+      if [ -z "$cwd" ]; then
+        fixture_root=$(dirname "$(dirname "$state")")
+        case "$workspace" in
+          w1) cwd="$fixture_root/home" ;;
+          w2) cwd="$fixture_root/second-home" ;;
+          w3) cwd="$fixture_root/layout-home" ;;
+        esac
+      fi
       jq -n --arg id "$(pane_field "$row" 1)" --arg label "$(pane_field "$row" 2)" \
-        --arg tab "$(pane_field "$row" 3)" --arg workspace "$(pane_field "$row" 4)" \
-        '{result:{pane:{pane_id:$id,label:$label,tab_id:$tab,workspace_id:$workspace}}}'
+        --arg tab "$(pane_field "$row" 3)" --arg workspace "$workspace" --arg cwd "$cwd" \
+        '{result:{pane:{pane_id:$id,label:$label,tab_id:$tab,workspace_id:$workspace,
+          foreground_cwd:$cwd}}}'
     fi
     ;;
   "agent get")
@@ -1030,6 +1041,7 @@ run_layout_cockpit() {  # <action> [<args...>]
     FM_FAKE_HERDR_STATE="$HERDR_STATE" \
     FM_FAKE_HERDR_LOG="$HERDR_LOG" \
     FM_FAKE_FLEET_HOME="${FM_FAKE_FLEET_HOME:-}" \
+    FM_FAKE_FLEET_CWD="${FM_FAKE_FLEET_CWD:-}" \
     FM_COCKPIT_ROOT="$ROOT" \
     HERDR_ENV=1 \
     HERDR_SESSION=fmtest \
@@ -1369,26 +1381,27 @@ set_fleet_pane_status() {  # <status> [<1-based fleet pane, default 1>]
   printf '%s' "$fleet"
 }
 
-test_a_relative_path_fleet_view_still_counts_as_live() {
+test_cockpit_liveness_requires_exact_painter_ownership() {
   local fleet out
   reset_layout_frame
   run_layout_cockpit adopt >/dev/null 2>&1 || fail "banner adoption failed"
   fleet=$(set_fleet_pane_status fleet-relative)
   out=$(run_layout_cockpit status 2>&1) \
-    || fail "a fleet view started through a relative path was rejected: $out"
-  assert_contains "$out" "COCKPIT: live session=fmtest" \
-    "a relative-path fleet view did not report the frame live"
+    && fail "a same-basename painter from another executable was accepted"
+  assert_contains "$out" "(fleet-no-fleet-process)" \
+    "the wrong executable did not fail painter identity"
 
-  FM_FAKE_FLEET_HOME="$LAYOUT_HOME"
-  set_fleet_pane_status fleet-env-home >/dev/null
+  set_fleet_pane_status fleet-live >/dev/null
+  FM_FAKE_FLEET_CWD="$TMP_ROOT/other-home"
   out=$(run_layout_cockpit status 2>&1) \
-    || fail "a fleet view publishing this home was rejected: $out"
+    && fail "a painter running from another home was accepted"
+  assert_contains "$out" "(fleet-no-fleet-process)" \
+    "the wrong foreground cwd did not fail painter identity"
 
-  FM_FAKE_FLEET_HOME="$TMP_ROOT/other-home"
+  FM_FAKE_FLEET_CWD=""
   run_layout_cockpit status >/dev/null 2>&1 \
-    && fail "a fleet view publishing another home was accepted"
-  FM_FAKE_FLEET_HOME=""
-  pass "fleet-view identity survives a relative path but not another home"
+    || fail "the exact painter executable and foreground cwd were rejected"
+  pass "cockpit liveness requires the exact painter executable and foreground cwd"
 }
 
 test_an_unresolved_home_path_still_matches_the_live_banner() {
@@ -1640,7 +1653,7 @@ test_a_later_pane_failure_removes_every_pane_the_region_added
 test_a_later_pane_cleanup_failure_reports_each_pane_still_on_screen
 test_failed_record_publication_reports_when_the_screen_cannot_be_restored
 test_re_adoption_neither_warns_nor_touches_the_screen
-test_a_relative_path_fleet_view_still_counts_as_live
+test_cockpit_liveness_requires_exact_painter_ownership
 test_an_unresolved_home_path_still_matches_the_live_banner
 test_fleet_diagnostics_name_the_check_that_failed
 test_a_fleet_painter_without_the_geometry_binding_is_not_live
