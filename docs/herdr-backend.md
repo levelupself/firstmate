@@ -59,6 +59,8 @@ Nothing in that path closes, replaces, or re-splits a pane holding a live agent:
 The band is divided by splitting the newest fleet pane again, each division taking the share that leaves the pane it splits with an equal part of the band, so the panes come out equal without any pane being rebuilt.
 A layout or arrangement change takes effect the next time a region is built, because an already-adopted frame is preserved without rebuild; a frame adopted as a single banner therefore keeps that one pane, which remains a valid arrangement.
 Before every redraw, each fleet painter reads its pane's current rectangle from `herdr pane layout` and renders to the smaller of those authoritative drawn columns and lines and the pane's own pty.
+If that authoritative read proves the exact recorded pane or its foreground cwd is gone, the bound painter names and closes that exact pane once; an unreadable layout for a still-authoritative pane receives at most three consecutive reads before the same terminal eviction, and a successful read resets that budget.
+An unbound standalone watch stops at either terminal boundary without closing a Herdr pane.
 The drawn rectangle is what the operator can see, so it wins whenever the pty reports a larger size; the pty is where text actually wraps, so it wins when the drawn rectangle overstates the pane.
 Exceeding either boundary wraps full-width rows, multiplies the frame's physical height, and leaves fragments of consecutive redraws on screen at once, while taking the smaller of the two only narrows the content.
 This preserves configured narrow side-by-side layouts through cockpit redraws and later geometry changes even when Herdr has not synchronized the pane pty.

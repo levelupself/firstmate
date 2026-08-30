@@ -77,8 +77,8 @@ The Herdr integration path remains covered by `tests/fm-cockpit.test.sh`; the ot
 
 Verified on 2026-08-30 against Herdr 0.8.0 in a guarded lab session and with the focused watch-mode fixtures.
 The geometry probe treats a missing exact pane or missing authoritative foreground cwd as permanent, while a failed layout read for a still-live pane remains transient.
-The fleet painter evicts a permanently unavailable pane after the first classified read, retries a transient failure at most three consecutive times, resets the counter after recovery, and evicts once when that boundary is exhausted.
-Every terminal path names the exact pane loudly before issuing its single close.
+The bound fleet painter evicts a permanently unavailable pane after the first classified read, retries a transient failure at most three consecutive times, resets the counter after recovery, and evicts once when that boundary is exhausted.
+Each bound terminal path names the exact pane loudly before issuing its single close, while standalone watch mode stops without pane mutation.
 
 ```sh
 bash tests/fm-herdr-pane-geometry.test.sh
