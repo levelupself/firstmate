@@ -100,6 +100,29 @@ pane_rows_with_drawn_geometry() {  # <command> <pty-cols> <drawn-cols> <drawn-ro
   kill_server
 }
 
+# A pane whose pty IS its real size: no stty override, so the terminal wraps
+# exactly where it says it does. This is the fixture for a drawn budget that
+# overstates the pane, the mirror of pane_rows_with_drawn_geometry's lying pty.
+pane_rows_in_exact_terminal() {  # <command> <cols> <rows> <frame-marker>
+  local command=$1 cols=$2 rows=$3 frame_marker=$4 waited=0 out=
+  kill_server
+  tmux -L "$SOCKET" new-session -d -s fit -x "$cols" -y "$rows" "$command" \
+    || fail "could not start a ${cols}x${rows} pane"
+  while [ "$waited" -lt 60 ]; do
+    out=$(tmux -L "$SOCKET" capture-pane -p -t fit:0.0 2>/dev/null \
+      | sed 's/[[:space:]]*$//')
+    case "$out" in *"$frame_marker"*) break ;; esac
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  # A second redraw must not accumulate either, so the frame is read after one.
+  sleep 2
+  out=$(tmux -L "$SOCKET" capture-pane -p -t fit:0.0 2>/dev/null \
+    | sed 's/[[:space:]]*$//')
+  printf '%s\n' "$out"
+  kill_server
+}
+
 write_terminal_evidence() {  # <name> <title> <rows>
   local name=$1 title=$2 rows=$3 escaped
   [ -n "${FM_TEST_EVIDENCE_DIR:-}" ] || return 0
@@ -198,6 +221,39 @@ EOF
   pass "the overflow summary is clipped to the drawn width and cannot scroll a fitted frame"
 }
 
+# The reverse of the Herdr defect above, and just as destructive: the
+# authoritative drawn rectangle can be WIDER or TALLER than the pty the pane
+# actually wraps at. Measured live on herdr 0.8.0, a pane reported a drawn
+# rectangle of 54 columns while its own pty was 53. Painting to the drawn
+# budget then wraps every full-width row, which multiplies the frame's physical
+# height, scrolls the pane, and leaves fragments of consecutive redraws on
+# screen at once. The painter must never exceed EITHER boundary.
+test_drawn_geometry_never_exceeds_the_ptys_own_wrap_boundary() {
+  local geometry out widest visible first
+  geometry="$TMP_ROOT/oversized-geometry"
+  cat > "$geometry" <<'EOF'
+#!/usr/bin/env bash
+printf '40 14
+'
+EOF
+  chmod +x "$geometry"
+  out=$(pane_rows_in_exact_terminal \
+    "FM_CODEBURN_BIN=$FAKE_CODEBURN FM_HOME=$HOME_DIR $ROOT/bin/fm-fleet-view.sh --geometry-command $geometry --watch 1 --section in-flight" \
+    24 8 "IN FLIGHT")
+  write_terminal_evidence oversized-drawn-geometry \
+    "Fleet frame when the drawn rectangle claims more columns than the pty wraps at" "$out"
+  first=$(printf '%s\n' "$out" | head -1)
+  widest=$(printf '%s\n' "$out" | jq -Rrs 'split("\n") | map(length) | max')
+  visible=$(printf '%s\n' "$out" | sed '/^$/d' | wc -l)
+  [ "$widest" -le 24 ] \
+    || fail "the painter emitted a $widest-column row into a 24-column pty: $out"
+  [ "$visible" -le 8 ] \
+    || fail "the painter emitted $visible rows into an 8-row pty: $out"
+  [ "$first" = "IN FLIGHT (8)" ] \
+    || fail "an oversized drawn budget wrapped and scrolled the frame head to: $first"
+  pass "the painter honours the smaller of the drawn rectangle and the pty's own wrap boundary"
+}
+
 test_cockpit_panel_fits_a_short_pane_as_one_frame() {
   local out visible
   out=$(pane_rows "FM_CODEBURN_BIN=$FAKE_CODEBURN FM_HOME=$HOME_DIR $ROOT/bin/fm-cockpit.sh panel --watch 1" 12 "ORCHESTRATION COCKPIT")
@@ -217,4 +273,5 @@ test_fleet_panel_fits_a_short_pane_without_scrolling_its_head
 test_fleet_panel_uses_the_whole_pane_when_it_fits
 test_drawn_geometry_overrides_a_wider_pty_on_every_frame
 test_overflow_summary_is_width_clipped_without_scrolling_the_head
+test_drawn_geometry_never_exceeds_the_ptys_own_wrap_boundary
 test_cockpit_panel_fits_a_short_pane_as_one_frame

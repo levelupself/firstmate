@@ -165,7 +165,7 @@ test_missing_record_unknown_not_idle() {
     [ "$out" = "unknown missing" ] || fail "$h with no record must be 'unknown missing', got '$out'"
   done
   out=$(fm_busy_classify tmux w1 codex t1 "$state")
-  [ "$out" = "unknown codex-unverified" ] || fail "codex with no verified source must be 'unknown codex-unverified', got '$out'"
+  [ "$out" = "unknown codex-rollout" ] || fail "codex with no resolvable rollout must be 'unknown codex-rollout', got '$out'"
   pass "a converted adapter with no record classifies unknown, never idle"
 }
 
@@ -227,7 +227,7 @@ Ctrl+c:cancel'
     [ "$out" = "unknown missing" ] || fail "$h must never classify from footer text, got '$out'"
   done
   out=$(fm_busy_classify tmux w1 codex t1 "$state" "$tail")
-  [ "$out" = "unknown codex-unverified" ] || fail "codex must never classify from footer text, got '$out'"
+  [ "$out" = "unknown codex-rollout" ] || fail "codex must never classify from footer text, got '$out'"
   pass "converted adapters never classify busy from rendered footer text"
 }
 
@@ -248,16 +248,18 @@ Ctrl+c:cancel')
 
 # --- kimi verification gate -----------------------------------------------------
 
-test_codex_unverified_gate() {
+test_codex_push_source_gate() {
   local state gen out
   state=$(new_state_dir codex-gate)
   gen=$("$EV" arm "$state" t1)
   "$EV" apply "$state" t1 busy --gen "$gen" --source codex-hook --event user-prompt-submit
+  # A record written by an unverified push source can never classify codex: the
+  # rollout fold owns codex's verdict, and with no binding it stays unknown.
   out=$(fm_busy_classify tmux w1 codex t1 "$state")
-  [ "$out" = "unknown codex-unverified" ] || fail "unverified codex must classify unknown, got '$out'"
+  [ "$out" = "unknown codex-rollout" ] || fail "an unverified codex push record must not classify, got '$out'"
   [ -z "$(fm_busy_sources_for_harness codex)" ] \
-    || fail "codex must trust no semantic source until one is verified"
-  pass "codex classifies unknown until a semantic source passes its verification gate"
+    || fail "codex must trust no stored record source until a push source is verified"
+  pass "codex ignores an unverified push record and classifies only from its own rollout log"
 }
 
 test_kimi_unverified_gate() {
@@ -395,7 +397,7 @@ test_record_without_sidecar_unknown
 test_source_mismatch_cross_adapter
 test_converted_adapters_ignore_footer_text
 test_grok_regex_isolated
-test_codex_unverified_gate
+test_codex_push_source_gate
 test_kimi_unverified_gate
 test_cursor_ignores_rendered_and_native_signals
 test_dead_endpoint_overrides

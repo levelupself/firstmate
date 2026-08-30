@@ -23,12 +23,26 @@
 # Visible work is grouped under compact project headers in every live section.
 # Each project receives the same row cap for the available pane height, and its
 # header reports that project's hidden count instead of one global list tail.
+# An authoritative drawn rectangle bounds the frame together with the pane's own
+# pty rather than instead of it: the drawn rectangle is what the operator can
+# see and the pty is where text wraps, so the frame honours whichever is
+# smaller.
 # Watch mode uses only bash, jq, terminal control sequences, and sleep; a failed
 # snapshot or render prints an explicit degraded panel and retries next redraw.
+#
+# A watched banner inside an adopted cockpit frame paints only while that home's
+# frame record still names ITS pane, and only one such banner paints a pane at a
+# time. The frame record written by bin/backends/herdr.sh is the sole authority
+# for both questions - this file reads it through that adapter's own reader
+# rather than keeping a second registry of who is painting what. Everywhere else
+# the banner is the operator's own panel and nothing here constrains it.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SNAPSHOT_CMD="$SCRIPT_DIR/fm-fleet-snapshot.sh"
+FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+PAINTER_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
+PAINTER_STATE="${FM_STATE_OVERRIDE:-$PAINTER_HOME/state}"
 
 # shellcheck source=bin/fm-terminal-frame-lib.sh
 . "$SCRIPT_DIR/fm-terminal-frame-lib.sh"
@@ -43,7 +57,8 @@ Use --json to print the complete underlying snapshot.
 Use --watch to redraw every 5 seconds, or provide a positive interval in seconds.
 Use --geometry-command to read "<columns> <lines>" from an executable before
 every redraw when an embedding surface has geometry more authoritative than
-the pane pty.
+the pane pty. The frame is bounded by the smaller of that rectangle and the
+pane's own measurable size, because exceeding either one wraps and scrolls it.
 Use --section to render a subset of: waiting, ready, in-flight, blocked,
 finished, failed. The flag may be repeated and accepts a comma-separated list;
 the sections are always rendered in that priority order, whatever order they
@@ -54,6 +69,13 @@ READY holds every queued task with no open dependency and no active hold. Rows
 that can be handed to a worker now are listed with a bullet; rows the backlog
 cannot confirm are listed with a "?" and the reason, and the heading counts the
 two apart.
+
+Inside a Herdr cockpit frame, --watch paints only while that home's frame
+record still names this pane for these sections, and only one banner paints a
+recorded pane at a time; a banner the frame stops naming retires and leaves the
+pane alone. Anywhere else --watch is unconstrained, including as the fallback
+panel every cockpit-unavailable message points at.
+
 Live sections group rows by project and divide limited row capacity evenly
 between those projects. A project header reports its own hidden-row count.
 EOF
@@ -102,40 +124,59 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-SECTIONS=$DEFAULT_SECTIONS
-if [ "$SECTION_SET" = 1 ]; then
-  requested_name=
-  known=
-  selected=
-  while IFS= read -r requested_name; do
-    [ -n "$requested_name" ] || continue
+# normalize_sections: one comma-separated section list rebuilt in the priority
+# order above, so a repeated or out-of-order request still renders exactly once
+# and in the same place. Publishes NORMALIZED_SECTIONS and returns 0, or returns
+# non-zero with UNKNOWN_SECTION naming the section this view does not have (or
+# empty when the list held no names at all). Both results are published rather
+# than printed: a command substitution would run this in a subshell and discard
+# whichever of the two the caller did not capture.
+#
+# The requested list and the frame record's own recorded --section argument are
+# both read through this, so "the sections this banner renders" and "the
+# sections the frame recorded for this pane" are compared as the same value
+# rather than as two spellings that happen to agree today.
+NORMALIZED_SECTIONS=
+UNKNOWN_SECTION=
+normalize_sections() {  # <comma-separated names>
+  local raw=$1 name known candidate selected='' normalized=''
+  NORMALIZED_SECTIONS=
+  UNKNOWN_SECTION=
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
     known=0
     for candidate in $SECTION_ORDER; do
-      [ "$candidate" != "$requested_name" ] || known=1
+      [ "$candidate" != "$name" ] || known=1
     done
     if [ "$known" != 1 ]; then
-      echo "fm-fleet-view: unknown section: $requested_name" >&2
-      usage >&2
-      exit 2
+      UNKNOWN_SECTION=$name
+      return 1
     fi
-    selected="$selected $requested_name"
+    selected="$selected $name"
   done <<EOF
-$(printf '%s' "${REQUESTED#,}" | tr -d '[:space:]' | tr ',' '\n')
+$(printf '%s' "$raw" | tr -d '[:space:]' | tr ',' '\n')
 EOF
-  if [ -z "$selected" ]; then
-    echo "fm-fleet-view: --section needs at least one section name" >&2
+  [ -n "$selected" ] || return 1
+  for candidate in $SECTION_ORDER; do
+    case " $selected " in
+      *" $candidate "*) normalized="$normalized $candidate" ;;
+    esac
+  done
+  NORMALIZED_SECTIONS=${normalized# }
+}
+
+SECTIONS=$DEFAULT_SECTIONS
+if [ "$SECTION_SET" = 1 ]; then
+  if ! normalize_sections "${REQUESTED#,}"; then
+    if [ -n "$UNKNOWN_SECTION" ]; then
+      echo "fm-fleet-view: unknown section: $UNKNOWN_SECTION" >&2
+    else
+      echo "fm-fleet-view: --section needs at least one section name" >&2
+    fi
     usage >&2
     exit 2
   fi
-  # Rebuilt from the priority order rather than kept as given, so a repeated or
-  # out-of-order request still renders exactly once and in the same place.
-  SECTIONS=
-  for candidate in $SECTION_ORDER; do
-    case " $selected " in
-      *" $candidate "*) SECTIONS="$SECTIONS $candidate" ;;
-    esac
-  done
-  SECTIONS=${SECTIONS# }
+  SECTIONS=$NORMALIZED_SECTIONS
 fi
 
 if [ "$FORMAT" = json ] && [ "$WATCH" = 1 ]; then
@@ -202,6 +243,29 @@ EOF
   printf '%s %s\n' "$width" "$height"
 }
 
+# The drawn rectangle and the pty are two different boundaries, and a frame has
+# to respect both. The drawn rectangle says how much of the pane is actually
+# shown, so it wins when the pty reports a larger size - that is the Herdr
+# defect --geometry-command exists for. But WRAPPING happens at the pty, so a
+# drawn rectangle wider or taller than the pty (measured live on herdr 0.8.0: a
+# 54-column drawn rectangle over a 53-column pty) would wrap every full-width
+# row, multiply the frame's physical height, scroll the pane, and leave
+# fragments of consecutive redraws on screen at once. Taking the smaller of the
+# two is correct in both directions: over-clipping only narrows the content,
+# while exceeding either boundary destroys the frame.
+#
+# Only a real measurement clamps. fm_terminal_dimension fails rather than
+# guessing when it cannot read the pane, and a built-in default must never
+# override the authoritative drawn budget.
+clamp_to_pty() {  # <drawn> <lines|cols> -> the value to paint to
+  local drawn=$1 pty
+  if pty=$(fm_terminal_dimension "$2") && [ "$pty" -gt 0 ] && [ "$pty" -lt "$drawn" ]; then
+    printf '%s\n' "$pty"
+  else
+    printf '%s\n' "$drawn"
+  fi
+}
+
 render_once() {
   local width height snapshot rendered geometry
   if [ -n "$GEOMETRY_COMMAND" ]; then
@@ -210,8 +274,8 @@ render_once() {
         "Drawn pane geometry unavailable; retrying on the next redraw."
       return 1
     fi
-    width=${geometry%% *}
-    height=${geometry#* }
+    width=$(clamp_to_pty "${geometry%% *}" cols)
+    height=$(clamp_to_pty "${geometry#* }" lines)
   else
     width=$(terminal_width)
     height=$(terminal_height)
@@ -487,11 +551,131 @@ render_once() {
   fm_terminal_fit_height "$height" "$rendered" "$width"
 }
 
+# --- painter ownership ------------------------------------------------------
+#
+# Only watch mode is constrained. A one-shot render is a read, and the cockpit
+# panel embeds exactly that read from its own pinned head pane, which is
+# deliberately not a fleet pane.
+
+# painter_binding: how this watched banner relates to this home's adopted
+# cockpit frame. Publishes PAINTER_BINDING as one of:
+#
+#   standalone  no frame record answers for this pane - the documented
+#               fm-fleet-view.sh --watch fallback panel, an ordinary pane on
+#               another tab, or any non-Herdr runtime. Nothing constrains it.
+#   bound       the frame records THIS pane, for exactly the sections this
+#               banner renders.
+#   unbound     the frame is recorded for this home and session and this pane
+#               sits inside it, but the frame does not record this pane as the
+#               painter of these sections. A region rebuilt around new panes
+#               leaves the previous generation here.
+#
+# Membership decides first and the tab only breaks the remaining tie, so a
+# recorded fleet pane is bound whatever tab the record claims, and an
+# unrecorded pane is judged only against the frame it actually sits in.
+PAINTER_BINDING=standalone
+PAINTER_BOUND_ONCE=0
+painter_binding() {
+  local recorded fleet_state index=0 pane
+  if [ "$PAINTER_BOUND_ONCE" = 1 ]; then
+    PAINTER_BINDING=unbound
+  else
+    PAINTER_BINDING=standalone
+  fi
+  [ -n "${HERDR_PANE_ID:-}" ] || return 0
+  if ! declare -F fm_backend_herdr_cockpit_record_snapshot >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-backend.sh
+    . "$SCRIPT_DIR/fm-backend.sh" 2>/dev/null || return 0
+    fm_backend_source herdr 2>/dev/null || return 0
+  fi
+  fm_backend_herdr_cockpit_record_snapshot "$PAINTER_STATE" "$PAINTER_HOME" || return 0
+  # A version-1 record predates the fleet region and records no painter at all.
+  [ -n "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_IDS" ] || return 0
+  [ "$FM_BACKEND_HERDR_COCKPIT_SESSION" = "${HERDR_SESSION:-default}" ] || return 0
+  while IFS= read -r pane; do
+    [ -n "$pane" ] || continue
+    index=$((index + 1))
+    [ "$pane" = "$HERDR_PANE_ID" ] || continue
+    if ! fm_backend_herdr_cockpit_pane_matches \
+      "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$HERDR_PANE_ID" \
+      "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" "$FM_BACKEND_HERDR_COCKPIT_TAB_ID"; then
+      PAINTER_BINDING=unbound
+      return 0
+    fi
+    recorded=$(fm_backend_herdr_cockpit_fleet_pane_section "$index")
+    # No recorded argument is the version-2 shape: one pane, launched before the
+    # flag existed, so there is no section to disagree with.
+    if [ -z "$recorded" ]; then
+      fleet_state=$(fm_backend_herdr_cockpit_fleet_state \
+        "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$HERDR_PANE_ID" "$PAINTER_HOME" '' strict)
+    elif normalize_sections "$recorded" && [ "$NORMALIZED_SECTIONS" = "$SECTIONS" ]; then
+      fleet_state=$(fm_backend_herdr_cockpit_fleet_state \
+        "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$HERDR_PANE_ID" "$PAINTER_HOME" "$recorded" strict)
+    else
+      PAINTER_BINDING=unbound
+      return 0
+    fi
+    if [ "$fleet_state" = live ]; then
+      PAINTER_BINDING=bound
+      PAINTER_BOUND_ONCE=1
+    else
+      PAINTER_BINDING=unbound
+    fi
+    return 0
+  done <<EOF
+$(printf '%s' "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_IDS" | tr ',' '\n')
+EOF
+  # Not recorded anywhere in the region. Inside the recorded frame that makes it
+  # a stranded painter; anywhere else it is the operator's own panel.
+  [ "${HERDR_TAB_ID:-}" = "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" ] || return 0
+  PAINTER_BINDING=unbound
+}
+
+painter_retire() {  # <reason>
+  fm_terminal_watch_reset
+  printf 'fm-fleet-view: %s is not this frame'"'"'s recorded painter for these sections; %s\n' \
+    "$HERDR_PANE_ID" "$1" >&2
+}
+
+PAINTER_LOCK=
+painter_claim() {
+  [ "$PAINTER_BINDING" = bound ] || return 0
+  [ -z "$PAINTER_LOCK" ] || return 0
+  if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-wake-lib.sh
+    . "$SCRIPT_DIR/fm-wake-lib.sh"
+  fi
+  PAINTER_LOCK="$PAINTER_STATE/.fleet-painter-$HERDR_PANE_ID.lock"
+  if ! fm_lock_try_acquire "$PAINTER_LOCK"; then
+    printf 'fm-fleet-view: another fleet banner (pid %s) is already painting %s; refusing to paint over it.\n' \
+      "${FM_LOCK_HELD_PID:-unknown}" "$HERDR_PANE_ID" >&2
+    PAINTER_LOCK=
+    return 1
+  fi
+  trap 'fm_lock_release "$PAINTER_LOCK" || true' EXIT
+}
+
 if [ "$WATCH" = 1 ]; then
+  painter_binding
+  if [ "$PAINTER_BINDING" = unbound ]; then
+    painter_retire 'leaving the frame to the panes it records'
+    exit 0
+  fi
+  painter_claim || exit 1
   trap 'fm_terminal_watch_reset; exit 0' INT TERM HUP
   while :; do
+    # Re-read the binding every redraw, so a banner whose pane the frame stops
+    # recording retires here instead of painting a region it was replaced in.
+    painter_binding
+    if [ "$PAINTER_BINDING" = unbound ]; then
+      painter_retire 'retiring rather than painting beside its replacement'
+      exit 0
+    fi
+    painter_claim || exit 1
     frame=$(render_once) || true
-    fm_terminal_paint_frame "$frame"
+    # A write that fails is a pane that has gone away underneath this loop:
+    # stop rather than spin forever against a terminal nobody can read.
+    fm_terminal_paint_frame "$frame" || exit 0
     sleep "$INTERVAL"
   done
 fi

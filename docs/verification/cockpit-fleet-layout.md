@@ -73,6 +73,42 @@ It places the public fleet-view interface in a real terminal rectangle, delibera
 The same suite verifies that the overflow-summary row is width-clipped and cannot wrap and scroll a correctly height-budgeted frame.
 The Herdr integration path remains covered by `tests/fm-cockpit.test.sh`; the other supported runtime backends do not create or paint a native cockpit fleet region and retain their existing plain-panel fallback.
 
+## The drawn rectangle and the pty diverge in BOTH directions
+
+Verified on 2026-08-29 against herdr 0.8.0 on Linux, in an isolated `fm-lab-` session provisioned through `bin/fm-herdr-lab.sh` with the default-session tripwire.
+A supervisor pane was split into a band of three fleet panes, then each pane was asked for its own `stty size` while `pane layout` reported the same panes' drawn rectangles.
+
+```
+pane=w1:p1 rect={"height":17,"width":54,"x":26,"y":1}   stty (rows cols) = 23 53
+pane=w1:p2 rect={"height":6,"width":18,"x":26,"y":18}   stty (rows cols) = 23 54
+pane=w1:p3 rect={"height":6,"width":18,"x":44,"y":18}   stty (rows cols) = 17 54
+pane=w1:p4 rect={"height":6,"width":18,"x":62,"y":18}   stty (rows cols) = 17 54
+```
+
+The band panes show the already-recorded direction: a stale pty three times wider than the rectangle Herdr actually draws.
+`w1:p1` shows the opposite one, which was not previously recorded: a drawn rectangle of 54 columns over a pty that wraps at 53.
+A painter that trusts the drawn rectangle alone therefore emits rows one column too wide for the terminal that renders them, and the wrap multiplies the frame's height until it scrolls.
+`bin/fm-fleet-view.sh` takes the smaller of the two on every redraw for that reason, and `tests/fm-fleet-view-pane-fit-smoke.test.sh` covers both directions in a real terminal.
+
+## A fleet painter outlives the code that launched it
+
+Observed on 2026-08-29 on the same host, outside the lab, against a cockpit that had been running since 2026-08-13.
+
+```sh
+$ ps -eo pid,etimes,args | grep fm-fleet-view
+3599816 1374489 bash bin/fm-fleet-view.sh --watch --section waiting
+3600904 1374485 bash bin/fm-fleet-view.sh --watch --section ready
+3603856 1374481 bash bin/fm-fleet-view.sh --watch --section in-flight,blocked
+$ for t in 0 1 2; do stty -F /dev/pts/$t size; done
+10 23
+10 67
+10 59
+```
+
+Each painter owned its own pty, so the repeated and interleaved rows the operator saw were not concurrent painters sharing a pane.
+They were launched before `--geometry-command` existed, so each sized its frame to those pty numbers rather than to its drawn rectangle, and the panes had never been rebuilt because every other liveness check still passed.
+`fm_backend_herdr_cockpit_fleet_state` now requires the drawn-size binding for exactly this reason, so such a painter is reported as its own named failure instead of as a live region.
+
 ## Swapping preserves pane identity and a registered agent
 
 `w1:p1` held a registered agent before the swap.

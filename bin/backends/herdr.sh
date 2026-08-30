@@ -2259,8 +2259,24 @@ fm_backend_herdr_cockpit_binding_live() {  # <state-dir> <home> [<session>]
 # keeps the original check exactly: a version 2 banner was launched before the
 # flag existed and is not made suspicious by the absence of an argument it never
 # had.
-fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane> [<home>] [<sections>]
-  local session=$1 pane=$2 home=${3:-} sections=${4:-} info
+#
+# Strict painter ownership proves both identities from live process properties:
+# the exact tracked fleet-view executable in argv and the pane's authoritative
+# foreground cwd resolved against the operational home. The cwd is durable
+# across the env launcher that Herdr uses even though FM_HOME itself is not
+# retained in the foreground process argv.
+# The painter must also carry --geometry-command, and that one is NOT excused
+# for an older frame. Herdr can leave a pane's pty winsize larger than the
+# rectangle it actually draws, so a painter without that binding sizes its frame
+# to the wrong boundary: rows wrap, the frame outgrows the pane, and consecutive
+# redraws pile up on screen. Every other check passes for such a painter, so
+# without this one a process started before the flag existed is reported live
+# forever and the region is never rebuilt - which is exactly how a cockpit ended
+# up painting 2026-08-13 frames on 2026-08-29. A pane that cannot size itself to
+# the drawn rectangle is not live.
+fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane> [<home>] [<sections>] [<identity>]
+  local session=$1 pane=$2 home=${3:-} sections=${4:-} identity=${5:-compatible} info pane_info
+  local process_home exact_home exact_process_home strict_state
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || {
     printf 'no-process-info'
     return 0
@@ -2271,6 +2287,52 @@ fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane> [<home>] [<sections
     and (.result.process_info.foreground_processes | type) == "array"
   ' >/dev/null 2>&1; then
     printf 'unreadable'
+    return 0
+  fi
+  if [ "$identity" = strict ]; then
+    exact_home=$(fm_backend_herdr_cockpit_home_identity "$home") || {
+      printf 'no-fleet-process'
+      return 0
+    }
+    pane_info=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null) || {
+      printf 'no-fleet-process'
+      return 0
+    }
+    process_home=$(printf '%s' "$pane_info" | jq -r --arg pane "$pane" '
+      select(.result.pane.pane_id == $pane)
+      | .result.pane.foreground_cwd // empty
+    ' 2>/dev/null) || process_home=
+    exact_process_home=$(fm_backend_herdr_cockpit_home_identity "$process_home") || {
+      printf 'no-fleet-process'
+      return 0
+    }
+    if [ "$exact_process_home" != "$exact_home" ]; then
+      printf 'no-fleet-process'
+      return 0
+    fi
+    strict_state=$(printf '%s' "$info" | jq -r \
+      --arg script "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" \
+      --arg geometry "$FM_BACKEND_HERDR_COCKPIT_GEOMETRY_SCRIPT" \
+      --arg sections "$sections" '
+      def words: (.argv // (if (.argv0 // "") == "" then [] else [.argv0] end));
+      [.result.process_info.foreground_processes[]?
+       | select((words | index($script)) != null
+                and (words | index("--watch")) != null)] as $painters
+      | [$painters[]
+         | select((words | index("--geometry-command")) as $at
+                  | $at != null
+                    and ((words[$at + 1] // "") | split("/") | last) == $geometry)] as $bound
+      | [$bound[]
+         | select($sections == ""
+                  or ((words | index("--section")) as $at
+                      | $at != null and words[$at + 1] == $sections))] as $matched
+      | if ($painters | length) == 0 then "no-fleet-process"
+        elif ($bound | length) == 0 then "no-geometry-binding"
+        elif ($matched | length) == 0 then "wrong-sections"
+        else "live"
+        end
+    ' 2>/dev/null) || strict_state=no-fleet-process
+    printf '%s' "$strict_state"
     return 0
   fi
   if ! printf '%s' "$info" | jq -e \
@@ -2286,6 +2348,20 @@ fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane> [<home>] [<sections
                | ($set | length) == 0 or ($set | index("FM_HOME=" + $home)) != null)))
   ' >/dev/null 2>&1; then
     printf 'no-fleet-process'
+    return 0
+  fi
+  if ! printf '%s' "$info" | jq -e \
+    --arg script "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" \
+    --arg name "$FM_BACKEND_HERDR_COCKPIT_FLEET_SCRIPT" \
+    --arg geometry "$FM_BACKEND_HERDR_COCKPIT_GEOMETRY_SCRIPT" '
+    def words: (.argv // (if (.argv0 // "") == "" then [] else [.argv0] end));
+    any(.result.process_info.foreground_processes[]?;
+      (words | any(. == $script or ((. | split("/") | last) == $name)))
+      and ((words | index("--geometry-command")) as $at
+           | $at != null
+             and ((words[$at + 1] // "") | split("/") | last) == $geometry))
+  ' >/dev/null 2>&1; then
+    printf 'no-geometry-binding'
     return 0
   fi
   if [ -n "$sections" ] && ! printf '%s' "$info" | jq -e \
@@ -2347,7 +2423,7 @@ fm_backend_herdr_cockpit_binding_diagnose() {  # <state-dir> <home> [<session>]
       fleet=$(fm_backend_herdr_cockpit_fleet_state \
         "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$pane" \
         "$FM_BACKEND_HERDR_COCKPIT_HOME" \
-        "$(fm_backend_herdr_cockpit_fleet_pane_section "$index")")
+        "$(fm_backend_herdr_cockpit_fleet_pane_section "$index")" strict)
       if [ "$fleet" != live ]; then
         reason="fleet-$fleet"
       elif ! fm_backend_herdr_cockpit_pane_matches \
@@ -2394,6 +2470,7 @@ fm_backend_herdr_cockpit_binding_explain() {  # <reason>
     fleet-unreadable) printf 'the server reported the fleet banner pane in an untrusted shape' ;;
     fleet-no-fleet-process) printf 'the fleet banner pane is not running the fleet view' ;;
     fleet-wrong-sections) printf 'a fleet banner pane is showing different sections than the frame recorded' ;;
+    fleet-no-geometry-binding) printf 'a fleet banner pane is running a painter started before the frame could size itself, so it is not painting to the pane'"'"'s drawn size; close that pane and let this home build its fleet region again to replace it' ;;
     fleet-pane-mismatch) printf 'the fleet banner pane moved out of the recorded tab' ;;
     head-dead) printf 'the recorded supervisor pane has no live agent' ;;
     head-unknown) printf 'the recorded supervisor pane state could not be read' ;;

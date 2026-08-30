@@ -40,20 +40,22 @@
 #   fm-recovery      a documented recovery reset after relaunch
 # Classifier-only sources (never written into a record):
 #   endpoint-gone, herdr-native, grok-regex, muse-session-log,
-#   cursor-transcript, missing, malformed, gen-mismatch, source-mismatch,
-#   kimi-unverified, codex-unverified, capture-failed, no-target
+#   cursor-transcript, codex-rollout, missing, malformed, gen-mismatch,
+#   source-mismatch, kimi-unverified, capture-failed, no-target
 #
 # Classification (fm_busy_classify): busy | idle | unknown | dead, always
 # with the producing source as the second token. Precedence:
 #   1. dead endpoint (fm_busy_classify_live only) -> dead endpoint-gone
 #   2. standalone Kimi before verification       -> unknown kimi-unverified
-#   3. a valid, gen-matching, source-trusted record -> its state and source
-#   4. no record at all: herdr's native busy verdict is trusted as busy
+#   3. Codex, and cursor, before any verified push source exists: the
+#      adapter's own durable log, folded on demand
+#   4. a valid, gen-matching, source-trusted record -> its state and source
+#   5. no record at all: herdr's native busy verdict is trusted as busy
 #      (generation state is sufficient for busy, not for idle), then the
-#      muse session-log and cursor transcript pull sources, then the Grok-only
-#      temporary regex fallback classifies a grok task from its rendered tail,
+#      muse session-log pull source, then the Grok-only temporary regex
+#      fallback classifies a grok task from its rendered tail,
 #      then unknown missing
-#   5. malformed, stale, or untrusted records -> unknown, never a fallback
+#   6. malformed, stale, or untrusted records -> unknown, never a fallback
 # The Grok arm is the ONLY rendered-text classification that survives the
 # redesign, because Grok's structured lifecycle was not credited-live-verified
 # in the approved audit; it is scoped to harness=grok and can never classify
@@ -76,13 +78,20 @@
 # cleared. See fm_busy_cursor_turn_state for the fold. Cursor's rendered
 # `ctrl+c to stop` footer is deliberately not a state source here.
 #
+# The codex pull source is the third of that family and exists for the same
+# reason: neither codex push surface is usable on the installed binary, but
+# codex writes its own durable per-session rollout log, which brackets each
+# turn with a task_started open and a task_complete or turn_aborted close. See
+# fm_busy_codex_turn_state for the fold.
+#
 # Codex negotiation (fm_busy_codex_appserver_observable,
 # fm_busy_codex_hooks_verified): the approved contract prefers Codex's
 # app-server turn lifecycle with capability negotiation, and sanctions its
 # stable lifecycle hooks as the intermediate. Neither is usable on the
-# installed binary, so Codex classifies unknown codex-unverified rather than
-# falling back to idle, and fm-spawn installs no Codex busy wiring.
-# docs/verification/supervision.md owns the evidence for both probes.
+# installed binary, so neither PUSH source is armed and fm-spawn installs no
+# Codex busy wiring; the rollout PULL source above carries Codex's turn state
+# instead, and these gates still decide when a verified push source supersedes
+# it. docs/verification/supervision.md owns the evidence for all three.
 #
 # Sourcing: set -u and set -e safe; no subshell-unfriendly globals.
 
@@ -139,9 +148,9 @@ fm_busy_codex_hooks_verified() {
   return 1
 }
 
-# fm_busy_codex_semantic_source: 0 when ANY verified Codex semantic source
-# exists. fm-spawn arms and wires Codex only behind this gate, and the
-# classifier reports unknown codex-unverified until it opens.
+# fm_busy_codex_semantic_source: 0 when ANY verified Codex PUSH source exists.
+# fm-spawn arms and wires Codex only behind this gate, and the classifier folds
+# codex's own rollout log (fm_busy_codex_turn_state) until it opens.
 fm_busy_codex_semantic_source() {
   fm_busy_codex_appserver_observable || fm_busy_codex_hooks_verified
 }
@@ -822,6 +831,147 @@ fm_busy_cursor_turn_state() {  # <transcript>
   '
 }
 
+# codex rollout-log busy source
+#
+# codex persists an append-only JSONL rollout per session at
+# <sessions-root>/YYYY/MM/DD/rollout-<stamp>-<session-id>.jsonl and brackets
+# every submitted turn. Verified live on codex-cli 0.145.0 in an interactive
+# pane (docs/verification/supervision.md owns the evidence):
+#   {"type":"session_meta","payload":{"cwd":"<abs>","originator":"codex-tui",…}}
+#   {"type":"event_msg","payload":{"type":"task_started"}}   <- turn opens
+#   {"type":"event_msg","payload":{"type":"task_complete"}}  <- turn closes
+#   {"type":"event_msg","payload":{"type":"turn_aborted"}}   <- interrupt closes
+# An interrupt closes the turn with turn_aborted, so like muse's session log and
+# cursor's transcript - and unlike Claude's Stop hook - this source covers the
+# manual interrupt path, which is the bar a pull source has to clear here.
+# Nothing is installed and no trust grant is needed: codex writes this rollout
+# on its own, which is why it is usable where the app-server protocol and the
+# hooks engine are not.
+#
+# This fold needs jq, exactly as muse's binding needs node. Without it the
+# source reports unknown rather than guessing.
+#
+# fm_busy_codex_binding_path: the per-task sidecar fm-spawn writes. It records
+# sessions_root=<abs>, workspace_root=<abs>, and one prior_session=<abs> for
+# each rollout that already named that worktree when this pane launched, so a
+# relaunched task cannot fold its predecessor's turn.
+fm_busy_codex_binding_path() {  # <state-dir> <id>
+  printf '%s/%s.codex-session' "$1" "$2"
+}
+
+fm_busy_codex_binding_field() {  # <state-dir> <id> <key>
+  local path value
+  path=$(fm_busy_codex_binding_path "$1" "$2")
+  [ -f "$path" ] || return 1
+  value=$(LC_ALL=C awk -F= -v k="$3" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$path")
+  [ -n "$value" ] || return 1
+  printf '%s' "$value"
+}
+
+# fm_busy_codex_matching_logs: every rollout whose own session_meta records
+# <workspace-root> as its cwd AND identifies as an interactive session. Both
+# metadata fields must agree: originator is codex-tui and source is cli. The
+# filter matters because
+# `codex exec` writes rollouts into this same tree; an exec run that happened to
+# share the worktree would otherwise make the binding ambiguous.
+#
+# <from-day> bounds the scan to codex's own YYYY/MM/DD directories at or after
+# that day, which sort lexically. This runs on every classification of every
+# codex task, so an unbounded walk would re-read a whole sessions history each
+# redraw; the recorded day is the pane's own launch day less a margin, and a
+# rollout older than the pane cannot be the pane's. An empty <from-day> scans
+# everything, which is what a sidecar written before this bound existed gets.
+#
+# Each candidate's first line is read with the shell's own read builtin rather
+# than a per-file command, so scanning costs no forks, and one jq call
+# classifies the whole batch.
+fm_busy_codex_matching_logs() {  # <sessions-root> <workspace-root> [<from-day>]
+  local root=$1 ws=$2 from=${3-} day_dir day file line
+  [ -d "$root" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  {
+    for day_dir in "$root"/*/*/*/; do
+      [ -d "$day_dir" ] || continue
+      day=${day_dir#"$root"/}
+      day=${day%/}
+      if [ -n "$from" ] && [[ $day < $from ]]; then
+        continue
+      fi
+      for file in "$day_dir"rollout-*.jsonl; do
+        [ -f "$file" ] || continue
+        IFS= read -r line < "$file" 2>/dev/null || continue
+        [ -n "$line" ] || continue
+        printf '%s\t%s\n' "$file" "$line"
+      done
+    done
+  } | LC_ALL=C jq -Rr --arg ws "$ws" '
+    (index("\t")) as $at
+    | select($at != null)
+    | {file: .[:$at], line: .[($at + 1):]}
+    | . as $row
+    | ($row.line | try fromjson catch empty)
+    | select(type == "object" and .type? == "session_meta")
+    | .payload?
+    | select(type == "object" and .cwd? == $ws
+             and .originator? == "codex-tui" and .source? == "cli")
+    | $row.file
+  '
+}
+
+# fm_busy_codex_rollout: the ONE rollout this pane owns, or failure. A session
+# recorded as prior_session is excluded, so a relaunch in a reused worktree
+# folds its own turn rather than the previous pane's. Requiring a UNIQUE
+# remaining rollout is what keeps the binding honest: zero means no turn has
+# been submitted yet and several means the pane cannot be told apart, and
+# neither proves anything about the current turn.
+fm_busy_codex_rollout() {  # <state-dir> <id>
+  local root workspace from file found='' count=0 prior
+  root=$(fm_busy_codex_binding_field "$1" "$2" sessions_root) || return 1
+  workspace=$(fm_busy_codex_binding_field "$1" "$2" workspace_root) || return 1
+  from=$(fm_busy_codex_binding_field "$1" "$2" sessions_from 2>/dev/null || true)
+  prior=$(LC_ALL=C awk -F= '$1 == "prior_session" { sub(/^[^=]*=/, ""); print }' \
+    "$(fm_busy_codex_binding_path "$1" "$2")" 2>/dev/null)
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    printf '%s\n' "$prior" | grep -Fqx "$file" && continue
+    found=$file
+    count=$((count + 1))
+  done <<EOF
+$(fm_busy_codex_matching_logs "$root" "$workspace" "$from" 2>/dev/null || true)
+EOF
+  [ "$count" = 1 ] && [ -n "$found" ] || return 1
+  printf '%s' "$found"
+}
+
+# fm_busy_codex_turn_state: fold the rollout into busy | settled | none.
+# A turn record is matched only inside codex's own event_msg envelope, so
+# neither a turn name quoted in message text nor the same name carried by a
+# different record type can move the fold.
+fm_busy_codex_turn_state() {  # <rollout>
+  [ -f "$1" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  LC_ALL=C jq -Rr '
+    try (
+      fromjson
+      | if type == "object" and .type? == "event_msg" then
+          (.payload? | if type == "object" then (.type? // "") else "" end)
+        else "" end
+      | if . == "task_started" then "open"
+        elif . == "task_complete" or . == "turn_aborted" then "close"
+        else "other"
+        end
+    ) catch "malformed"
+  ' "$1" | LC_ALL=C awk '
+    $0 == "close" { open = 0; seen = 1; malformed = 0; next }
+    $0 == "open" { open = 1; seen = 1; next }
+    $0 == "malformed" { if (!open) malformed = 1; next }
+    END {
+      if (!seen || (!open && malformed)) { print "none"; exit }
+      print (open ? "busy" : "settled")
+    }
+  '
+}
+
 # fm_busy_grok_tail_busy: the Grok-only temporary rendered-tail fallback.
 # Consumes the tail on stdin; 0 when Grok's verified busy signature matches.
 # FM_BUSY_REGEX still globally overrides the signature, mirroring the
@@ -848,8 +998,24 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
       fi
       ;;
     codex*)
+      # Semantic, on demand: fold this task's bound rollout log. A turn open
+      # past its last close is positive proof of a turn in flight, and a
+      # trailing task_complete or turn_aborted is a finished turn. Every other
+      # outcome - no sidecar, no resolvable rollout, an unreadable or
+      # record-free file, or no jq to read it with - is unknown, never idle.
+      # Codex's rendered footer is deliberately NOT consulted here.
+      # A future verified PUSH source opens fm_busy_codex_semantic_source and
+      # takes precedence, so this arm steps aside once one exists.
       if ! fm_busy_codex_semantic_source; then
-        printf 'unknown codex-unverified'
+        if ! log=$(fm_busy_codex_rollout "$state" "$id"); then
+          printf 'unknown codex-rollout'
+          return 0
+        fi
+        case "$(fm_busy_codex_turn_state "$log" 2>/dev/null)" in
+          busy) printf 'busy codex-rollout' ;;
+          settled) printf 'idle codex-rollout' ;;
+          *) printf 'unknown codex-rollout' ;;
+        esac
         return 0
       fi
       ;;

@@ -364,7 +364,7 @@ jobs:
         include:
           - name: fleet snapshot
             script: fm-fleet-snapshot-view.test.sh
-            expected: 26
+            expected: 35
           - name: Bearings
             script: fm-bearings-snapshot.test.sh
             expected: 43
@@ -398,8 +398,10 @@ jobs:
           [ "$parse_fail" -eq 0 ] || { echo "::error::stock macOS Bash 3.2 parse sweep failed"; exit 1; }
 
           suite_output="$RUNNER_TEMP/${{ matrix.script }}.out"
-          /bin/bash "tests/${{ matrix.script }}" > "$suite_output" 2>&1
+          suite_status=0
+          /bin/bash "tests/${{ matrix.script }}" > "$suite_output" 2>&1 || suite_status=$?
           cat "$suite_output"
+          [ "$suite_status" -eq 0 ] || exit "$suite_status"
           suite_count=$(grep -c '^ok - ' "$suite_output")
           [ "$suite_count" -eq '${{ matrix.expected }}' ] || {
             echo "::error::expected ${{ matrix.expected }} ${{ matrix.name }} tests, got $suite_count"
