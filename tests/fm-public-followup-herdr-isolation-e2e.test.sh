@@ -61,6 +61,7 @@ test_failed_teardown_preserves_fixture
 lab() { "$LAB_HELPER" run "$SESSION" "$@"; }
 
 mkdir -p "$TMP_ROOT/controller" "$FAKEBIN"
+ln -s "$(command -v bash)" "$FAKEBIN/codex"
 cat > "$FAKEBIN/herdr" <<'SH'
 #!/usr/bin/env bash
 set -eu
@@ -134,7 +135,7 @@ run_scenario() {
     FM_TEST_PUBLIC_FOLLOWUP_TMP_ROOT="$fixture" \
     FM_TEST_PUBLIC_FOLLOWUP_HERDR_STARTUP=1 \
     FM_TEST_PUBLIC_FOLLOWUP_HERDR_SCENARIO="$scenario" \
-    bash "$ROOT/tests/fm-public-followup.test.sh" > "$log" 2>&1 || rc=$?
+    "$FAKEBIN/codex" "$ROOT/tests/fm-public-followup.test.sh" > "$log" 2>&1 || rc=$?
   grep -F 'ok - Herdr startup adopts a cockpit while surfacing public commitments' \
     "$log" >/dev/null 2>&1 \
     || fail "$scenario bypassed Herdr cockpit pane creation: $(tail -20 "$log")"
