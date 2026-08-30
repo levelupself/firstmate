@@ -33,6 +33,12 @@ SH
 cat > "$FAKEBIN/gh-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = api ]; then
+  if [ "${2:-}" = /repos/example/repo/pulls/74 ]; then
+    printf '%s\n' \
+      'merged: true' \
+      'merged_at: "2026-08-29T22:42:58Z"'
+    exit 0
+  fi
   printf '%s\n' \
     'merged: true' \
     'merged_at: "2026-08-29T10:20:00Z"'
@@ -270,6 +276,52 @@ NODE
   || fail "merge after metadata teardown did not enrich the prior row: $TORN_ROW"
 pass 'sanctioned merge enriches a prior raw row after volatile task metadata is gone'
 
+fm_write_meta "$HOME_DIR/state/stamp-the-effort-record-automatically-at-8b.meta" \
+  'window=fm-stamp-the-effort-record-automatically-at-8b' \
+  'endpoint_task_id=stamp-the-effort-record-automatically-at-8b' \
+  "worktree=$TMP_ROOT/pr74-wt" \
+  "project=$TMP_ROOT/project" \
+  'harness=codex' \
+  'kind=ship' \
+  'mode=no-mistakes' \
+  'spawned_at=2026-08-29T20:00:00Z'
+node --no-warnings - "$NM_DB" <<'NODE'
+const {DatabaseSync} = require('node:sqlite')
+const db = new DatabaseSync(process.argv[2])
+db.prepare('INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?)').run(
+  'run-74', 'repo-1', 'fm/stamp-the-effort-record-automatically-at-8b',
+  'https://github.com/example/repo/pull/74', 'completed', 2,
+)
+const step = db.prepare('INSERT INTO step_results VALUES (?, ?, ?, ?)')
+for (const name of ['rebase', 'review', 'test', 'document', 'lint', 'ci']) {
+  step.run(`pr74-${name}`, 'run-74', name, 'completed')
+}
+const round = db.prepare('INSERT INTO step_rounds VALUES (?, ?, ?, ?, ?)')
+for (let number = 1; number <= 11; number++) {
+  let findings = []
+  if (number === 1) {
+    findings = [
+      {id: 'pr74-ask-1', action: 'ask-user'},
+      {id: 'pr74-ask-2', action: 'ask-user'},
+      {id: 'pr74-ask-3', action: 'ask-user'},
+      {id: 'pr74-auto-1', action: 'auto-fix'},
+    ]
+  } else if (number <= 10) {
+    findings = [{id: `pr74-ask-${number + 2}`, action: 'ask-user'}]
+  }
+  round.run(
+    `pr74-review-${number}`, 'pr74-review', number,
+    number === 1 ? 'initial' : 'auto_fix', JSON.stringify({findings}),
+  )
+}
+db.close()
+NODE
+FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
+  FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
+  "$PR_MERGE" stamp-the-effort-record-automatically-at-8b \
+  https://github.com/example/repo/pull/74 >/dev/null \
+  || fail 'PR #74 lifecycle capture failed'
+
 MERGED_FINGERPRINT=$(FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" fingerprint)
 rm -f "$NM_DB" "$DB"
 FM_HOME="$HOME_DIR" FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
@@ -289,6 +341,19 @@ NODE
 [ "$REPLAYED_PROCESS" = '3|2|1|1' ] \
   || fail "merged effort replay lost process counts: $REPLAYED_PROCESS"
 pass 'delete-and-rebuild replays process cost without the mutable pipeline database'
+PR74_REPLAY=$(node - "$DB" <<'NODE'
+process.emitWarning = () => {}
+const {DatabaseSync} = require('node:sqlite')
+const row = new DatabaseSync(process.argv[2], {readOnly:true}).prepare(`
+  SELECT merged_at, outcome, findings, review_rounds, ask_user_count, gate_failures
+  FROM task WHERE task_id = ?
+`).get('stamp-the-effort-record-automatically-at-8b')
+process.stdout.write(Object.values(row || {}).map(value => value ?? 'NULL').join('|') + '\n')
+NODE
+)
+[ "$PR74_REPLAY" = '2026-08-29T22:42:58Z|merged|13|11|12|0' ] \
+  || fail "PR #74 replay lost its real lifecycle values: $PR74_REPLAY"
+pass 'PR #74 real lifecycle values survive replay without the mutable pipeline database'
 
 fm_write_meta "$HOME_DIR/state/pr-task.meta" \
   'window=fm-pr-task' \
