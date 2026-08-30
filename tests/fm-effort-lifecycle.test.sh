@@ -310,6 +310,47 @@ NODE
   || fail "incomplete authoritative rerun inherited older process counts: $RERUN_PROCESS"
 pass 'incomplete authoritative rerun does not inherit older settled process cost'
 
+node --no-warnings - "$NM_DB" <<'NODE'
+const {DatabaseSync} = require('node:sqlite')
+const db = new DatabaseSync(process.argv[2])
+db.prepare("UPDATE step_results SET status = 'completed' WHERE id = 'rerun-new-ci'").run()
+db.close()
+NODE
+FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
+  FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
+  "$PR_MERGE" rerun-task https://github.com/example/repo/pull/12 >/dev/null \
+  || fail 'settled rerun task PR merge retry failed'
+node --no-warnings - "$NM_DB" <<'NODE'
+const {DatabaseSync} = require('node:sqlite')
+const db = new DatabaseSync(process.argv[2])
+db.exec('ALTER TABLE step_results RENAME TO unavailable_step_results')
+db.close()
+NODE
+FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
+  FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
+  "$PR_MERGE" rerun-task https://github.com/example/repo/pull/12 >/dev/null
+READ_ERROR_RC=$?
+node --no-warnings - "$NM_DB" <<'NODE'
+const {DatabaseSync} = require('node:sqlite')
+const db = new DatabaseSync(process.argv[2])
+db.exec('ALTER TABLE unavailable_step_results RENAME TO step_results')
+db.close()
+NODE
+[ "$READ_ERROR_RC" -eq 0 ] || fail 'selected-run read-error PR merge retry failed'
+READ_ERROR_PROCESS=$(node - "$DB" <<'NODE'
+process.emitWarning = () => {}
+const {DatabaseSync} = require('node:sqlite')
+const row = new DatabaseSync(process.argv[2], {readOnly:true}).prepare(`
+  SELECT findings, review_rounds, ask_user_count, gate_failures
+  FROM task WHERE task_id = ?
+`).get('rerun-task')
+process.stdout.write(Object.values(row || {}).map(value => value ?? 'NULL').join('|') + '\n')
+NODE
+)
+[ "$READ_ERROR_PROCESS" = 'NULL|NULL|NULL|NULL' ] \
+  || fail "selected-run read error inherited prior process counts: $READ_ERROR_PROCESS"
+pass 'selected-run read errors do not inherit prior process cost'
+
 fm_write_meta "$HOME_DIR/state/torn-task.meta" \
   'window=fm-torn-task' \
   'endpoint_task_id=torn-task' \

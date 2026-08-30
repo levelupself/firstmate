@@ -164,6 +164,7 @@ function readPipelineMetrics(dbPath, identity) {
     return null
   }
   let db
+  let authoritativeRunSelected = false
   try {
     db = new DatabaseSync(dbPath, {readOnly: true})
     const run = db.prepare(`
@@ -175,6 +176,7 @@ function readPipelineMetrics(dbPath, identity) {
       ORDER BY runs.created_at DESC, runs.id DESC
       LIMIT 1
     `).get(identity.project, identity.branch, identity.prUrl)
+    authoritativeRunSelected = Boolean(run)
     if (run) {
       const steps = db.prepare(`
         SELECT id, step_name, status
@@ -239,7 +241,7 @@ function readPipelineMetrics(dbPath, identity) {
     return null
   } catch {
     if (db) db.close()
-    return null
+    return authoritativeRunSelected ? PIPELINE_METRICS_UNAVAILABLE : null
   }
 }
 
@@ -1540,8 +1542,8 @@ function capture(options, taskId, argv) {
   }
   for (const column of CAPTURE_COLUMNS) row[column] = String(row[column] ?? '')
   fs.mkdirSync(path.dirname(options.rawFile), {recursive: true})
-  const exact = existing.some(candidate => candidate.task === taskId
-    && CAPTURE_COLUMNS.every(column => String(candidate[column] ?? '') === row[column]))
+  const exact = previous
+    && CAPTURE_COLUMNS.every(column => String(previous[column] ?? '') === row[column])
   if (!exact) {
     const lines = [V2_MARKER, CAPTURE_COLUMNS.join('\t'), CAPTURE_COLUMNS.map(column => escapeRawValue(row[column])).join('\t')]
     fs.appendFileSync(options.rawFile, `${lines.join('\n')}\n`, {mode: 0o600})
