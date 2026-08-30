@@ -155,6 +155,57 @@ EOF
   pass "a fixture that pins the driver without dying is named by the watchdog"
 }
 
+test_historical_close_order_reproduces_the_blocked_writer_failure() {
+  local bus gate out status
+  bus="$TMP_ROOT/historical-closed.bus"
+  gate="$TMP_ROOT/historical-closed.gate"
+  fm_checkpoint_bus "$bus"
+  out=$(FM_CHECKPOINT_BUS="$bus" FM_GATE="$gate" node --input-type=module 2>&1 <<'EOF'
+import { spawn } from "node:child_process";
+import { openSync, writeFileSync } from "node:fs";
+import { Socket } from "node:net";
+
+const socket = new Socket({ fd: openSync(process.env.FM_CHECKPOINT_BUS, "r+"), readable: true, writable: false });
+socket.setEncoding("utf8");
+const fixture = spawn(
+  "bash",
+  [
+    "-c",
+    "printf 'ready 1\\n' > \"$FM_CHECKPOINT_BUS\"; while [ ! -e \"$FM_GATE\" ]; do sleep 0.02; done; printf 'attempting late\\n' >&2; printf 'late 1\\n' > \"$FM_CHECKPOINT_BUS\"; printf 'completed late\\n' >&2",
+  ],
+  { stdio: ["ignore", "pipe", "pipe"] },
+);
+let buffered = "";
+await new Promise((resolve) => {
+  socket.on("data", (chunk) => {
+    buffered += chunk;
+    if (buffered.includes("ready 1\n")) resolve();
+  });
+});
+socket.destroy();
+writeFileSync(process.env.FM_GATE, "go\n");
+let stderr = "";
+fixture.stderr.setEncoding("utf8");
+fixture.stderr.on("data", (chunk) => { stderr += chunk; });
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (!stderr.includes("attempting late\n")) throw new Error("fixture never attempted the late checkpoint write");
+if (stderr.includes("completed late\n") || fixture.exitCode !== null) {
+  throw new Error("blocked-writer detector did not detect the historical failure");
+}
+fixture.kill("SIGKILL");
+await new Promise((resolve) => fixture.once("close", resolve));
+throw new Error("fixture became a blocked writer on a closed checkpoint bus");
+EOF
+)
+  status=$?
+  [ "$status" -ne 0 ] || fail "historical close order did not reproduce the blocked writer failure"
+  assert_contains "$out" "fixture became a blocked writer on a closed checkpoint bus" \
+    "historical blocked-writer failure was not preserved"
+  assert_not_contains "$out" "blocked-writer detector did not detect" \
+    "historical blocked-writer positive control did not detect the bad state"
+  pass "historical close order visibly reproduces the blocked writer failure"
+}
+
 test_bus_refuses_to_close_while_a_fixture_can_still_announce() {
   local bus gate out status
   bus="$TMP_ROOT/live-announcer.bus"
@@ -204,4 +255,5 @@ test_wait_is_named_when_the_only_fixture_exits_without_announcing
 test_wait_is_named_when_the_fixture_is_killed_rather_than_exiting
 test_pending_timer_is_not_mistaken_for_an_unreachable_wait
 test_watchdog_names_a_fixture_that_pins_the_driver_without_dying
+test_historical_close_order_reproduces_the_blocked_writer_failure
 test_bus_refuses_to_close_while_a_fixture_can_still_announce
