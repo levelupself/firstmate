@@ -162,11 +162,22 @@ test_historical_close_order_reproduces_the_blocked_writer_failure() {
   fm_checkpoint_bus "$bus"
   out=$(FM_CHECKPOINT_BUS="$bus" FM_GATE="$gate" node --input-type=module 2>&1 <<'EOF'
 import { spawn } from "node:child_process";
-import { openSync, writeFileSync } from "node:fs";
+import { constants, closeSync, openSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
 import { Socket } from "node:net";
 
 const socket = new Socket({ fd: openSync(process.env.FM_CHECKPOINT_BUS, "r+"), readable: true, writable: false });
 socket.setEncoding("utf8");
+const writerCanOpen = () => {
+  try {
+    const fd = openSync(process.env.FM_CHECKPOINT_BUS, constants.O_WRONLY | constants.O_NONBLOCK);
+    closeSync(fd);
+    return true;
+  } catch (error) {
+    if (error.code === "ENXIO") return false;
+    throw error;
+  }
+};
 const fixture = spawn(
   "bash",
   [
@@ -182,14 +193,17 @@ await new Promise((resolve) => {
     if (buffered.includes("ready 1\n")) resolve();
   });
 });
+if (!writerCanOpen()) throw new Error("blocked-writer detector missed the open-reader positive control");
+const closed = once(socket, "close");
 socket.destroy();
-writeFileSync(process.env.FM_GATE, "go\n");
-let stderr = "";
+await closed;
+if (writerCanOpen()) throw new Error("checkpoint FIFO still accepted writers after its reader closed");
 fixture.stderr.setEncoding("utf8");
-fixture.stderr.on("data", (chunk) => { stderr += chunk; });
-await new Promise((resolve) => setTimeout(resolve, 100));
+const attempted = once(fixture.stderr, "data");
+writeFileSync(process.env.FM_GATE, "go\n");
+const [stderr] = await attempted;
 if (!stderr.includes("attempting late\n")) throw new Error("fixture never attempted the late checkpoint write");
-if (stderr.includes("completed late\n") || fixture.exitCode !== null) {
+if (stderr.includes("completed late\n") || fixture.exitCode !== null || writerCanOpen()) {
   throw new Error("blocked-writer detector did not detect the historical failure");
 }
 fixture.kill("SIGKILL");
