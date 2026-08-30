@@ -1744,7 +1744,6 @@ await hooks.event(event);
 // successor arm row is written before the prompt begins, and rowsAtPrompt
 // below is what actually proves that ordering.
 await promptBegan.reached;
-await bus.reached("armed");
 const successorPid = await bus.reached("armed");
 const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (rows.length !== 2) throw new Error(`expected one successor arm, got ${rows.length}: ${rows.join(" | ")}`);
