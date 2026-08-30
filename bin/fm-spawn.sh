@@ -140,10 +140,12 @@
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from the primary project checkout.
-#   Before a fresh ship or scout worker starts, its clean task worktree fetches
+#   Before a fresh ship or scout worker starts, a task worktree with remotes fetches
 #   origin, resolves the current remote default branch, and resets to its tip.
+#   A worktree with no remotes visibly keeps its clean local base because there is
+#   no remote truth to refresh from.
 #   An unreachable origin, unresolved default branch, or non-clean worktree
-#   refuses the spawn rather than risking a PR based on stale history.
+#   refuses the spawn rather than risking stale history or discarded local work.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -1739,7 +1741,23 @@ validate_spawn_worktree() {  # <source> <inspect-target>
 }
 
 freshen_spawn_worktree_base() {  # <worktree>
-  local worktree=$1 default target expected actual status
+  local worktree=$1 default target expected actual status remotes
+  if ! remotes=$(git -C "$worktree" remote 2>/dev/null); then
+    echo "error: could not inspect remotes for pooled worktree '$worktree'; refusing to launch without knowing its freshness contract" >&2
+    return 1
+  fi
+  if [ -z "$remotes" ]; then
+    status=$(git -C "$worktree" status --porcelain) || {
+      echo "error: could not inspect pooled worktree '$worktree' before using its local base" >&2
+      return 1
+    }
+    if [ -n "$status" ]; then
+      echo "error: pooled worktree '$worktree' is not clean; refusing to launch with uncommitted local work" >&2
+      return 1
+    fi
+    echo "notice: pooled worktree '$worktree' has no remotes; using its local base without a remote freshness check" >&2
+    return 0
+  fi
   if ! git -C "$worktree" fetch --quiet origin; then
     echo "error: could not fetch origin for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
     return 1

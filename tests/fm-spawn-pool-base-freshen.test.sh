@@ -137,11 +137,66 @@ test_non_main_default_branch_refreshes_before_branching() {
   pass "a stale pooled worktree resolves and refreshes a non-main default branch"
 }
 
+test_no_remote_uses_local_pool_base() {
+  local rec id out status before after
+  id='pool-no-remote-r2'
+  rec=$(make_case no-remote "$id")
+  read_case_record "$rec"
+  git -C "$POOL_DIR" fetch --quiet origin \
+    || fail "positive control could not fetch the reachable origin before removing it"
+  git -C "$PROJECT_DIR" remote remove origin
+  [ -z "$(git -C "$POOL_DIR" remote)" ] \
+    || fail "fixture still has a remote after removing origin"
+  before=$(git -C "$POOL_DIR" rev-parse HEAD)
+
+  out=$(run_spawn "$id" --mode local-only --yolo off)
+  status=$?
+  expect_code 0 "$status" "a no-remote local-only project should spawn from its local base"
+  assert_contains "$out" "has no remotes; using its local base" \
+    "spawn did not make the no-remote local-base decision visible"
+  after=$(git -C "$POOL_DIR" rev-parse HEAD)
+  [ "$after" = "$before" ] || fail "spawn moved the no-remote pooled worktree away from its local base"
+  if [ "${FM_TEST_EVIDENCE:-0}" = 1 ]; then
+    printf '# observed no-remote local base: %s; HEAD=%s\n' \
+      "$(printf '%s\n' "$out" | grep 'has no remotes' | tail -n 1)" "$after"
+  fi
+  pass "a no-remote local-only project visibly uses its local pooled-worktree base"
+}
+
+test_dirty_no_remote_pool_refuses_without_discarding_work() {
+  local rec id out status before
+  id='pool-no-remote-dirty-r2'
+  rec=$(make_case no-remote-dirty "$id")
+  read_case_record "$rec"
+  git -C "$POOL_DIR" fetch --quiet origin \
+    || fail "positive control could not fetch the reachable origin before removing it"
+  git -C "$PROJECT_DIR" remote remove origin
+  [ -z "$(git -C "$POOL_DIR" remote)" ] \
+    || fail "fixture still has a remote after removing origin"
+  [ -z "$(git -C "$POOL_DIR" status --porcelain)" ] \
+    || fail "positive control found a dirty no-remote pool before adding local work"
+  before=$(git -C "$POOL_DIR" rev-parse HEAD)
+  printf 'keep this no-remote local work\n' > "$POOL_DIR/uncommitted.txt"
+
+  out=$(run_spawn "$id" --mode local-only --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "spawn succeeded despite a dirty no-remote pooled worktree"
+  assert_contains "$out" "is not clean" \
+    "spawn did not clearly refuse a dirty no-remote pooled worktree"
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$before" ] \
+    || fail "spawn moved HEAD while refusing a dirty no-remote pooled worktree"
+  assert_grep 'keep this no-remote local work' "$POOL_DIR/uncommitted.txt" \
+    "spawn discarded uncommitted no-remote work while refusing the pool"
+  pass "a dirty no-remote pooled worktree is visibly refused without discarding local work"
+}
+
 test_unreachable_origin_refuses_stale_pool_base() {
   local rec id out status before after
   id='pool-unreachable-origin-r2'
   rec=$(make_case unreachable-origin "$id")
   read_case_record "$rec"
+  git -C "$POOL_DIR" fetch --quiet origin \
+    || fail "positive control could not fetch the reachable origin before making it unreachable"
   git -C "$POOL_DIR" remote set-url origin "file://$CASE_DIR/missing-origin.git"
   before=$(git -C "$POOL_DIR" rev-parse HEAD)
 
@@ -189,6 +244,8 @@ test_dirty_pool_refuses_without_discarding_work() {
   rec=$(make_case dirty-refusal "$id")
   read_case_record "$rec"
   before=$(git -C "$POOL_DIR" rev-parse HEAD)
+  [ -z "$(git -C "$POOL_DIR" status --porcelain)" ] \
+    || fail "positive control found a dirty pooled worktree before adding local work"
   printf 'keep this local work\n' > "$POOL_DIR/uncommitted.txt"
 
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
@@ -211,6 +268,9 @@ test_unresolved_remote_default_refuses_pool() {
   id='pool-unresolved-default-r5'
   rec=$(make_case unresolved-default "$id")
   read_case_record "$rec"
+  git -C "$POOL_DIR" ls-remote --symref origin HEAD 2>/dev/null \
+    | grep -q "^ref:[[:space:]]refs/heads/${DEFAULT_BRANCH}[[:space:]]HEAD$" \
+    || fail "positive control could not observe origin's advertised default branch before invalidating HEAD"
   git --git-dir="$CASE_DIR/origin.git" symbolic-ref HEAD refs/heads/missing-default
   before=$(git -C "$POOL_DIR" rev-parse HEAD)
 
@@ -229,6 +289,8 @@ test_unresolved_remote_default_refuses_pool() {
 
 test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching
+test_dirty_no_remote_pool_refuses_without_discarding_work
+test_no_remote_uses_local_pool_base
 test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
 test_unresolved_remote_default_refuses_pool
