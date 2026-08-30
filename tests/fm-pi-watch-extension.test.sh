@@ -2581,6 +2581,7 @@ SH
   cat > "$repo/bin/fm-turnend-guard.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'guard\n' >> "${FM_GUARD_LOG:?}"
+printf 'firstmate-opencode-guard-input-accepted\n'
 printf 'guard should not run\n' >&2
 exit 2
 SH
@@ -2661,6 +2662,8 @@ SH
   cat > "$repo/bin/fm-turnend-guard.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'guard\n' >> "${FM_GUARD_LOG:?}"
+cat >/dev/null
+printf 'firstmate-opencode-guard-input-accepted\n'
 printf 'guard ran after external healthy watcher\n' >&2
 exit 2
 SH

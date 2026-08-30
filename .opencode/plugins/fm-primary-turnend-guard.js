@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.js";
 
 const COORDINATOR_KEY = "__firstmateOpenCodeWatchArm";
+const INPUT_ACK = "firstmate-opencode-guard-input-accepted";
 
 let skipNextIdle = false;
 
@@ -14,15 +15,31 @@ function runProcess(command, args, input = "") {
     });
     let stdout = "";
     let stderr = "";
+    let inputError = null;
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
+    child.stdin.on("error", (error) => {
+      inputError = error;
+    });
     child.on("error", () => resolve({ code: 0, stdout: "", stderr: "" }));
-    child.on("close", (code) => resolve({ code: code ?? 0, stdout, stderr }));
-    child.stdin.end(input);
+    child.on("close", (code) => {
+      setImmediate(() => resolve({ code: code ?? 0, stdout, stderr, inputError }));
+    });
+    if (input) {
+      setImmediate(() => {
+        if (child.stdin.destroyed) {
+          inputError = new Error("guard process closed stdin before input delivery");
+          return;
+        }
+        child.stdin.end(input);
+      });
+    } else {
+      child.stdin.end();
+    }
   });
 }
 
@@ -42,9 +59,26 @@ function resolvePath(anchor) {
   }
 }
 
-function runGuard(root) {
+async function runGuard(root) {
   if (!root) return Promise.resolve({ code: 0, stderr: "" });
-  return runProcess(`${root}/bin/fm-turnend-guard.sh`, [], '{"stop_hook_active":false}');
+  const result = await runProcess(
+    `${root}/bin/fm-turnend-guard.sh`,
+    ["--opencode"],
+    '{"stop_hook_active":false}',
+  );
+  if (!result.inputError && result.stdout.trim() === INPUT_ACK) return result;
+  const detail = result.inputError?.code ? ` (${result.inputError.code})` : "";
+  const failure = result.inputError
+    ? `the guard process closed stdin${detail}`
+    : "the guard process did not acknowledge the payload";
+  return {
+    ...result,
+    code: 2,
+    stderr:
+      `OpenCode turn-end guard could not confirm input delivery because ${failure}.\n` +
+      "The supervision state was not checked, so this turn must remain visible for recovery.\n" +
+      result.stderr,
+  };
 }
 
 async function letWatchArmRun(sessionID, client) {

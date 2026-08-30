@@ -21,6 +21,8 @@
 # duplicate Cursor also loads, and this guard stands down.
 # See docs/turnend-guard.md for the per-harness mechanics, validation evidence,
 # and fail-open tradeoffs.
+# OpenCode calls with --opencode, which writes one acknowledgement to stdout
+# only after the hook payload has been received and parsed.
 #
 # Ships with TRACKED harness hook files at the repo root, so this file is
 # checked out into every worktree of this repo: the primary checkout, every
@@ -73,6 +75,7 @@ GRACE=${FM_GUARD_GRACE:-300}
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 CLAUDE_MODE=0
 CURSOR_MODE=0
+OPENCODE_MODE=0
 SYNC_WAIT_MS=${FM_CLAUDE_AUTOARM_SYNC_WAIT_MS:-800}
 EPOCH_FRESH=${FM_CLAUDE_AUTOARM_EPOCH_FRESH:-15}
 BLOCK_BUDGET=${FM_CLAUDE_TURNEND_BLOCK_BUDGET:-3}
@@ -84,7 +87,8 @@ for arg in "$@"; do
   case "$arg" in
     --claude) CLAUDE_MODE=1 ;;
     --cursor) CURSOR_MODE=1 ;;
-    *) echo "usage: $(basename "$0") [--claude|--cursor]" >&2; exit 2 ;;
+    --opencode) OPENCODE_MODE=1 ;;
+    *) echo "usage: $(basename "$0") [--claude|--cursor|--opencode]" >&2; exit 2 ;;
   esac
 done
 
@@ -123,6 +127,9 @@ STOP_HOOK_ACTIVE=$(printf '%s' "$PAYLOAD" | jq -r '
   else false
   end
 ' 2>/dev/null) || exit 0
+if [ "$OPENCODE_MODE" -eq 1 ]; then
+  printf '%s\n' 'firstmate-opencode-guard-input-accepted'
+fi
 if [ "$CLAUDE_MODE" -eq 0 ] && [ "$STOP_HOOK_ACTIVE" = "true" ]; then
   exit 0
 fi
