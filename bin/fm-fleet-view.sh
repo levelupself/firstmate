@@ -664,6 +664,25 @@ $reason" || true
   fi
 }
 
+painter_can_evict() {
+  [ "$PAINTER_BOUND_ONCE" = 1 ] \
+    && [ -n "${HERDR_PANE_ID:-}" ] \
+    && [ -n "${HERDR_SESSION:-}" ] \
+    && declare -F fm_backend_herdr_cli >/dev/null 2>&1
+}
+
+painter_terminal_failure() {  # <reason>
+  local reason=$1
+  if painter_can_evict; then
+    painter_evict "$reason"
+    return $?
+  fi
+  fm_terminal_watch_reset
+  printf 'fm-fleet-view: STOPPING without pane mutation: %s\n' "$reason" >&2
+  fm_terminal_paint_frame "FLEET VIEW STOPPING
+$reason" || true
+}
+
 painter_home_available() (
   [ -d "$PAINTER_HOME" ] || return 1
   CDPATH='' cd -- "$PAINTER_HOME" 2>/dev/null || return 1
@@ -709,12 +728,12 @@ if [ "$WATCH" = 1 ]; then
         fi
         geometry_status=$?
         if [ "$geometry_status" -eq 64 ]; then
-          painter_evict 'authoritative pane state or cwd is permanently unavailable' || true
+          painter_terminal_failure 'authoritative pane state or cwd is permanently unavailable' || true
           exit 1
         fi
         GEOMETRY_FAILURES=$((GEOMETRY_FAILURES + 1))
         if [ "$GEOMETRY_FAILURES" -ge "$GEOMETRY_RETRY_LIMIT" ]; then
-          painter_evict "authoritative pane state stayed unavailable after $GEOMETRY_RETRY_LIMIT consecutive attempts" || true
+          painter_terminal_failure "authoritative pane state stayed unavailable after $GEOMETRY_RETRY_LIMIT consecutive attempts" || true
           exit 1
         fi
         frame="FLEET VIEW DEGRADED
@@ -733,13 +752,13 @@ Authoritative pane state unavailable; transient attempt $GEOMETRY_FAILURES of $G
       render_status=$?
       case "$render_status" in
         64)
-          painter_evict 'authoritative pane state or cwd is permanently unavailable' || true
+          painter_terminal_failure 'authoritative pane state or cwd is permanently unavailable' || true
           exit 1
           ;;
         75)
           GEOMETRY_FAILURES=$((GEOMETRY_FAILURES + 1))
           if [ "$GEOMETRY_FAILURES" -ge "$GEOMETRY_RETRY_LIMIT" ]; then
-            painter_evict "drawn geometry stayed unavailable after $GEOMETRY_RETRY_LIMIT consecutive attempts" || true
+            painter_terminal_failure "drawn geometry stayed unavailable after $GEOMETRY_RETRY_LIMIT consecutive attempts" || true
             exit 1
           fi
           frame="FLEET VIEW DEGRADED

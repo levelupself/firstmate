@@ -1845,6 +1845,50 @@ SH
   pass "a genuinely transient geometry failure recovers within the bounded retry budget"
 }
 
+test_standalone_geometry_failures_stop_without_pane_mutation() {
+  local home dir geometry calls out rc count
+  home=$(make_home painter-geometry-standalone)
+  dir=$(painter_bin "$home")
+  calls="$home/standalone-herdr-calls"
+  geometry="$home/permanent-geometry"
+  printf '#!/usr/bin/env bash\nexit 64\n' > "$geometry"
+  chmod +x "$geometry"
+  out=$(fm_run_timed 30 env FM_HOME="$home" COLUMNS=45 LINES=20 \
+    PAINTER_HOME="$home" PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" \
+    PAINTER_CALLS="$calls" PATH="$home/fakebin:$PATH" \
+    "$dir/fm-fleet-view.sh" --geometry-command "$geometry" --watch 0.1 2>&1) && rc=0 || rc=$?
+  expect_code 1 "$rc" "standalone permanent geometry failure must terminate"
+  assert_contains "$out" 'STOPPING without pane mutation' \
+    "standalone permanent geometry failure must report its non-destructive terminal path"
+  assert_not_contains "$out" 'unbound variable' \
+    "standalone permanent geometry failure must not expand an absent pane identity"
+  [ ! -e "$calls" ] || [ "$(grep -c 'pane close' "$calls" 2>/dev/null)" -eq 0 ] \
+    || fail "standalone permanent geometry failure attempted a Herdr pane close"
+
+  geometry="$home/transient-geometry"
+  cat > "$geometry" <<'SH'
+#!/usr/bin/env bash
+count=$(cat "$PAINTER_HOME/standalone-geometry-count" 2>/dev/null || printf 0)
+printf '%s\n' "$((count + 1))" > "$PAINTER_HOME/standalone-geometry-count"
+exit 75
+SH
+  chmod +x "$geometry"
+  out=$(fm_run_timed 30 env FM_HOME="$home" COLUMNS=45 LINES=20 \
+    PAINTER_HOME="$home" PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" \
+    PAINTER_CALLS="$calls" PATH="$home/fakebin:$PATH" \
+    "$dir/fm-fleet-view.sh" --geometry-command "$geometry" --watch 0.1 2>&1) && rc=0 || rc=$?
+  expect_code 1 "$rc" "standalone transient geometry exhaustion must terminate"
+  count=$(cat "$home/standalone-geometry-count" 2>/dev/null || printf 0)
+  [ "$count" -eq 3 ] || fail "standalone transient geometry used $count attempts instead of three"
+  assert_contains "$out" 'STOPPING without pane mutation' \
+    "standalone transient exhaustion must report its non-destructive terminal path"
+  assert_not_contains "$out" 'unbound variable' \
+    "standalone transient exhaustion must not expand an absent pane identity"
+  [ ! -e "$calls" ] || [ "$(grep -c 'pane close' "$calls" 2>/dev/null)" -eq 0 ] \
+    || fail "standalone transient exhaustion attempted a Herdr pane close"
+  pass "standalone geometry failures terminate without Herdr pane mutation"
+}
+
 test_watch_evicts_permanently_unavailable_geometry_once() {
   local home dir pid count closes
   home=$(make_home painter-geometry-permanent)
@@ -1961,6 +2005,7 @@ test_watch_retires_when_its_recorded_pane_moves_to_another_tab
 test_watch_refuses_a_second_painter_for_one_bound_pane
 test_watch_claims_ownership_when_the_frame_is_published_after_launch
 test_watch_recovers_within_the_transient_geometry_budget
+test_standalone_geometry_failures_stop_without_pane_mutation
 test_watch_evicts_permanently_unavailable_geometry_once
 test_watch_evicts_after_the_transient_geometry_budget
 test_watch_refuses_a_recorded_pane_with_wrong_process_identity
