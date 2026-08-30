@@ -251,23 +251,51 @@ const {DatabaseSync} = require('node:sqlite')
 const db = new DatabaseSync(process.argv[2])
 const run = db.prepare('INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?)')
 run.run('rerun-old', 'repo-1', 'fm/rerun-task', 'https://github.com/example/repo/pull/12', 'completed', 10)
-run.run('rerun-new', 'repo-1', 'fm/rerun-task', 'https://github.com/example/repo/pull/12', 'running', 11)
 const step = db.prepare('INSERT INTO step_results VALUES (?, ?, ?, ?)')
 for (const name of ['rebase', 'review', 'test', 'document', 'lint', 'ci']) {
   step.run(`rerun-old-${name}`, 'rerun-old', name, 'completed')
-  step.run(`rerun-new-${name}`, 'rerun-new', name, name === 'ci' ? 'running' : 'completed')
 }
 const round = db.prepare('INSERT INTO step_rounds VALUES (?, ?, ?, ?, ?)')
 round.run('rerun-old-review-1', 'rerun-old-review', 1, 'initial', JSON.stringify({findings: [
   {id: 'stale', action: 'ask-user'},
 ]}))
-round.run('rerun-new-review-1', 'rerun-new-review', 1, 'initial', JSON.stringify({findings: []}))
 db.close()
 NODE
 FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
   FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
   "$PR_MERGE" rerun-task https://github.com/example/repo/pull/12 >/dev/null \
   || fail 'rerun task PR merge failed'
+SETTLED_PROCESS=$(node - "$DB" <<'NODE'
+process.emitWarning = () => {}
+const {DatabaseSync} = require('node:sqlite')
+const row = new DatabaseSync(process.argv[2], {readOnly:true}).prepare(`
+  SELECT findings, review_rounds, ask_user_count, gate_failures
+  FROM task WHERE task_id = ?
+`).get('rerun-task')
+process.stdout.write(Object.values(row || {}).map(value => value ?? 'NULL').join('|') + '\n')
+NODE
+)
+[ "$SETTLED_PROCESS" = '1|1|1|0' ] \
+  || fail "settled pipeline did not establish prior process counts: $SETTLED_PROCESS"
+node --no-warnings - "$NM_DB" <<'NODE'
+const {DatabaseSync} = require('node:sqlite')
+const db = new DatabaseSync(process.argv[2])
+db.prepare('INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?)').run(
+  'rerun-new', 'repo-1', 'fm/rerun-task', 'https://github.com/example/repo/pull/12', 'running', 11,
+)
+const step = db.prepare('INSERT INTO step_results VALUES (?, ?, ?, ?)')
+for (const name of ['rebase', 'review', 'test', 'document', 'lint', 'ci']) {
+  step.run(`rerun-new-${name}`, 'rerun-new', name, name === 'ci' ? 'running' : 'completed')
+}
+db.prepare('INSERT INTO step_rounds VALUES (?, ?, ?, ?, ?)').run(
+  'rerun-new-review-1', 'rerun-new-review', 1, 'initial', JSON.stringify({findings: []}),
+)
+db.close()
+NODE
+FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
+  FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
+  "$PR_MERGE" rerun-task https://github.com/example/repo/pull/12 >/dev/null \
+  || fail 'incomplete rerun task PR merge retry failed'
 RERUN_PROCESS=$(node - "$DB" <<'NODE'
 process.emitWarning = () => {}
 const {DatabaseSync} = require('node:sqlite')

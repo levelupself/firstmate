@@ -154,6 +154,7 @@ function git(repo, args, {timeoutMs = 20000} = {}) {
 
 const PIPELINE_GATE_STEPS = new Set(['rebase', 'test', 'document', 'lint', 'ci'])
 const PIPELINE_SETTLED_STEPS = new Set(['rebase', 'review', 'test', 'document', 'lint', 'ci'])
+const PIPELINE_METRICS_UNAVAILABLE = Symbol('pipeline-metrics-unavailable')
 
 function readPipelineMetrics(dbPath, identity) {
   if (!dbPath || !identity.project || !identity.branch || !identity.prUrl) return null
@@ -187,7 +188,7 @@ function readPipelineMetrics(dbPath, identity) {
         return status !== 'completed' && status !== 'skipped'
       })) {
         db.close()
-        return null
+        return PIPELINE_METRICS_UNAVAILABLE
       }
       const rounds = db.prepare(`
         SELECT step_results.step_name, step_rounds.round, step_rounds.findings_json
@@ -198,7 +199,7 @@ function readPipelineMetrics(dbPath, identity) {
       `).all(run.id)
       if (!rounds.some(round => round.step_name === 'review')) {
         db.close()
-        return null
+        return PIPELINE_METRICS_UNAVAILABLE
       }
       let findings = 0
       let reviewRounds = 0
@@ -223,7 +224,7 @@ function readPipelineMetrics(dbPath, identity) {
       }
       if (!valid) {
         db.close()
-        return null
+        return PIPELINE_METRICS_UNAVAILABLE
       }
       db.close()
       return {
@@ -1451,6 +1452,7 @@ const CAPTURE_COLUMNS = [
 ]
 
 function resolvePipelineMetrics(pipeline, previous, identity) {
+  if (pipeline === PIPELINE_METRICS_UNAVAILABLE) return null
   const source = pipeline ?? (
     previous?.started_at === identity.startedAt
       && previous?.project === identity.project
