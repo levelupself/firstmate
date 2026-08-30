@@ -87,7 +87,7 @@ The durable wake queue retains records until post-handling acknowledgement.
 Never touch `state/.watcher-down`, `state/.claude-autoarm*`, `state/.turnend-claude-blocks*`, `state/.cursor-park-owner*`, `state/.turnend-cursor-blocks`, `state/.hash-*`, `state/.count-*`, `state/.stale-*`, `state/.stale-since-*`, `state/.paused-*`, `state/.wedge-escalations-*`, `state/.seen-*`, `state/.hb-surfaced-*`, `state/.last-*`, `state/.heartbeat-streak`, `state/.subsuper-*`, or `state/.supervise-daemon.*`.
 `state/.<id>.open-decisions-cursor` is owned by `bin/fm-classify-lib.sh`, removed by teardown, and safe to delete only to force a full re-fold; the same library owns the status-presentation cursor and lock and teardown retires each task's row.
 `state/.watch-triage.log` is a size-capped debug log that is never authoritative and is safe to delete, while only the watcher may update `state/.last-watcher-beat`, the liveness beacon that guard scripts read.
-The presence of `state/.afk` transfers escalation injection to the sub-supervisor until `/afk` return clears it.
+The presence of `state/.afk` transfers escalation injection to the sub-supervisor until the first real unmarked message clears it.
 `state/.herdr-cockpit`, `state/.cockpit-focus.lock`, `state/.watch.lock`, and `state/.wake-queue.lock` are private coordination state owned by their named docs and scripts.
 
 A `state/<id>.status` line is a wake event, not current-state truth; `bin/fm-crew-state.sh` owns current-state reconciliation.
