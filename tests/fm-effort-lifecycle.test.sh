@@ -177,6 +177,36 @@ const db = new DatabaseSync(process.argv[2])
 db.prepare('UPDATE step_rounds SET findings_json = ? WHERE id = ?').run(
   JSON.stringify({findings: []}), 'review-2',
 )
+db.prepare("DELETE FROM step_rounds WHERE step_result_id = 'review'").run()
+db.close()
+NODE
+FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
+  FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
+  "$PR_MERGE" pr-task https://github.com/example/repo/pull/9 >/dev/null \
+  || fail 'repeated PR merge without review rounds failed'
+NO_REVIEW_ROW=$(node - "$DB" <<'NODE'
+process.emitWarning = () => {}
+const {DatabaseSync} = require('node:sqlite')
+const row = new DatabaseSync(process.argv[2], {readOnly:true}).prepare(`
+  SELECT findings, review_rounds, ask_user_count, gate_failures
+  FROM task WHERE task_id = ?
+`).get('pr-task')
+process.stdout.write(Object.values(row || {}).map(value => value ?? 'NULL').join('|') + '\n')
+NODE
+)
+[ "$NO_REVIEW_ROW" = 'NULL|NULL|NULL|NULL' ] \
+  || fail "completed review without rounds produced process counts: $NO_REVIEW_ROW"
+pass 'sanctioned PR merge preserves missing process cost without review rounds'
+
+node --no-warnings - "$NM_DB" <<'NODE'
+const {DatabaseSync} = require('node:sqlite')
+const db = new DatabaseSync(process.argv[2])
+const round = db.prepare('INSERT INTO step_rounds VALUES (?, ?, ?, ?, ?)')
+round.run('review-1', 'review', 1, 'initial', JSON.stringify({findings: [
+  {id: 'r1', action: 'ask-user'},
+  {id: 'r2', action: 'auto-fix'},
+]}))
+round.run('review-2', 'review', 2, 'auto_fix', JSON.stringify({findings: []}))
 db.close()
 NODE
 FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
@@ -259,6 +289,35 @@ NODE
 [ "$REPLAYED_PROCESS" = '3|2|1|1' ] \
   || fail "merged effort replay lost process counts: $REPLAYED_PROCESS"
 pass 'delete-and-rebuild replays process cost without the mutable pipeline database'
+
+fm_write_meta "$HOME_DIR/state/pr-task.meta" \
+  'window=fm-pr-task' \
+  'endpoint_task_id=pr-task' \
+  "worktree=$TMP_ROOT/wt-reused" \
+  "project=$TMP_ROOT/project" \
+  'harness=codex' \
+  'model=configured-gpt' \
+  'effort=xhigh' \
+  'kind=ship' \
+  'mode=no-mistakes' \
+  'spawned_at=2026-08-29T09:00:00Z'
+FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
+  FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
+  "$PR_MERGE" pr-task https://github.com/example/repo/pull/11 >/dev/null \
+  || fail 'reused task PR merge failed'
+REUSED_PROCESS=$(node - "$DB" <<'NODE'
+process.emitWarning = () => {}
+const {DatabaseSync} = require('node:sqlite')
+const row = new DatabaseSync(process.argv[2], {readOnly:true}).prepare(`
+  SELECT started_at, pr_url, findings, review_rounds, ask_user_count, gate_failures
+  FROM task WHERE task_id = ?
+`).get('pr-task')
+process.stdout.write(Object.values(row || {}).map(value => value ?? 'NULL').join('|') + '\n')
+NODE
+)
+[ "$REUSED_PROCESS" = '2026-08-29T09:00:00Z|https://github.com/example/repo/pull/11|NULL|NULL|NULL|NULL' ] \
+  || fail "reused task inherited prior launch process counts: $REUSED_PROCESS"
+pass 'reused task identity does not inherit prior launch process cost'
 
 LOCAL_PROJECT="$TMP_ROOT/local-project"
 git init -q -b main "$LOCAL_PROJECT"

@@ -192,6 +192,7 @@ function readPipelineMetrics(dbPath, identity) {
         WHERE step_results.run_id = ?
         ORDER BY step_results.step_name, step_rounds.round, step_rounds.id
       `).all(run.id)
+      if (!rounds.some(round => round.step_name === 'review')) continue
       let findings = 0
       let reviewRounds = 0
       let askUserCount = 0
@@ -1439,6 +1440,25 @@ const CAPTURE_COLUMNS = [
   'pipeline_run_id', 'findings', 'review_rounds', 'ask_user_count', 'gate_failures',
 ]
 
+function resolvePipelineMetrics(pipeline, previous, identity) {
+  const source = pipeline ?? (
+    previous?.started_at === identity.startedAt
+      && previous?.project === identity.project
+      && previous?.branch === identity.branch
+      && previous?.pr_url === identity.prUrl
+      ? previous : null
+  )
+  if (!source?.pipeline_run_id) return null
+  const metrics = {
+    pipeline_run_id: source.pipeline_run_id,
+    findings: capturedCount(source.findings),
+    review_rounds: capturedCount(source.review_rounds),
+    ask_user_count: capturedCount(source.ask_user_count),
+    gate_failures: capturedCount(source.gate_failures),
+  }
+  return Object.values(metrics).some(value => value === null) ? null : metrics
+}
+
 function capture(options, taskId, argv) {
   if (!TASK_ID_PATTERN.test(taskId)) throw new Error('capture needs a safe task id')
   let outcome = null
@@ -1478,6 +1498,7 @@ function capture(options, taskId, argv) {
   const branch = meta?.branch ?? previous?.branch ?? `fm/${taskId}`
   const prUrl = meta?.pr ?? previous?.pr_url ?? mergeReceipt?.pr_url
   const pipeline = readPipelineMetrics(options.pipelineDbPath, {project, branch, prUrl})
+  const processMetrics = resolvePipelineMetrics(pipeline, previous, {startedAt, project, branch, prUrl})
   const row = {
     task: taskId,
     worktree: meta?.worktree ?? previous?.worktree,
@@ -1499,11 +1520,11 @@ function capture(options, taskId, argv) {
     local_landed_at: meta?.local_landed_at ?? previous?.local_landed_at,
     teardown_at: meta?.teardown_at ?? previous?.teardown_at,
     outcome: outcome ?? meta?.outcome ?? previous?.outcome,
-    pipeline_run_id: pipeline?.pipeline_run_id ?? previous?.pipeline_run_id,
-    findings: pipeline?.findings ?? previous?.findings,
-    review_rounds: pipeline?.review_rounds ?? previous?.review_rounds,
-    ask_user_count: pipeline?.ask_user_count ?? previous?.ask_user_count,
-    gate_failures: pipeline?.gate_failures ?? previous?.gate_failures,
+    pipeline_run_id: processMetrics?.pipeline_run_id,
+    findings: processMetrics?.findings,
+    review_rounds: processMetrics?.review_rounds,
+    ask_user_count: processMetrics?.ask_user_count,
+    gate_failures: processMetrics?.gate_failures,
   }
   for (const column of CAPTURE_COLUMNS) row[column] = String(row[column] ?? '')
   fs.mkdirSync(path.dirname(options.rawFile), {recursive: true})
