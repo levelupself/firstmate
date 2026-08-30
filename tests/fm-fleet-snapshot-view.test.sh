@@ -1411,6 +1411,7 @@ test_parked_scout_decision_stays_pending() {
 # adapter's own frame reader, which a symlinked stand-in directory would not
 # carry. The homes below are empty, so the real snapshot renders an empty board.
 painter_bin() {  # <home> -> the bin dir the banner runs from
+<<<<<<< HEAD
   local home=$1 fakebin="$1/fakebin"
   mkdir -p "$fakebin"
   ln -s "$ROOT/bin" "$home/bin"
@@ -1450,6 +1451,16 @@ write_cockpit_record() {  # <home> <fleet-pane-ids> <fleet-pane-sections>
   cat > "$home/state/.herdr-cockpit" <<EOF
 version=3
 home=$exact_home
+=======
+  printf '%s\n' "$ROOT/bin"
+}
+
+write_cockpit_record() {  # <home> <fleet-pane-ids> <fleet-pane-sections>
+  local home=$1 ids=$2 sections=$3
+  cat > "$home/state/.herdr-cockpit" <<EOF
+version=3
+home=$home
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
 session=lab-session
 workspace_id=w9
 tab_id=w9:t1
@@ -1460,19 +1471,29 @@ fleet_pane_sections=$sections
 EOF
 }
 
+<<<<<<< HEAD
 # Run a watched banner in the background and publish its pid as PAINTER_PID.
 # Output and stderr land in <home>/<tag>.out and <home>/<tag>.err. Keeping the
 # process as this shell's direct child makes teardown portable to Bash 3.2.
+=======
+# Run a watched banner in the background and echo its pid. Output and stderr
+# land in <home>/<tag>.out and <home>/<tag>.err.
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
 start_painter() {  # <home> <bin> <pane-id> <tag> [<section>]
   local home=$1 dir=$2 pane=$3 tag=$4 section=${5:-}
   local -a cmd=("$dir/fm-fleet-view.sh" --watch 0.1)
   [ -z "$section" ] || cmd+=(--section "$section")
   FM_HOME="$home" COLUMNS=45 LINES=20 \
     HERDR_SESSION=lab-session HERDR_PANE_ID="$pane" HERDR_TAB_ID=w9:t1 \
+<<<<<<< HEAD
     PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" \
     PAINTER_REPORTED_SECTIONS="$section" PATH="$home/fakebin:$PATH" \
     "${cmd[@]}" > "$home/$tag.out" 2> "$home/$tag.err" &
   PAINTER_PID=$!
+=======
+    "${cmd[@]}" > "$home/$tag.out" 2> "$home/$tag.err" &
+  printf '%s\n' "$!"
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
 }
 
 reap_painter() {  # <pid>
@@ -1498,8 +1519,12 @@ test_watch_outside_an_adopted_frame_keeps_painting() {
   home=$(make_home painter-standalone)
   dir=$(painter_bin "$home")
   # The documented fallback panel: a home with no adopted frame at all.
+<<<<<<< HEAD
   start_painter "$home" "$dir" w9:p7 fallback
   pid=$PAINTER_PID
+=======
+  pid=$(start_painter "$home" "$dir" w9:p7 fallback)
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
   wait_for_paint "$home/fallback.out" 'FLEET STATUS' \
     || { reap_painter "$pid"; fail "the fallback fleet panel painted nothing: $(cat "$home/fallback.err")"; }
   kill -0 "$pid" 2>/dev/null || fail "the fallback fleet panel must keep running with no adopted frame"
@@ -1510,7 +1535,10 @@ test_watch_outside_an_adopted_frame_keeps_painting() {
   write_cockpit_record "$home" 'w9:p2,w9:p3' 'waiting|ready'
   FM_HOME="$home" COLUMNS=45 LINES=20 \
     HERDR_SESSION=lab-session HERDR_PANE_ID=w9:p9 HERDR_TAB_ID=w9:t4 \
+<<<<<<< HEAD
     PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" PATH="$home/fakebin:$PATH" \
+=======
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
     "$dir/fm-fleet-view.sh" --watch 0.1 > "$home/other-tab.out" 2>&1 &
   pid=$!
   rc=0
@@ -1528,10 +1556,16 @@ test_watch_refuses_to_paint_inside_a_bound_frame_it_is_not_recorded_for() {
   write_cockpit_record "$home" 'w9:p2,w9:p3' 'waiting|ready'
   # w9:p5 sits on the recorded cockpit tab but is not a recorded fleet pane:
   # exactly the stranded previous-generation banner a region rebuild leaves.
+<<<<<<< HEAD
   out=$(fm_run_timed 30 env FM_HOME="$home" COLUMNS=45 LINES=20 \
     HERDR_SESSION=lab-session HERDR_PANE_ID=w9:p5 HERDR_TAB_ID=w9:t1 \
     PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" PATH="$home/fakebin:$PATH" \
     "$dir/fm-fleet-view.sh" --watch 0.1 2>&1) && rc=0 || rc=$?
+=======
+  out=$(FM_HOME="$home" COLUMNS=45 LINES=20 \
+    HERDR_SESSION=lab-session HERDR_PANE_ID=w9:p5 HERDR_TAB_ID=w9:t1 \
+    timeout 30 "$dir/fm-fleet-view.sh" --watch 0.1 2>&1) && rc=0 || rc=$?
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
   expect_code 0 "$rc" "an unrecorded banner should retire cleanly, not error out"
   assert_contains "$out" 'not this frame' \
     "an unrecorded banner must say why it stopped"
@@ -1539,11 +1573,17 @@ test_watch_refuses_to_paint_inside_a_bound_frame_it_is_not_recorded_for() {
     "an unrecorded banner must not paint a single frame inside a bound cockpit"
 
   # A recorded pane asked for someone else's sections is equally not its owner.
+<<<<<<< HEAD
   out=$(fm_run_timed 30 env FM_HOME="$home" COLUMNS=45 LINES=20 \
     HERDR_SESSION=lab-session HERDR_PANE_ID=w9:p2 HERDR_TAB_ID=w9:t1 \
     PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" \
     PAINTER_REPORTED_SECTIONS=waiting PATH="$home/fakebin:$PATH" \
     "$dir/fm-fleet-view.sh" --watch 0.1 --section ready 2>&1) && rc=0 || rc=$?
+=======
+  out=$(FM_HOME="$home" COLUMNS=45 LINES=20 \
+    HERDR_SESSION=lab-session HERDR_PANE_ID=w9:p2 HERDR_TAB_ID=w9:t1 \
+    timeout 30 "$dir/fm-fleet-view.sh" --watch 0.1 --section ready 2>&1) && rc=0 || rc=$?
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
   expect_code 0 "$rc" "a mismatched-section banner should retire cleanly"
   assert_not_contains "$out" 'FLEET STATUS' \
     "a banner showing sections the frame records for another pane must not paint"
@@ -1555,8 +1595,12 @@ test_watch_retires_when_its_pane_leaves_the_binding() {
   home=$(make_home painter-retire)
   dir=$(painter_bin "$home")
   write_cockpit_record "$home" 'w9:p2,w9:p3' 'waiting|ready'
+<<<<<<< HEAD
   start_painter "$home" "$dir" w9:p2 bound waiting
   pid=$PAINTER_PID
+=======
+  pid=$(start_painter "$home" "$dir" w9:p2 bound waiting)
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
   wait_for_paint "$home/bound.out" 'YOUR DECISIONS' \
     || { reap_painter "$pid"; fail "the recorded banner painted nothing: $(cat "$home/bound.err")"; }
   kill -0 "$pid" 2>/dev/null \
@@ -1578,6 +1622,7 @@ test_watch_retires_when_its_pane_leaves_the_binding() {
   pass "a watched banner retires once the frame stops recording its pane"
 }
 
+<<<<<<< HEAD
 test_watch_retires_when_its_bound_frame_record_disappears() {
   local home dir pid waited=0
   home=$(make_home painter-record-loss)
@@ -1632,22 +1677,34 @@ test_watch_retires_when_its_recorded_pane_moves_to_another_tab() {
   pass "a recorded banner retires when its pane moves to another tab"
 }
 
+=======
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
 test_watch_refuses_a_second_painter_for_one_bound_pane() {
   local home dir first second out rc
   home=$(make_home painter-single-owner)
   dir=$(painter_bin "$home")
   write_cockpit_record "$home" 'w9:p2,w9:p3' 'waiting|ready'
+<<<<<<< HEAD
   start_painter "$home" "$dir" w9:p2 owner waiting
   first=$PAINTER_PID
+=======
+  first=$(start_painter "$home" "$dir" w9:p2 owner waiting)
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
   # Painting proves the pane was claimed: the claim is taken before the loop.
   wait_for_paint "$home/owner.out" 'YOUR DECISIONS' \
     || { reap_painter "$first"; fail "the first banner must own its pane: $(cat "$home/owner.err")"; }
 
+<<<<<<< HEAD
   out=$(fm_run_timed 30 env FM_HOME="$home" COLUMNS=45 LINES=20 \
     HERDR_SESSION=lab-session HERDR_PANE_ID=w9:p2 HERDR_TAB_ID=w9:t1 \
     PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" \
     PAINTER_REPORTED_SECTIONS=waiting PATH="$home/fakebin:$PATH" \
     "$dir/fm-fleet-view.sh" --watch 0.1 --section waiting 2>&1) && rc=0 || rc=$?
+=======
+  out=$(FM_HOME="$home" COLUMNS=45 LINES=20 \
+    HERDR_SESSION=lab-session HERDR_PANE_ID=w9:p2 HERDR_TAB_ID=w9:t1 \
+    timeout 30 "$dir/fm-fleet-view.sh" --watch 0.1 --section waiting 2>&1) && rc=0 || rc=$?
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
   expect_code 1 "$rc" "a second painter for one bound pane must refuse"
   assert_contains "$out" 'already painting' \
     "the refusal must name the conflict"
@@ -1659,14 +1716,19 @@ test_watch_refuses_a_second_painter_for_one_bound_pane() {
 
   # The owner's exit releases the pane, so the next launch takes it over
   # rather than inheriting a stale refusal.
+<<<<<<< HEAD
   start_painter "$home" "$dir" w9:p2 successor waiting
   second=$PAINTER_PID
+=======
+  second=$(start_painter "$home" "$dir" w9:p2 successor waiting)
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
   wait_for_paint "$home/successor.out" 'YOUR DECISIONS' \
     || { reap_painter "$second"; fail "a released bound pane must accept a fresh painter: $(cat "$home/successor.err")"; }
   reap_painter "$second"
   pass "one bound cockpit pane admits exactly one painter at a time"
 }
 
+<<<<<<< HEAD
 test_watch_claims_ownership_when_the_frame_is_published_after_launch() {
   local home dir first out rc waited=0
   home=$(make_home painter-late-binding)
@@ -1718,6 +1780,8 @@ test_watch_refuses_a_recorded_pane_with_wrong_process_identity() {
   pass "a recorded pane paints only with the authoritative process identity"
 }
 
+=======
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_main_inventory_orphan_and_unstructured_disclosure
@@ -1746,9 +1810,13 @@ test_watch_computes_before_paint_and_erases_shorter_frames
 test_watch_outside_an_adopted_frame_keeps_painting
 test_watch_refuses_to_paint_inside_a_bound_frame_it_is_not_recorded_for
 test_watch_retires_when_its_pane_leaves_the_binding
+<<<<<<< HEAD
 test_watch_retires_when_its_bound_frame_record_disappears
 test_watch_retires_when_its_recorded_pane_moves_to_another_tab
 test_watch_refuses_a_second_painter_for_one_bound_pane
 test_watch_claims_ownership_when_the_frame_is_published_after_launch
 test_watch_refuses_a_recorded_pane_with_wrong_process_identity
+=======
+test_watch_refuses_a_second_painter_for_one_bound_pane
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
 test_non_watch_outputs_remain_byte_exact

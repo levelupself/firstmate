@@ -57,11 +57,14 @@ the sections are always rendered in that priority order, whatever order they
 were asked for. Without --section the panel renders its default banner:
 a heading followed by waiting, ready, in-flight, and blocked.
 
+<<<<<<< HEAD
 READY holds every queued task with no open dependency and no active hold. Rows
 that can be handed to a worker now are listed with a bullet; rows the backlog
 cannot confirm are listed with a "?" and the reason, and the heading counts the
 two apart.
 
+=======
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
 Inside a Herdr cockpit frame, --watch paints only while that home's frame
 record still names this pane for these sections, and only one banner paints a
 recorded pane at a time; a banner the frame stops naming retires and leaves the
@@ -531,13 +534,97 @@ painter_claim() {
   trap 'fm_lock_release "$PAINTER_LOCK" || true' EXIT
 }
 
+# --- painter ownership ------------------------------------------------------
+#
+# Only watch mode is constrained. A one-shot render is a read, and the cockpit
+# panel embeds exactly that read from its own pinned head pane, which is
+# deliberately not a fleet pane.
+
+# painter_binding: how this watched banner relates to this home's adopted
+# cockpit frame. Publishes PAINTER_BINDING as one of:
+#
+#   standalone  no frame record answers for this pane - the documented
+#               fm-fleet-view.sh --watch fallback panel, an ordinary pane on
+#               another tab, or any non-Herdr runtime. Nothing constrains it.
+#   bound       the frame records THIS pane, for exactly the sections this
+#               banner renders.
+#   unbound     the frame is recorded for this home and session and this pane
+#               sits inside it, but the frame does not record this pane as the
+#               painter of these sections. A region rebuilt around new panes
+#               leaves the previous generation here.
+#
+# Membership decides first and the tab only breaks the remaining tie, so a
+# recorded fleet pane is bound whatever tab the record claims, and an
+# unrecorded pane is judged only against the frame it actually sits in.
+PAINTER_BINDING=standalone
+painter_binding() {
+  local recorded index=0 pane
+  PAINTER_BINDING=standalone
+  [ -n "${HERDR_PANE_ID:-}" ] || return 0
+  if ! declare -F fm_backend_herdr_cockpit_record_snapshot >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-backend.sh
+    . "$SCRIPT_DIR/fm-backend.sh" 2>/dev/null || return 0
+    fm_backend_source herdr 2>/dev/null || return 0
+  fi
+  fm_backend_herdr_cockpit_record_snapshot "$PAINTER_STATE" "$PAINTER_HOME" || return 0
+  # A version-1 record predates the fleet region and records no painter at all.
+  [ -n "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_IDS" ] || return 0
+  [ "$FM_BACKEND_HERDR_COCKPIT_SESSION" = "${HERDR_SESSION:-default}" ] || return 0
+  while IFS= read -r pane; do
+    [ -n "$pane" ] || continue
+    index=$((index + 1))
+    [ "$pane" = "$HERDR_PANE_ID" ] || continue
+    recorded=$(fm_backend_herdr_cockpit_fleet_pane_section "$index")
+    # No recorded argument is the version-2 shape: one pane, launched before the
+    # flag existed, so there is no section to disagree with.
+    if [ -z "$recorded" ]; then
+      PAINTER_BINDING=bound
+    elif normalize_sections "$recorded" && [ "$NORMALIZED_SECTIONS" = "$SECTIONS" ]; then
+      PAINTER_BINDING=bound
+    else
+      PAINTER_BINDING=unbound
+    fi
+    return 0
+  done <<EOF
+$(printf '%s' "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_IDS" | tr ',' '\n')
+EOF
+  # Not recorded anywhere in the region. Inside the recorded frame that makes it
+  # a stranded painter; anywhere else it is the operator's own panel.
+  [ "${HERDR_TAB_ID:-}" = "$FM_BACKEND_HERDR_COCKPIT_TAB_ID" ] || return 0
+  PAINTER_BINDING=unbound
+}
+
+painter_retire() {  # <reason>
+  fm_terminal_watch_reset
+  printf 'fm-fleet-view: %s is not this frame'"'"'s recorded painter for these sections; %s\n' \
+    "$HERDR_PANE_ID" "$1" >&2
+}
+
 if [ "$WATCH" = 1 ]; then
   painter_binding
   if [ "$PAINTER_BINDING" = unbound ]; then
     painter_retire 'leaving the frame to the panes it records'
     exit 0
   fi
+<<<<<<< HEAD
   painter_claim || exit 1
+=======
+  PAINTER_LOCK=
+  if [ "$PAINTER_BINDING" = bound ]; then
+    # One painter per bound pane. fm_lock_try_acquire owns the staleness and
+    # PID-reuse rules: a recorded owner that is merely gone is reclaimed, and
+    # anything it cannot prove dead keeps the lock and refuses this launch.
+    # shellcheck source=bin/fm-wake-lib.sh
+    . "$SCRIPT_DIR/fm-wake-lib.sh"
+    PAINTER_LOCK="$PAINTER_STATE/.fleet-painter-$HERDR_PANE_ID.lock"
+    if ! fm_lock_try_acquire "$PAINTER_LOCK"; then
+      printf 'fm-fleet-view: another fleet banner (pid %s) is already painting %s; refusing to paint over it.\n' \
+        "${FM_LOCK_HELD_PID:-unknown}" "$HERDR_PANE_ID" >&2
+      exit 1
+    fi
+    trap 'fm_lock_release "$PAINTER_LOCK" || true' EXIT
+  fi
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
   trap 'fm_terminal_watch_reset; exit 0' INT TERM HUP
   while :; do
     # Re-read the binding every redraw, so a banner whose pane the frame stops
@@ -547,7 +634,10 @@ if [ "$WATCH" = 1 ]; then
       painter_retire 'retiring rather than painting beside its replacement'
       exit 0
     fi
+<<<<<<< HEAD
     painter_claim || exit 1
+=======
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
     frame=$(render_once) || true
     # A write that fails is a pane that has gone away underneath this loop:
     # stop rather than spin forever against a terminal nobody can read.

@@ -118,6 +118,7 @@ Twenty consecutive captures of a fixture alternating three-line and one-line fra
 
 ## Watched-banner ownership inside a cockpit fleet region
 
+<<<<<<< HEAD
 Verified on 2026-08-10 against the real herdr 0.8.0 executable, in a guarded non-`default` lab session provisioned by `bin/fm-herdr-lab.sh`.
 
 The accepted verification uses this exact lifecycle scaffold from the repository root.
@@ -152,6 +153,16 @@ For the record-loss counterfactual, `bash tests/fm-fleet-snapshot-view.test.sh` 
 
 Two facts about herdr 0.8.0 bound this design and are recorded because the fix depends on them.
 Closing a fleet pane already retires its banner, so process reaping is not the gap; and `pane run` types into the pane's shell, so it cannot start a second banner in a pane whose banner is still in the foreground.
+=======
+Verified on 2026-08-10 against the real herdr 0.8.0 executable, in a guarded
+non-`default` lab session provisioned by `bin/fm-herdr-lab.sh`.
+
+Two facts about herdr 0.8.0 bound this design and are recorded because the fix
+depends on them.
+Closing a fleet pane already retires its banner, so process reaping is not the
+gap; and `pane run` types into the pane's shell, so it cannot start a second
+banner in a pane whose banner is still in the foreground.
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
 
 ```
 === E2: close a fleet pane; is its watcher reaped? ===
@@ -162,7 +173,13 @@ Closing a fleet pane already retires its banner, so process reaping is not the g
 ```
 
 The gap is a region rebuild.
+<<<<<<< HEAD
 Adoption that finds no readable record builds a fresh region and leaves the previous generation's panes untouched, so before this rule every rebuild added a live banner rather than replacing one.
+=======
+Adoption that finds no readable record builds a fresh region and leaves the
+previous generation's panes untouched, so before this rule every rebuild added
+a live banner rather than replacing one.
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
 
 ```
 === E4: record lost -> re-adopt builds a SECOND region; old watchers? ===
@@ -171,7 +188,12 @@ Adoption that finds no readable record builds a fresh region and leaves the prev
     pid=1686794 STILL PAINTING (unbound)
 ```
 
+<<<<<<< HEAD
 The same rebuild after the rule strands nothing, and the newly recorded panes keep painting.
+=======
+The same rebuild after the rule strands nothing, and the newly recorded panes
+keep painting.
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
 
 ```
 generation 1 fleet panes: w1:p2,w1:p3,w1:p4
@@ -190,11 +212,25 @@ generation 2 fleet panes: w1:p5,w1:p6,w1:p7
 RESULT stranded=0 live_bound_panes=3
 ```
 
+<<<<<<< HEAD
 Retirement stops the banner and nothing else: the emptied panes stay on the tab for the operator, which is why the tab still reports seven panes above.
 
 Repaint contention was the first hypothesis and does not survive.
 Two banners painting one pane's terminal at 1-second intervals, with different sections and with frames taller than the pane, left exactly one complete board in the pane across repeated captures, because each paint homes the cursor and erases to the end of the display.
 Contention therefore costs authorship - the visible board silently alternates between owners - rather than accumulating rows, which is what makes single ownership the guarantee worth enforcing.
+=======
+Retirement stops the banner and nothing else: the emptied panes stay on the tab
+for the operator, which is why the tab still reports seven panes above.
+
+Repaint contention was the first hypothesis and does not survive.
+Two banners painting one pane's terminal at 1-second intervals, with different
+sections and with frames taller than the pane, left exactly one complete board
+in the pane across repeated captures, because each paint homes the cursor and
+erases to the end of the display.
+Contention therefore costs authorship - the visible board silently alternates
+between owners - rather than accumulating rows, which is what makes single
+ownership the guarantee worth enforcing.
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
 
 ```
 === B2: add a SECOND painter with a DIFFERENT frame on the same tty ===
@@ -203,6 +239,7 @@ Contention therefore costs authorship - the visible board silently alternates be
   verdict: STABLE
 ```
 
+<<<<<<< HEAD
 Counting banner processes with a bare process match overstates them roughly twofold: each redraw forks a command substitution that carries the same argv as its parent for the length of one render.
 Only the loop process is a banner.
 
@@ -227,3 +264,9 @@ trap - EXIT
 
 For a live post-merge frame, first run the updated `bin/fm-cockpit.sh status`, compare its recorded pane ids with Herdr's visible panes, issue the same warning, and use Herdr's interactive close action only for positively identified legacy fleet panes.
 If identity is ambiguous, leave the pane in place rather than guessing.
+=======
+Counting banner processes with a bare process match overstates them roughly
+twofold: each redraw forks a command substitution that carries the same argv as
+its parent for the length of one render.
+Only the loop process is a banner.
+>>>>>>> 66ad5a9 (fix(herdr): retire fleet banners the cockpit frame no longer records)
