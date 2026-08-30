@@ -125,6 +125,9 @@ mkdir -p "$FM_HOME/data/900-broken-cycle"
 cat > "$FM_HOME/data/900-broken-cycle/usage.json" <<'JSON'
 {"schema":"fm-task-usage.v1","id":"900-broken-cycle","harness":"codex","configured_model":"default","actual_models":[],"models":[],"tokens":{"input":0,"output":0,"cache_read":0,"cache_write":0},"cost_usd":0,"calls":0,"spawned_at":"2026-08-10T00:00:00Z","captured_at":"2026-08-10T01:00:00Z"}
 JSON
+mkdir -p "$FM_HOME/data/899-pretracking-task"
+printf '%s\n' '{"generated":"2026-01-01T00:00:00.000Z","overview":{"cost":0}}' \
+  > "$FM_HOME/data/899-pretracking-task/usage-baseline.json"
 
 # --- query helper -----------------------------------------------------------
 #
@@ -152,7 +155,6 @@ query() {  # <sql>
   --failure-mode quietly \
   --round 1:discovery \
   --round '2:churn:the acceptance list changed' \
-  --findings 5 --review-rounds 2 --ask-user 1 --gate-failures 0 \
   --title 'Introduce memory' >/dev/null \
   || fail 'annotate should record a task'
 "$STORE" annotate 902-extend-memory --failure-mode loudly --round 1:discovery >/dev/null \
@@ -166,13 +168,19 @@ done
 [ "$(wc -c < "$FM_HOME/data/effort-annotations.jsonl")" -eq "$ANNOTATION_SIZE" ] \
   || fail 'rejected lifecycle annotation options changed the durable annotation record'
 pass 'manual annotations reject lifecycle-owned outcome and timestamp fields'
-printf '%s\n' '{"task":"905-modify-memory","pr_opened_at":"2026-03-01T00:30:00Z"}' \
+for process_option in --findings --review-rounds --ask-user --gate-failures; do
+  if "$STORE" annotate 902-extend-memory "$process_option" 1 >/dev/null 2>&1; then
+    fail "annotate accepted pipeline-owned option $process_option"
+  fi
+done
+pass 'manual annotations reject pipeline-owned process fields'
+printf '%s\n' '{"task":"905-modify-memory","pr_opened_at":"2026-03-01T00:30:00Z","findings":9,"review_rounds":8,"ask_user_count":7,"gate_failures":6}' \
   >> "$FM_HOME/data/effort-annotations.jsonl"
 
 # --- rebuild ----------------------------------------------------------------
 
 REBUILD_OUT=$("$STORE" rebuild 2>&1) || fail "rebuild failed: $REBUILD_OUT"
-assert_contains "$REBUILD_OUT" 'rebuilt 9 tasks' 'rebuild should report every task it discovered'
+assert_contains "$REBUILD_OUT" 'rebuilt 10 tasks' 'rebuild should report every task it discovered'
 assert_present "$DB" 'rebuild should create the store'
 pass 'rebuild builds the store from raw lifecycle capture, durable task usage, and git'
 
@@ -184,6 +192,10 @@ MANUAL_PR_OPEN=$(query "SELECT pr_opened_at FROM task WHERE task_id = '905-modif
 [ "$MANUAL_PR_OPEN" = 'NULL' ] \
   || fail "manual annotation populated PR-open lifecycle time: $MANUAL_PR_OPEN"
 pass 'PR-open timestamp remains missing without forge lifecycle proof'
+MANUAL_PROCESS=$(query "SELECT findings, review_rounds, ask_user_count, gate_failures FROM task WHERE task_id = '905-modify-memory'")
+[ "$MANUAL_PROCESS" = 'NULL|NULL|NULL|NULL' ] \
+  || fail "manual annotation populated pipeline-owned process cost: $MANUAL_PROCESS"
+pass 'pipeline process cost remains missing without a structured run record'
 
 # Rebuild consumed the durable snapshots and never queried account-wide logs.
 [ ! -e "$ROOTDIR/codeburn-called" ] || fail 'rebuild unexpectedly queried mutable codeburn history'
@@ -246,6 +258,14 @@ BROKEN_CYCLE=$(query "SELECT tokens_in, tokens_out, notional_cost_usd FROM task 
 [ "$(query "SELECT status FROM task_source WHERE task_id = '900-broken-cycle' AND source = 'raw'")" = missing ] \
   || fail 'a task discovered only from a usage artifact did not show its missing lifecycle row'
 pass 'legacy broken-attribution snapshots are discovered but their zero totals remain missing'
+
+PRETRACKING=$(query "SELECT task_id, findings, review_rounds, ask_user_count, gate_failures FROM task WHERE task_id = '899-pretracking-task'")
+[ "$PRETRACKING" = '899-pretracking-task|NULL|NULL|NULL|NULL' ] \
+  || fail "a pre-tracking task was absent or acquired invented process values: $PRETRACKING"
+PRETRACKING_ISSUE=$(query "SELECT kind FROM ingest_issue WHERE task_id = '899-pretracking-task'")
+[ "$PRETRACKING_ISSUE" = 'usage-pre-deterministic-attribution' ] \
+  || fail "a pre-tracking task did not retain its honest missingness reason: $PRETRACKING_ISSUE"
+pass 'a baseline-only pre-tracking task remains visible with NULL values and a stamped reason'
 
 # --- nothing is silently dropped -------------------------------------------
 
@@ -339,7 +359,7 @@ CAPTURE_OUT=$("$STORE" capture 910-lifecycle --outcome pr-merged 2>&1) \
   || fail "lifecycle capture failed: $CAPTURE_OUT"
 assert_present "$DB" 'a lifecycle capture should create the store automatically'
 LIFECYCLE=$(query "SELECT launch_to_pr_seconds, tokens_in, tokens_out, notional_cost_usd, pr_opened_at, merged_at, teardown_at, outcome FROM task WHERE task_id = '910-lifecycle'")
-[ "$LIFECYCLE" = '900|321|45|1.25|2026-06-01T10:15:00Z|2026-06-01T11:00:00Z|2026-06-01T11:05:00Z|pr-merged' ] \
+[ "$LIFECYCLE" = '900|321|45|1.25|2026-06-01T10:15:00Z|2026-06-01T11:00:00Z|2026-06-01T11:05:00Z|merged' ] \
   || fail "captured lifecycle fields were incomplete: $LIFECYCLE"
 pass 'lifecycle capture creates and populates the store without a remembered rebuild'
 
@@ -520,9 +540,34 @@ fm_write_meta "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" \
 "$STORE" capture 911-receipt-outcome >/dev/null \
   || fail 'receipt-backed lifecycle capture failed'
 RECEIPT_OUTCOME=$(query "SELECT merged_at IS NOT NULL, outcome FROM task WHERE task_id = '911-receipt-outcome'")
-[ "$RECEIPT_OUTCOME" = '1|pr-merged' ] \
+[ "$RECEIPT_OUTCOME" = '1|merged' ] \
   || fail "a durable sanctioned merge receipt did not supply merge lifecycle proof: $RECEIPT_OUTCOME"
 pass 'durable merge receipt supplies missing merge lifecycle proof'
+
+fm_write_meta "$FM_HOME/state/918-forge-time-missing.meta" \
+  "worktree=$ROOTDIR/worktrees/forge-time-missing" \
+  "project=$PROJECT" \
+  "harness=codex" \
+  "kind=ship" \
+  "mode=no-mistakes" \
+  "spawned_at=2026-06-06T10:00:00Z" \
+  "pr=https://github.com/example/repo/pull/18" \
+  "outcome=pr-merged"
+fm_write_meta "$FM_HOME/data/pr-merges/918-forge-time-missing.receipt" \
+  "schema=fm-pr-merge.v2" \
+  "task_id=918-forge-time-missing" \
+  "spawned_at=2026-06-06T10:00:00Z" \
+  "phase=merged" \
+  "pr=https://github.com/example/repo/pull/18" \
+  "authorization=live-meta" \
+  "prepared_epoch=1780743600" \
+  "merged_at="
+"$STORE" capture 918-forge-time-missing --outcome pr-merged >/dev/null \
+  || fail 'forge-time-missing lifecycle capture failed'
+FORGE_TIME_MISSING=$(query "SELECT merged_at, outcome FROM task WHERE task_id = '918-forge-time-missing'")
+[ "$FORGE_TIME_MISSING" = 'NULL|merged' ] \
+  || fail "an unavailable forge time was replaced or lost the proven outcome: $FORGE_TIME_MISSING"
+pass 'an unavailable forge merge time remains NULL while the sanctioned outcome stays merged'
 
 mv "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt" "$FM_HOME/data/pr-merges/911-receipt-outcome.target"
 ln -s 911-receipt-outcome.target "$FM_HOME/data/pr-merges/911-receipt-outcome.receipt"

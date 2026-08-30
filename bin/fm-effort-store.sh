@@ -31,16 +31,18 @@
 # Annotation options (every one is optional and recorded exactly as given):
 #   --failure-mode loudly|quietly   would a defect here be caught, or only felt
 #   --round <n>:<discovery|churn>[:<note>]   repeatable, one per extra round
-#   --findings <n> --review-rounds <n> --ask-user <n> --gate-failures <n>
 #   --title <text> --branch <name> --pr-url <url> --backend <name>
 #   --commit <sha>                  repeatable; the task-to-commit link
 #   --reverted yes|no
 #
 # `capture` is the lifecycle-owned append-and-rebuild path. It reads stamped
-# task metadata and the durable usage snapshot. Operators normally use `report`.
+# task metadata, a prior raw row when volatile metadata is gone, the durable
+# usage snapshot, and matching settled no-mistakes rounds. Operators normally
+# use `report`.
 #
 # Environment:
 #   FM_HOME                              selects the home whose data/ is used
+#   FM_NO_MISTAKES_STATE_DB_OVERRIDE     test/runtime override for pipeline data
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -140,7 +142,10 @@ fi
 
 node -e '
 const fs = require("fs")
+const path = require("path")
 const [out, dbPath, rawFile, annotationsFile, dataDir, stateDir, importGraph, taskId] = process.argv.slice(1)
+const pipelineDbPath = process.env.FM_NO_MISTAKES_STATE_DB_OVERRIDE
+  || (process.env.HOME ? path.join(process.env.HOME, ".no-mistakes", "state.sqlite") : null)
 fs.writeFileSync(out, JSON.stringify({
   dbPath,
   rawFile,
@@ -149,6 +154,7 @@ fs.writeFileSync(out, JSON.stringify({
   stateDir,
   importGraph: importGraph === "true",
   taskId: taskId || null,
+  pipelineDbPath,
 }))
 ' "$CONFIG" "$DB" "$DATA/cost-attribution.tsv" "$DATA/effort-annotations.jsonl" \
   "$DATA" "$STATE" "$IMPORT_GRAPH" "$TASK_ID" || die "could not stage the ingestion config"

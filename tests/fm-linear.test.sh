@@ -27,6 +27,8 @@ set -u
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 JQ_DIR=$(command -v jq 2>/dev/null) && JQ_DIR=$(dirname "$JQ_DIR") || JQ_DIR=
 [ -n "$JQ_DIR" ] && BASE_PATH="$JQ_DIR:$BASE_PATH"
+NODE_DIR=$(command -v node 2>/dev/null) && NODE_DIR=$(dirname "$NODE_DIR") || NODE_DIR=
+[ -n "$NODE_DIR" ] && BASE_PATH="$NODE_DIR:$BASE_PATH"
 TMP_ROOT=$(fm_test_tmproot fm-linear-tests)
 
 # A fakebin `curl` standing in for Linear's GraphQL endpoint. It extracts the
@@ -117,6 +119,9 @@ printf '%s\n' "$*" >> "$FAKE_DIR/gh-axi.log"
 case "${1:-} ${2:-}" in
   "pr merge")
     [ -z "${FAKE_GH_AXI_MERGE_FAIL:-}" ] || { echo "gh-axi: pr merge refused" >&2; exit 1; }
+    ;;
+  "api "*)
+    printf '%s\n' 'merged: true' 'merged_at: "2026-08-20T12:45:00Z"'
     ;;
 esac
 exit 0
@@ -595,6 +600,7 @@ new_merge_home() {
 
 run_merge() {
   FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$HOME_DIR/state" \
+    FM_NO_MISTAKES_STATE_DB_OVERRIDE="$HOME_DIR/no-mistakes-state.sqlite" \
     "$ROOT/bin/fm-pr-merge.sh" "$@" 2>&1
 }
 

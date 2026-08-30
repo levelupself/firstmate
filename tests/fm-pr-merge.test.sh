@@ -7,6 +7,7 @@
 # Matrix:
 #   (a) merge records pr= and pr_head= before merging, and merges
 #   (b) merge is refused when gh-axi pr merge itself fails (no silent success)
+#   (b2) merge success is not stamped until the forge confirms the merged state
 #   (c) extra gh-axi pr merge args are forwarded after number and --repo
 #   (d) merge is refused before gh-axi when task meta is missing
 #   (e) PR URL is parsed to number + --repo for gh-axi (defaults to --squash)
@@ -52,9 +53,12 @@ make_case() {
 # headRefOid for fm-pr-check.sh's pr_head lookup. Args: case_dir head_sha
 add_gh_mocks() {
   local case_dir=$1 head=$2
-  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-}" = api ]; then
+  printf '%s\n' 'merged: true' 'merged_at: null'
+fi
 exit 0
 SH
   cat > "$case_dir/fakebin/gh" <<SH
@@ -168,12 +172,12 @@ test_records_pr_and_head_before_merging() {
     "project=$case_dir/project" \
     "kind=ship" \
     "mode=no-mistakes" \
-    "spawned_at=2026-08-30T10:00:00Z"
+    "spawned_at=2026-08-29T11:00:00Z"
   run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/10 \
     >/dev/null 2> "$case_dir/reuse.stderr" || fail "records-before-merge: reused task merge failed"
   [ -f "$case_dir/data/pr-merges/history/task-x1.2026-08-29T10-00-00Z.receipt" ] \
     || fail "records-before-merge: reused task did not retain completed receipt history"
-  assert_grep 'spawned_at=2026-08-30T10:00:00Z' "$receipt" \
+  assert_grep 'spawned_at=2026-08-29T11:00:00Z' "$receipt" \
     "records-before-merge: reused task did not create current launch provenance"
   assert_grep 'pr=https://github.com/example/repo/pull/10' "$receipt" \
     "records-before-merge: reused task retained the prior delivery identity"
@@ -199,6 +203,40 @@ test_merge_failure_propagates_after_recording() {
   assert_grep 'phase=prepared' "$case_dir/data/pr-merges/task-x1.receipt" \
     "merge-fails: the durable pre-merge provenance was not retained"
   pass "fm-pr-merge propagates a real merge failure without silently succeeding"
+}
+
+test_unconfirmed_merge_remains_prepared() {
+  local case_dir rc
+  case_dir=$(make_case merge-unconfirmed)
+  mkdir -p "$case_dir/wt"
+  : > "$case_dir/gh-axi.log"
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-}" = api ]; then
+  printf '%s\n' 'merged: false' 'merged_at: null'
+fi
+SH
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/14 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "merge-unconfirmed: fm-pr-merge should require forge confirmation"
+  assert_grep 'forge did not confirm' "$case_dir/stderr" \
+    "merge-unconfirmed: refusal did not explain the missing confirmation"
+  assert_grep 'phase=prepared' "$case_dir/data/pr-merges/task-x1.receipt" \
+    "merge-unconfirmed: unconfirmed provenance did not remain prepared"
+  assert_no_grep '^outcome=pr-merged$' "$case_dir/state/task-x1.meta" \
+    "merge-unconfirmed: unconfirmed merge stamped an outcome"
+  pass "fm-pr-merge stamps no outcome until the forge confirms the merged state"
 }
 
 test_extra_merge_args_forwarded() {
@@ -285,7 +323,7 @@ pr=https://github.com/example/repo/pull/21
 spawned_at=2026-08-29T10:00:00Z
 phase=prepared
 authorization=done-record
-prepared_epoch=1770000000
+prepared_epoch=1788000000
 EOF
 
   run_pr_merge "$case_dir" delivered-x1 https://github.com/example/repo/pull/21 \
@@ -298,7 +336,7 @@ EOF
     "prepared-retry: durable receipt did not advance to merged"
   assert_grep 'authorization=done-record' "$receipt" \
     "prepared-retry: durable receipt lost its original authorization"
-  assert_grep 'prepared_epoch=1770000000' "$receipt" \
+  assert_grep 'prepared_epoch=1788000000' "$receipt" \
     "prepared-retry: durable receipt lost the original preparation time"
   pass "fm-pr-merge retries the exact prepared merge after Done history is pruned"
 }
@@ -314,6 +352,9 @@ printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 if [ "${1:-} ${2:-}" = "pr merge" ]; then
   : > "$FM_TEST_GH_AXI_ENTERED"
   while [ ! -f "$FM_TEST_GH_AXI_RELEASE" ]; do sleep 0.05; done
+fi
+if [ "${1:-}" = api ]; then
+  printf '%s\n' 'merged: true' 'merged_at: null'
 fi
 SH
   cat > "$case_dir/fakebin/gh" <<'SH'
@@ -485,6 +526,7 @@ test_parses_pr_url_for_gh_axi() {
 
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
+test_unconfirmed_merge_remains_prepared
 test_extra_merge_args_forwarded
 test_torn_down_delivered_task_merges_with_durable_provenance
 test_missing_meta_refuses_before_merge

@@ -100,6 +100,7 @@ SH
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+[ "${1:-}" != api ] || printf '%s\n' 'merged: true' 'merged_at: "2026-08-20T12:45:00Z"'
 exit "${FM_TEST_GH_AXI_RC:-0}"
 SH
   # Plain glab, reproducing the real CLI's contract: its field output on stdout
@@ -587,8 +588,8 @@ test_valid_recording_and_merge_derivation() {
     >/dev/null 2>/dev/null || fail "valid merge wrapper failed"
   grep -qxF 'pr merge 37 --repo my-org/repo_name.with-dots --merge' "$dir/gh-axi.log" \
     || fail "merge wrapper did not preserve repository derivation and method"
-  grep -Eq '^merged_at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
-    "$dir/home/state/task-a.meta" || fail "successful PR merge did not stamp its lifecycle time"
+  grep -qxF 'merged_at=2026-08-20T12:45:00Z' "$dir/home/state/task-a.meta" \
+    || fail "successful PR merge did not stamp the forge lifecycle time"
   set +e
   FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/merged-watch.out" 2> "$dir/merged-watch.err"
   rc=$?
