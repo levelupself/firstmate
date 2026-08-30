@@ -1279,7 +1279,10 @@ test_relay_poll_stays_inert_and_surfaces_once() {
 test_session_start_surfaces_only_when_owed() {
   local off on out
   off=$(make_home startup-off relay-off)
-  out=$(PATH="$off/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$off" \
+  out=$(env -u TMUX -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_TAB_ID \
+    -u HERDR_WORKSPACE_ID -u HERDR_SOCKET_PATH -u CMUX_WORKSPACE_ID \
+    -u CMUX_SURFACE_ID -u __CFBundleIdentifier \
+    PATH="$off/fakebin:$PATH" FM_BACKEND=tmux FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$off" \
     FM_STATE_OVERRIDE="$off/state" FM_DATA_OVERRIDE="$off/data" \
     FM_CONFIG_OVERRIDE="$off/config" "$SESSION_START" 2>&1)
   assert_not_contains "$out" "Public commitments" \
@@ -1287,7 +1290,10 @@ test_session_start_surfaces_only_when_owed() {
 
   on=$(make_home startup-on)
   seed_commitment "$on" pf-start req-start discord main work-start
-  out=$(PATH="$on/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$on" \
+  out=$(env -u TMUX -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_TAB_ID \
+    -u HERDR_WORKSPACE_ID -u HERDR_SOCKET_PATH -u CMUX_WORKSPACE_ID \
+    -u CMUX_SURFACE_ID -u __CFBundleIdentifier \
+    PATH="$on/fakebin:$PATH" FM_BACKEND=tmux FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$on" \
     FM_STATE_OVERRIDE="$on/state" FM_DATA_OVERRIDE="$on/data" \
     FM_CONFIG_OVERRIDE="$on/config" "$SESSION_START" 2>&1)
   assert_contains "$out" "Public commitments awaiting delivery" \

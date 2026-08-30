@@ -1477,9 +1477,14 @@ SH
   cat > "$fakebin/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
+printf '%s\n' "$*" >> "$PAINTER_HOME/herdr-calls"
 mode=${PAINTER_REPORTED_MODE:-live}
 script=${PAINTER_VIEW:?}
 geometry=${PAINTER_GEOMETRY:-$PAINTER_HOME/fm-herdr-pane-geometry.sh}
+if [ "${1:-}" = pane ] && [ "${2:-}" = close ]; then
+  printf '{"result":{"type":"ok"}}\n'
+  exit 0
+fi
 if [ "${1:-}" = pane ] && [ "${2:-}" = get ]; then
   tab=$(cat "$PAINTER_HOME/reported-tab" 2>/dev/null || printf 'w9:t1')
   cwd=$PAINTER_HOME
@@ -1534,6 +1539,7 @@ start_painter() {  # <home> <bin> <pane-id> <tag> [<section>]
   FM_HOME="$home" COLUMNS=45 LINES=20 \
     HERDR_SESSION=lab-session HERDR_PANE_ID="$pane" HERDR_TAB_ID=w9:t1 \
     PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" \
+    PAINTER_GEOMETRY="${PAINTER_GEOMETRY:-}" \
     PAINTER_REPORTED_SECTIONS="$section" PATH="$home/fakebin:$PATH" \
     "${cmd[@]}" > "$home/$tag.out" 2> "$home/$tag.err" &
   PAINTER_PID=$!
@@ -1542,6 +1548,15 @@ start_painter() {  # <home> <bin> <pane-id> <tag> [<section>]
 reap_painter() {  # <pid>
   kill -TERM "$1" 2>/dev/null || true
   wait "$1" 2>/dev/null || true
+}
+
+wait_for_painter_exit() {  # <pid>
+  local pid=$1 waited=0
+  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 100 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  ! kill -0 "$pid" 2>/dev/null
 }
 
 # Wait for a banner to actually paint rather than for a fixed interval: these
@@ -1761,6 +1776,98 @@ test_watch_claims_ownership_when_the_frame_is_published_after_launch() {
   pass "a banner launched before publication claims ownership when bound"
 }
 
+test_watch_recovers_within_the_transient_geometry_budget() {
+  local home dir pid count closes
+  home=$(make_home painter-geometry-recovery)
+  dir=$(painter_bin "$home")
+  write_cockpit_record "$home" 'w9:p2' 'waiting'
+  cat > "$home/fm-herdr-pane-geometry.sh" <<'SH'
+#!/usr/bin/env bash
+count=$(cat "$PAINTER_HOME/geometry-count" 2>/dev/null || printf 0)
+count=$((count + 1))
+printf '%s\n' "$count" > "$PAINTER_HOME/geometry-count"
+if [ "$count" -lt 3 ]; then
+  exit 75
+fi
+printf '45 20\n'
+SH
+  chmod +x "$home/fm-herdr-pane-geometry.sh"
+  start_painter "$home" "$dir" w9:p2 recovering waiting
+  pid=$PAINTER_PID
+  wait_for_paint "$home/recovering.out" 'YOUR DECISIONS' \
+    || { reap_painter "$pid"; fail "a transient geometry failure did not recover within its retry budget: $(cat "$home/recovering.err")"; }
+  kill -0 "$pid" 2>/dev/null \
+    || fail "a painter that recovered transient geometry was evicted"
+  count=$(cat "$home/geometry-count" 2>/dev/null || printf 0)
+  [ "$count" -eq 3 ] \
+    || { reap_painter "$pid"; fail "transient geometry recovered after $count reads instead of the third read"; }
+  closes=$(grep -c '^pane close w9:p2' "$home/herdr-calls" 2>/dev/null || true)
+  [ "$closes" -eq 0 ] \
+    || { reap_painter "$pid"; fail "transient geometry recovery closed its live pane"; }
+  reap_painter "$pid"
+  pass "a genuinely transient geometry failure recovers within the bounded retry budget"
+}
+
+test_watch_evicts_permanently_unavailable_geometry_once() {
+  local home dir pid count closes
+  home=$(make_home painter-geometry-permanent)
+  dir=$(painter_bin "$home")
+  write_cockpit_record "$home" 'w9:p2' 'waiting'
+  cat > "$home/fm-herdr-pane-geometry.sh" <<'SH'
+#!/usr/bin/env bash
+count=$(cat "$PAINTER_HOME/geometry-count" 2>/dev/null || printf 0)
+printf '%s\n' "$((count + 1))" > "$PAINTER_HOME/geometry-count"
+exit 64
+SH
+  chmod +x "$home/fm-herdr-pane-geometry.sh"
+  start_painter "$home" "$dir" w9:p2 permanent waiting
+  pid=$PAINTER_PID
+  if ! wait_for_painter_exit "$pid"; then
+    reap_painter "$pid"
+    fail "permanently unavailable geometry kept retrying instead of evicting its pane"
+  fi
+  wait "$pid" 2>/dev/null || true
+  count=$(cat "$home/geometry-count" 2>/dev/null || printf 0)
+  [ "$count" -eq 1 ] \
+    || fail "permanent geometry was retried $count times instead of terminating on its first proof"
+  closes=$(grep -c '^pane close w9:p2' "$home/herdr-calls" 2>/dev/null || true)
+  [ "$closes" -eq 1 ] \
+    || fail "permanent geometry issued $closes exact-pane evictions instead of one"
+  assert_contains "$(cat "$home/permanent.err")" 'EVICTING fleet pane w9:p2' \
+    "permanent geometry eviction was not reported loudly"
+  pass "permanently unavailable geometry evicts its exact pane once without redraw retry"
+}
+
+test_watch_evicts_after_the_transient_geometry_budget() {
+  local home dir pid count closes
+  home=$(make_home painter-geometry-exhausted)
+  dir=$(painter_bin "$home")
+  write_cockpit_record "$home" 'w9:p2' 'waiting'
+  cat > "$home/fm-herdr-pane-geometry.sh" <<'SH'
+#!/usr/bin/env bash
+count=$(cat "$PAINTER_HOME/geometry-count" 2>/dev/null || printf 0)
+printf '%s\n' "$((count + 1))" > "$PAINTER_HOME/geometry-count"
+exit 75
+SH
+  chmod +x "$home/fm-herdr-pane-geometry.sh"
+  start_painter "$home" "$dir" w9:p2 exhausted waiting
+  pid=$PAINTER_PID
+  if ! wait_for_painter_exit "$pid"; then
+    reap_painter "$pid"
+    fail "transient geometry retried past its terminal boundary"
+  fi
+  wait "$pid" 2>/dev/null || true
+  count=$(cat "$home/geometry-count" 2>/dev/null || printf 0)
+  [ "$count" -eq 3 ] \
+    || fail "the transient geometry boundary used $count reads instead of three"
+  closes=$(grep -c '^pane close w9:p2' "$home/herdr-calls" 2>/dev/null || true)
+  [ "$closes" -eq 1 ] \
+    || fail "exhausted transient geometry issued $closes exact-pane evictions instead of one"
+  assert_contains "$(cat "$home/exhausted.err")" 'after 3 consecutive attempts' \
+    "the terminal retry boundary was not reported"
+  pass "transient geometry retries are bounded and terminal exhaustion evicts once"
+}
+
 test_watch_refuses_a_recorded_pane_with_wrong_process_identity() {
   local home dir mode out rc
   home=$(make_home painter-process-identity)
@@ -1815,5 +1922,8 @@ test_watch_retires_when_its_bound_frame_record_disappears
 test_watch_retires_when_its_recorded_pane_moves_to_another_tab
 test_watch_refuses_a_second_painter_for_one_bound_pane
 test_watch_claims_ownership_when_the_frame_is_published_after_launch
+test_watch_recovers_within_the_transient_geometry_budget
+test_watch_evicts_permanently_unavailable_geometry_once
+test_watch_evicts_after_the_transient_geometry_budget
 test_watch_refuses_a_recorded_pane_with_wrong_process_identity
 test_non_watch_outputs_remain_byte_exact

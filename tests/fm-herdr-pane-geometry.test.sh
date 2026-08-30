@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Classification tests for the authoritative Herdr pane-geometry probe.
+set -u
+
+# shellcheck source=tests/lib.sh
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+TMP_ROOT=$(fm_test_tmproot fm-herdr-pane-geometry)
+FAKEBIN=$(fm_fakebin "$TMP_ROOT")
+PROBE="$ROOT/bin/fm-herdr-pane-geometry.sh"
+PANE_HOME="$TMP_ROOT/live-home"
+mkdir -p "$PANE_HOME"
+
+cat > "$FAKEBIN/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-} ${2:-}" in
+  'pane get')
+    jq -cn --arg pane "${HERDR_PANE_ID:?}" --arg cwd "${FM_TEST_PANE_CWD:?}" \
+      '{result:{pane:{pane_id:$pane,foreground_cwd:$cwd}}}'
+    ;;
+  'pane layout')
+    [ "${FM_TEST_LAYOUT_STATE:-live}" = live ] || exit 1
+    jq -cn --arg pane "${HERDR_PANE_ID:?}" \
+      '{result:{layout:{panes:[{pane_id:$pane,rect:{width:45,height:20}}]}}}'
+    ;;
+  *) exit 2 ;;
+esac
+SH
+chmod +x "$FAKEBIN/herdr"
+
+run_probe() {
+  PATH="$FAKEBIN:$PATH" HERDR_SESSION=geometry-test HERDR_PANE_ID=w1:p2 \
+    FM_TEST_PANE_CWD="$1" FM_TEST_LAYOUT_STATE="${2:-live}" "$PROBE"
+}
+
+test_live_pane_reports_geometry() {
+  local out
+  out=$(run_probe "$PANE_HOME") || fail "a live pane with a real cwd did not report geometry"
+  [ "$out" = '45 20' ] || fail "the live pane reported unexpected geometry: $out"
+  pass "the geometry probe accepts a live authoritative pane and cwd"
+}
+
+test_missing_cwd_is_permanent() {
+  local rc=0
+  run_probe "$TMP_ROOT/deleted-home" >/dev/null 2>&1 || rc=$?
+  expect_code 64 "$rc" "a missing authoritative foreground cwd must be permanent"
+  pass "a missing authoritative foreground cwd is classified as permanent"
+}
+
+test_healthy_pane_layout_failure_is_transient() {
+  local rc=0
+  run_probe "$PANE_HOME" transient >/dev/null 2>&1 || rc=$?
+  expect_code 75 "$rc" "a layout read failure for a healthy pane must be transient"
+  pass "a healthy pane's layout read failure is classified as transient"
+}
+
+test_live_pane_reports_geometry
+test_missing_cwd_is_permanent
+test_healthy_pane_layout_failure_is_transient

@@ -73,6 +73,22 @@ It places the public fleet-view interface in a real terminal rectangle, delibera
 The same suite verifies that the overflow-summary row is width-clipped and cannot wrap and scroll a correctly height-budgeted frame.
 The Herdr integration path remains covered by `tests/fm-cockpit.test.sh`; the other supported runtime backends do not create or paint a native cockpit fleet region and retain their existing plain-panel fallback.
 
+## Geometry failure has a bounded terminal path
+
+Verified on 2026-08-30 against Herdr 0.8.0 in a guarded lab session and with the focused watch-mode fixtures.
+The geometry probe treats a missing exact pane or missing authoritative foreground cwd as permanent, while a failed layout read for a still-live pane remains transient.
+The fleet painter evicts a permanently unavailable pane after the first classified read, retries a transient failure at most three consecutive times, resets the counter after recovery, and evicts once when that boundary is exhausted.
+Every terminal path names the exact pane loudly before issuing its single close.
+
+```sh
+bash tests/fm-herdr-pane-geometry.test.sh
+bash tests/fm-fleet-snapshot-view.test.sh
+HERDR_LAB_HELPER=/absolute/path/to/bin/fm-herdr-lab.sh \
+  bash tests/fm-public-followup-herdr-isolation-e2e.test.sh
+```
+
+The focused probe distinguished a deleted cwd from a transient layout failure, the watch suite observed recovery on the third read with no close and one exact-pane close for both terminal cases, and two full public-followup runs left the guarded lab's pane inventory byte-identical to its baseline.
+
 ## The drawn rectangle and the pty diverge in BOTH directions
 
 Verified on 2026-08-29 against herdr 0.8.0 on Linux, in an isolated `fm-lab-` session provisioned through `bin/fm-herdr-lab.sh` with the default-session tripwire.
