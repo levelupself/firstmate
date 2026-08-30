@@ -630,8 +630,39 @@ EOF
   pass "handing off an item whose decisions already travelled converges"
 }
 
+test_stranded_decision_hold_is_recovered() {
+  local home="$TMP_ROOT/decision-holds-recovery-main"
+  local sub="$TMP_ROOT/decision-holds-recovery-sub"
+  setup_homes "$home" "$sub"
+
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] recovery-origin-decision-scope - Choose the scope (repo: alpha) (kind: captain) (hold: needs the captain) (hold-kind: captain)
+  Origin: recovery-origin
+  Decision key: scope
+  State: awaiting captain decision.
+EOF
+  cat > "$sub/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] recovery-origin - Origin work (repo: alpha)
+
+## Done
+EOF
+
+  FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" design recovery-origin >/dev/null \
+    || fail "recovery handoff failed"
+  grep -q -- '- \[ \] recovery-origin-decision-scope -' "$sub/data/backlog.md" \
+    || fail "the stranded decision hold did not reach the secondmate backlog"
+  grep -q -- '- \[ \] recovery-origin-decision-scope -' "$home/data/backlog.md" \
+    && fail "the stranded decision hold remained in the originating home"
+  pass "an already-handed-off origin recovers its stranded decision hold"
+}
+
 test_open_decision_holds_travel_with_their_origin
 test_decision_hold_handoff_is_idempotent
+test_stranded_decision_hold_is_recovered
 test_body_moves_when_followed_by_another_item
 test_body_moves_when_followed_by_section_heading
 test_multi_paragraph_body_with_internal_blanks_moves_whole

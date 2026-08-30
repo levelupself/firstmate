@@ -477,15 +477,13 @@ remote_handoff() { # <secondmate-id> <keys...>
   fi
   # An item's open captain decisions belong with the work, so they are added to
   # the SAME atomic move rather than left stranded in this home.
-  if [ "${#to_move[@]}" -gt 0 ]; then
-    while IFS= read -r hold; do
-      [ -n "$hold" ] || continue
-      to_move+=("$hold")
-      carried+=("$hold")
-    done <<EOF
-$(collect_decision_holds "$outbox" "${to_move[@]}")
+  while IFS= read -r hold; do
+    [ -n "$hold" ] || continue
+    to_move+=("$hold")
+    carried+=("$hold")
+  done <<EOF
+$(collect_decision_holds "$outbox" "${to_move[@]}" "${already[@]}")
 EOF
-  fi
   for key in "${to_move[@]}"; do
     while IFS= read -r line; do
       printf 'error: refusing to hand off %s: non-2-space continuation line: %s\n' "$key" "$line" >&2
@@ -619,11 +617,6 @@ if [ "$FAILED" -ne 0 ]; then
   exit 1
 fi
 
-if [ "${#TO_MOVE[@]}" -eq 0 ]; then
-  echo "nothing to move: ${ALREADY[*]:-no keys} already present in $SUB_BACKLOG"
-  exit 0
-fi
-
 # An item's open captain decisions belong with the work, so they join the SAME
 # atomic move rather than staying stranded in this home.
 CARRIED=()
@@ -632,8 +625,13 @@ while IFS= read -r hold; do
   TO_MOVE+=("$hold")
   CARRIED+=("$hold")
 done <<EOF
-$(collect_decision_holds "$SUB_BACKLOG" "${TO_MOVE[@]}")
+$(collect_decision_holds "$SUB_BACKLOG" "${TO_MOVE[@]}" "${ALREADY[@]}")
 EOF
+
+if [ "${#TO_MOVE[@]}" -eq 0 ]; then
+  echo "nothing to move: ${ALREADY[*]:-no keys} already present in $SUB_BACKLOG"
+  exit 0
+fi
 
 FAILED=0
 for key in "${TO_MOVE[@]}"; do
