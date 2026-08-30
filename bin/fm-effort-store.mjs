@@ -5,8 +5,10 @@
 // data/cost-attribution.tsv, is irreplaceable and append-only. Everything in
 // the database is recomputed from three durable sources plus one recorded-by-
 // hand source, so the file is safe to delete and `rebuild` restores it exactly.
+// Pipeline process counts are read once at a settled sanctioned merge edge and
+// become raw lifecycle input; rebuild never consults the mutable pipeline DB.
 //
-//   raw         data/cost-attribution.tsv       identity, dispatch axes, window
+//   raw         data/cost-attribution.tsv       identity, lifecycle, process
 //   codeburn    data/<task>/usage.json           effort tokens and notional cost
 //   git         the project clone               structure, time, durability
 //   annotation  data/effort-annotations.jsonl   the posterior nobody can derive
@@ -150,6 +152,86 @@ function git(repo, args, {timeoutMs = 20000} = {}) {
   return result.stdout
 }
 
+const PIPELINE_GATE_STEPS = new Set(['rebase', 'test', 'document', 'lint', 'ci'])
+const PIPELINE_SETTLED_STEPS = new Set(['review', 'test', 'document', 'lint'])
+
+function readPipelineMetrics(dbPath, identity) {
+  if (!dbPath || !identity.project || !identity.branch || !identity.prUrl) return null
+  try {
+    if (!fs.statSync(dbPath).isFile()) return null
+  } catch {
+    return null
+  }
+  let db
+  try {
+    db = new DatabaseSync(dbPath, {readOnly: true})
+    const runs = db.prepare(`
+      SELECT runs.id
+      FROM runs
+      JOIN repos ON repos.id = runs.repo_id
+      WHERE repos.working_path = ? AND runs.branch = ? AND runs.pr_url = ?
+        AND runs.status != 'cancelled'
+      ORDER BY runs.created_at DESC, runs.id DESC
+    `).all(identity.project, identity.branch, identity.prUrl)
+    for (const run of runs) {
+      const steps = db.prepare(`
+        SELECT id, step_name, status
+        FROM step_results
+        WHERE run_id = ?
+        ORDER BY step_name, id
+      `).all(run.id)
+      const byName = new Map(steps.map(step => [step.step_name, step]))
+      if ([...PIPELINE_SETTLED_STEPS].some(name => {
+        const status = byName.get(name)?.status
+        return status !== 'completed' && status !== 'skipped'
+      })) continue
+      const rounds = db.prepare(`
+        SELECT step_results.step_name, step_rounds.round, step_rounds.findings_json
+        FROM step_rounds
+        JOIN step_results ON step_results.id = step_rounds.step_result_id
+        WHERE step_results.run_id = ?
+        ORDER BY step_results.step_name, step_rounds.round, step_rounds.id
+      `).all(run.id)
+      let findings = 0
+      let reviewRounds = 0
+      let askUserCount = 0
+      let gateFailures = 0
+      let valid = true
+      for (const round of rounds) {
+        let reported = []
+        if (round.findings_json !== null) {
+          try {
+            const parsed = JSON.parse(round.findings_json)
+            if (!Array.isArray(parsed?.findings)) throw new Error('missing findings array')
+            reported = parsed.findings
+          } catch {
+            valid = false
+            break
+          }
+        }
+        findings += reported.length
+        askUserCount += reported.filter(finding => finding?.action === 'ask-user').length
+        if (round.step_name === 'review') reviewRounds += 1
+        if (PIPELINE_GATE_STEPS.has(round.step_name) && reported.length > 0) gateFailures += 1
+      }
+      if (!valid) continue
+      db.close()
+      return {
+        pipeline_run_id: run.id,
+        findings,
+        review_rounds: reviewRounds,
+        ask_user_count: askUserCount,
+        gate_failures: gateFailures,
+      }
+    }
+    db.close()
+    return null
+  } catch {
+    if (db) db.close()
+    return null
+  }
+}
+
 // --- source 1: the raw capture ---------------------------------------------
 //
 // The file is a sequence of sections, each opened by its own `# schema=` line.
@@ -266,7 +348,19 @@ function readTaskUsage(dataDir, taskId, spawnedAt, issues) {
   }
   const file = path.join(dataDir, taskId, 'usage.json')
   const text = readTextFile(file)
-  if (text === null) return {status: 'missing', detail: 'durable task usage snapshot is absent'}
+  if (text === null) {
+    const baseline = path.join(dataDir, taskId, 'usage-baseline.json')
+    let baselineIsFile = false
+    try {
+      const stat = fs.lstatSync(baseline)
+      baselineIsFile = stat.isFile() && !stat.isSymbolicLink()
+    } catch {}
+    if (!spawnedAt && baselineIsFile) {
+      issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-pre-deterministic-attribution', detail: baseline})
+      return {status: 'missing', detail: 'launch baseline exists but deterministic lifecycle capture and final usage do not'}
+    }
+    return {status: 'missing', detail: 'durable task usage snapshot is absent'}
+  }
   let usage
   try {
     usage = JSON.parse(text)
@@ -369,7 +463,8 @@ function discoverUsageTaskIds(dataDir) {
   }
   return entries
     .filter(entry => entry.isDirectory() && TASK_ID_PATTERN.test(entry.name)
-      && fs.existsSync(path.join(dataDir, entry.name, 'usage.json')))
+      && (fs.existsSync(path.join(dataDir, entry.name, 'usage.json'))
+        || fs.existsSync(path.join(dataDir, entry.name, 'usage-baseline.json'))))
     .map(entry => entry.name)
 }
 
@@ -813,6 +908,13 @@ const bind = value => {
   return value
 }
 
+const capturedCount = value => {
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? value : null
+  if (typeof value !== 'string' || !/^(0|[1-9]\d*)$/.test(value)) return null
+  const count = Number(value)
+  return Number.isSafeInteger(count) ? count : null
+}
+
 // --- rebuild ----------------------------------------------------------------
 
 function isoSecondsBetween(from, to) {
@@ -1118,11 +1220,14 @@ function computeDurability(repo, perTask) {
 
 function readMergeReceipt(dataDir, taskId, spawnedAt) {
   if (!TASK_ID_PATTERN.test(taskId)) return null
-  const receipt = readMetaWithRequiredFields(
-    path.join(dataDir, 'pr-merges', `${taskId}.receipt`),
-    ['schema', 'task_id', 'pr', 'spawned_at', 'phase', 'authorization', 'prepared_epoch', 'merged_epoch'],
-  )
-  if (!receipt || receipt.schema !== 'fm-pr-merge.v1' || receipt.task_id !== taskId
+  const file = path.join(dataDir, 'pr-merges', `${taskId}.receipt`)
+  const commonFields = ['schema', 'task_id', 'pr', 'spawned_at', 'phase', 'authorization', 'prepared_epoch']
+  const first = readMetaWithRequiredFields(file, commonFields)
+  const timestampField = first?.schema === 'fm-pr-merge.v2' ? 'merged_at' : 'merged_epoch'
+  const receipt = first && readMetaWithRequiredFields(file, [...commonFields, timestampField])
+  if (!receipt || !['fm-pr-merge.v1', 'fm-pr-merge.v2'].includes(receipt.schema) || receipt.task_id !== taskId
+      || (receipt.schema === 'fm-pr-merge.v2' && receipt.merged_epoch !== undefined)
+      || (receipt.schema === 'fm-pr-merge.v1' && receipt.merged_at !== undefined)
       || !/^https:\/\/github\.com\/(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]{0,37}[A-Za-z0-9])\/[A-Za-z0-9._-]{1,100}\/pull\/[1-9]\d*$/.test(receipt.pr || '')
       || receipt.spawned_at !== spawnedAt || receipt.phase !== 'merged'
       || !['live-meta', 'done-record'].includes(receipt.authorization)) return null
@@ -1136,11 +1241,16 @@ function readMergeReceipt(dataDir, taskId, spawnedAt) {
     return validatedLifecycleTimestamp(date.toISOString().replace('.000Z', 'Z'), earliest)
   }
   const preparedAt = epochTimestamp(receipt.prepared_epoch, spawnedAt)
-  const mergedAt = preparedAt ? epochTimestamp(receipt.merged_epoch, preparedAt) : null
-  if (!mergedAt) return null
+  if (!preparedAt) return null
+  const mergedAt = receipt.schema === 'fm-pr-merge.v2'
+    ? (receipt.merged_at === '' ? null : validatedLifecycleTimestamp(receipt.merged_at, spawnedAt))
+    : epochTimestamp(receipt.merged_epoch, preparedAt)
+  if (receipt.schema === 'fm-pr-merge.v2' && receipt.merged_at !== '' && !mergedAt) return null
+  if (receipt.schema === 'fm-pr-merge.v1' && !mergedAt) return null
   return {
     pr_url: receipt.pr || null,
     merged_at: mergedAt,
+    merged: true,
   }
 }
 
@@ -1205,9 +1315,9 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
       ? validatedLifecycleTimestamp(row.local_landed_at, startedAt) : null
     const teardownOutcome = ['forced', 'scout-complete'].includes(row?.outcome)
       && teardownAt ? row.outcome : null
-    const provenOutcome = receipt?.merged_at ? 'pr-merged'
+    const provenOutcome = receipt?.merged ? 'merged'
       : localReceipt?.local_landed_at ? 'local-landed'
-        : stampedMergedAt ? 'pr-merged'
+        : stampedMergedAt ? 'merged'
           : stampedLocalLandedAt ? 'local-landed' : teardownOutcome
 
     taskInsert.run(
@@ -1231,7 +1341,7 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
       bind(gitResult.status === 'present' ? gitResult.first_commit_at : null),
       bind(prOpenedAt),
       bind(prOpenedAt ? isoSecondsBetween(startedAt, prOpenedAt) : null),
-      bind(receipt?.merged_at || stampedMergedAt),
+      bind(receipt?.merged ? receipt.merged_at : stampedMergedAt),
       bind(localReceipt?.local_landed_at || stampedLocalLandedAt),
       bind(teardownAt),
       bind(structure?.files_changed),
@@ -1241,10 +1351,10 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
       bind(structure?.dels),
       bind(structure?.import_in_degree),
       bind(structure?.import_out_degree),
-      bind(annotation?.findings),
-      bind(annotation?.review_rounds),
-      bind(annotation?.ask_user_count),
-      bind(annotation?.gate_failures),
+      bind(capturedCount(row?.findings)),
+      bind(capturedCount(row?.review_rounds)),
+      bind(capturedCount(row?.ask_user_count)),
+      bind(capturedCount(row?.gate_failures)),
       bind(annotation?.failure_mode),
       bind(totals?.tokens_in),
       bind(totals?.tokens_out),
@@ -1327,6 +1437,7 @@ const CAPTURE_COLUMNS = [
   'task', 'worktree', 'harness', 'model', 'effort', 'kind', 'project',
   'started_at', 'ended_at', 'mode', 'backend', 'branch', 'pr_url',
   'pr_opened_at', 'merged_at', 'local_landed_at', 'teardown_at', 'outcome',
+  'pipeline_run_id', 'findings', 'review_rounds', 'ask_user_count', 'gate_failures',
 ]
 
 function capture(options, taskId, argv) {
@@ -1341,36 +1452,62 @@ function capture(options, taskId, argv) {
     throw new Error(`unknown capture option '${argv[index]}'`)
   }
   const meta = readMeta(path.join(options.stateDir, `${taskId}.meta`))
-  if (!meta) throw new Error(`task metadata is unavailable for ${taskId}`)
+  const existing = fs.existsSync(options.rawFile) ? readRawCapture(options.rawFile, []).rows : []
+  const previous = [...existing].reverse().find(candidate => candidate.task === taskId) || null
+  const receiptIdentity = readMetaWithRequiredFields(
+    path.join(options.dataDir, 'pr-merges', `${taskId}.receipt`),
+    ['schema', 'task_id', 'spawned_at'],
+  )
+  const receiptStartedAt = receiptIdentity?.task_id === taskId
+    ? canonicalTimestamp(receiptIdentity.spawned_at) : null
+  if (!meta && !previous && outcome !== 'pr-merged') {
+    throw new Error(`task metadata and prior lifecycle capture are unavailable for ${taskId}`)
+  }
   if (outcome !== null && !['pr-merged', 'local-landed', 'forced', 'scout-complete'].includes(outcome)) {
     throw new Error(`unsupported lifecycle outcome '${outcome}'`)
   }
-  if (outcome !== null && outcome !== meta.outcome) {
+  if (outcome !== null && meta?.outcome && outcome !== meta.outcome) {
     throw new Error('capture outcome does not match the stamped lifecycle outcome')
   }
+  const startedAt = meta?.spawned_at ?? previous?.started_at ?? receiptStartedAt
+  const mergeReceipt = readMergeReceipt(options.dataDir, taskId, canonicalTimestamp(startedAt))
+  const stampedMerge = validatedLifecycleTimestamp(meta?.merged_at, canonicalTimestamp(startedAt))
+  if (outcome === 'pr-merged' && !mergeReceipt?.merged && !stampedMerge) {
+    throw new Error('PR merge capture lacks a completed launch-bound merge receipt')
+  }
+  const project = meta?.project ?? previous?.project
+  const branch = meta?.branch ?? previous?.branch ?? `fm/${taskId}`
+  const prUrl = meta?.pr ?? previous?.pr_url ?? mergeReceipt?.pr_url
+  const pipeline = readPipelineMetrics(options.pipelineDbPath, {project, branch, prUrl})
   const row = {
     task: taskId,
-    worktree: meta.worktree,
-    harness: meta.harness,
-    model: meta.model,
-    effort: meta.effort,
-    kind: meta.kind,
-    project: meta.project,
-    started_at: meta.spawned_at,
-    ended_at: meta.teardown_at,
-    mode: meta.mode,
-    backend: meta.backend || 'tmux',
-    branch: meta.branch || `fm/${taskId}`,
-    pr_url: meta.pr,
-    pr_opened_at: meta.pr_opened_at,
-    merged_at: meta.merged_at,
-    local_landed_at: meta.local_landed_at,
-    teardown_at: meta.teardown_at,
-    outcome: outcome ?? meta.outcome,
+    worktree: meta?.worktree ?? previous?.worktree,
+    harness: meta?.harness ?? previous?.harness,
+    model: meta?.model ?? previous?.model,
+    effort: meta?.effort ?? previous?.effort,
+    kind: meta?.kind ?? previous?.kind,
+    project,
+    started_at: startedAt,
+    ended_at: meta?.teardown_at ?? previous?.ended_at,
+    mode: meta?.mode ?? previous?.mode,
+    backend: meta?.backend ?? previous?.backend ?? 'tmux',
+    branch,
+    pr_url: prUrl,
+    pr_opened_at: meta?.pr_opened_at ?? previous?.pr_opened_at,
+    merged_at: mergeReceipt?.merged
+      ? mergeReceipt.merged_at
+      : (meta?.merged_at ?? previous?.merged_at),
+    local_landed_at: meta?.local_landed_at ?? previous?.local_landed_at,
+    teardown_at: meta?.teardown_at ?? previous?.teardown_at,
+    outcome: outcome ?? meta?.outcome ?? previous?.outcome,
+    pipeline_run_id: pipeline?.pipeline_run_id ?? previous?.pipeline_run_id,
+    findings: pipeline?.findings ?? previous?.findings,
+    review_rounds: pipeline?.review_rounds ?? previous?.review_rounds,
+    ask_user_count: pipeline?.ask_user_count ?? previous?.ask_user_count,
+    gate_failures: pipeline?.gate_failures ?? previous?.gate_failures,
   }
   for (const column of CAPTURE_COLUMNS) row[column] = String(row[column] ?? '')
   fs.mkdirSync(path.dirname(options.rawFile), {recursive: true})
-  const existing = fs.existsSync(options.rawFile) ? readRawCapture(options.rawFile, []).rows : []
   const exact = existing.some(candidate => candidate.task === taskId
     && CAPTURE_COLUMNS.every(column => String(candidate[column] ?? '') === row[column]))
   if (!exact) {
@@ -1472,12 +1609,6 @@ function annotate(file, record) {
 // failure mode from any other field: the whole point of these two is that they
 // are answers, not measurements.
 
-const COUNT_FLAGS = {
-  '--findings': 'findings',
-  '--review-rounds': 'review_rounds',
-  '--ask-user': 'ask_user_count',
-  '--gate-failures': 'gate_failures',
-}
 const TEXT_FLAGS = {
   '--title': 'title',
   '--branch': 'branch',
@@ -1521,10 +1652,6 @@ function parseAnnotation(taskId, argv) {
       const reverted = needsValue()
       if (reverted !== 'yes' && reverted !== 'no') throw new Error("--reverted must be 'yes' or 'no'")
       record.reverted = reverted === 'yes' ? 1 : 0
-    } else if (COUNT_FLAGS[flag] !== undefined) {
-      const count = Number(needsValue())
-      if (!Number.isInteger(count) || count < 0) throw new Error(`${flag} needs a non-negative integer`)
-      record[COUNT_FLAGS[flag]] = count
     } else if (TEXT_FLAGS[flag] !== undefined) {
       record[TEXT_FLAGS[flag]] = needsValue()
     } else {

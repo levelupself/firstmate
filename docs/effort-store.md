@@ -12,7 +12,10 @@ It is not a cost tracker: spend is one column among structure, process, time, an
 The raw layer is `data/cost-attribution.tsv`.
 It is append-only and irreplaceable because each lifecycle producer records its current durable facts while task metadata is available.
 `fm-spawn.sh` stamps launch time, `fm-pr-check.sh` stamps the forge-created PR-open time, `fm-pr-merge.sh` stamps a sanctioned PR merge, and `fm-merge-local.sh` stamps a sanctioned local landing.
-GitHub and GitLab creation timestamps come from their structured forge responses; an unavailable or invalid provider timestamp remains NULL.
+GitHub and GitLab creation timestamps and the GitHub merge timestamp come from structured forge responses; an unavailable or invalid provider timestamp remains NULL.
+The PR outcome is stamped only after the same forge response confirms the merged state.
+The sanctioned merge path also snapshots the matching no-mistakes run's structured process record while it is still available.
+Merges performed outside `fm-pr-merge.sh` are not observed or inferred later.
 Launch, PR-open, sanctioned merge, sanctioned local landing, and teardown producers incrementally capture their metadata or receipts and rebuild the store.
 `fm-teardown.sh` additionally snapshots task usage, stamps teardown time and outcome, and captures the final revision before deleting task state.
 No agent or operator command is part of that lifecycle.
@@ -25,7 +28,7 @@ Nothing in the derived layer is ever written back to the raw layer.
 
 | Source | Origin | Contributes |
 |---|---|---|
-| raw | `data/cost-attribution.tsv` | identity, dispatch axes, lifecycle timestamps, configured model, and outcome stamps |
+| raw | `data/cost-attribution.tsv` | identity, dispatch axes, lifecycle timestamps, configured model, process counts, and outcome stamps |
 | codeburn | `data/<task>/usage.json` | tokens, notional cost, calls, sessions, and actual-model split |
 | git | the project clone named in the raw row | structure, commit link, and the durability relation |
 | annotation | `data/effort-annotations.jsonl` | the posterior that no artifact records |
@@ -34,6 +37,16 @@ Records are keyed by task, so any later source that can name a task contributes 
 The codeburn input is the durable task-bounded snapshot written while the task still owns its worktree and baseline.
 Rebuild never re-queries mutable account-wide history.
 The task-usage producer owns project-key matching and baseline subtraction, as documented in [`task-usage.md`](task-usage.md).
+
+## Process cost
+
+The four process columns come from the durable no-mistakes run record matched by project, branch, and pull request at the sanctioned merge edge.
+`findings` is the total number of structured findings reported across every recorded pipeline round.
+`review_rounds` is the number of review rounds, including the final clean re-review.
+`ask_user_count` counts reported findings whose recorded action is `ask-user`.
+`gate_failures` counts non-review validation rounds in rebase, test, documentation, lint, or CI that reported one or more findings.
+The counts are stamped into the append-only raw layer, so rebuilding never depends on the no-mistakes database still retaining the run.
+If the matching run or its structured round record is unavailable, all four fields remain NULL rather than becoming zero.
 
 ## Reading the headline numbers
 
@@ -63,10 +76,12 @@ An absent source and a zero must never look the same.
 - A source that could not be consulted for a task is recorded in `task_source` as `missing`, and the columns it would have filled stay NULL.
 - A source that was consulted and legitimately found nothing is recorded as `present`, and its columns hold real zeros.
 - A raw line whose schema section is not the v2 join is recorded in `ingest_issue` rather than guessed into a task row, so nothing that arrives is dropped.
+- A baseline-only task directory from before deterministic lifecycle capture creates a task row with NULL measurements and a `usage-pre-deterministic-attribution` issue.
 
 The same rule applies inside a source.
 Binary diff additions and deletions stay NULL at both file and task levels because git cannot measure them.
 Import degrees are computed from the project's current checkout, so a path a task once touched that no longer exists there has no degree at all rather than a degree of zero.
+Tasks from before tracking that left no durable raw row, usage artifact, baseline, or annotation cannot be enumerated honestly and remain unrecoverable rather than being invented.
 
 ## The durability relation
 
@@ -93,7 +108,7 @@ Event times are written once by the lifecycle edge that observed them and become
 
 ## Deterministic limits
 
-Launch time, PR-open time, sanctioned merge or local landing time, teardown time, outcome, cost, tokens, calls, sessions, configured model, and actual models are deterministic lifecycle or snapshot facts.
+Launch time, PR-open time, sanctioned merge or local landing time, teardown time, outcome, process counts, cost, tokens, calls, sessions, configured model, and actual models are deterministic lifecycle or snapshot facts.
 A task discovered from any durable raw row, usage snapshot, or annotation remains visible when another source is absent, with that source's measurements NULL and its `task_source` row marked `missing`.
 Legacy `fm-task-usage.v1` snapshots are discovered but treated as missing because they predate deterministic reported-project attribution and may contain the broken plausible-zero result.
 No value is reconstructed from a guess.
