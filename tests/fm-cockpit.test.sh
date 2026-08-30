@@ -293,6 +293,18 @@ case "${1:-} ${2:-}" in
         emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
           --argjson extra "$(section_argv)" '["bash",$s,"--watch"] + $extra')"
         ;;
+      fleet-split-evidence)
+        jq -n --arg pane "$info_pane" \
+          --arg exact "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
+          --arg other "/wrong/checkout/bin/fm-fleet-view.sh" \
+          --arg geometry "$FM_COCKPIT_ROOT/bin/fm-herdr-pane-geometry.sh" \
+          --arg section "$pane_section" \
+          '{result:{type:"pane_process_info",process_info:{pane_id:$pane,shell_pid:100,
+            foreground_process_group_id:101,foreground_processes:[
+              {pid:101,name:"bash",argv:["bash",$exact,"--watch","--section",$section]},
+              {pid:102,name:"bash",argv:["bash",$other,"--geometry-command",$geometry,
+                "--watch","--section",$section]}]}}}'
+        ;;
       fleet-no-watch)
         emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
           --arg g "$FM_COCKPIT_ROOT/bin/fm-herdr-pane-geometry.sh" \
@@ -1390,6 +1402,12 @@ test_cockpit_liveness_requires_exact_painter_ownership() {
     && fail "a same-basename painter from another executable was accepted"
   assert_contains "$out" "(fleet-no-fleet-process)" \
     "the wrong executable did not fail painter identity"
+
+  set_fleet_pane_status fleet-split-evidence >/dev/null
+  out=$(run_layout_cockpit status 2>&1) \
+    && fail "split ownership and geometry evidence was accepted"
+  assert_contains "$out" "(fleet-no-geometry-binding)" \
+    "geometry from another process satisfied the exact painter"
 
   set_fleet_pane_status fleet-live >/dev/null
   FM_FAKE_FLEET_CWD="$TMP_ROOT/other-home"

@@ -2276,7 +2276,7 @@ fm_backend_herdr_cockpit_binding_live() {  # <state-dir> <home> [<session>]
 # the drawn rectangle is not live.
 fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane> [<home>] [<sections>] [<identity>]
   local session=$1 pane=$2 home=${3:-} sections=${4:-} identity=${5:-compatible} info pane_info
-  local process_home exact_home exact_process_home
+  local process_home exact_home exact_process_home strict_state
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || {
     printf 'no-process-info'
     return 0
@@ -2306,19 +2306,34 @@ fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane> [<home>] [<sections
       printf 'no-fleet-process'
       return 0
     }
-    if [ "$exact_process_home" = "$exact_home" ] && printf '%s' "$info" | jq -e \
-      --arg script "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" \
-      '
-      def words: (.argv // (if (.argv0 // "") == "" then [] else [.argv0] end));
-      any(.result.process_info.foreground_processes[]?;
-        (words | index($script)) != null
-        and (words | index("--watch")) != null)
-    ' >/dev/null 2>&1; then
-      :
-    else
+    if [ "$exact_process_home" != "$exact_home" ]; then
       printf 'no-fleet-process'
       return 0
     fi
+    strict_state=$(printf '%s' "$info" | jq -r \
+      --arg script "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" \
+      --arg geometry "$FM_BACKEND_HERDR_COCKPIT_GEOMETRY_SCRIPT" \
+      --arg sections "$sections" '
+      def words: (.argv // (if (.argv0 // "") == "" then [] else [.argv0] end));
+      [.result.process_info.foreground_processes[]?
+       | select((words | index($script)) != null
+                and (words | index("--watch")) != null)] as $painters
+      | [$painters[]
+         | select((words | index("--geometry-command")) as $at
+                  | $at != null
+                    and ((words[$at + 1] // "") | split("/") | last) == $geometry)] as $bound
+      | [$bound[]
+         | select($sections == ""
+                  or ((words | index("--section")) as $at
+                      | $at != null and words[$at + 1] == $sections))] as $matched
+      | if ($painters | length) == 0 then "no-fleet-process"
+        elif ($bound | length) == 0 then "no-geometry-binding"
+        elif ($matched | length) == 0 then "wrong-sections"
+        else "live"
+        end
+    ' 2>/dev/null) || strict_state=no-fleet-process
+    printf '%s' "$strict_state"
+    return 0
   fi
   if ! printf '%s' "$info" | jq -e \
     --arg script "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" \
