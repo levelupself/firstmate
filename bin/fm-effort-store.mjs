@@ -165,15 +165,16 @@ function readPipelineMetrics(dbPath, identity) {
   let db
   try {
     db = new DatabaseSync(dbPath, {readOnly: true})
-    const runs = db.prepare(`
+    const run = db.prepare(`
       SELECT runs.id
       FROM runs
       JOIN repos ON repos.id = runs.repo_id
       WHERE repos.working_path = ? AND runs.branch = ? AND runs.pr_url = ?
         AND runs.status != 'cancelled'
       ORDER BY runs.created_at DESC, runs.id DESC
-    `).all(identity.project, identity.branch, identity.prUrl)
-    for (const run of runs) {
+      LIMIT 1
+    `).get(identity.project, identity.branch, identity.prUrl)
+    if (run) {
       const steps = db.prepare(`
         SELECT id, step_name, status
         FROM step_results
@@ -184,7 +185,10 @@ function readPipelineMetrics(dbPath, identity) {
       if ([...PIPELINE_SETTLED_STEPS].some(name => {
         const status = byName.get(name)?.status
         return status !== 'completed' && status !== 'skipped'
-      })) continue
+      })) {
+        db.close()
+        return null
+      }
       const rounds = db.prepare(`
         SELECT step_results.step_name, step_rounds.round, step_rounds.findings_json
         FROM step_rounds
@@ -192,7 +196,10 @@ function readPipelineMetrics(dbPath, identity) {
         WHERE step_results.run_id = ?
         ORDER BY step_results.step_name, step_rounds.round, step_rounds.id
       `).all(run.id)
-      if (!rounds.some(round => round.step_name === 'review')) continue
+      if (!rounds.some(round => round.step_name === 'review')) {
+        db.close()
+        return null
+      }
       let findings = 0
       let reviewRounds = 0
       let askUserCount = 0
@@ -214,7 +221,10 @@ function readPipelineMetrics(dbPath, identity) {
         if (round.step_name === 'review') reviewRounds += 1
         if (PIPELINE_GATE_STEPS.has(round.step_name) && reported.length > 0) gateFailures += 1
       }
-      if (!valid) continue
+      if (!valid) {
+        db.close()
+        return null
+      }
       db.close()
       return {
         pipeline_run_id: run.id,
