@@ -703,8 +703,25 @@ if [ "$WATCH" = 1 ]; then
     painter_binding
     if [ "$PAINTER_BINDING" = unbound ]; then
       if [ "$PAINTER_BOUND_ONCE" = 1 ] && ! painter_home_available; then
-        painter_evict 'its operational home and authoritative cwd are permanently unavailable' || true
-        exit 1
+        if authoritative_geometry >/dev/null; then
+          painter_retire 'its frame record is unavailable while its exact pane and cwd remain live'
+          exit 0
+        fi
+        geometry_status=$?
+        if [ "$geometry_status" -eq 64 ]; then
+          painter_evict 'authoritative pane state or cwd is permanently unavailable' || true
+          exit 1
+        fi
+        GEOMETRY_FAILURES=$((GEOMETRY_FAILURES + 1))
+        if [ "$GEOMETRY_FAILURES" -ge "$GEOMETRY_RETRY_LIMIT" ]; then
+          painter_evict "authoritative pane state stayed unavailable after $GEOMETRY_RETRY_LIMIT consecutive attempts" || true
+          exit 1
+        fi
+        frame="FLEET VIEW DEGRADED
+Authoritative pane state unavailable; transient attempt $GEOMETRY_FAILURES of $GEOMETRY_RETRY_LIMIT."
+        fm_terminal_paint_frame "$frame" || exit 0
+        sleep "$INTERVAL"
+        continue
       fi
       painter_retire 'retiring rather than painting beside its replacement'
       exit 0

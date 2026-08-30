@@ -1477,7 +1477,7 @@ SH
   cat > "$fakebin/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
-printf '%s\n' "$*" >> "$PAINTER_HOME/herdr-calls"
+printf '%s\n' "$*" >> "${PAINTER_CALLS:-$PAINTER_HOME/herdr-calls}"
 mode=${PAINTER_REPORTED_MODE:-live}
 script=${PAINTER_VIEW:?}
 geometry=${PAINTER_GEOMETRY:-$PAINTER_HOME/fm-herdr-pane-geometry.sh}
@@ -1533,13 +1533,15 @@ EOF
 # Output and stderr land in <home>/<tag>.out and <home>/<tag>.err. Keeping the
 # process as this shell's direct child makes teardown portable to Bash 3.2.
 start_painter() {  # <home> <bin> <pane-id> <tag> [<section>]
-  local home=$1 dir=$2 pane=$3 tag=$4 section=${5:-}
-  local -a cmd=("$dir/fm-fleet-view.sh" --geometry-command "$home/fm-herdr-pane-geometry.sh" --watch 0.1)
+  local home=$1 dir=$2 pane=$3 tag=$4 section=${5:-} geometry
+  geometry=${PAINTER_GEOMETRY:-$home/fm-herdr-pane-geometry.sh}
+  local -a cmd=("$dir/fm-fleet-view.sh" --geometry-command "$geometry" --watch 0.1)
   [ -z "$section" ] || cmd+=(--section "$section")
   FM_HOME="$home" COLUMNS=45 LINES=20 \
     HERDR_SESSION=lab-session HERDR_PANE_ID="$pane" HERDR_TAB_ID=w9:t1 \
     PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" \
     PAINTER_GEOMETRY="${PAINTER_GEOMETRY:-}" \
+    PAINTER_CALLS="${PAINTER_CALLS:-}" \
     PAINTER_REPORTED_SECTIONS="$section" PATH="$home/fakebin:$PATH" \
     "${cmd[@]}" > "$home/$tag.out" 2> "$home/$tag.err" &
   PAINTER_PID=$!
@@ -1682,6 +1684,41 @@ test_watch_retires_when_its_bound_frame_record_disappears() {
   assert_contains "$(cat "$home/bound.err")" 'not this frame' \
     "a banner retired after record loss must report why it stopped"
   pass "a bound banner retires when its frame record disappears"
+}
+
+test_deleted_home_does_not_evict_a_live_exact_pane() {
+  local home dir pid geometry calls waited=0 rc=0
+  home=$(make_home painter-deleted-home-live-pane)
+  dir=$(painter_bin "$home")
+  geometry="$TMP_ROOT/fm-herdr-pane-geometry.sh"
+  calls="$TMP_ROOT/live-pane-herdr-calls"
+  printf '#!/usr/bin/env bash\nprintf "45 20\\n"\n' > "$geometry"
+  chmod +x "$geometry"
+  write_cockpit_record "$home" 'w9:p2' 'waiting'
+  PAINTER_GEOMETRY=$geometry
+  PAINTER_CALLS=$calls
+  start_painter "$home" "$dir" w9:p2 bound waiting
+  PAINTER_GEOMETRY=
+  PAINTER_CALLS=
+  pid=$PAINTER_PID
+  while [ ! -e "$home/state/.fleet-painter-w9:p2.lock" ] && [ "$waited" -lt 300 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  [ -e "$home/state/.fleet-painter-w9:p2.lock" ] \
+    || { reap_painter "$pid"; fail "the recorded banner did not claim its pane before home deletion: $(cat "$home/bound.err")"; }
+  waited=0
+  rm -rf "$home"
+  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 300 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  kill -0 "$pid" 2>/dev/null && { reap_painter "$pid"; rc=1; }
+  wait "$pid" 2>/dev/null || true
+  [ "$rc" -eq 0 ] || fail "a painter with a deleted home did not retire"
+  [ "$(grep -c '^pane close w9:p2' "$calls" 2>/dev/null || true)" -eq 0 ] \
+    || fail "home deletion closed an exact pane whose authoritative cwd remained live"
+  pass "a deleted home cannot evict an exact pane with a live authoritative cwd"
 }
 
 test_watch_retires_when_its_recorded_pane_moves_to_another_tab() {
@@ -1919,6 +1956,7 @@ test_watch_outside_an_adopted_frame_keeps_painting
 test_watch_refuses_to_paint_inside_a_bound_frame_it_is_not_recorded_for
 test_watch_retires_when_its_pane_leaves_the_binding
 test_watch_retires_when_its_bound_frame_record_disappears
+test_deleted_home_does_not_evict_a_live_exact_pane
 test_watch_retires_when_its_recorded_pane_moves_to_another_tab
 test_watch_refuses_a_second_painter_for_one_bound_pane
 test_watch_claims_ownership_when_the_frame_is_published_after_launch
