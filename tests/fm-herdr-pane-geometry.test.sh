@@ -21,9 +21,20 @@ case "${1:-} ${2:-}" in
       '{result:{pane:{pane_id:$pane,foreground_cwd:$cwd}}}'
     ;;
   'pane layout')
-    [ "${FM_TEST_LAYOUT_STATE:-live}" = live ] || exit 1
-    jq -cn --arg pane "${HERDR_PANE_ID:?}" \
-      '{result:{layout:{panes:[{pane_id:$pane,rect:{width:45,height:20}}]}}}'
+    case "${FM_TEST_LAYOUT_STATE:-live}" in
+      live)
+        jq -cn --arg pane "${HERDR_PANE_ID:?}" \
+          '{result:{layout:{panes:[{pane_id:$pane,rect:{width:45,height:20}}]}}}'
+        ;;
+      omitted)
+        jq -cn '{result:{layout:{panes:[{pane_id:"w1:p9",rect:{width:45,height:20}}]}}}'
+        ;;
+      malformed)
+        printf '%s\n' '{"result":{"layout":'
+        ;;
+      transient) exit 1 ;;
+      *) exit 2 ;;
+    esac
     ;;
   *) exit 2 ;;
 esac
@@ -56,6 +67,22 @@ test_healthy_pane_layout_failure_is_transient() {
   pass "a healthy pane's layout read failure is classified as transient"
 }
 
+test_successful_layout_omitting_exact_pane_is_permanent() {
+  local rc=0
+  run_probe "$PANE_HOME" omitted >/dev/null 2>&1 || rc=$?
+  expect_code 64 "$rc" "a successful layout omitting the exact pane must be permanent"
+  pass "a successful authoritative layout omission is classified as permanent"
+}
+
+test_malformed_layout_is_transient() {
+  local rc=0
+  run_probe "$PANE_HOME" malformed >/dev/null 2>&1 || rc=$?
+  expect_code 75 "$rc" "a malformed layout read must remain transient"
+  pass "a malformed authoritative layout read is classified as transient"
+}
+
 test_live_pane_reports_geometry
 test_missing_cwd_is_permanent
 test_healthy_pane_layout_failure_is_transient
+test_successful_layout_omitting_exact_pane_is_permanent
+test_malformed_layout_is_transient

@@ -42,6 +42,11 @@ PANE_CWD=$(printf '%s' "$PANE_OUT" | jq -r --arg pane "$PANE" '
 
 OUT=$(herdr_call pane layout --pane "$PANE") || exit 75
 
+printf '%s' "$OUT" | jq -e '.result.layout.panes | type == "array"' >/dev/null 2>&1 || exit 75
+printf '%s' "$OUT" | jq -e --arg pane "$PANE" '
+  any(.result.layout.panes[]; .pane_id == $pane)
+' >/dev/null 2>&1 || exit 64
+
 printf '%s' "$OUT" | jq -er --arg pane "$PANE" '
   [.result.layout.panes[]? | select(.pane_id == $pane) | .rect]
   | if length == 1

@@ -89,6 +89,21 @@ HERDR_LAB_HELPER=/absolute/path/to/bin/fm-herdr-lab.sh \
 
 The focused probe distinguished a deleted cwd from a transient layout failure, the watch suite observed recovery on the third read with no close and one exact-pane close for both terminal cases, and two full public-followup runs left the guarded lab's pane inventory byte-identical to its baseline.
 
+## Deleted fixture directories caused the repeated redraw failure
+
+Verified on 2026-08-30 from the public-followup startup reproduction and its guarded Herdr and non-Herdr counterfactuals.
+Inherited `HERDR_ENV` together with pane, session, workspace, and tab context triggered session-start cockpit adoption during public-followup startup.
+Adoption remained masked unless the inherited workspace was the unique firstmate workspace and its authoritative supervisor was live.
+Deleting the fixture directory while its cockpit pane processes remained live left those processes in deleted foreground working directories.
+The fleet painters then repeated geometry-unavailable redraws because the panes remained live while authoritative cwd lookup could no longer succeed.
+The healthy comparison supplied explicit non-Herdr tmux fixture context and left the guarded lab pane inventory unchanged.
+A workspace-label mismatch created no panes, which disconfirmed unguarded adoption from inherited Herdr context alone.
+A dead supervisor also made adoption refuse, which independently confirmed the live-authority gate.
+
+The 29 surviving panes were externally closed before authoritative live identity, cwd, owning home or task, and tab inventory could be completed.
+No identity was reconstructed from pane age or naming.
+No default-session pane was closed by this work.
+
 ## The drawn rectangle and the pty diverge in BOTH directions
 
 Verified on 2026-08-29 against herdr 0.8.0 on Linux, in an isolated `fm-lab-` session provisioned through `bin/fm-herdr-lab.sh` with the default-session tripwire.
