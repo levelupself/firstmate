@@ -27,6 +27,8 @@ set -u
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 JQ_DIR=$(command -v jq 2>/dev/null) && JQ_DIR=$(dirname "$JQ_DIR") || JQ_DIR=
 [ -n "$JQ_DIR" ] && BASE_PATH="$JQ_DIR:$BASE_PATH"
+NODE_DIR=$(command -v node 2>/dev/null) && NODE_DIR=$(dirname "$NODE_DIR") || NODE_DIR=
+[ -n "$NODE_DIR" ] && BASE_PATH="$NODE_DIR:$BASE_PATH"
 TMP_ROOT=$(fm_test_tmproot fm-linear-tests)
 
 # A fakebin `curl` standing in for Linear's GraphQL endpoint. It extracts the
