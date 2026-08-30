@@ -14,7 +14,7 @@ It does not replace `AGENTS.md`, `docs/orca-backend.md`, or `harness-adapters`.
 Orca is a runtime backend, not an agent harness.
 The runtime backend owns the task endpoint and, for Orca, the task worktree.
 The harness is the agent process launched inside that endpoint, such as `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, or `kimi`.
-Load `harness-adapters` for harness-specific launch, interrupt, resume, trust-dialog, and skill-invocation facts.
+Load `harness-adapters`, then the adapter-detail skill it routes to, for harness-specific launch, interrupt, resume, trust-dialog, and skill-invocation facts.
 
 Implementation details, metadata fields, teardown guarantees, and limitations live in `docs/orca-backend.md`.
 `docs/verification/runtime-backends.md` "Orca" owns active smoke evidence.
@@ -61,7 +61,7 @@ The recorded `terminal=` and `orca_worktree_id=` fields are what backend helpers
 
 If `fm-send` fails to submit, do not immediately repeat the same long instruction.
 Peek first, then decide whether the target is busy, waiting on a prompt, stuck behind a popup, or genuinely wedged.
-For harness-specific interrupts or exits, load `harness-adapters`.
+For harness-specific interrupts or exits, load `harness-adapters`, then the adapter-detail skill it routes to.
 
 ## Recovery
 

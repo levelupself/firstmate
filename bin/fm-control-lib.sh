@@ -24,8 +24,8 @@
 #      that key, which adapter-owned cancellation acknowledgement is observable,
 #      which command exits the agent, and which task kinds the adapter is
 #      verified to run. These are the empirically verified facts previously
-#      carried only in the harness-adapters skill's per-adapter tables; that
-#      skill now points here so one executable owner holds them, and
+#      carried only in the routed adapter-detail skills' per-adapter tables; that
+#      those skills now point here so one executable owner holds them, and
 #      bin/fm-send.sh's --key path reads the same table rather than a second
 #      copy of it.
 #   3. Per-backend capability: which named keys a runtime backend can deliver,
