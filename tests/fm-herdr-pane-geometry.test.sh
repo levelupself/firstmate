@@ -17,8 +17,19 @@ cat > "$FAKEBIN/herdr" <<'SH'
 set -u
 case "${1:-} ${2:-}" in
   'pane get')
-    jq -cn --arg pane "${HERDR_PANE_ID:?}" --arg cwd "${FM_TEST_PANE_CWD:?}" \
-      '{result:{pane:{pane_id:$pane,foreground_cwd:$cwd}}}'
+    case "${FM_TEST_PANE_STATE:-live}" in
+      live)
+        jq -cn --arg pane "${HERDR_PANE_ID:?}" --arg cwd "${FM_TEST_PANE_CWD:?}" \
+          '{result:{pane:{pane_id:$pane,foreground_cwd:$cwd}}}'
+        ;;
+      malformed) printf '%s\n' '{"result":{"pane":' ;;
+      wrong-identity)
+        jq -cn --arg cwd "${FM_TEST_PANE_CWD:?}" \
+          '{result:{pane:{pane_id:"w1:p9",foreground_cwd:$cwd}}}'
+        ;;
+      incomplete) jq -cn --arg pane "${HERDR_PANE_ID:?}" '{result:{pane:{pane_id:$pane}}}' ;;
+      *) exit 2 ;;
+    esac
     ;;
   'pane layout')
     case "${FM_TEST_LAYOUT_STATE:-live}" in
@@ -43,7 +54,8 @@ chmod +x "$FAKEBIN/herdr"
 
 run_probe() {
   PATH="$FAKEBIN:$PATH" HERDR_SESSION=geometry-test HERDR_PANE_ID=w1:p2 \
-    FM_TEST_PANE_CWD="$1" FM_TEST_LAYOUT_STATE="${2:-live}" "$PROBE"
+    FM_TEST_PANE_CWD="$1" FM_TEST_LAYOUT_STATE="${2:-live}" \
+    FM_TEST_PANE_STATE="${3:-live}" "$PROBE"
 }
 
 test_live_pane_reports_geometry() {
@@ -81,8 +93,32 @@ test_malformed_layout_is_transient() {
   pass "a malformed authoritative layout read is classified as transient"
 }
 
+test_malformed_pane_get_is_transient() {
+  local rc=0
+  run_probe "$PANE_HOME" live malformed >/dev/null 2>&1 || rc=$?
+  expect_code 75 "$rc" "a malformed pane-get response must remain transient"
+  pass "a malformed pane-get response is classified as transient"
+}
+
+test_wrong_pane_identity_is_transient() {
+  local rc=0
+  run_probe "$PANE_HOME" live wrong-identity >/dev/null 2>&1 || rc=$?
+  expect_code 75 "$rc" "a wrong pane identity must not prove permanent absence"
+  pass "a wrong pane identity is classified as transient"
+}
+
+test_incomplete_pane_get_is_transient() {
+  local rc=0
+  run_probe "$PANE_HOME" live incomplete >/dev/null 2>&1 || rc=$?
+  expect_code 75 "$rc" "an incomplete pane-get response must remain transient"
+  pass "an incomplete pane-get response is classified as transient"
+}
+
 test_live_pane_reports_geometry
 test_missing_cwd_is_permanent
 test_healthy_pane_layout_failure_is_transient
 test_successful_layout_omitting_exact_pane_is_permanent
 test_malformed_layout_is_transient
+test_malformed_pane_get_is_transient
+test_wrong_pane_identity_is_transient
+test_incomplete_pane_get_is_transient

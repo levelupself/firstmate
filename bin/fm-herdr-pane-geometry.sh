@@ -33,10 +33,16 @@ if [ "$PANE_STATUS" -ne 0 ]; then
   [ "$PANE_CODE" != pane_not_found ] || exit 64
   exit 75
 fi
+printf '%s' "$PANE_OUT" | jq -e --arg pane "$PANE" '
+  .result.pane as $record
+  | ($record | type) == "object"
+    and $record.pane_id == $pane
+    and ($record | has("foreground_cwd"))
+    and (($record.foreground_cwd | type) == "string" or $record.foreground_cwd == null)
+' >/dev/null 2>&1 || exit 75
 PANE_CWD=$(printf '%s' "$PANE_OUT" | jq -r --arg pane "$PANE" '
-  select(.result.pane.pane_id == $pane)
-  | .result.pane.foreground_cwd // empty
-' 2>/dev/null) || PANE_CWD=
+  .result.pane.foreground_cwd // empty
+') || exit 75
 [ -n "$PANE_CWD" ] || exit 64
 [ -d "$PANE_CWD" ] || exit 64
 
