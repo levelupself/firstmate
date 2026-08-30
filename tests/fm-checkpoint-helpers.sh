@@ -42,10 +42,10 @@
 # retry-exhaustion wake, the deadline version failed in about 2.5s naming the
 # missing wake, and the checkpoint version ran until it was killed.
 #
-# Two guarantees close that gap, and between them a checkpoint that cannot be
-# satisfied is always reported rather than waited on. Neither is a deadline:
-# neither one decides an assertion, and a slow machine only makes the run
-# slower.
+# Three guarantees close that gap, and between them a checkpoint that cannot be
+# satisfied is always reported rather than waited on. The first two are exact,
+# event-driven properties rather than deadlines. The watchdog remains a
+# diagnostic backstop that can only fail a silent run, never pass one.
 #
 # 1. Liveness. A checkpoint can only be announced by something that can still
 #    run - a live fixture process, or a pending timer that will start or signal
@@ -57,14 +57,20 @@
 #    killed rather than exited, because the kernel closes a dead process's
 #    handles whatever killed it.
 #
-# 2. Watchdog. Liveness cannot see a fixture that never dies - one blocked
-#    writing to a bus whose reader has closed, say, which keeps its parent
-#    alive through the very handles liveness reads. That leaves the run alive
-#    with nothing outstanding and nothing to report, which is silence to the
-#    job cap. One idle-time watchdog per driver, reset by every checkpoint,
-#    prints what is outstanding and which fixtures are still alive, then exits
-#    non-zero. It can only turn silence into a named report; it can never pass
-#    a test. FM_CHECKPOINT_WATCHDOG_MS overrides its idle bound.
+# 2. Close ordering. The bus refuses to close while any fixture process is
+#    alive, naming the bad state instead of letting a later writer block.
+#    Drivers cancel future fixture work, initiate fixture shutdown, and use
+#    waitForNoFixtures() before close(), so the reader stays present until no
+#    announcer remains.
+#
+# 3. Watchdog. Liveness cannot see a fixture that never dies - one blocked
+#    writing to some other channel whose reader has closed, say, which keeps
+#    its parent alive through the very handles liveness reads. That leaves the
+#    run alive with nothing outstanding and nothing to report, which is silence
+#    to the job cap. One idle-time watchdog per driver, reset by every
+#    checkpoint, prints what is outstanding and which fixtures are still alive,
+#    then exits non-zero. It can only turn silence into a named report; it can
+#    never pass a test. FM_CHECKPOINT_WATCHDOG_MS overrides its idle bound.
 #
 # The module also carries the process-death poll, which stays a poll on purpose.
 
@@ -103,7 +109,11 @@ export async function waitForExit(pid, label, attempts = 250) {
     try {
       process.kill(Number(pid), 0);
     } catch {
-      return;
+      // Process death and Node releasing its ChildProcess handle are separate
+      // events. A checkpoint bus close must wait for both: the live-handle
+      // set is the structural source used to decide whether an announcer can
+      // still exist, so returning in between would race that close guard.
+      if (!liveFixturePids().includes(Number(pid))) return;
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
@@ -163,7 +173,7 @@ function outstandingLabels() {
   return [...outstanding.keys()];
 }
 
-function liveFixturePids() {
+function liveFixtureHandles() {
   let handles = [];
   try {
     handles = process._getActiveHandles();
@@ -171,8 +181,34 @@ function liveFixturePids() {
     return [];
   }
   return handles
-    .filter((handle) => handle && typeof handle.pid === "number" && handle.pid !== process.pid)
-    .map((handle) => handle.pid);
+    .filter((handle) => handle && typeof handle.pid === "number" && handle.pid !== process.pid);
+}
+
+function liveFixturePids() {
+  return liveFixtureHandles().map((handle) => handle.pid);
+}
+
+async function waitForNoFixtures() {
+  while (true) {
+    const handles = liveFixtureHandles();
+    if (handles.length === 0) return;
+    await new Promise((resolve) => {
+      let settled = false;
+      const fixtureStateChanged = () => {
+        if (settled) return;
+        settled = true;
+        for (const handle of handles) handle.removeListener("close", fixtureStateChanged);
+        setImmediate(resolve);
+      };
+      for (const handle of handles) {
+        if (handle.exitCode !== null || handle.signalCode !== null) {
+          fixtureStateChanged();
+          return;
+        }
+        handle.once("close", fixtureStateChanged);
+      }
+    });
+  }
 }
 
 function reportOutstanding() {
@@ -353,7 +389,18 @@ export function openCheckpointBus(path) {
     seen(name) {
       return (arrived.get(name) ?? []).length > 0;
     },
+    // Resolve only after Node has released every child-process handle. Drivers
+    // call this after cancelling any source of future fixture work and
+    // initiating fixture shutdown, so the bus reader cannot disappear while a
+    // fixture can still announce.
+    waitForNoFixtures,
+    // Fail visibly if a caller violates the shutdown-before-close ordering.
+    // A refusal leaves the bus open so the fixture can still finish normally.
     close() {
+      const pids = liveFixturePids();
+      if (pids.length > 0) {
+        throw new Error(`refusing to close checkpoint bus while fixture processes are alive: ${pids.join(", ")}`);
+      }
       socket.destroy();
     },
   };

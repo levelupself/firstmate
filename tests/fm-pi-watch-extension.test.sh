@@ -285,7 +285,7 @@ SH
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-const { openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const { openCheckpointBus, waitForExit } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 let tool = null;
 const pi = {
@@ -315,7 +315,7 @@ if (!redundant.content[0]?.text.includes("only after a later notification says t
 }
 // The arm child announces itself once its row is on disk, which is a stronger
 // fact than the log file merely existing.
-await bus.reached("armed");
+const armPid = await bus.reached("armed");
 // Left as a duration on purpose. The claim under test is that the redundant
 // call started NO second child, and an absence is only observable across some
 // span of time; there is no checkpoint for an event that must never happen.
@@ -323,6 +323,8 @@ await new Promise((resolve) => setTimeout(resolve, 100));
 const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (rows.length !== 1) throw new Error(`redundant call spawned ${rows.length} arm children`);
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+await waitForExit(armPid, "redundant-tool arm exit");
+await bus.waitForNoFixtures();
 bus.close();
 EOF
 )
@@ -697,6 +699,7 @@ writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
 // observing that earlier pid disappear. Observe the actual successor pid
 // instead; this is the process-death check the shared helper preserves.
 await waitForExit(successorPid, "successor exit");
+await bus.waitForNoFixtures();
 bus.close();
 EOF
   )
@@ -851,6 +854,7 @@ writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 // Replaces an 80ms drain: the restored arm says when it is actually gone.
 const exitedRestoredPid = await bus.reached("restored-exited");
 await waitForExit(exitedRestoredPid, "restored arm exit");
+await bus.waitForNoFixtures();
 bus.close();
 EOF
 )
@@ -1061,7 +1065,7 @@ import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-const { openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const { openCheckpointBus, waitForExit } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 let tool = null;
 const pi = {
@@ -1116,8 +1120,10 @@ if (owned.details?.ok !== true || !owned.details.message.includes("started Pi ex
 }
 // The arm child announces itself after writing its row, which is what "the
 // watcher arm ran" actually means here.
-await bus.reached("armed");
+const ownedPid = await bus.reached("armed");
 if (!existsSync(process.env.FM_ARM_LOG)) throw new Error("owned lock did not run the watcher arm");
+await waitForExit(ownedPid, "owned lock arm exit");
+await bus.waitForNoFixtures();
 bus.close();
 EOF
 )
@@ -1470,7 +1476,7 @@ SH
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-const { openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const { openCheckpointBus, waitForExit } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = { session: { promptAsync: async () => {} } };
@@ -1483,7 +1489,9 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 // The arm child announces itself once its row is written, so the driver reads
 // a complete row rather than sampling for the file to appear.
-await bus.reached("armed");
+const armPid = await bus.reached("armed");
+await waitForExit(armPid, "effective-state arm exit");
+await bus.waitForNoFixtures();
 bus.close();
 if (!existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm did not run");
@@ -1526,7 +1534,7 @@ SH
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-const { openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const { openCheckpointBus, waitForExit } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = { session: { promptAsync: async () => {} } };
@@ -1539,7 +1547,9 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 // The arm child announces its written row, so the config value read below is
 // never read out of a row that is still being written.
-await bus.reached("armed");
+const armPid = await bus.reached("armed");
+await waitForExit(armPid, "effective-config arm exit");
+await bus.waitForNoFixtures();
 bus.close();
 if (!existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm did not run");
@@ -1700,7 +1710,7 @@ SH
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-const { latch, openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const { latch, openCheckpointBus, waitForExit } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 let prompts = 0;
@@ -1734,6 +1744,8 @@ await hooks.event(event);
 // successor arm row is written before the prompt begins, and rowsAtPrompt
 // below is what actually proves that ordering.
 await promptBegan.reached;
+await bus.reached("armed");
+const successorPid = await bus.reached("armed");
 const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (rows.length !== 2) throw new Error(`expected one successor arm, got ${rows.length}: ${rows.join(" | ")}`);
 if (prompts !== 1) throw new Error(`expected one blocked wake prompt, got ${prompts}`);
@@ -1753,6 +1765,8 @@ if (confirmedRows.filter((row) => row.startsWith("confirmed ")).length !== 1) {
   throw new Error(`successful prompt delivery was not confirmed exactly once: ${confirmedRows.join(" | ")}`);
 }
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+await waitForExit(successorPid, "OpenCode rearm successor exit");
+await bus.waitForNoFixtures();
 bus.close();
 EOF
   )
@@ -1799,10 +1813,10 @@ while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_PRE_READY_RELEASE_FILE="$release" FM_PRE_READY_RETIRED_FILE="$retired" FM_STOP_FILE="$stop" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-const { counter, openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const { counter, openCheckpointBus, waitForExit } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const prompts = [];
@@ -1835,12 +1849,15 @@ if (!prompts.some((message) => message.includes("original wake"))) throw new Err
 await new Promise((resolve) => setTimeout(resolve, 150));
 if (existsSync(process.env.FM_PRE_READY_RETIRED_FILE)) throw new Error("pre-ready actionable successor was retired before its close");
 writeFileSync(process.env.FM_PRE_READY_RELEASE_FILE, "release\n");
-await bus.reached("armed");
+const stablePid = await bus.reached("armed");
 await wakes.reached(2);
 const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (stableRows.length !== 3) throw new Error(`pre-ready close did not create exactly one successor: ${stableRows.join(" | ")}`);
 if (!prompts.some((message) => message.includes("pre-ready successor wake"))) throw new Error(`pre-ready actionable wake was not delivered: ${prompts.join(" | ")}`);
+rmSync(`${process.env.FM_HOME}/state/.lock`);
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+await waitForExit(stablePid, "OpenCode pre-ready successor exit");
+await bus.waitForNoFixtures();
 bus.close();
 EOF
 )
@@ -1992,7 +2009,7 @@ SH
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-const { counter, latch, openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const { counter, latch, openCheckpointBus, waitForExit } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
 const nativeSetTimeout = globalThis.setTimeout;
 const nativeClearTimeout = globalThis.clearTimeout;
@@ -2044,13 +2061,17 @@ await hooks.event({ event: { type: "session.idle", properties: { sessionID: "ses
 // The original arm, then one announcement per successor. Each successor is
 // stepped through its own two checkpoints - its arm row and its captured
 // readiness timeout - instead of both being sampled together for 5s.
-await bus.reached("armed");
+const originalPid = await bus.reached("armed");
+const successorPids = [];
 for (let successor = 0; successor < 3; successor += 1) {
-  await bus.reached("armed");
+  successorPids.push(await bus.reached("armed"));
   await readinessCaptured.reached(successor + 1);
   fireReadinessTimeouts[successor]();
 }
 await fallbackDelivered.reached;
+await waitForExit(originalPid, "OpenCode original arm exit");
+for (const pid of successorPids) await waitForExit(pid, "OpenCode hung successor exit");
+await bus.waitForNoFixtures();
 bus.close();
 const finalRows = rows();
 if (finalRows.length !== 4) throw new Error(`expected one successor plus two retries, got ${finalRows.length}: ${finalRows.join(" | ")}`);
@@ -2200,6 +2221,7 @@ writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
 // Process death cannot be announced by the dying process. Observe the actual
 // successor pid with the shared process-death check instead.
 await waitForExit(successorPid, "successor exit");
+await bus.waitForNoFixtures();
 bus.close();
 EOF
 )
@@ -2354,6 +2376,7 @@ writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 // Replaces an 80ms drain: the restored arm says when it is actually gone.
 const exitedRestoredPid = await bus.reached("restored-exited");
 await waitForExit(exitedRestoredPid, "restored arm exit");
+await bus.waitForNoFixtures();
 bus.close();
 EOF
 )
@@ -2419,6 +2442,7 @@ const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (rows.length !== 2) throw new Error(`clean empty close was ignored: ${rows.join(" | ")}`);
 if (prompts !== 0) throw new Error(`restored transient close surfaced ${prompts} failure prompts`);
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+await bus.waitForNoFixtures();
 bus.close();
 EOF
 )
@@ -2548,6 +2572,7 @@ try {
   if (!prompt.includes("no longer owns the lock")) throw new Error(`missing lock-loss failure: ${prompt}`);
 } finally {
   other.kill("SIGTERM");
+  await bus.waitForNoFixtures();
   bus.close();
 }
 EOF
@@ -2617,6 +2642,7 @@ await guardHooks.event({ event: { type: "session.idle", properties: { sessionID:
 // at a point the arm has definitely reached rather than at whatever point a
 // 5s poll happened to stop at.
 await bus.reached("armed");
+await bus.waitForNoFixtures();
 bus.close();
 if (!existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm did not run");
@@ -2701,6 +2727,7 @@ await guardHooks.event({ event: { type: "session.idle", properties: { sessionID:
 // The arm child is the one thing still running outside that awaited path, so
 // it announces its own row.
 await bus.reached("armed");
+await bus.waitForNoFixtures();
 bus.close();
 if (!existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm did not run");

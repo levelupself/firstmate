@@ -105,33 +105,36 @@ EOF
 }
 
 test_watchdog_names_a_fixture_that_pins_the_driver_without_dying() {
-  local bus fixture_pid gate out status watchdog_pids
+  local blocked_bus bus fixture_pid gate out status watchdog_pids
   bus="$TMP_ROOT/pinned-driver.bus"
+  blocked_bus="$TMP_ROOT/pinned-writer.bus"
   gate="$TMP_ROOT/pinned-driver.gate"
   fm_checkpoint_bus "$bus"
+  fm_checkpoint_bus "$blocked_bus"
   out=$(FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_GATE="$gate" \
+    FM_BLOCKED_BUS="$blocked_bus" \
     FM_CHECKPOINT_WATCHDOG_MS=10000 node --input-type=module 2>&1 <<'EOF'
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { closeSync, openSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const { openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
-// A fixture that announces once, then announces again after the reader has
-// gone. The second write blocks in the kernel with no reader on the far end,
-// so the fixture never dies and keeps this process alive through its own
-// stdio handles. Liveness cannot see that: nothing is outstanding and nothing
-// is dead, which is silence until the job is cancelled.
+const blockedReader = openSync(process.env.FM_BLOCKED_BUS, "r+");
+// The checkpoint bus stays open, but the fixture writes next to a different
+// FIFO after its reader closes. This preserves a direct watchdog control for
+// a pinned live fixture without violating the close-order guarantee under
+// test: the helper bus itself is never closed while its announcer is alive.
 const fixture = spawn(
   "bash",
   [
     "-c",
-    "printf 'ready 1\\n' > \"$FM_CHECKPOINT_BUS\"; while [ ! -e \"$FM_GATE\" ]; do sleep 0.02; done; printf 'late 1\\n' > \"$FM_CHECKPOINT_BUS\"",
+    "printf 'ready 1\\n' > \"$FM_CHECKPOINT_BUS\"; while [ ! -e \"$FM_GATE\" ]; do sleep 0.02; done; printf 'blocked 1\\n' > \"$FM_BLOCKED_BUS\"",
   ],
   { stdio: ["ignore", "pipe", "pipe"] },
 );
 await bus.reached("ready");
-bus.close();
+closeSync(blockedReader);
 writeFileSync(process.env.FM_GATE, "go\n");
 process.stdout.write(`pinned by ${fixture.pid}\n`);
 EOF
@@ -152,7 +155,53 @@ EOF
   pass "a fixture that pins the driver without dying is named by the watchdog"
 }
 
+test_bus_refuses_to_close_while_a_fixture_can_still_announce() {
+  local bus gate out status
+  bus="$TMP_ROOT/live-announcer.bus"
+  gate="$TMP_ROOT/live-announcer.gate"
+  fm_checkpoint_bus "$bus"
+  out=$(FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_GATE="$gate" \
+    FM_CHECKPOINT_WATCHDOG_MS=1000 node --input-type=module 2>&1 <<'EOF'
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const { openCheckpointBus, waitForExit } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
+const fixture = spawn(
+  "bash",
+  [
+    "-c",
+    "printf 'ready 1\\n' > \"$FM_CHECKPOINT_BUS\"; while [ ! -e \"$FM_GATE\" ]; do sleep 0.02; done; printf 'late 1\\n' > \"$FM_CHECKPOINT_BUS\"",
+  ],
+  { stdio: ["ignore", "pipe", "pipe"] },
+);
+await bus.reached("ready");
+let refusal = null;
+try {
+  bus.close();
+} catch (error) {
+  refusal = error;
+}
+if (!refusal) throw new Error("checkpoint bus closed while a fixture could still announce");
+if (!refusal.message.includes(`refusing to close checkpoint bus while fixture processes are alive: ${fixture.pid}`)) {
+  throw refusal;
+}
+writeFileSync(process.env.FM_GATE, "go\n");
+await bus.reached("late");
+await waitForExit(fixture.pid, "live-announcer fixture exit");
+await bus.waitForNoFixtures();
+bus.close();
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "checkpoint bus close must reject a live announcer and permit close after it exits"
+  [ -z "$out" ] || fail "live-announcer close test printed output: $out"
+  pass "checkpoint bus close visibly rejects a live announcer and succeeds once none remain"
+}
+
 test_wait_is_named_when_the_only_fixture_exits_without_announcing
 test_wait_is_named_when_the_fixture_is_killed_rather_than_exiting
 test_pending_timer_is_not_mistaken_for_an_unreachable_wait
 test_watchdog_names_a_fixture_that_pins_the_driver_without_dying
+test_bus_refuses_to_close_while_a_fixture_can_still_announce
