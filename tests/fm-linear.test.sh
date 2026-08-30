@@ -598,6 +598,7 @@ new_merge_home() {
 
 run_merge() {
   FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$HOME_DIR/state" \
+    FM_NO_MISTAKES_STATE_DB_OVERRIDE="$HOME_DIR/no-mistakes-state.sqlite" \
     "$ROOT/bin/fm-pr-merge.sh" "$@" 2>&1
 }
 
