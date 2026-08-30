@@ -21,7 +21,7 @@ EMIT="$ROOT/bin/fm-public-followup-emit.sh"
 POLL="$ROOT/bin/fm-x-poll.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 SESSION_START="$ROOT/bin/fm-session-start.sh"
-TMP_ROOT=$(fm_test_tmproot fm-public-followup)
+TMP_ROOT=${FM_TEST_PUBLIC_FOLLOWUP_TMP_ROOT:-$(fm_test_tmproot fm-public-followup)}
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 command -v tasks-axi >/dev/null 2>&1 || { echo "skip: tasks-axi not found"; exit 0; }
@@ -1278,6 +1278,25 @@ test_relay_poll_stays_inert_and_surfaces_once() {
 
 test_session_start_surfaces_only_when_owed() {
   local off on out
+  if [ "${FM_TEST_PUBLIC_FOLLOWUP_HERDR_STARTUP:-0}" = 1 ]; then
+    on=$(make_home startup-herdr)
+    seed_commitment "$on" pf-start req-start discord main work-start
+    out=$(PATH="$on/fakebin:$PATH" FM_BACKEND=herdr FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$on" \
+      FM_STATE_OVERRIDE="$on/state" FM_DATA_OVERRIDE="$on/data" \
+      FM_CONFIG_OVERRIDE="$on/config" "$SESSION_START" 2>&1)
+    assert_contains "$out" "COCKPIT: adopted Herdr frame" \
+      "the Herdr startup fixture must create a cockpit frame"
+    assert_contains "$out" "Public commitments awaiting delivery" \
+      "the Herdr startup fixture must exercise public-followup surfacing"
+    case "${FM_TEST_PUBLIC_FOLLOWUP_HERDR_SCENARIO:-success}" in
+      success) ;;
+      failure) return 17 ;;
+      early-exit) exit 23 ;;
+      *) fail "unknown Herdr startup scenario" ;;
+    esac
+    pass "Herdr startup adopts a cockpit while surfacing public commitments"
+    return 0
+  fi
   off=$(make_home startup-off relay-off)
   out=$(env -u TMUX -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_TAB_ID \
     -u HERDR_WORKSPACE_ID -u HERDR_SOCKET_PATH -u CMUX_WORKSPACE_ID \
@@ -1328,6 +1347,11 @@ test_typed_records_exclude_raw_public_material() {
     "the typed obligation must never carry raw public message text"
   pass "typed public-followup records carry only public-safe summaries and deliverables"
 }
+
+if [ "${FM_TEST_PUBLIC_FOLLOWUP_HERDR_STARTUP:-0}" = 1 ]; then
+  test_session_start_surfaces_only_when_owed
+  exit $?
+fi
 
 test_outcome_text_is_bounded_without_corrupting_characters
 test_restart_e2e_delivers_exactly_once

@@ -82,18 +82,60 @@ pane_inventory() {
 }
 
 baseline=$(pane_inventory) || fail "could not capture the baseline pane inventory"
-for run in 1 2; do
-  log="$TMP_ROOT/public-followup-$run.log"
-  if ! env PATH="$FAKEBIN:$PATH" \
+baseline_ids=$(printf '%s' "$baseline" | jq -r '.[].pane_id')
+
+close_created_panes() {
+  local ids=$1 pane status=0
+  while IFS= read -r pane; do
+    [ -n "$pane" ] || continue
+    lab pane close "$pane" >/dev/null 2>&1 || status=1
+  done <<< "$ids"
+  return "$status"
+}
+
+deleted_cwd_processes() {
+  local fixture=$1 cwd
+  for cwd in /proc/[0-9]*/cwd; do
+    [ -L "$cwd" ] || continue
+    case "$(readlink "$cwd" 2>/dev/null || true)" in
+      "$fixture"*' (deleted)') printf '%s\n' "${cwd#/proc/}" ;;
+    esac
+  done
+}
+
+run_scenario() {
+  local scenario=$1 expected=$2 fixture log rc=0 after created_ids remaining leaked
+  fixture="$TMP_ROOT/fixture-$scenario-$RANDOM"
+  log="$TMP_ROOT/public-followup-$scenario.log"
+  mkdir -p "$fixture"
+  env PATH="$FAKEBIN:$PATH" \
     FM_COCKPIT_LAB_HELPER="$LAB_HELPER" FM_COCKPIT_LAB_SESSION="$SESSION" \
     HERDR_ENV=1 HERDR_SESSION="$SESSION" HERDR_SOCKET_PATH="$socket" \
     HERDR_WORKSPACE_ID="$workspace" HERDR_TAB_ID="$tab" HERDR_PANE_ID="$head" \
-    bash "$ROOT/tests/fm-public-followup.test.sh" > "$log" 2>&1; then
-    fail "public-followup run $run failed: $(tail -20 "$log")"
-  fi
-  after=$(pane_inventory) || fail "could not inspect panes after public-followup run $run"
-  [ "$after" = "$baseline" ] \
-    || fail "public-followup run $run leaked live cockpit panes or deleted-cwd processes"$'\n'"baseline=$baseline"$'\n'"after=$after"
-done
+    FM_TEST_PUBLIC_FOLLOWUP_TMP_ROOT="$fixture" \
+    FM_TEST_PUBLIC_FOLLOWUP_HERDR_STARTUP=1 \
+    FM_TEST_PUBLIC_FOLLOWUP_HERDR_SCENARIO="$scenario" \
+    bash "$ROOT/tests/fm-public-followup.test.sh" > "$log" 2>&1 || rc=$?
+  after=$(pane_inventory) || fail "could not inspect panes after $scenario"
+  created_ids=$(jq -nr --argjson after "$after" --arg baseline "$baseline_ids" '
+    ($baseline | split("\n") | map(select(length > 0))) as $before
+    | $after | map(.pane_id) | map(select(. as $id | $before | index($id) | not))[]
+  ')
+  [ -n "$created_ids" ] || fail "$scenario bypassed Herdr cockpit pane creation: $(tail -20 "$log")"
+  close_created_panes "$created_ids" || fail "$scenario could not close every created pane"
+  remaining=$(pane_inventory) || fail "could not inspect panes after $scenario cleanup"
+  [ "$remaining" = "$baseline" ] \
+    || fail "$scenario did not restore the exact baseline pane inventory"
+  rm -rf "$fixture"
+  leaked=$(deleted_cwd_processes "$fixture")
+  [ -z "$leaked" ] || fail "$scenario retained deleted fixture cwd processes: $leaked"
+  [ "$rc" -eq "$expected" ] \
+    || fail "$scenario returned $rc instead of $expected: $(tail -20 "$log")"
+}
 
-pass "two public-followup runs leave no live cockpit panes or deleted-cwd processes"
+run_scenario success 0
+run_scenario success 0
+run_scenario failure 17
+run_scenario early-exit 23
+
+pass "repeated, failed, and early-exit startups restore panes before fixture deletion"
