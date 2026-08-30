@@ -118,6 +118,9 @@ case "${1:-} ${2:-}" in
   "pr merge")
     [ -z "${FAKE_GH_AXI_MERGE_FAIL:-}" ] || { echo "gh-axi: pr merge refused" >&2; exit 1; }
     ;;
+  "api "*)
+    printf '%s\n' 'merged: true' 'merged_at: "2026-08-20T12:45:00Z"'
+    ;;
 esac
 exit 0
 SH
