@@ -100,9 +100,51 @@ The healthy comparison supplied explicit non-Herdr tmux fixture context and left
 A workspace-label mismatch created no panes, which disconfirmed unguarded adoption from inherited Herdr context alone.
 A dead supervisor also made adoption refuse, which independently confirmed the live-authority gate.
 
-The 29 surviving panes were externally closed before authoritative live identity, cwd, owning home or task, and tab inventory could be completed.
-No identity was reconstructed from pane age or naming.
-No default-session pane was closed by this work.
+### Red-first provenance
+
+The public-followup reproduction ran against code under test at exact full SHA `6b6c5059d901537f5926ea1ce28f06630e04ba7b` and produced this exact pre-fix failure:
+
+```text
+not ok - public-followup run 1 leaked live cockpit panes or deleted-cwd processes
+```
+
+Its proof-file list is `tests/fm-public-followup-herdr-isolation-e2e.test.sh`, `tests/fm-public-followup.test.sh`, `bin/fm-session-start.sh`, `bin/fm-cockpit.sh`, and `bin/backends/herdr.sh`.
+The two test files contained then-new uncommitted fixture and assertion content, so the observation binds the code under test to the stated SHA but does not overclaim clean-commit provenance for those test bytes.
+
+The focused geometry reproduction ran against code under test at exact full SHA `6b6c5059d901537f5926ea1ce28f06630e04ba7b` and produced this exact pre-fix failure:
+
+```text
+not ok - a missing authoritative foreground cwd must be permanent: expected exit 64, got 0
+```
+
+Its proof-file list is `tests/fm-herdr-pane-geometry.test.sh` and `bin/fm-herdr-pane-geometry.sh`.
+The test file contained then-new uncommitted fixture and assertion content, so this observation also binds the code under test to the stated SHA without claiming clean-commit provenance for the test bytes.
+
+The first broad `tests/fm-fleet-snapshot-view.test.sh` watch attempt failed before reaching the new behavior because the custom geometry fixture basename violated the existing strict painter-ownership contract in `bin/backends/herdr.sh`.
+Changing that basename to `fm-herdr-pane-geometry.sh` was a non-behavioral fixture correction.
+No meaningful broad-watch red result existed before the first post-implementation run.
+The repository context for that attempt was exact full SHA `3c71d0589eedbfef57e6748a94ccf9c40f9110af`, and its proof-file list is `tests/fm-fleet-snapshot-view.test.sh`, `bin/fm-fleet-view.sh`, and `bin/backends/herdr.sh`.
+The test file was modified in the active review round, so the attempt is chronology rather than clean-commit verification.
+
+### Accepted authoritative pre-closure inventory
+
+The authoritative external pre-closure record was captured in repository context exact full SHA `6b6c5059d901537f5926ea1ce28f06630e04ba7b` and supplied after the affected panes had been closed.
+Its proof-file list is this durable record, `docs/verification/cockpit-fleet-layout.md`; the underlying live state was external and is not reconstructible repository evidence.
+No live pane may be queried or closed to recreate it.
+
+The 18 deleted-cwd panes were all in tab `w5:t3`: `w5:p9F`, `w5:p9G`, `w5:p9H`, `w5:p9J`, `w5:p9K`, `w5:p9M`, `w5:p9N`, `w5:p9P`, `w5:p9Q`, `w5:p9R`, `w5:p9S`, `w5:p9T`, `w5:p9V`, `w5:p9W`, `w5:p9X`, `w5:p9Y`, `w5:p9Z`, and `w5:p90`.
+They came from three fixture runs and six deleted cwd paths: `/tmp/fm-public-followup.gx6nBn/startup-off`, `/tmp/fm-public-followup.gx6nBn/startup-on`, `/tmp/fm-public-followup.PcXNA9/startup-off`, `/tmp/fm-public-followup.PcXNA9/startup-on`, `/tmp/fm-public-followup.iW1qXN/startup-off`, and `/tmp/fm-public-followup.iW1qXN/startup-on`.
+Each run created six panes, each cwd held three panes, and every listed cwd was deleted.
+
+The 26 non-deleted orphaned fleet panes were `w5:p1W` in `w5:t93`; `w5:p60`, `w5:p71`, `w5:p72`, `w5:p73`, `w5:p74`, and `w5:p75` in `w5:tBN`; `w5:p8C`, `w5:p8D`, `w5:p8E`, `w5:p8F`, `w5:p8G`, and `w5:p8H` in `w5:tCB`; `w5:p8J`, `w5:p8K`, `w5:p8M`, `w5:p8N`, `w5:p8P`, and `w5:p8Q` in `w5:tCC`; `w5:p8W`, `w5:p8X`, `w5:p8Y`, `w5:p8Z`, `w5:p80`, and `w5:p91` in `w5:tCF`; and `w7:p3` in `w7:t4`.
+Their cwd was `/home/fungiman` or `/home/fungiman/firstmate`, no agent was registered, and their labels were only `waiting`, `ready`, and `in-flight,blocked` repeating in threes.
+Each six-pane tab was a doubled three-pane fleet-region rebuild.
+
+The legitimate retained cockpit panes were `w5:p3B`, `w5:p3C`, and `w5:p3D` in `w5:t3`.
+The 18 deleted-cwd panes and 26 non-deleted orphaned fleet panes were closed externally before independent implementation inspection.
+No identity was reconstructed from pane age, naming, or any later state.
+The implementation issued zero default-session pane closures.
+This section is the single durable owner for the accepted inventory and supplies the same role-neutral provenance and inventory for PR evidence without duplicating the record.
 
 ## The drawn rectangle and the pty diverge in BOTH directions
 
