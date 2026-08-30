@@ -1288,13 +1288,13 @@ test_session_start_surfaces_only_when_owed() {
       "the Herdr startup fixture must create a cockpit frame"
     assert_contains "$out" "Public commitments awaiting delivery" \
       "the Herdr startup fixture must exercise public-followup surfacing"
+    pass "Herdr startup adopts a cockpit while surfacing public commitments"
     case "${FM_TEST_PUBLIC_FOLLOWUP_HERDR_SCENARIO:-success}" in
       success) ;;
       failure) return 17 ;;
       early-exit) exit 23 ;;
       *) fail "unknown Herdr startup scenario" ;;
     esac
-    pass "Herdr startup adopts a cockpit while surfacing public commitments"
     return 0
   fi
   off=$(make_home startup-off relay-off)

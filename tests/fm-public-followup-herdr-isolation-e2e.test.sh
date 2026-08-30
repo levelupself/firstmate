@@ -135,16 +135,19 @@ run_scenario() {
     FM_TEST_PUBLIC_FOLLOWUP_HERDR_STARTUP=1 \
     FM_TEST_PUBLIC_FOLLOWUP_HERDR_SCENARIO="$scenario" \
     bash "$ROOT/tests/fm-public-followup.test.sh" > "$log" 2>&1 || rc=$?
+  grep -F 'ok - Herdr startup adopts a cockpit while surfacing public commitments' \
+    "$log" >/dev/null 2>&1 \
+    || fail "$scenario bypassed Herdr cockpit pane creation: $(tail -20 "$log")"
   after=$(pane_inventory) || fail "could not inspect panes after $scenario"
   created_ids=$(jq -nr --argjson after "$after" --arg baseline "$baseline_ids" '
     ($baseline | split("\n") | map(select(length > 0))) as $before
     | $after | map(.pane_id) | map(select(. as $id | $before | index($id) | not))[]
   ')
-  [ -n "$created_ids" ] || fail "$scenario bypassed Herdr cockpit pane creation: $(tail -20 "$log")"
   close_created_panes "$created_ids" || fail "$scenario could not close every created pane"
   remaining=$(pane_inventory) || fail "could not inspect panes after $scenario cleanup"
   [ "$remaining" = "$baseline" ] \
-    || fail "$scenario did not restore the exact baseline pane inventory"
+    || fail "$scenario did not restore the exact baseline pane inventory"$'\n'\
+"baseline=$baseline"$'\n'"remaining=$remaining"
   rm -rf "$fixture"
   leaked=$(deleted_cwd_processes "$fixture")
   [ -z "$leaked" ] || fail "$scenario retained deleted fixture cwd processes: $leaked"
