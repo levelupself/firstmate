@@ -27,8 +27,9 @@
 # pty rather than instead of it: the drawn rectangle is what the operator can
 # see and the pty is where text wraps, so the frame honours whichever is
 # smaller.
-# Watch mode uses only bash, jq, terminal control sequences, and sleep; a failed
-# snapshot or render prints an explicit degraded panel and retries next redraw.
+# Watch mode uses only bash, jq, terminal control sequences, and sleep. A failed
+# snapshot or render prints an explicit degraded panel. Drawn-geometry failures
+# recover within three transient reads or evict the exact bound pane once.
 #
 # A watched banner inside an adopted cockpit frame paints only while that home's
 # frame record still names ITS pane, and only one such banner paints a pane at a
@@ -228,18 +229,23 @@ terminal_height() {
 }
 
 authoritative_geometry() {
-  local geometry width height extra
+  local geometry width height extra status
   [ -n "$GEOMETRY_COMMAND" ] || return 1
   [ -x "$GEOMETRY_COMMAND" ] || return 1
-  geometry=$("$GEOMETRY_COMMAND") || return 1
+  geometry=$("$GEOMETRY_COMMAND")
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    [ "$status" -ne 64 ] || return 64
+    return 75
+  fi
   read -r width height extra <<EOF
 $geometry
 EOF
-  [ -z "${extra:-}" ] || return 1
+  [ -z "${extra:-}" ] || return 75
   case "$width:$height" in
-    *[!0-9:]*|:*|*:) return 1 ;;
+    *[!0-9:]*|:*|*:) return 75 ;;
   esac
-  [ "$width" -gt 0 ] && [ "$height" -gt 0 ] || return 1
+  [ "$width" -gt 0 ] && [ "$height" -gt 0 ] || return 75
   printf '%s %s\n' "$width" "$height"
 }
 
@@ -267,12 +273,20 @@ clamp_to_pty() {  # <drawn> <lines|cols> -> the value to paint to
 }
 
 render_once() {
-  local width height snapshot rendered geometry
+  local width height snapshot rendered geometry status
   if [ -n "$GEOMETRY_COMMAND" ]; then
-    if ! geometry=$(authoritative_geometry); then
+    if geometry=$(authoritative_geometry); then
+      :
+    else
+      status=$?
+      if [ "$status" -eq 64 ]; then
+        printf '%s\n' "FLEET VIEW EVICTING" \
+          "Authoritative pane geometry is permanently unavailable."
+        return 64
+      fi
       printf '%s\n' "FLEET VIEW DEGRADED" \
-        "Drawn pane geometry unavailable; retrying on the next redraw."
-      return 1
+        "Drawn pane geometry is transiently unavailable."
+      return 75
     fi
     width=$(clamp_to_pty "${geometry%% *}" cols)
     height=$(clamp_to_pty "${geometry#* }" lines)
@@ -637,6 +651,43 @@ painter_retire() {  # <reason>
     "$HERDR_PANE_ID" "$1" >&2
 }
 
+painter_evict() {  # <reason>
+  local reason=$1
+  fm_terminal_watch_reset
+  printf 'fm-fleet-view: EVICTING fleet pane %s: %s\n' "$HERDR_PANE_ID" "$reason" >&2
+  fm_terminal_paint_frame "FLEET VIEW EVICTING
+$reason" || true
+  if ! fm_backend_herdr_cli "${HERDR_SESSION:-default}" pane close "$HERDR_PANE_ID" >/dev/null 2>&1; then
+    printf 'fm-fleet-view: exact pane eviction failed for %s; the painter is stopping without another close attempt.\n' \
+      "$HERDR_PANE_ID" >&2
+    return 1
+  fi
+}
+
+painter_can_evict() {
+  [ "$PAINTER_BOUND_ONCE" = 1 ] \
+    && [ -n "${HERDR_PANE_ID:-}" ] \
+    && [ -n "${HERDR_SESSION:-}" ] \
+    && declare -F fm_backend_herdr_cli >/dev/null 2>&1
+}
+
+painter_terminal_failure() {  # <reason>
+  local reason=$1
+  if painter_can_evict; then
+    painter_evict "$reason"
+    return $?
+  fi
+  fm_terminal_watch_reset
+  printf 'fm-fleet-view: STOPPING without pane mutation: %s\n' "$reason" >&2
+  fm_terminal_paint_frame "FLEET VIEW STOPPING
+$reason" || true
+}
+
+painter_home_available() (
+  [ -d "$PAINTER_HOME" ] || return 1
+  CDPATH='' cd -- "$PAINTER_HOME" 2>/dev/null || return 1
+)
+
 PAINTER_LOCK=
 painter_claim() {
   [ "$PAINTER_BINDING" = bound ] || return 0
@@ -656,6 +707,8 @@ painter_claim() {
 }
 
 if [ "$WATCH" = 1 ]; then
+  GEOMETRY_FAILURES=0
+  GEOMETRY_RETRY_LIMIT=3
   painter_binding
   if [ "$PAINTER_BINDING" = unbound ]; then
     painter_retire 'leaving the frame to the panes it records'
@@ -668,11 +721,51 @@ if [ "$WATCH" = 1 ]; then
     # recording retires here instead of painting a region it was replaced in.
     painter_binding
     if [ "$PAINTER_BINDING" = unbound ]; then
+      if [ "$PAINTER_BOUND_ONCE" = 1 ] && ! painter_home_available; then
+        if authoritative_geometry >/dev/null; then
+          painter_retire 'its frame record is unavailable while its exact pane and cwd remain live'
+          exit 0
+        fi
+        geometry_status=$?
+        if [ "$geometry_status" -eq 64 ]; then
+          painter_terminal_failure 'authoritative pane state or cwd is permanently unavailable' || true
+          exit 1
+        fi
+        GEOMETRY_FAILURES=$((GEOMETRY_FAILURES + 1))
+        if [ "$GEOMETRY_FAILURES" -ge "$GEOMETRY_RETRY_LIMIT" ]; then
+          painter_terminal_failure "authoritative pane state stayed unavailable after $GEOMETRY_RETRY_LIMIT consecutive attempts" || true
+          exit 1
+        fi
+        frame="FLEET VIEW DEGRADED
+Authoritative pane state unavailable; transient attempt $GEOMETRY_FAILURES of $GEOMETRY_RETRY_LIMIT."
+        fm_terminal_paint_frame "$frame" || exit 0
+        sleep "$INTERVAL"
+        continue
+      fi
       painter_retire 'retiring rather than painting beside its replacement'
       exit 0
     fi
     painter_claim || exit 1
-    frame=$(render_once) || true
+    if frame=$(render_once); then
+      GEOMETRY_FAILURES=0
+    else
+      render_status=$?
+      case "$render_status" in
+        64)
+          painter_terminal_failure 'authoritative pane state or cwd is permanently unavailable' || true
+          exit 1
+          ;;
+        75)
+          GEOMETRY_FAILURES=$((GEOMETRY_FAILURES + 1))
+          if [ "$GEOMETRY_FAILURES" -ge "$GEOMETRY_RETRY_LIMIT" ]; then
+            painter_terminal_failure "drawn geometry stayed unavailable after $GEOMETRY_RETRY_LIMIT consecutive attempts" || true
+            exit 1
+          fi
+          frame="FLEET VIEW DEGRADED
+Drawn pane geometry unavailable; transient attempt $GEOMETRY_FAILURES of $GEOMETRY_RETRY_LIMIT."
+          ;;
+      esac
+    fi
     # A write that fails is a pane that has gone away underneath this loop:
     # stop rather than spin forever against a terminal nobody can read.
     fm_terminal_paint_frame "$frame" || exit 0
