@@ -2,7 +2,7 @@
 
 Verified on 2026-08-31 from commit `eae2b921c6dbd875d296f4bf28e6d7935cf738ee`.
 
-The behavioral fixture populated the real session-start public interface with 12 task metadata files and 12 matching status logs, enough to exceed the six-record detail ceiling.
+The realistic behavioral fixture exercised the session-start public interface with 12 synthetic task metadata files and 12 matching status logs, enough to exceed the six-record detail ceiling.
 
 The uncapped control used `FM_SESSION_START_TASK_DETAIL_LIMIT=12` and measured 5,167 estimated tokens.
 
