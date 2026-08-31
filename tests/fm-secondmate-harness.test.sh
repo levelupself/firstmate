@@ -997,7 +997,7 @@ new_world() {
     printf 'projects/\nstate/\ndata/\n.no-mistakes/\n'
     [ "$dispatch_ignore" = no ] || printf 'config/crew-dispatch.json\n'
     printf 'config/crew-harness\nconfig/secondmate-harness\nconfig/backlog-backend\n'
-    printf 'config/backend\nconfig/herdr-presentation-spaces\nconfig/startup-memory-budget\nconfig/agents-md-budget\n'
+    printf 'config/backend\nconfig/herdr-presentation-spaces\nconfig/startup-memory-budget\nconfig/agents-md-budget\nconfig/session-start-budget\n'
   } > "$w/main/.gitignore"
   printf 'v1\n' > "$w/main/AGENTS.md"
   printf 'r1\n' > "$w/main/README.md"
@@ -1340,7 +1340,7 @@ test_bootstrap_sweep_defers_dispatch_on_stale_unignored_home() {
   pass "B9 bootstrap sweep defers new inherited config until the home ignores it"
 }
 
-# The primary bootstrap always materializes both prompt-surface defaults, so an
+# The primary bootstrap always materializes all three always-loaded budgets, so an
 # otherwise empty inherited surface converges those visible values while
 # ordinary tracked-file fast-forward behavior remains unchanged.
 test_bootstrap_sweep_materializes_and_inherits_memory_default() {
@@ -1368,9 +1368,13 @@ test_bootstrap_sweep_materializes_and_inherits_memory_default() {
     || fail "primary bootstrap did not materialize the AGENTS.md default"
   [ "$(cat "$w/sm/config/agents-md-budget")" = 25000 ] \
     || fail "default-only sweep did not converge agents-md-budget"
+  [ "$(cat "$w/home/config/session-start-budget")" = 20000 ] \
+    || fail "primary bootstrap did not materialize the session-start default"
+  [ "$(cat "$w/sm/config/session-start-budget")" = 20000 ] \
+    || fail "default-only sweep did not converge session-start-budget"
   [ "$(git -C "$w/sm" rev-parse HEAD)" = "$head" ] \
     || fail "default-only sweep did not still fast-forward the tracked files"
-  pass "B10 bootstrap sweep materializes and inherits both prompt-surface defaults while fast-forwarding"
+  pass "B10 bootstrap sweep materializes and inherits all three always-loaded budgets while fast-forwarding"
 }
 
 # config/backend: present and absent primary state converges exactly.
@@ -2430,6 +2434,7 @@ printf '%s' spawn >> '$log'
 printf '%s' codex > '$w/sm/config/crew-harness'
 printf '%s\n' 7500 > '$w/sm/config/startup-memory-budget'
 printf '%s\n' 25000 > '$w/sm/config/agents-md-budget'
+printf '%s\n' 20000 > '$w/sm/config/session-start-budget'
 SH
   chmod +x "$w/main/bin/fm-spawn.sh"
   fakebin=$(make_fake_toolchain "$w")

@@ -15,6 +15,7 @@
 #     watcher ownership
 #   - status-tail bounding, default and FM_SESSION_START_STATUS_TAIL override
 #   - the per-line status-tail cap and its truncation marker
+#   - fleet-detail bounding with compact, recoverable accounting for every task
 #   - startup backlog composition: done rows dropped, every in-flight/held/
 #     blocked row kept whole, the dispatchable queued listing bounded with an
 #     exact disclosed remainder
@@ -1265,6 +1266,53 @@ EOF
   [ "$orphan_count" -eq 1 ] || fail "orphan status log was printed $orphan_count times: $out"
 
   pass "orphan status logs are printed once with bounded tails"
+}
+
+test_fleet_detail_cap_keeps_every_task_accounted_for() {
+  local rec root home fakebin out id detailed trimmed reported_bytes actual_bytes
+  rec=$(new_world fleet-detail-cap)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+
+  for id in 01 02 03 04 05 06 07 08 09 10 11 12; do
+    {
+      printf 'window=fm-sess:task-%s\n' "$id"
+      printf 'kind=ship\n'
+      printf 'brief=%s\n' "$(printf 'detail-%s-%.0s' "$id" {1..20})"
+    } > "$home/state/task-$id.meta"
+    printf 'working: task %s status detail\n' "$id" > "$home/state/task-$id.status"
+  done
+
+  out=$(FM_SESSION_START_TASK_DETAIL_LIMIT=6 \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" 'full task detail limit: 6; 12 task metadata file(s) found' \
+    "fleet digest did not disclose the configured task-detail ceiling"
+  detailed=$(printf '%s\n' "$out" | grep -c '^detail: full$')
+  trimmed=$(printf '%s\n' "$out" | grep -c '^detail: trimmed' )
+  [ "$detailed" -eq 6 ] || fail "expected 6 full task records, got $detailed: $out"
+  [ "$trimmed" -eq 6 ] || fail "expected 6 compact task records, got $trimmed: $out"
+
+  for id in 01 02 03 04 05 06 07 08 09 10 11 12; do
+    assert_contains "$out" "--- task-$id ---" \
+      "task-$id disappeared when the fleet detail cap was reached"
+  done
+  assert_contains "$out" "full meta: $home/state/task-12.meta" \
+    "trimmed task detail did not point to the complete metadata source"
+  assert_contains "$out" "full log: $home/state/task-12.status" \
+    "trimmed task status did not point to the complete status source"
+  assert_contains "$out" 'fleet task detail was trimmed' \
+    "read-once contract did not permit targeted recovery of trimmed task detail"
+  reported_bytes=$(printf '%s\n' "$out" | awk -F= '/^total_bytes=/{value=$2} END{print value}')
+  actual_bytes=$(printf '%s\n' "$out" | LC_ALL=C wc -c | tr -d '[:space:]')
+  [ "$reported_bytes" = "$actual_bytes" ] \
+    || fail "budget footer reported $reported_bytes bytes for a $actual_bytes-byte complete briefing"
+  assert_contains "$out" 'budget_status=within-budget' \
+    "completed briefing did not report its budget status"
+  pass "fleet detail is capped while every task remains explicitly and recoverably accounted for"
 }
 
 # --- session-start secondmate recovery boundary -----------------------------
@@ -2524,6 +2572,7 @@ test_session_start_relaunches_herdr_husk_secondmate
 test_status_tail_bounding
 test_status_tail_line_cap
 test_orphan_status_logs_are_printed
+test_fleet_detail_cap_keeps_every_task_accounted_for
 test_endpoint_liveness_tmux
 test_endpoint_liveness_herdr
 test_composition_invokes_real_scripts
