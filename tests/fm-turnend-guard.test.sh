@@ -922,6 +922,7 @@ test_opencode_plugin_anchors_guard_to_worktree() {
   cat > "$worktree_dir/bin/fm-turnend-guard.sh" <<'EOF'
 #!/usr/bin/env bash
 cat >/dev/null
+printf 'firstmate-opencode-guard-input-accepted\n'
 printf 'guard-fired\n' >&2
 exit 2
 EOF
@@ -967,6 +968,85 @@ EOF
   expect_code 0 "$status" "OpenCode plugin must run the guard from worktree even when directory is elsewhere"
   [ -z "$out" ] || fail "OpenCode plugin worktree-root test printed output: $out"
   pass ".opencode primary plugin: guard path is anchored to worktree, not directory"
+}
+
+test_opencode_plugin_reports_closed_guard_stdin() {
+  local plugin repo home received out status
+  plugin="$ROOT/.opencode/plugins/fm-primary-turnend-guard.js"
+  repo="$TMP_ROOT/opencode-plugin-closed-stdin"
+  home="$TMP_ROOT/opencode-plugin-closed-stdin-home"
+  received="$TMP_ROOT/opencode-plugin-received-input"
+  mkdir -p "$repo/bin" "$home/state"
+  cat > "$repo/bin/fm-turnend-guard.sh" <<'EOF'
+#!/usr/bin/env bash
+if [ "${FM_GUARD_CLOSE_STDIN:-0}" = 1 ]; then
+  exec 0<&-
+  sleep 0.02
+  exit 0
+fi
+cat > "${FM_GUARD_RECEIVED_INPUT:?}"
+printf 'firstmate-opencode-guard-input-accepted\n'
+exit 0
+EOF
+  chmod +x "$repo/bin/fm-turnend-guard.sh"
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_GUARD_RECEIVED_INPUT="$received" node --input-type=module 2>&1 <<'EOF'
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const pluginURL = pathToFileURL(process.env.PLUGIN).href;
+const healthyMod = await import(`${pluginURL}?healthy`);
+const prompts = [];
+const client = {
+  session: {
+    promptAsync: async (request) => {
+      prompts.push(request.body.parts[0].text);
+    },
+  },
+};
+const healthyHooks = await healthyMod.FmPrimaryTurnendGuard({
+  client,
+  directory: process.env.WORKTREE,
+  worktree: process.env.WORKTREE,
+});
+await healthyHooks.event({ event: { type: "session.idle", properties: { sessionID: "healthy" } } });
+const received = readFileSync(process.env.FM_GUARD_RECEIVED_INPUT, "utf8");
+if (received !== '{"stop_hook_active":false}') {
+  throw new Error(`healthy control did not receive guard input: ${JSON.stringify(received)}`);
+}
+if (prompts.length !== 0) {
+  throw new Error(`healthy control produced a prompt: ${prompts.join("\n---\n")}`);
+}
+
+process.env.FM_GUARD_CLOSE_STDIN = "1";
+for (let batch = 0; batch < 6; batch += 1) {
+  await Promise.all(Array.from({ length: 8 }, async (_, offset) => {
+    const index = batch * 8 + offset;
+    const closedMod = await import(`${pluginURL}?closed-${index}`);
+    const closedHooks = await closedMod.FmPrimaryTurnendGuard({
+      client,
+      directory: process.env.WORKTREE,
+      worktree: process.env.WORKTREE,
+    });
+    await closedHooks.event({ event: { type: "session.idle", properties: { sessionID: `closed-${index}` } } });
+  }));
+}
+if (prompts.length !== 48) {
+  throw new Error(`closed guard stdin was not visible for every run: ${prompts.length} of 48 prompts`);
+}
+for (const prompt of prompts) {
+  if (!prompt.includes("could not confirm input delivery because")) {
+    throw new Error(`closed guard stdin prompt omitted the delivery failure: ${prompt}`);
+  }
+}
+if (!prompts.some((prompt) => prompt.includes("the guard process closed stdin (EPIPE)"))) {
+  throw new Error("closed guard stdin stress did not exercise the EPIPE path");
+}
+EOF
+)
+  status=$?
+  [ -z "$out" ] || fail "OpenCode closed-stdin test printed output: $out"
+  expect_code 0 "$status" "OpenCode plugin must survive and report a guard process that closes stdin"
+  pass ".opencode primary plugin: closed guard stdin is survivable and visible"
 }
 
 test_pi_extension_injects_once_per_logical_agent_run() {
@@ -1647,6 +1727,7 @@ test_tracked_claude_entries_inert_under_grok
 test_codex_hook_uses_process_pwd_when_payload_cwd_is_outside_root
 test_codex_hook_ignores_nested_git_root_guard
 test_opencode_plugin_anchors_guard_to_worktree
+test_opencode_plugin_reports_closed_guard_stdin
 test_pi_extension_injects_once_per_logical_agent_run
 test_pi_extension_retries_after_followup_delivery_failure
 test_hook_claude_mode_reblocks_stop_hook_active_when_unhealthy
