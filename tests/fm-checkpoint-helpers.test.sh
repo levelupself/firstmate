@@ -105,33 +105,36 @@ EOF
 }
 
 test_watchdog_names_a_fixture_that_pins_the_driver_without_dying() {
-  local bus fixture_pid gate out status watchdog_pids
+  local blocked_bus bus fixture_pid gate out status watchdog_pids
   bus="$TMP_ROOT/pinned-driver.bus"
+  blocked_bus="$TMP_ROOT/pinned-writer.bus"
   gate="$TMP_ROOT/pinned-driver.gate"
   fm_checkpoint_bus "$bus"
+  fm_checkpoint_bus "$blocked_bus"
   out=$(FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_GATE="$gate" \
+    FM_BLOCKED_BUS="$blocked_bus" \
     FM_CHECKPOINT_WATCHDOG_MS=10000 node --input-type=module 2>&1 <<'EOF'
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { closeSync, openSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const { openCheckpointBus } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
 const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
-// A fixture that announces once, then announces again after the reader has
-// gone. The second write blocks in the kernel with no reader on the far end,
-// so the fixture never dies and keeps this process alive through its own
-// stdio handles. Liveness cannot see that: nothing is outstanding and nothing
-// is dead, which is silence until the job is cancelled.
+const blockedReader = openSync(process.env.FM_BLOCKED_BUS, "r+");
+// The checkpoint bus stays open, but the fixture writes next to a different
+// FIFO after its reader closes. This preserves a direct watchdog control for
+// a pinned live fixture without violating the close-order guarantee under
+// test: the helper bus itself is never closed while its announcer is alive.
 const fixture = spawn(
   "bash",
   [
     "-c",
-    "printf 'ready 1\\n' > \"$FM_CHECKPOINT_BUS\"; while [ ! -e \"$FM_GATE\" ]; do sleep 0.02; done; printf 'late 1\\n' > \"$FM_CHECKPOINT_BUS\"",
+    "printf 'ready 1\\n' > \"$FM_CHECKPOINT_BUS\"; while [ ! -e \"$FM_GATE\" ]; do sleep 0.02; done; printf 'blocked 1\\n' > \"$FM_BLOCKED_BUS\"",
   ],
   { stdio: ["ignore", "pipe", "pipe"] },
 );
 await bus.reached("ready");
-bus.close();
+closeSync(blockedReader);
 writeFileSync(process.env.FM_GATE, "go\n");
 process.stdout.write(`pinned by ${fixture.pid}\n`);
 EOF
@@ -152,7 +155,119 @@ EOF
   pass "a fixture that pins the driver without dying is named by the watchdog"
 }
 
+test_historical_close_order_reproduces_the_blocked_writer_failure() {
+  local bus gate out status
+  bus="$TMP_ROOT/historical-closed.bus"
+  gate="$TMP_ROOT/historical-closed.gate"
+  fm_checkpoint_bus "$bus"
+  out=$(FM_CHECKPOINT_BUS="$bus" FM_GATE="$gate" node --input-type=module 2>&1 <<'EOF'
+import { spawn } from "node:child_process";
+import { constants, closeSync, openSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
+import { Socket } from "node:net";
+
+const socket = new Socket({ fd: openSync(process.env.FM_CHECKPOINT_BUS, "r+"), readable: true, writable: false });
+socket.setEncoding("utf8");
+const writerCanOpen = () => {
+  try {
+    const fd = openSync(process.env.FM_CHECKPOINT_BUS, constants.O_WRONLY | constants.O_NONBLOCK);
+    closeSync(fd);
+    return true;
+  } catch (error) {
+    if (error.code === "ENXIO") return false;
+    throw error;
+  }
+};
+const fixture = spawn(
+  "bash",
+  [
+    "-c",
+    "printf 'ready 1\\n' > \"$FM_CHECKPOINT_BUS\"; while [ ! -e \"$FM_GATE\" ]; do sleep 0.02; done; printf 'attempting late\\n' >&2; printf 'late 1\\n' > \"$FM_CHECKPOINT_BUS\"; printf 'completed late\\n' >&2",
+  ],
+  { stdio: ["ignore", "pipe", "pipe"] },
+);
+let buffered = "";
+await new Promise((resolve) => {
+  socket.on("data", (chunk) => {
+    buffered += chunk;
+    if (buffered.includes("ready 1\n")) resolve();
+  });
+});
+if (!writerCanOpen()) throw new Error("blocked-writer detector missed the open-reader positive control");
+const closed = once(socket, "close");
+socket.destroy();
+await closed;
+if (writerCanOpen()) throw new Error("checkpoint FIFO still accepted writers after its reader closed");
+fixture.stderr.setEncoding("utf8");
+const attempted = once(fixture.stderr, "data");
+writeFileSync(process.env.FM_GATE, "go\n");
+const [stderr] = await attempted;
+if (!stderr.includes("attempting late\n")) throw new Error("fixture never attempted the late checkpoint write");
+if (stderr.includes("completed late\n") || fixture.exitCode !== null || writerCanOpen()) {
+  throw new Error("blocked-writer detector did not detect the historical failure");
+}
+fixture.kill("SIGKILL");
+await new Promise((resolve) => fixture.once("close", resolve));
+throw new Error("fixture became a blocked writer on a closed checkpoint bus");
+EOF
+)
+  status=$?
+  [ "$status" -ne 0 ] || fail "historical close order did not reproduce the blocked writer failure"
+  assert_contains "$out" "fixture became a blocked writer on a closed checkpoint bus" \
+    "historical blocked-writer failure was not preserved"
+  assert_not_contains "$out" "blocked-writer detector did not detect" \
+    "historical blocked-writer positive control did not detect the bad state"
+  pass "historical close order visibly reproduces the blocked writer failure"
+}
+
+test_bus_refuses_to_close_while_a_fixture_can_still_announce() {
+  local bus gate out status
+  bus="$TMP_ROOT/live-announcer.bus"
+  gate="$TMP_ROOT/live-announcer.gate"
+  fm_checkpoint_bus "$bus"
+  out=$(FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_GATE="$gate" \
+    FM_CHECKPOINT_WATCHDOG_MS=1000 node --input-type=module 2>&1 <<'EOF'
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const { openCheckpointBus, waitForExit } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
+const fixture = spawn(
+  "bash",
+  [
+    "-c",
+    "printf 'ready 1\\n' > \"$FM_CHECKPOINT_BUS\"; while [ ! -e \"$FM_GATE\" ]; do sleep 0.02; done; printf 'late 1\\n' > \"$FM_CHECKPOINT_BUS\"",
+  ],
+  { stdio: ["ignore", "pipe", "pipe"] },
+);
+await bus.reached("ready");
+let refusal = null;
+try {
+  bus.close();
+} catch (error) {
+  refusal = error;
+}
+if (!refusal) throw new Error("checkpoint bus closed while a fixture could still announce");
+if (!refusal.message.includes(`refusing to close checkpoint bus while fixture processes are alive: ${fixture.pid}`)) {
+  throw refusal;
+}
+writeFileSync(process.env.FM_GATE, "go\n");
+await bus.reached("late");
+await waitForExit(fixture.pid, "live-announcer fixture exit");
+await bus.waitForNoFixtures();
+bus.close();
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "checkpoint bus close must reject a live announcer and permit close after it exits"
+  [ -z "$out" ] || fail "live-announcer close test printed output: $out"
+  pass "checkpoint bus close visibly rejects a live announcer and succeeds once none remain"
+}
+
 test_wait_is_named_when_the_only_fixture_exits_without_announcing
 test_wait_is_named_when_the_fixture_is_killed_rather_than_exiting
 test_pending_timer_is_not_mistaken_for_an_unreachable_wait
 test_watchdog_names_a_fixture_that_pins_the_driver_without_dying
+test_historical_close_order_reproduces_the_blocked_writer_failure
+test_bus_refuses_to_close_while_a_fixture_can_still_announce
