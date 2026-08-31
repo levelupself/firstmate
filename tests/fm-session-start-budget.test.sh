@@ -38,6 +38,10 @@ test_report_classifies_a_captured_briefing() {
   out=$(FM_HOME="$home" "$BUDGET" report "$digest")
   assert_contains "$out" 'budget_status=over-budget' \
     "report did not classify a larger briefing as over budget"
+  assert_contains "$out" 'budget_overage_tokens=1' \
+    "over-budget report did not quantify the excess"
+  assert_contains "$out" 'budget_remedy=trim fleet detail or raise config/session-start-budget above 3 estimated tokens' \
+    "over-budget report did not provide a concrete remedy"
   pass "session-start accounting uses the shared estimator and classifies captured output"
 }
 

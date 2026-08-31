@@ -84,6 +84,9 @@ report() {
     printf 'budget_status=within-budget\n'
   else
     printf 'budget_status=over-budget\n'
+    printf 'budget_overage_tokens=%s\n' "$((total_tokens - budget))"
+    printf 'budget_remedy=trim fleet detail or raise config/%s above %s estimated tokens\n' \
+      "$FM_SESSION_START_BUDGET_FILE" "$total_tokens"
   fi
 }
 

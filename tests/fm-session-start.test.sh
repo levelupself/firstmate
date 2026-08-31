@@ -1269,7 +1269,7 @@ EOF
 }
 
 test_fleet_detail_cap_keeps_every_task_accounted_for() {
-  local rec root home fakebin out id detailed trimmed reported_bytes actual_bytes
+  local rec root home fakebin out uncapped id detailed trimmed reported_bytes actual_bytes uncapped_tokens capped_tokens
   rec=$(new_world fleet-detail-cap)
   IFS='|' read -r root home fakebin <<EOF
 $rec
@@ -1286,6 +1286,9 @@ EOF
     printf 'working: task %s status detail\n' "$id" > "$home/state/task-$id.status"
   done
 
+  uncapped=$(FM_SESSION_START_TASK_DETAIL_LIMIT=12 \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  rm -f "$home/state/.lock"
   out=$(FM_SESSION_START_TASK_DETAIL_LIMIT=6 \
     run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
@@ -1312,6 +1315,11 @@ EOF
     || fail "budget footer reported $reported_bytes bytes for a $actual_bytes-byte complete briefing"
   assert_contains "$out" 'budget_status=within-budget' \
     "completed briefing did not report its budget status"
+  uncapped_tokens=$(printf '%s\n' "$uncapped" | awk -F= '/^total_estimated_tokens=/{value=$2} END{print value}')
+  capped_tokens=$(printf '%s\n' "$out" | awk -F= '/^total_estimated_tokens=/{value=$2} END{print value}')
+  [ "$capped_tokens" -lt "$uncapped_tokens" ] \
+    || fail "fleet cap did not reduce the measured briefing: uncapped=$uncapped_tokens capped=$capped_tokens"
+  printf '# session-start measurement populated-12 uncapped=%s capped=%s\n' "$uncapped_tokens" "$capped_tokens"
   pass "fleet detail is capped while every task remains explicitly and recoverably accounted for"
 }
 

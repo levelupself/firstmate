@@ -214,11 +214,15 @@ Use `bin/fm-session-start-budget.sh read` to validate and print the effective va
 
 Every completed session start prints its measurement and budget status.
 
+An over-budget report states the estimated-token overage and directs the operator to trim fleet detail or raise `config/session-start-budget` above the measured total.
+
 `FM_SESSION_START_TASK_DETAIL_LIMIT` bounds full metadata and status-tail detail to six metadata records and six orphan status records by default.
 
 Records beyond either ceiling remain explicitly listed by task id with endpoint state and full source paths, so the expensive detail is bounded without silently hiding a task.
 
 The wake queue remains verbatim and unbounded because it is durable work, and context files retain their independent `config/startup-memory-budget` contract.
+
+The populated-fleet before-and-after measurement and capped-digest description are recorded in [`verification/session-start-budget.md`](verification/session-start-budget.md).
 The helper's header owns exact parsing, publication, and report output mechanics.
 
 ## Secondmate routes (data/secondmates.md)
