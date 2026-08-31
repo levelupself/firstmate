@@ -429,6 +429,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/session-start-budget.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/stacked-pr-workflow.md",
       "audience": "maintainer-verification"
     },

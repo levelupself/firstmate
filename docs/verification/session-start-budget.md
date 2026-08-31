@@ -1,6 +1,6 @@
 # Session-start briefing budget verification
 
-Verified on 2026-08-31 from commit `b0bc735ea32befd4dc3d9da125ecc230cace4912` plus the review fix.
+Verified on 2026-08-31 from commit `eae2b921c6dbd875d296f4bf28e6d7935cf738ee`.
 
 The behavioral fixture populated the real session-start public interface with 12 task metadata files and 12 matching status logs, enough to exceed the six-record detail ceiling.
 

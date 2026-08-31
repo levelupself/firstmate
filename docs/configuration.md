@@ -222,7 +222,7 @@ Records beyond either ceiling remain explicitly listed by task id with endpoint 
 
 The wake queue remains verbatim and unbounded because it is durable work, and context files retain their independent `config/startup-memory-budget` contract.
 
-The populated-fleet before-and-after measurement and capped-digest description are recorded in [`verification/session-start-budget.md`](verification/session-start-budget.md).
+The reproducible fixture measurement and capped-digest description are recorded in [`verification/session-start-budget.md`](verification/session-start-budget.md).
 The helper's header owns exact parsing, publication, and report output mechanics.
 
 ## Secondmate routes (data/secondmates.md)
