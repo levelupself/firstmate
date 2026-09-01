@@ -7,13 +7,15 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 USAGE="$ROOT/bin/fm-task-usage.sh"
+ALLOCATION="$ROOT/bin/fm-worktree-allocation.sh"
 TMP_ROOT=$(fm_test_tmproot fm-task-usage)
 HOME_DIR="$TMP_ROOT/home"
 FAKEBIN=$(fm_fakebin "$TMP_ROOT")
 POOLED_WORKTREE="$HOME_DIR/pooled-worktree"
 OTHER_WORKTREE="$HOME_DIR/other-worktree"
 FRESH_WORKTREE="$HOME_DIR/fresh-worktree"
-mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$POOLED_WORKTREE" "$OTHER_WORKTREE" "$FRESH_WORKTREE"
+CROSS_WORKTREE="$HOME_DIR/cross-worktree"
+mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$POOLED_WORKTREE" "$OTHER_WORKTREE" "$FRESH_WORKTREE" "$CROSS_WORKTREE"
 
 cat > "$FAKEBIN/codeburn" <<'SH'
 #!/usr/bin/env bash
@@ -246,7 +248,12 @@ if FM_HOME="$HOME_DIR" "$USAGE" fresh-late-key --baseline >/dev/null 2>"$TMP_ROO
 fi
 assert_contains "$(cat "$TMP_ROOT/header-only-ledger.err")" "could not be verified" \
   "a header-only ledger without allocation provenance did not preserve uncertainty"
-printf '%s\n' 'worktree_allocation=fresh' >> "$HOME_DIR/state/fresh-late-key.meta"
+FM_HOME="$HOME_DIR" "$ALLOCATION" acquire history-start "$OTHER_WORKTREE" 2026-07-20T09:00:00Z reused >/dev/null \
+  || fail "allocation history initialization failed"
+FRESH_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire fresh-late-key "$FRESH_WORKTREE" 2026-07-20T10:00:00Z fresh) \
+  || fail "fresh allocation provenance failed"
+[ "$FRESH_DISPOSITION" = first-owner ] || fail "new working-copy identity was not recorded as first owner"
+printf '%s\n' 'worktree_allocation=first-owner' >> "$HOME_DIR/state/fresh-late-key.meta"
 FM_HOME="$HOME_DIR" "$USAGE" fresh-late-key --baseline \
   || fail "a fresh worktree without a pre-call codeburn key did not record a zero baseline"
 export FM_CODEBURN_FIXTURE="$TMP_ROOT/fresh-after-first-call.json"
@@ -261,6 +268,13 @@ if (u.tokens.input !== 120 || u.tokens.output !== 30 || u.tokens.cache_read !== 
 if (u.correlation.baseline_kind !== "fresh-worktree-zero") process.exit(1)
 ' "$fresh_usage" || fail "the first post-work read did not measure a late-published key from zero: $fresh_usage"
 pass "a fresh worktree reports real usage on its first read after codeburn publishes the key"
+FM_HOME="$HOME_DIR" "$ALLOCATION" release fresh-late-key "$FRESH_WORKTREE" 2026-07-20T10:20:00Z \
+  || fail "fresh allocation release history failed"
+RECREATED_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire recreated-slot "$FRESH_WORKTREE" 2026-07-20T10:25:00Z fresh) \
+  || fail "recreated allocation history failed"
+[ "$RECREATED_DISPOSITION" = reused ] \
+  || fail "recreated path identity lost its durable prior-owner history"
+pass "recreated working-copy paths retain prior-owner allocation history"
 rm -f "$HOME_DIR/state/fresh-late-key.meta"
 
 # The same absent-key observation is not a zero when a prior task already held
@@ -297,19 +311,21 @@ pass "a reused worktree with prior period spend refuses an unsafe zero baseline"
 # A prior owner that starts before midnight still contaminates the report
 # period when its lifecycle ends after midnight.
 fm_write_meta "$HOME_DIR/state/cross-day-owner.meta" \
-  "worktree=$FRESH_WORKTREE" \
+  "worktree=$CROSS_WORKTREE" \
   "project=/srv/projects/fresh" \
   "harness=codex" \
   "kind=ship" \
   "spawned_at=2026-07-19T23:50:00Z" \
   "teardown_at=2026-07-20T00:10:00Z"
 fm_write_meta "$HOME_DIR/state/cross-day-next.meta" \
-  "worktree=$FRESH_WORKTREE" \
+  "worktree=$CROSS_WORKTREE" \
   "project=/srv/projects/fresh" \
   "harness=codex" \
   "kind=ship" \
-  "worktree_allocation=fresh" \
+  "worktree_allocation=first-owner" \
   "spawned_at=2026-07-20T10:30:00Z"
+FM_HOME="$HOME_DIR" "$ALLOCATION" acquire cross-day-next "$CROSS_WORKTREE" 2026-07-20T10:30:00Z fresh >/dev/null \
+  || fail "cross-day allocation provenance failed"
 export FM_CODEBURN_FIXTURE="$TMP_ROOT/cross-day-before-key.json"
 write_fixture "$FM_CODEBURN_FIXTURE" 3.25 7 4 7 11
 node - "$FM_CODEBURN_FIXTURE" <<'NODE'

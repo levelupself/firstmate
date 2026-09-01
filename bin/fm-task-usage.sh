@@ -267,10 +267,10 @@ if [ "$PROJECT_MATCH_STATUS" -eq 3 ] && [ "$MODE" = --baseline ]; then
   # owner for this worktree in the report period. This is intentionally stricter
   # than checking whether the directory is clean: pool cleanup does not erase
   # codeburn's cumulative same-day counters.
-  if node - "$DATA/cost-attribution.tsv" "$STATE" "$ID" "$WORKTREE" "$FROM" "$SPAWNED_AT" "$WORKTREE_ALLOCATION" <<'NODE'
+  if node - "$DATA/cost-attribution.tsv" "$DATA/worktree-allocations.jsonl" "$STATE" "$ID" "$WORKTREE" "$FROM" "$SPAWNED_AT" "$WORKTREE_ALLOCATION" <<'NODE'
 const fs = require('fs')
 const path = require('path')
-const [rawFile, stateDir, taskId, worktree, from, spawnedAt, allocation] = process.argv.slice(2)
+const [rawFile, allocationFile, stateDir, taskId, worktree, from, spawnedAt, allocation] = process.argv.slice(2)
 const normalize = value => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 const target = normalize(worktree)
 const periodStart = Date.parse(`${from}T00:00:00.000Z`)
@@ -293,7 +293,21 @@ const priorOwnerOverlapsPeriod = (row, source) => {
 }
 
 if (allocation === 'reused') process.exit(1)
-if (!Number.isFinite(periodStart) || !Number.isFinite(currentStart) || allocation !== 'fresh') process.exit(2)
+if (!Number.isFinite(periodStart) || !Number.isFinite(currentStart) || allocation !== 'first-owner') process.exit(2)
+let allocationRecords
+try {
+  allocationRecords = fs.readFileSync(allocationFile, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
+} catch {
+  process.exit(2)
+}
+if (allocationRecords[0]?.schema !== 'fm-worktree-allocations.v1') process.exit(2)
+const allocationIdentity = String(worktree).replace(/\\/g, '/').replace(/^\/+/, '').replace(/[-/_]+/g, '/').replace(/\/+$/, '').toLowerCase()
+const allocationMatches = allocationRecords.slice(1).filter(record => record.event === 'acquire'
+  && record.task_id === taskId && record.identity === allocationIdentity && record.event_at === spawnedAt)
+if (allocationMatches.length !== 1 || allocationMatches[0].disposition !== 'first-owner'
+    || allocationRecords.slice(1).some(record => record.identity === allocationIdentity
+      && record.event === 'acquire' && record !== allocationMatches[0]
+      && Date.parse(record.event_at) <= currentStart)) process.exit(2)
 
 try {
   for (const entry of fs.readdirSync(stateDir, {withFileTypes: true})) {

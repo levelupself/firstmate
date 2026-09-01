@@ -2544,6 +2544,15 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   }
 fi
 
+if [ "$KIND" != secondmate ]; then
+  RELEASED_AT=$(meta_value "$META" teardown_at)
+  [ -n "$RELEASED_AT" ] || RELEASED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  "$SCRIPT_DIR/fm-worktree-allocation.sh" release "$ID" "$WT" "$RELEASED_AT" || {
+    echo "error: could not record worktree release for $ID; retaining task state" >&2
+    exit 1
+  }
+fi
+
 HERDR_PRESENTATION_JOURNAL="$STATE/$ID.herdr-presentation"
 HERDR_PRESENTATION_RETIRE_CANDIDATE=0
 HERDR_PRESENTATION_SESSION=

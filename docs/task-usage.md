@@ -3,8 +3,9 @@
 Firstmate records codeburn usage automatically for each crewmate and scout cycle.
 `bin/fm-spawn.sh` records `spawned_at=` and saves the worktree's pre-launch codeburn totals in `data/<id>/usage-baseline.json`.
 Codeburn does not publish a new worktree key until that directory records its first call.
-Spawn records whether the task worktree was newly created or already present before allocation.
-When the key is absent at launch, the baseline producer records an explicit zero only if that durable allocation provenance says the worktree is new and the declared lifecycle ledger is present, completely parseable, and shows no contradictory earlier owner whose lifecycle overlaps the report period.
+Spawn records every exact normalized working-copy identity in the append-only `data/worktree-allocations.jsonl` history, and teardown records its release without deleting prior identities.
+The first observation that initializes tracking is unknown, a previously recorded path remains reused after cleanup or recreation, and only a newly created identity observed after complete tracking began is a first owner.
+When the key is absent at launch, the baseline producer records an explicit zero only if the durable allocation record proves first ownership and the declared lifecycle ledger is present, completely parseable, and shows no contradictory earlier owner whose lifecycle overlaps the report period.
 A missing or incomplete ledger and a reused worktree with an overlapping owner remain unavailable until a real bounded baseline exists.
 `bin/fm-task-usage.sh <id>` first lists codeburn's reported project inventory and matches the worktree against those reported paths.
 It uses the uniquely matched reported project name as codeburn's filter key, then subtracts the same filtered baseline to exclude previous occupants of a pooled worktree slot.

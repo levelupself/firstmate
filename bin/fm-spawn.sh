@@ -2333,8 +2333,10 @@ if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
 fi
 if [ "$RELAUNCH" -eq 1 ]; then
+  SPAWNED_AT=$(fm_meta_get "$RELAUNCH_META" spawned_at)
   SPAWN_WORKTREE_ALLOCATION=$(fm_meta_get "$RELAUNCH_META" worktree_allocation)
 elif [ "$KIND" != secondmate ]; then
+  SPAWNED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   if [ "$BACKEND" = orca ]; then
     SPAWN_WORKTREE_ALLOCATION=fresh
   elif [ "$WORKTREE_INVENTORY_VALID" -eq 1 ] \
@@ -2343,6 +2345,10 @@ elif [ "$KIND" != secondmate ]; then
   else
     SPAWN_WORKTREE_ALLOCATION=reused
   fi
+  SPAWN_WORKTREE_ALLOCATION=$("$SCRIPT_DIR/fm-worktree-allocation.sh" acquire \
+    "$ID" "$WT" "$SPAWNED_AT" "$SPAWN_WORKTREE_ALLOCATION") || SPAWN_WORKTREE_ALLOCATION=unknown
+else
+  SPAWNED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
@@ -2725,7 +2731,6 @@ fi
 
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
-SPAWNED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 SPAWN_GEN="s$(date +%s).${BASHPID:-$$}.$RANDOM"
 SPAWN_META_PATH="$STATE/$ID.meta"
 if [ "$RELAUNCH" -eq 1 ]; then
@@ -2738,7 +2743,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree worktree_allocation project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree worktree_allocation project harness kind mode yolo tasktmp spawned_at model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
