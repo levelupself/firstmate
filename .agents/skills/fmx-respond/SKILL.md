@@ -18,7 +18,7 @@ Relay lets a firstmate instance answer and act on public mentions routed through
 A mention arrives through the watcher as a `check:` wake whose payload is `x-mention <request_id>`.
 The full mention is stashed locally; this skill acts on any request it carries and turns it into one public reply, or deliberately skips it when there is nothing to answer.
 
-This runs only when Relay is on (the user dropped `FMX_PAIRING_TOKEN` into `.env`; see AGENTS.md "Relay").
+This runs only when Relay is on (the user dropped `FMX_PAIRING_TOKEN` into `.env`; see [`docs/configuration.md`](../../../docs/configuration.md#relay-env)).
 If you ever see an `x-mention` wake without Relay configured, do nothing.
 A `check:` wake can also carry `x-mode-error ...` instead of `x-mention <request_id>` - that is a poll or relay configuration problem, not a mention to answer.
 Report it directly to the captain as a Relay configuration blocker and do not treat it as a mention to answer.
@@ -196,7 +196,7 @@ A non-final dry-run follow-up increments `x_followups` and keeps the link while 
 ## Completion follow-up (posted on milestone and done wakes, not this turn)
 
 When an actionable request spawned a task and you linked it (step 2c), progress and the **outcome** are delivered later as follow-up replies, not in this turn.
-This skill is the sole owner of the completion-follow-up procedure below; AGENTS.md §13 declares the load trigger for Relay-linked milestone or terminal wakes, and AGENTS.md §8 reinforces the terminal final-follow-up step before teardown.
+This skill is the sole owner of the completion-follow-up procedure below; AGENTS.md §13 declares the load trigger for Relay-linked milestone or terminal wakes, and the emitted common supervision procedure reinforces the terminal final-follow-up step before teardown.
 This skill's own responsibility during the mention-handling turn is linking the task in step 2c; the full completion path is:
 
 - Firstmate has **up to three** follow-ups per mention, within a 7-day window, chained in the same thread - it spends them only on genuine milestones the captain would want surfaced (e.g. investigation done and a build started, work shipped or ready, or the task failing), never on routine internal churn.
