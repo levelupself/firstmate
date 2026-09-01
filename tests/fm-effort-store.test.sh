@@ -850,6 +850,28 @@ NODE
   || fail "backfill snapshot lacks auditable bounded provenance: $BACKFILL_CORRELATION"
 pass 'codeburn export records backfill exact task windows and classify every unattributed dollar'
 
+BACKFILL_BEFORE=$(cat "$FM_HOME/data/920-backfill-a/usage.json")
+printf '%s\n' '{"schema":"fm-task-usage.v2","id":"920-backfill-a","correlation":{"baseline":true}}' \
+  > "$FM_HOME/data/920-backfill-a/usage.json"
+if "$STORE" backfill-codeburn "$BACKFILL_EXPORT" >/dev/null 2>"$ROOTDIR/backfill-refusal.err"; then
+  fail 'backfill silently replaced a different existing usage snapshot'
+fi
+assert_contains "$(cat "$ROOTDIR/backfill-refusal.err")" '--replace-existing' \
+  'backfill refusal did not identify the explicit replacement policy'
+[ "$(cat "$FM_HOME/data/920-backfill-a/usage.json")" = '{"schema":"fm-task-usage.v2","id":"920-backfill-a","correlation":{"baseline":true}}' ] \
+  || fail 'refused backfill modified the authoritative existing snapshot'
+"$STORE" backfill-codeburn --replace-existing "$BACKFILL_EXPORT" >/dev/null \
+  || fail 'explicit backfill replacement failed'
+[ "$(cat "$FM_HOME/data/920-backfill-a/usage.json")" = "$BACKFILL_BEFORE" ] \
+  || fail 'explicit replacement did not restore the exact backfill snapshot'
+BACKUP_COUNT=$(find "$FM_HOME/data/920-backfill-a" -maxdepth 1 -type f -name 'usage.pre-backfill.*.json' | wc -l)
+[ "$BACKUP_COUNT" -eq 1 ] || fail 'explicit replacement did not preserve exactly one prior usage artifact'
+"$STORE" backfill-codeburn "$BACKFILL_EXPORT" >/dev/null \
+  || fail 'byte-equivalent backfill rerun was not idempotent'
+[ "$(find "$FM_HOME/data/920-backfill-a" -maxdepth 1 -type f -name 'usage.pre-backfill.*.json' | wc -l)" -eq 1 ] \
+  || fail 'idempotent rerun created another preservation artifact'
+pass 'backfill replacement is explicit, preserving, and byte-idempotent'
+
 REPORT=$("$STORE" report 910-lifecycle) || fail 'single-task report failed'
 assert_contains "$REPORT" '910-lifecycle' 'report should identify the task'
 assert_contains "$REPORT" '15m 0s' 'report should surface launch-to-PR duration'
@@ -866,6 +888,6 @@ assert_contains "$ALL_REPORT" 'measured' \
 
 USAGE=$("$STORE" --help)
 assert_contains "$USAGE" 'report [<task-id>]' 'help should document the one reporting command'
-assert_contains "$USAGE" 'backfill-codeburn <export.json>' \
+assert_contains "$USAGE" 'backfill-codeburn [--replace-existing] <export.json>' \
   'help should document the explicit historical recovery command'
 pass 'reporting exposes project coverage and the documented backfill command'

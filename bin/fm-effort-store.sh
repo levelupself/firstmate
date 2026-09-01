@@ -21,7 +21,7 @@
 #
 # Usage:
 #   fm-effort-store.sh rebuild [--db <path>] [--no-import-graph]
-#   fm-effort-store.sh backfill-codeburn <export.json>
+#   fm-effort-store.sh backfill-codeburn [--replace-existing] <export.json>
 #   fm-effort-store.sh report [<task-id>] [--db <path>]
 #   fm-effort-store.sh fingerprint [--db <path>]
 #   fm-effort-store.sh annotate <task-id> [annotation options]

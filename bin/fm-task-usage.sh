@@ -272,20 +272,33 @@ const path = require('path')
 const [rawFile, stateDir, taskId, worktree, from, spawnedAt] = process.argv.slice(2)
 const normalize = value => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 const target = normalize(worktree)
+const periodStart = Date.parse(`${from}T00:00:00.000Z`)
+const currentStart = Date.parse(spawnedAt)
 const meta = text => Object.fromEntries(text.split('\n').flatMap(line => {
   const separator = line.indexOf('=')
   return separator > 0 ? [[line.slice(0, separator), line.slice(separator + 1)]] : []
 }))
-const samePeriodOwner = row => normalize(row.worktree) === target
-  && String(row.started_at || row.captured || '').slice(0, 10) === from
-  && !(row.task === taskId && row.started_at === spawnedAt)
+const priorOwnerOverlapsPeriod = (row, source) => {
+  if (normalize(row.worktree) !== target) return false
+  const startedText = source === 'meta' ? row.spawned_at : row.started_at
+  if (row.task === taskId && startedText === spawnedAt) return false
+  const started = Date.parse(startedText || '')
+  if (!Number.isFinite(started)) return true
+  if (started >= currentStart) return false
+  const endedText = source === 'meta' ? row.teardown_at : row.ended_at
+  const ended = Date.parse(endedText || '')
+  if (!Number.isFinite(ended)) return true
+  return ended > periodStart
+}
+
+if (!Number.isFinite(periodStart) || !Number.isFinite(currentStart)) process.exit(2)
 
 try {
   for (const entry of fs.readdirSync(stateDir, {withFileTypes: true})) {
     if (!entry.isFile() || !entry.name.endsWith('.meta') || entry.name === `${taskId}.meta`) continue
     const row = meta(fs.readFileSync(path.join(stateDir, entry.name), 'utf8'))
     row.task = entry.name.slice(0, -5)
-    if (samePeriodOwner(row)) process.exit(1)
+    if (priorOwnerOverlapsPeriod(row, 'meta')) process.exit(1)
   }
 } catch (error) {
   if (error?.code !== 'ENOENT') process.exit(2)
@@ -321,7 +334,8 @@ for (const line of text.split('\n')) {
   }
   if (fields.length !== columns.length) process.exit(2)
   const row = Object.fromEntries(columns.map((name, index) => [name, fields[index]]))
-  if (samePeriodOwner(row)) process.exit(1)
+  if (section === 'preamble' && normalize(row.worktree) === target && row.task !== taskId) process.exit(1)
+  if (priorOwnerOverlapsPeriod(row, 'raw')) process.exit(1)
 }
 NODE
   then
@@ -329,7 +343,7 @@ NODE
   else
     ZERO_STATUS=$?
     if [ "$ZERO_STATUS" -eq 1 ]; then
-      echo "fm-task-usage: codeburn key is absent for a reused worktree with an earlier same-day owner; refusing a zero baseline" >&2
+      echo "fm-task-usage: codeburn key is absent for a reused worktree with a prior owner overlapping the report period; refusing a zero baseline" >&2
     else
       echo "fm-task-usage: prior worktree ownership could not be verified; refusing a zero baseline" >&2
     fi

@@ -239,6 +239,7 @@ if (u.tokens.input !== 120 || u.tokens.output !== 30 || u.tokens.cache_read !== 
 if (u.correlation.baseline_kind !== "fresh-worktree-zero") process.exit(1)
 ' "$fresh_usage" || fail "the first post-work read did not measure a late-published key from zero: $fresh_usage"
 pass "a fresh worktree reports real usage on its first read after codeburn publishes the key"
+rm -f "$HOME_DIR/state/fresh-late-key.meta"
 
 # The same absent-key observation is not a zero when a prior task already held
 # the slot during this report period.
@@ -269,6 +270,37 @@ fi
 assert_contains "$(cat "$TMP_ROOT/reused-read.err")" "saved baseline is unavailable" \
   "the reused worktree did not preserve missingness after its key appeared"
 pass "a reused worktree with prior period spend refuses an unsafe zero baseline"
+
+# A prior owner that starts before midnight still contaminates the report
+# period when its lifecycle ends after midnight.
+fm_write_meta "$HOME_DIR/state/cross-day-owner.meta" \
+  "worktree=$FRESH_WORKTREE" \
+  "project=/srv/projects/fresh" \
+  "harness=codex" \
+  "kind=ship" \
+  "spawned_at=2026-07-19T23:50:00Z" \
+  "teardown_at=2026-07-20T00:10:00Z"
+fm_write_meta "$HOME_DIR/state/cross-day-next.meta" \
+  "worktree=$FRESH_WORKTREE" \
+  "project=/srv/projects/fresh" \
+  "harness=codex" \
+  "kind=ship" \
+  "spawned_at=2026-07-20T10:30:00Z"
+export FM_CODEBURN_FIXTURE="$TMP_ROOT/cross-day-before-key.json"
+write_fixture "$FM_CODEBURN_FIXTURE" 3.25 7 4 7 11
+node - "$FM_CODEBURN_FIXTURE" <<'NODE'
+const fs = require('fs')
+const file = process.argv[2]
+const fixture = JSON.parse(fs.readFileSync(file, 'utf8'))
+fixture.projects = fixture.projects.filter(project => project.name === 'another-opaque-codeburn-key')
+fs.writeFileSync(file, `${JSON.stringify(fixture)}\n`)
+NODE
+if FM_HOME="$HOME_DIR" "$USAGE" cross-day-next --baseline >/dev/null 2>"$TMP_ROOT/cross-day.err"; then
+  fail "a cross-midnight prior owner accepted an unsafe zero baseline"
+fi
+assert_contains "$(cat "$TMP_ROOT/cross-day.err")" "overlapping the report period" \
+  "the cross-midnight ownership refusal did not identify lifecycle overlap"
+pass "cross-midnight lifecycle overlap refuses an unsafe zero baseline"
 
 fm_write_meta "$HOME_DIR/state/task-zero.meta" \
   "worktree=$POOLED_WORKTREE" \

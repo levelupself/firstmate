@@ -61,6 +61,8 @@ It never prints a plausible zero for an absent source.
 ## Historical codeburn recovery
 
 Run `bin/fm-effort-store.sh backfill-codeburn <export.json>` with one `codeburn export --format json` result to recover completed task windows explicitly.
+An existing byte-equivalent snapshot makes the command an idempotent no-op, while a different snapshot is refused unless `--replace-existing` is passed.
+Explicit replacement preserves the previous bytes beside `usage.json` under their SHA-256 before atomically installing the recovered snapshot.
 The command joins each export record to the one lifecycle row whose normalized worktree matches and whose launch-through-end window contains the record timestamp.
 It writes a durable task snapshot only when at least one record has exactly one owner.
 No-record windows remain missing because an empty export window cannot prove that every worker runtime was observable.

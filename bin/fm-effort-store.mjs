@@ -1635,7 +1635,7 @@ function readBackfillTitle(dataDir, taskId) {
   return lines.slice(taskHeader + 1).find(line => line.trim())?.trim() || taskId
 }
 
-function writeBackfillSnapshot(options, task, aggregation, exportHash) {
+function writeBackfillSnapshot(options, task, aggregation, exportHash, replaceExisting) {
   const models = sortedBy([...aggregation.models.values()], model =>
     [model.provider, model.name].join(KEY_SEPARATOR))
   const snapshot = {
@@ -1692,14 +1692,31 @@ function writeBackfillSnapshot(options, task, aggregation, exportHash) {
     fs.mkdirSync(taskDir, {recursive: true, mode: 0o700})
   }
   const target = path.join(taskDir, 'usage.json')
+  let existing = null
   try {
-    if (fs.lstatSync(target).isSymbolicLink()) throw new Error('task usage snapshot is a symbolic link')
+    const stat = fs.lstatSync(target)
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('task usage snapshot is not a regular file')
+    existing = fs.readFileSync(target)
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error
   }
+  const snapshotBytes = Buffer.from(`${JSON.stringify(snapshot)}\n`)
+  if (existing?.equals(snapshotBytes)) return
+  if (existing !== null && !replaceExisting) {
+    throw new Error(`task ${task.task} already has a different usage snapshot; pass --replace-existing to preserve and replace it`)
+  }
+  if (existing !== null) {
+    const priorHash = crypto.createHash('sha256').update(existing).digest('hex')
+    const backup = path.join(taskDir, `usage.pre-backfill.${priorHash}.json`)
+    try {
+      fs.writeFileSync(backup, existing, {mode: 0o600, flag: 'wx'})
+    } catch (error) {
+      if (error?.code !== 'EEXIST' || !fs.readFileSync(backup).equals(existing)) throw error
+    }
+  }
   const staged = path.join(taskDir, `.usage.backfill.${process.pid}.${crypto.randomBytes(8).toString('hex')}`)
   try {
-    fs.writeFileSync(staged, `${JSON.stringify(snapshot)}\n`, {mode: 0o600, flag: 'wx'})
+    fs.writeFileSync(staged, snapshotBytes, {mode: 0o600, flag: 'wx'})
     fs.renameSync(staged, target)
   } finally {
     try { fs.unlinkSync(staged) } catch {}
@@ -1707,8 +1724,10 @@ function writeBackfillSnapshot(options, task, aggregation, exportHash) {
 }
 
 function backfillCodeburn(options, argv) {
-  if (argv.length !== 1) throw new Error('backfill-codeburn needs exactly one codeburn export.json path')
-  const exportFile = argv[0]
+  const replaceExisting = argv[0] === '--replace-existing'
+  const args = replaceExisting ? argv.slice(1) : argv
+  if (args.length !== 1) throw new Error('backfill-codeburn needs [--replace-existing] and exactly one codeburn export.json path')
+  const exportFile = args[0]
   const exportText = readTextFile(exportFile)
   if (exportText === null) throw new Error(`codeburn export is unreadable: ${exportFile}`)
   let exported
@@ -1835,7 +1854,7 @@ function backfillCodeburn(options, argv) {
     for (const [key, value] of Object.entries(values)) modelAggregation[key] += value
   }
   for (const aggregation of assigned.values()) {
-    writeBackfillSnapshot(options, aggregation.task, aggregation, exportHash)
+    writeBackfillSnapshot(options, aggregation.task, aggregation, exportHash, replaceExisting)
   }
   return {
     period: period.label,
