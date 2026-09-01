@@ -2544,7 +2544,8 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   }
 fi
 
-if [ "$KIND" != secondmate ]; then
+WORKTREE_ALLOCATION=$(meta_value "$META" worktree_allocation)
+if [ "$KIND" != secondmate ] && [ -n "$WORKTREE_ALLOCATION" ]; then
   RELEASED_AT=$(meta_value "$META" teardown_at)
   [ -n "$RELEASED_AT" ] || RELEASED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   ALLOCATION_PROJECT=$(meta_value "$META" allocation_project)
