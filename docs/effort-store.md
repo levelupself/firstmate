@@ -53,8 +53,24 @@ If the matching run or its structured round record is unavailable, all four fiel
 Run `bin/fm-effort-store.sh report` to list every task and aggregate totals.
 Run `bin/fm-effort-store.sh report <task-id>` for one task.
 The report shows launch-to-PR duration, cost, input and output tokens, actual models, and outcome.
+The cross-task report also groups cost by the lifecycle row's project path and shows measured tasks over total tasks for each project.
+A pooled worktree is only the codeburn correlation key and never becomes the project bucket.
 A dash means the durable source is missing.
 It never prints a plausible zero for an absent source.
+
+## Historical codeburn recovery
+
+Run `bin/fm-effort-store.sh backfill-codeburn <export.json>` with one `codeburn export --format json` result to recover completed task windows explicitly.
+The command joins each export record to the one lifecycle row whose normalized worktree matches and whose launch-through-end window contains the record timestamp.
+It writes a durable task snapshot only when at least one record has exactly one owner.
+No-record windows remain missing because an empty export window cannot prove that every worker runtime was observable.
+Overlapping windows remain unassigned instead of choosing one.
+
+Every recovered snapshot records the task window, record count, worktree key, and SHA-256 of the export.
+The command reports the attributed subtotal and classifies every remaining record and dollar as `unmapped-worktree`, `outside-task-window`, `ambiguous-worktree-key`, or `ambiguous-task-window`.
+It also prints codeburn's summary total, the sum of per-record costs used for task attribution, and their exact rounding delta.
+This matters because codeburn exports task-addressable record costs at cent precision while its summary and interactive report retain aggregate pricing precision.
+The raw export record is the bounded attribution evidence, so no difference is hidden or interpolated.
 
 ## The two fields that are not automatic
 
@@ -75,7 +91,9 @@ An absent source and a zero must never look the same.
 
 - A source that could not be consulted for a task is recorded in `task_source` as `missing`, and the columns it would have filled stay NULL.
 - A source that was consulted and legitimately found nothing is recorded as `present`, and its columns hold real zeros.
-- A raw line whose schema section is not the v2 join is recorded in `ingest_issue` rather than guessed into a task row, so nothing that arrives is dropped.
+- The original declared eight-column capture format contributes task and project identity but not lifecycle time, because its `captured` value was a migration observation rather than launch evidence.
+- A line under that legacy header with the wrong column count is recorded as `legacy-column-count`, and an undeclared legacy region remains `unparsed-legacy-line`.
+- A raw line whose schema section is unknown is recorded in `ingest_issue` rather than guessed into a task row, so nothing that arrives is dropped.
 - A baseline-only task directory from before deterministic lifecycle capture creates a task row with NULL measurements and a `usage-pre-deterministic-attribution` issue.
 
 The same rule applies inside a source.
@@ -111,6 +129,7 @@ Event times are written once by the lifecycle edge that observed them and become
 Launch time, PR-open time, sanctioned merge or local landing time, teardown time, outcome, process counts, cost, tokens, calls, sessions, configured model, and actual models are deterministic lifecycle or snapshot facts.
 A task discovered from any durable raw row, usage snapshot, or annotation remains visible when another source is absent, with that source's measurements NULL and its `task_source` row marked `missing`.
 Legacy `fm-task-usage.v1` snapshots are discovered but treated as missing because they predate deterministic reported-project attribution and may contain the broken plausible-zero result.
+Baseline-only task directories from before lifecycle capture remain `usage-pre-deterministic-attribution` because they have no trustworthy task window or project mapping for a history join.
 No value is reconstructed from a guess.
 The separate discovery-versus-churn and loud-versus-quiet research annotations remain manual because no durable artifact contains those judgments.
 

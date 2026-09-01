@@ -69,6 +69,7 @@ RAW="$FM_HOME/data/cost-attribution.tsv"
 {
   printf 'task\tworktree\tharness\tmodel\teffort\tkind\tproject\tcaptured\n'
   printf 'hand-written-row\t/tmp/legacy\tclaude\tdefault\thigh\tship\t/tmp/legacy\t2026-01-01T00:00:00Z\n'
+  printf 'opaque legacy prose that has no declared columns\n'
   printf '# schema=firstmate-effort-attribution-v2\n'
   printf 'task\tworktree\tharness\tmodel\teffort\tkind\tproject\tstarted_at\tended_at\n'
   printf '901-introduce-memory\t%s\tclaude\tdefault\txhigh\tship\t%s\t2026-01-01T00:00:00Z\t2026-01-01T02:00:00Z\n' "$WT_A" "$PROJECT"
@@ -180,7 +181,7 @@ printf '%s\n' '{"task":"905-modify-memory","pr_opened_at":"2026-03-01T00:30:00Z"
 # --- rebuild ----------------------------------------------------------------
 
 REBUILD_OUT=$("$STORE" rebuild 2>&1) || fail "rebuild failed: $REBUILD_OUT"
-assert_contains "$REBUILD_OUT" 'rebuilt 10 tasks' 'rebuild should report every task it discovered'
+assert_contains "$REBUILD_OUT" 'rebuilt 11 tasks' 'rebuild should report every task it discovered'
 assert_present "$DB" 'rebuild should create the store'
 pass 'rebuild builds the store from raw lifecycle capture, durable task usage, and git'
 
@@ -270,11 +271,15 @@ pass 'a baseline-only pre-tracking task remains visible with NULL values and a s
 # --- nothing is silently dropped -------------------------------------------
 
 LEGACY=$(query "SELECT kind, detail FROM ingest_issue WHERE source = 'raw' ORDER BY ordinal")
-assert_contains "$LEGACY" 'unparsed-legacy-line' 'raw lines outside the v2 section must be recorded, not dropped'
-assert_contains "$LEGACY" 'hand-written-row' 'the hand-written row itself must be recoverable from the store'
-COUNT=$(query "SELECT COUNT(*) FROM task WHERE task_id = 'hand-written-row'")
-[ "$COUNT" = '0' ] || fail 'a row whose schema is unknown must not be guessed into a task record'
-pass 'raw lines with an unknown schema are surfaced as issues rather than dropped or guessed'
+assert_contains "$LEGACY" 'legacy-column-count' 'malformed rows under the legacy header must state why they are unparseable'
+assert_contains "$LEGACY" 'opaque legacy prose' 'the genuinely unstructured legacy line must remain classified'
+LEGACY_ROW=$(query "SELECT worktree, harness, model, effort, kind, project_path, started_at FROM task WHERE task_id = 'hand-written-row'")
+[ "$LEGACY_ROW" = '/tmp/legacy|claude|NULL|high|ship|/tmp/legacy|NULL' ] \
+  || fail "the declared legacy columns were not ingested without inventing lifecycle time: $LEGACY_ROW"
+if printf '%s\n' "$LEGACY" | grep -F 'hand-written-row' >/dev/null; then
+  fail 'a row under the recognized legacy header remained an ingest issue'
+fi
+pass 'declared legacy rows are parsed while genuinely unstructured lines retain a stated issue'
 
 # --- the two fields that are not automatic ----------------------------------
 
@@ -772,6 +777,79 @@ rm -f "$DB"
   || fail 'delete-and-rebuild lost lifecycle fields or usage'
 pass 'lifecycle capture is idempotent and delete-and-rebuild reproduces it'
 
+# --- bounded historical codeburn recovery ----------------------------------
+
+BACKFILL_A="$ROOTDIR/worktrees/backfill-a"
+BACKFILL_B="$ROOTDIR/worktrees/backfill-b"
+fm_write_meta "$FM_HOME/state/920-backfill-a.meta" \
+  "worktree=$BACKFILL_A" \
+  "project=$PROJECT" \
+  "harness=codex" \
+  "model=configured-gpt" \
+  "effort=xhigh" \
+  "kind=ship" \
+  "spawned_at=2026-07-01T10:00:00Z" \
+  "teardown_at=2026-07-01T10:30:00Z" \
+  "outcome=forced"
+"$STORE" capture 920-backfill-a --outcome forced >/dev/null \
+  || fail 'first historical backfill lifecycle capture failed'
+fm_write_meta "$FM_HOME/state/921-backfill-b.meta" \
+  "worktree=$BACKFILL_B" \
+  "project=$PROJECT" \
+  "harness=claude" \
+  "model=configured-opus" \
+  "effort=xhigh" \
+  "kind=scout" \
+  "spawned_at=2026-07-01T10:00:00Z" \
+  "teardown_at=2026-07-01T10:45:00Z" \
+  "outcome=scout-complete"
+"$STORE" capture 921-backfill-b --outcome scout-complete >/dev/null \
+  || fail 'second historical backfill lifecycle capture failed'
+
+BACKFILL_EXPORT="$ROOTDIR/codeburn-backfill.json"
+cat > "$BACKFILL_EXPORT" <<JSON
+{"schema":"codeburn.export.v2","generated":"2026-07-02T00:00:00.000Z","summary":[{"Period":"2026-07-01 to 2026-07-01","Cost (USD)":15.5,"API Calls":4}],"records":[
+  {"project":"$BACKFILL_A","sessionId":"session-a","timestamp":"2026-07-01T10:05:00.000Z","provider":"openai","model":"gpt-5.6-sol","inputTokens":100,"outputTokens":20,"reasoningTokens":5,"cacheWriteTokens":7,"cacheReadTokens":900,"cost":1.25},
+  {"project":"$BACKFILL_B","sessionId":"session-b","timestamp":"2026-07-01T10:10:00.000Z","provider":"claude","model":"claude-opus-5","inputTokens":200,"outputTokens":40,"reasoningTokens":0,"cacheWriteTokens":9,"cacheReadTokens":800,"cost":2.25},
+  {"project":"$BACKFILL_A","sessionId":"outside-a","timestamp":"2026-07-01T11:00:00.000Z","provider":"openai","model":"gpt-5.6-sol","inputTokens":300,"outputTokens":60,"reasoningTokens":0,"cacheWriteTokens":0,"cacheReadTokens":700,"cost":4},
+  {"project":"/unmanaged/project","sessionId":"unmanaged","timestamp":"2026-07-01T10:00:00.000Z","provider":"claude","model":"claude-opus-5","inputTokens":400,"outputTokens":80,"reasoningTokens":0,"cacheWriteTokens":0,"cacheReadTokens":600,"cost":8}
+]}
+JSON
+BACKFILL_OUT=$("$STORE" backfill-codeburn "$BACKFILL_EXPORT" 2>&1) \
+  || fail "bounded codeburn backfill failed: $BACKFILL_OUT"
+# shellcheck disable=SC2016 # Literal currency amount, not shell expansion.
+assert_contains "$BACKFILL_OUT" 'attributed 2 records / $3.5000 to 2 tasks' \
+  'backfill did not report its exact attributed subtotal'
+# shellcheck disable=SC2016 # Literal currency amount, not shell expansion.
+assert_contains "$BACKFILL_OUT" 'per-record rounding delta $0.0000' \
+  'backfill did not reconcile the export summary with its task-level record ledger'
+# shellcheck disable=SC2016 # Literal currency amount, not shell expansion.
+assert_contains "$BACKFILL_OUT" 'outside-task-window: 1 records / $4.0000' \
+  'backfill did not classify known-worktree spend outside every task window'
+# shellcheck disable=SC2016 # Literal currency amount, not shell expansion.
+assert_contains "$BACKFILL_OUT" 'unmapped-worktree: 1 records / $8.0000' \
+  'backfill did not classify spend whose worktree has no lifecycle mapping'
+BACKFILLED=$(query "SELECT task_id, project_path, tokens_in, tokens_out, tokens_reasoning, tokens_cached_read, tokens_cached_write, notional_cost_usd, api_calls, sessions FROM task WHERE task_id IN ('920-backfill-a','921-backfill-b') ORDER BY task_id")
+[ "$BACKFILLED" = "920-backfill-a|$PROJECT|100|20|5|900|7|1.25|1|1
+921-backfill-b|$PROJECT|200|40|0|800|9|2.25|1|1" ] \
+  || fail "timestamp-window backfill did not populate exact per-task values: $BACKFILLED"
+BACKFILL_CORRELATION=$(node - "$FM_HOME/data/920-backfill-a/usage.json" <<'NODE'
+const fs = require('fs')
+const usage = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
+process.stdout.write([
+  usage.correlation?.attribution,
+  usage.correlation?.baseline,
+  usage.correlation?.window?.start,
+  usage.correlation?.window?.end,
+  usage.correlation?.records,
+  /^[0-9a-f]{64}$/.test(usage.correlation?.export_sha256 || ''),
+].join('|'))
+NODE
+)
+[ "$BACKFILL_CORRELATION" = 'timestamp-window|false|2026-07-01T10:00:00Z|2026-07-01T10:30:00Z|1|true' ] \
+  || fail "backfill snapshot lacks auditable bounded provenance: $BACKFILL_CORRELATION"
+pass 'codeburn export records backfill exact task windows and classify every unattributed dollar'
+
 REPORT=$("$STORE" report 910-lifecycle) || fail 'single-task report failed'
 assert_contains "$REPORT" '910-lifecycle' 'report should identify the task'
 assert_contains "$REPORT" '15m 0s' 'report should surface launch-to-PR duration'
@@ -781,7 +859,13 @@ assert_contains "$REPORT" '321 in / 45 out' 'report should surface tokens'
 assert_contains "$REPORT" 'gpt-5.6-sol' 'report should surface the actual model'
 ALL_REPORT=$("$STORE" report) || fail 'cross-task report failed'
 assert_contains "$ALL_REPORT" 'TOTAL' 'cross-task report should include aggregate totals'
+assert_contains "$ALL_REPORT" "PROJECT $PROJECT" \
+  'cross-task report should aggregate task spend by the recorded project rather than worktree'
+assert_contains "$ALL_REPORT" 'measured' \
+  'project totals should state how many tasks actually have cost evidence'
 
 USAGE=$("$STORE" --help)
 assert_contains "$USAGE" 'report [<task-id>]' 'help should document the one reporting command'
-pass 'one documented report command answers per-task and cross-task effort'
+assert_contains "$USAGE" 'backfill-codeburn <export.json>' \
+  'help should document the explicit historical recovery command'
+pass 'reporting exposes project coverage and the documented backfill command'

@@ -36,6 +36,9 @@
 const SCHEMA_VERSION = 'fm-effort-store.v2'
 const CLASSIFIER_VERSION = 'fm-effort-classifier.v1'
 const V2_MARKER = '# schema=firstmate-effort-attribution-v2'
+const LEGACY_CAPTURE_COLUMNS = [
+  'task', 'worktree', 'harness', 'model', 'effort', 'kind', 'project', 'captured',
+]
 const MAX_IMPORT_FILE_BYTES = 512 * 1024
 // Composite keys and the fingerprint join on a byte no path, model name, or
 // column value can contain, so two different tuples can never collide.
@@ -248,10 +251,10 @@ function readPipelineMetrics(dbPath, identity) {
 // --- source 1: the raw capture ---------------------------------------------
 //
 // The file is a sequence of sections, each opened by its own `# schema=` line.
-// Only the v2 join section is parseable here; a preserved-legacy section or a
-// hand-written region above the first marker carries an unknown schema, so its
-// lines are surfaced as issues instead of being coerced into a shape they may
-// not have.
+// The original eight-column preamble has a declared identity shape but no
+// launch timestamp, so its task and project fields are retained without
+// turning `captured` into lifecycle time. Other preamble or unknown-section
+// lines are surfaced as issues instead of being coerced into a guessed shape.
 
 function readRawCapture(file, issues) {
   const text = readTextFile(file)
@@ -262,20 +265,27 @@ function readRawCapture(file, issues) {
     return {rows: []}
   }
   const rows = []
-  let section = 'legacy'
+  let section = 'preamble'
   let columns = null
   for (const line of text.split('\n')) {
     if (line === '') continue
     if (line.startsWith('# schema=')) {
-      section = line.trim() === V2_MARKER ? 'v2' : 'legacy'
+      section = line.trim() === V2_MARKER ? 'v2' : 'unknown'
       columns = null
       continue
     }
-    if (section !== 'v2') {
+    const fields = line.split('\t').map(unescapeRawValue)
+    if (section === 'preamble' && columns === null
+        && fields.length === LEGACY_CAPTURE_COLUMNS.length
+        && fields.every((field, index) => field === LEGACY_CAPTURE_COLUMNS[index])) {
+      section = 'v1'
+      columns = fields
+      continue
+    }
+    if (section !== 'v2' && section !== 'v1') {
       issues.push({source: 'raw', task_id: null, kind: 'unparsed-legacy-line', detail: line})
       continue
     }
-    const fields = line.split('\t').map(unescapeRawValue)
     if (columns === null) {
       if (fields[0] === 'task' && fields[1] === 'worktree') {
         columns = fields
@@ -285,7 +295,12 @@ function readRawCapture(file, issues) {
       continue
     }
     if (fields.length !== columns.length) {
-      issues.push({source: 'raw', task_id: fields[0] || null, kind: 'v2-column-count', detail: line})
+      issues.push({
+        source: 'raw',
+        task_id: section === 'v2' ? (fields[0] || null) : null,
+        kind: section === 'v2' ? 'v2-column-count' : 'legacy-column-count',
+        detail: line,
+      })
       continue
     }
     const row = {}
@@ -294,7 +309,19 @@ function readRawCapture(file, issues) {
       issues.push({source: 'raw', task_id: null, kind: 'v2-row-without-task', detail: line})
       continue
     }
-    rows.push(row)
+    if (section === 'v1') {
+      rows.push({
+        task: row.task,
+        worktree: row.worktree,
+        harness: row.harness,
+        model: row.model,
+        effort: row.effort,
+        kind: row.kind,
+        project: row.project,
+      })
+    } else {
+      rows.push(row)
+    }
   }
   return {rows}
 }
@@ -355,7 +382,7 @@ function finiteNonnegative(value) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 }
 
-function readTaskUsage(dataDir, taskId, spawnedAt, issues) {
+function readTaskUsage(dataDir, taskId, spawnedAt, endedAt, issues) {
   if (!TASK_ID_PATTERN.test(taskId)) {
     return {status: 'missing', detail: 'task id is not safe for a durable usage path'}
   }
@@ -393,9 +420,17 @@ function readTaskUsage(dataDir, taskId, spawnedAt, issues) {
     issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-launch-identity', detail: file})
     return {status: 'missing', detail: 'durable task usage snapshot belongs to another launch'}
   }
-  if (usage.correlation?.baseline !== true) {
+  const baselineBounded = usage.correlation?.baseline === true
+  const windowBounded = usage.correlation?.attribution === 'timestamp-window'
+    && usage.correlation?.baseline === false
+    && usage.correlation?.window?.start === spawnedAt
+    && usage.correlation?.window?.end === endedAt
+    && Number.isSafeInteger(usage.correlation?.records)
+    && usage.correlation.records > 0
+    && /^[0-9a-f]{64}$/.test(usage.correlation?.export_sha256 || '')
+  if (!baselineBounded && !windowBounded) {
     issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-unbounded-attribution', detail: file})
-    return {status: 'missing', detail: 'durable task usage snapshot lacks a valid launch baseline'}
+    return {status: 'missing', detail: 'durable task usage snapshot lacks a valid launch baseline or timestamp window'}
   }
   const totals = {
     tokens_in: finiteNonnegative(usage.tokens?.input),
@@ -485,7 +520,9 @@ function collectUsage(tasks, options, issues) {
   const byTask = new Map()
   for (const task of tasks) {
     byTask.set(task.taskId, readTaskUsage(options.dataDir, task.taskId,
-      canonicalTimestamp(task.raw?.started_at), issues))
+      canonicalTimestamp(task.raw?.started_at),
+      validatedLifecycleTimestamp(task.raw?.ended_at, canonicalTimestamp(task.raw?.started_at)),
+      issues))
   }
   return byTask
 }
@@ -1550,6 +1587,267 @@ function capture(options, taskId, argv) {
   }
 }
 
+// --- explicit codeburn-history recovery -----------------------------------
+
+function normalizedObservedPath(value) {
+  return String(value || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/[-/_]+/g, '/')
+    .replace(/\/$/, '')
+    .toLowerCase()
+}
+
+function codeburnExportPeriod(record) {
+  const summaries = Array.isArray(record?.summary) ? record.summary : []
+  if (summaries.length !== 1) throw new Error('codeburn export must declare exactly one summary period')
+  const summary = summaries[0]
+  const match = /^(\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})$/.exec(summary?.Period || '')
+  if (!match) throw new Error('codeburn export period is malformed')
+  const start = new Date(`${match[1]}T00:00:00.000Z`)
+  const last = new Date(`${match[2]}T00:00:00.000Z`)
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(last.getTime()) || last < start
+      || start.toISOString().slice(0, 10) !== match[1]
+      || last.toISOString().slice(0, 10) !== match[2]) {
+    throw new Error('codeburn export period is invalid')
+  }
+  const endExclusive = new Date(last.getTime() + 24 * 60 * 60 * 1000)
+  if (typeof summary['Cost (USD)'] !== 'number' || !Number.isFinite(summary['Cost (USD)'])
+      || summary['Cost (USD)'] < 0 || !Number.isSafeInteger(summary['API Calls'])
+      || summary['API Calls'] < 0) {
+    throw new Error('codeburn export summary totals are malformed')
+  }
+  return {
+    start: start.getTime(),
+    endExclusive: endExclusive.getTime(),
+    label: summary.Period,
+    cost_usd: summary['Cost (USD)'],
+    calls: summary['API Calls'],
+  }
+}
+
+function readBackfillTitle(dataDir, taskId) {
+  const brief = readTextFile(path.join(dataDir, taskId, 'brief.md'))
+  if (brief === null) return taskId
+  const lines = brief.split('\n')
+  const taskHeader = lines.findIndex(line => /^# Task\s*$/.test(line))
+  if (taskHeader < 0) return taskId
+  return lines.slice(taskHeader + 1).find(line => line.trim())?.trim() || taskId
+}
+
+function writeBackfillSnapshot(options, task, aggregation, exportHash) {
+  const models = sortedBy([...aggregation.models.values()], model =>
+    [model.provider, model.name].join(KEY_SEPARATOR))
+  const snapshot = {
+    schema: 'fm-task-usage.v2',
+    id: task.task,
+    title: readBackfillTitle(options.dataDir, task.task),
+    kind: task.kind || 'ship',
+    project: task.project || null,
+    delivery_mode: task.mode || null,
+    harness: task.harness || 'unknown',
+    configured_model: task.model || 'default',
+    actual_models: models.map(model => model.name),
+    models: models.map(model => ({
+      name: model.name,
+      provider: model.provider,
+      calls: model.calls,
+      input_tokens: model.input_tokens,
+      output_tokens: model.output_tokens,
+      reasoning_tokens: model.reasoning_tokens,
+      cache_read_tokens: model.cache_read_tokens,
+      cache_write_tokens: model.cache_write_tokens,
+      cost_usd: model.cost_usd,
+    })),
+    tokens: {
+      input: aggregation.input_tokens,
+      output: aggregation.output_tokens,
+      reasoning: aggregation.reasoning_tokens,
+      cache_read: aggregation.cache_read_tokens,
+      cache_write: aggregation.cache_write_tokens,
+    },
+    cost_usd: aggregation.cost_usd,
+    calls: aggregation.records,
+    sessions: aggregation.sessions.size,
+    spawned_at: task.started_at,
+    captured_at: task.ended_at,
+    duration_seconds: isoSecondsBetween(task.started_at, task.ended_at),
+    correlation: {
+      worktree: task.worktree,
+      project_key: [...aggregation.projectKeys].sort().join(', '),
+      project_match: 'codeburn-export-record',
+      baseline: false,
+      attribution: 'timestamp-window',
+      window: {start: task.started_at, end: task.ended_at},
+      records: aggregation.records,
+      export_sha256: exportHash,
+    },
+  }
+  const taskDir = path.join(options.dataDir, task.task)
+  try {
+    const stat = fs.lstatSync(taskDir)
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('task usage directory is not a regular directory')
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+    fs.mkdirSync(taskDir, {recursive: true, mode: 0o700})
+  }
+  const target = path.join(taskDir, 'usage.json')
+  try {
+    if (fs.lstatSync(target).isSymbolicLink()) throw new Error('task usage snapshot is a symbolic link')
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+  }
+  const staged = path.join(taskDir, `.usage.backfill.${process.pid}.${crypto.randomBytes(8).toString('hex')}`)
+  try {
+    fs.writeFileSync(staged, `${JSON.stringify(snapshot)}\n`, {mode: 0o600, flag: 'wx'})
+    fs.renameSync(staged, target)
+  } finally {
+    try { fs.unlinkSync(staged) } catch {}
+  }
+}
+
+function backfillCodeburn(options, argv) {
+  if (argv.length !== 1) throw new Error('backfill-codeburn needs exactly one codeburn export.json path')
+  const exportFile = argv[0]
+  const exportText = readTextFile(exportFile)
+  if (exportText === null) throw new Error(`codeburn export is unreadable: ${exportFile}`)
+  let exported
+  try {
+    exported = JSON.parse(exportText)
+  } catch {
+    throw new Error('codeburn export is not valid JSON')
+  }
+  if (exported?.schema !== 'codeburn.export.v2' || !Array.isArray(exported.records)) {
+    throw new Error('codeburn export has an unsupported schema')
+  }
+  const period = codeburnExportPeriod(exported)
+  if (period.calls !== exported.records.length) {
+    throw new Error('codeburn export summary calls disagree with its record ledger')
+  }
+  const exportHash = crypto.createHash('sha256').update(exportText).digest('hex')
+  const raw = readRawCapture(options.rawFile, [])
+  const latest = new Map()
+  for (const row of raw.rows) latest.set(row.task, row)
+  const byWorktree = new Map()
+  for (const row of latest.values()) {
+    const startedAt = canonicalTimestamp(row.started_at)
+    const endedAt = validatedLifecycleTimestamp(row.ended_at, startedAt)
+    if (!startedAt || !endedAt || !row.worktree || !row.project) continue
+    const start = Date.parse(startedAt)
+    const end = Date.parse(endedAt)
+    if (start < period.start || end >= period.endExclusive) continue
+    const task = {...row, started_at: startedAt, ended_at: endedAt, start, end}
+    const worktree = normalizedObservedPath(row.worktree)
+    if (!byWorktree.has(worktree)) byWorktree.set(worktree, [])
+    byWorktree.get(worktree).push(task)
+  }
+
+  const classifications = new Map([
+    ['outside-task-window', {records: 0, cost_usd: 0}],
+    ['unmapped-worktree', {records: 0, cost_usd: 0}],
+    ['ambiguous-worktree-key', {records: 0, cost_usd: 0}],
+    ['ambiguous-task-window', {records: 0, cost_usd: 0}],
+  ])
+  const assigned = new Map()
+  const number = (value, label, {integer = false} = {}) => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0
+        || (integer && !Number.isSafeInteger(value))) {
+      throw new Error(`codeburn export record has invalid ${label}`)
+    }
+    return value
+  }
+  for (const record of exported.records) {
+    const timestampText = typeof record?.timestamp === 'string' ? record.timestamp : ''
+    const timestamp = Date.parse(timestampText)
+    const projectKey = typeof record?.project === 'string' ? record.project : ''
+    const provider = typeof record?.provider === 'string' ? record.provider.trim() : ''
+    const model = typeof record?.model === 'string' ? record.model.trim() : ''
+    const session = typeof record?.sessionId === 'string' ? record.sessionId : ''
+    const canonicalRecordTimestamp = Number.isFinite(timestamp)
+      ? new Date(timestamp).toISOString() : ''
+    const expectedTimestamp = timestampText.includes('.')
+      ? canonicalRecordTimestamp : canonicalRecordTimestamp.replace('.000Z', 'Z')
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(timestampText)
+        || !Number.isFinite(timestamp) || expectedTimestamp !== timestampText
+        || timestamp < period.start || timestamp >= period.endExclusive
+        || !projectKey || !provider || !model || !session) {
+      throw new Error('codeburn export record has invalid identity or period')
+    }
+    const values = {
+      input_tokens: number(record.inputTokens, 'input tokens', {integer: true}),
+      output_tokens: number(record.outputTokens, 'output tokens', {integer: true}),
+      reasoning_tokens: number(record.reasoningTokens, 'reasoning tokens', {integer: true}),
+      cache_read_tokens: number(record.cacheReadTokens, 'cache-read tokens', {integer: true}),
+      cache_write_tokens: number(record.cacheWriteTokens, 'cache-write tokens', {integer: true}),
+      cost_usd: number(record.cost, 'cost'),
+    }
+    const worktreeTasks = byWorktree.get(normalizedObservedPath(projectKey)) || []
+    const matches = worktreeTasks.filter(task => timestamp >= task.start && timestamp <= task.end)
+    const distinctWorktrees = new Set(worktreeTasks.map(task => task.worktree))
+    let reason
+    if (worktreeTasks.length === 0) reason = 'unmapped-worktree'
+    else if (distinctWorktrees.size > 1) reason = 'ambiguous-worktree-key'
+    else if (matches.length === 0) reason = 'outside-task-window'
+    else if (matches.length > 1) reason = 'ambiguous-task-window'
+    if (reason) {
+      const classified = classifications.get(reason)
+      classified.records += 1
+      classified.cost_usd += values.cost_usd
+      continue
+    }
+    const task = matches[0]
+    if (!assigned.has(task.task)) {
+      assigned.set(task.task, {
+        task,
+        records: 0,
+        sessions: new Set(),
+        projectKeys: new Set(),
+        input_tokens: 0,
+        output_tokens: 0,
+        reasoning_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        cost_usd: 0,
+        models: new Map(),
+      })
+    }
+    const aggregation = assigned.get(task.task)
+    aggregation.records += 1
+    aggregation.sessions.add(session)
+    aggregation.projectKeys.add(projectKey)
+    for (const [key, value] of Object.entries(values)) aggregation[key] += value
+    const identity = `${provider}${KEY_SEPARATOR}${model}`
+    if (!aggregation.models.has(identity)) {
+      aggregation.models.set(identity, {
+        provider,
+        name: model,
+        calls: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        reasoning_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        cost_usd: 0,
+      })
+    }
+    const modelAggregation = aggregation.models.get(identity)
+    modelAggregation.calls += 1
+    for (const [key, value] of Object.entries(values)) modelAggregation[key] += value
+  }
+  for (const aggregation of assigned.values()) {
+    writeBackfillSnapshot(options, aggregation.task, aggregation, exportHash)
+  }
+  return {
+    period: period.label,
+    exportHash,
+    assigned,
+    classifications,
+    records: exported.records.length,
+    cost_usd: exported.records.reduce((total, record) => total + record.cost, 0),
+    summary_cost_usd: period.cost_usd,
+  }
+}
+
 // --- reporting -------------------------------------------------------------
 
 function durationText(seconds) {
@@ -1596,6 +1894,17 @@ function report(dbPath, taskId) {
     const cost = aggregate.cost_tasks === 0 ? '-' : `$${Number(aggregate.cost).toFixed(4)}`
     const tokens = aggregate.token_tasks === 0 ? '-' : `${aggregate.tokens_in ?? 0} in / ${aggregate.tokens_out ?? 0} out`
     lines.push(`TOTAL ${aggregate.tasks} tasks | avg ${durationText(aggregate.average_pr)} (${aggregate.pr_tasks} PR) | ${cost} | ${tokens}`)
+    const projects = db.prepare(`
+      SELECT project_path, COUNT(*) AS tasks, COUNT(notional_cost_usd) AS measured_tasks,
+        SUM(notional_cost_usd) AS cost
+      FROM task
+      GROUP BY project_path
+      ORDER BY project_path IS NULL, project_path
+    `).all()
+    for (const project of projects) {
+      const projectCost = project.measured_tasks === 0 ? '-' : `$${Number(project.cost).toFixed(4)}`
+      lines.push(`PROJECT ${project.project_path || '(unassigned)'} | ${project.measured_tasks}/${project.tasks} measured | ${projectCost}`)
+    }
   }
   db.close()
   return `${lines.join('\n')}\n`
@@ -1722,6 +2031,28 @@ if (command === 'rebuild') {
     process.exit(1)
   }
   process.stdout.write(`${value}\n`)
+} else if (command === 'backfill-codeburn') {
+  let result
+  try {
+    result = backfillCodeburn(config, argv)
+  } catch (error) {
+    warn(error.message)
+    process.exit(2)
+  }
+  const attributedRecords = [...result.assigned.values()]
+    .reduce((total, aggregation) => total + aggregation.records, 0)
+  const attributedCost = [...result.assigned.values()]
+    .reduce((total, aggregation) => total + aggregation.cost_usd, 0)
+  process.stdout.write(`codeburn export ${result.period}: ${result.records} calls / $${result.summary_cost_usd.toFixed(4)} summary\n`)
+  process.stdout.write(`record ledger: ${result.records} records / $${result.cost_usd.toFixed(4)}; per-record rounding delta $${(result.cost_usd - result.summary_cost_usd).toFixed(4)}\n`)
+  process.stdout.write(`attributed ${attributedRecords} records / $${attributedCost.toFixed(4)} to ${result.assigned.size} tasks\n`)
+  for (const [kind, summary] of result.classifications) {
+    process.stdout.write(`${kind}: ${summary.records} records / $${summary.cost_usd.toFixed(4)}\n`)
+  }
+  process.stdout.write(`export sha256: ${result.exportHash}\n`)
+  const rebuilt = rebuild(config)
+  process.stdout.write(`rebuilt ${rebuilt.tasks} tasks into ${config.dbPath}\n`)
+  if (rebuilt.issues > 0) process.stdout.write(`${rebuilt.issues} ingest issues recorded in ingest_issue\n`)
 } else if (command === 'annotate') {
   let record
   try {

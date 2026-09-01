@@ -4,7 +4,9 @@
 # The worktree path is matched against codeburn's reported project inventory.
 # The reported project name is then the filter key; a path is never guessed into
 # a slug. fm-spawn captures a baseline before launch, so subtracting it excludes
-# earlier occupants of a pooled worktree.
+# earlier occupants of a pooled worktree. When codeburn has not published a key
+# yet, a worktree with no earlier same-day owner gets an explicit zero baseline;
+# a reused worktree stays unavailable rather than inheriting another task's cost.
 # fm-teardown writes data/<id>/usage.json before removing the task metadata.
 # Old metadata without spawned_at or a baseline still works, but its live total
 # is only date/project scoped and can therefore include an earlier same-day occupant.
@@ -111,6 +113,37 @@ TO=$(date -u +%Y-%m-%d)
 
 command -v node >/dev/null 2>&1 || { echo "fm-task-usage: node not found" >&2; exit 1; }
 
+# A relaunch keeps the original task boundary. Replacing its baseline here would
+# silently drop everything the earlier worker already spent.
+if [ "$MODE" = --baseline ] && [ -e "$BASELINE" ]; then
+  if [ -f "$BASELINE" ] && [ ! -L "$BASELINE" ]; then
+    if node - "$BASELINE" "$ID" "$WORKTREE" "$SPAWNED_AT" <<'NODE'
+const fs = require('fs')
+const [file, id, worktree, spawnedAt] = process.argv.slice(2)
+let baseline
+try {
+  baseline = JSON.parse(fs.readFileSync(file, 'utf8'))
+} catch {
+  process.exit(1)
+}
+if (baseline.schema === 'fm-task-usage-baseline.v1') {
+  process.exit(baseline.id === id && baseline.worktree === worktree
+    && baseline.spawned_at === spawnedAt ? 0 : 1)
+}
+const generated = Date.parse(baseline.generated)
+const spawned = Date.parse(spawnedAt)
+process.exit(Number.isFinite(generated) && Number.isFinite(spawned) && generated >= spawned ? 0 : 1)
+NODE
+    then
+      exit 0
+    fi
+    echo "fm-task-usage: existing baseline belongs to an earlier launch; refusing to replace it" >&2
+    exit 1
+  fi
+  echo "fm-task-usage: existing baseline is not a regular file; refusing to replace it" >&2
+  exit 1
+fi
+
 DISCOVERY=$(mktemp "${TMPDIR:-/tmp}/fm-task-usage-discovery.XXXXXX") || exit 1
 CURRENT=$(mktemp "${TMPDIR:-/tmp}/fm-task-usage-current.XXXXXX") || exit 1
 PROJECT_KEY_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-task-usage-project.XXXXXX") || exit 1
@@ -193,9 +226,9 @@ case "$WORKTREE" in
     ;;
 esac
 
-if ! node - "$DISCOVERY" "$WORKTREE" "$WINDOWS_WORKTREE" > "$PROJECT_KEY_FILE" <<'NODE'
+if node - "$DISCOVERY" "$MODE" "$WORKTREE" "$WINDOWS_WORKTREE" > "$PROJECT_KEY_FILE" <<'NODE'
 const fs = require('fs')
-const [reportPath, ...worktrees] = process.argv.slice(2)
+const [reportPath, mode, ...worktrees] = process.argv.slice(2)
 const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'))
 const projects = Array.isArray(report.projects) ? report.projects : []
 const normalize = value => String(value || '')
@@ -212,8 +245,10 @@ const candidates = exact.length ? exact : normalized
 const names = [...new Set(candidates.map(project => project.name).filter(name => typeof name === 'string' && name))]
 const reported = projects.map(project => project.name).filter(Boolean).join(', ') || '<none>'
 if (names.length === 0) {
-  console.error(`fm-task-usage: no codeburn project matches worktree ${worktrees[0]}; reported keys: ${reported}`)
-  process.exit(1)
+  if (mode !== '--baseline') {
+    console.error(`fm-task-usage: no codeburn project matches worktree ${worktrees[0]}; reported keys: ${reported}`)
+  }
+  process.exit(3)
 }
 if (names.length > 1) {
   console.error(`fm-task-usage: codeburn project match is ambiguous for worktree ${worktrees[0]}: ${names.join(', ')}`)
@@ -222,6 +257,102 @@ if (names.length > 1) {
 process.stdout.write(names[0] + '\n')
 NODE
 then
+  PROJECT_MATCH_STATUS=0
+else
+  PROJECT_MATCH_STATUS=$?
+fi
+if [ "$PROJECT_MATCH_STATUS" -eq 3 ] && [ "$MODE" = --baseline ]; then
+  # No key means zero only when the durable lifecycle evidence has no earlier
+  # owner for this worktree in the report period. This is intentionally stricter
+  # than checking whether the directory is clean: pool cleanup does not erase
+  # codeburn's cumulative same-day counters.
+  if node - "$DATA/cost-attribution.tsv" "$STATE" "$ID" "$WORKTREE" "$FROM" "$SPAWNED_AT" <<'NODE'
+const fs = require('fs')
+const path = require('path')
+const [rawFile, stateDir, taskId, worktree, from, spawnedAt] = process.argv.slice(2)
+const normalize = value => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+const target = normalize(worktree)
+const meta = text => Object.fromEntries(text.split('\n').flatMap(line => {
+  const separator = line.indexOf('=')
+  return separator > 0 ? [[line.slice(0, separator), line.slice(separator + 1)]] : []
+}))
+const samePeriodOwner = row => normalize(row.worktree) === target
+  && String(row.started_at || row.captured || '').slice(0, 10) === from
+  && !(row.task === taskId && row.started_at === spawnedAt)
+
+try {
+  for (const entry of fs.readdirSync(stateDir, {withFileTypes: true})) {
+    if (!entry.isFile() || !entry.name.endsWith('.meta') || entry.name === `${taskId}.meta`) continue
+    const row = meta(fs.readFileSync(path.join(stateDir, entry.name), 'utf8'))
+    row.task = entry.name.slice(0, -5)
+    if (samePeriodOwner(row)) process.exit(1)
+  }
+} catch (error) {
+  if (error?.code !== 'ENOENT') process.exit(2)
+}
+
+let text
+try {
+  text = fs.readFileSync(rawFile, 'utf8')
+} catch (error) {
+  if (error?.code === 'ENOENT') process.exit(0)
+  process.exit(2)
+}
+let section = 'preamble'
+let columns = null
+for (const line of text.split('\n')) {
+  if (!line) continue
+  if (line.startsWith('# schema=')) {
+    section = line.trim() === '# schema=firstmate-effort-attribution-v2' ? 'v2' : 'unknown'
+    columns = null
+    continue
+  }
+  const fields = line.split('\t')
+  if (columns === null) {
+    const knownV1 = section === 'preamble'
+      && fields.join('\t') === 'task\tworktree\tharness\tmodel\teffort\tkind\tproject\tcaptured'
+    const knownV2 = section === 'v2' && fields[0] === 'task' && fields[1] === 'worktree'
+    if (knownV1 || knownV2) {
+      columns = fields
+      continue
+    }
+    if (section === 'v2') process.exit(2)
+    continue
+  }
+  if (fields.length !== columns.length) process.exit(2)
+  const row = Object.fromEntries(columns.map((name, index) => [name, fields[index]]))
+  if (samePeriodOwner(row)) process.exit(1)
+}
+NODE
+  then
+    ZERO_STATUS=0
+  else
+    ZERO_STATUS=$?
+    if [ "$ZERO_STATUS" -eq 1 ]; then
+      echo "fm-task-usage: codeburn key is absent for a reused worktree with an earlier same-day owner; refusing a zero baseline" >&2
+    else
+      echo "fm-task-usage: prior worktree ownership could not be verified; refusing a zero baseline" >&2
+    fi
+    exit 1
+  fi
+  mkdir -p "$TASK_DATA"
+  node - "$BASELINE" "$ID" "$WORKTREE" "$SPAWNED_AT" "$FROM" <<'NODE'
+const fs = require('fs')
+const [file, id, worktree, spawnedAt, from] = process.argv.slice(2)
+const baseline = {
+  schema: 'fm-task-usage-baseline.v1',
+  status: 'fresh-worktree-zero',
+  id,
+  worktree,
+  spawned_at: spawnedAt,
+  from,
+  captured_at: new Date().toISOString(),
+}
+fs.writeFileSync(file, `${JSON.stringify(baseline)}\n`, {mode: 0o600})
+NODE
+  exit 0
+fi
+if [ "$PROJECT_MATCH_STATUS" -ne 0 ]; then
   exit 1
 fi
 PROJECT_KEY=$(cat "$PROJECT_KEY_FILE")
@@ -256,12 +387,19 @@ if (!baselinePresent) {
   console.error('fm-task-usage: saved baseline is unavailable; refusing an unbounded total')
   process.exit(1)
 }
-if (baselinePresent && !(baseline.projects || []).some(project => project.name === projectKey)) {
+const zeroBaseline = baseline.schema === 'fm-task-usage-baseline.v1'
+  && baseline.status === 'fresh-worktree-zero'
+  && baseline.id === id
+  && baseline.worktree === worktree
+  && baseline.spawned_at === spawnedAt
+if (baseline.schema === 'fm-task-usage-baseline.v1' && !zeroBaseline) {
+  console.error('fm-task-usage: saved zero baseline belongs to another launch; refusing an unbounded total')
+  process.exit(1)
+}
+if (!zeroBaseline && !(baseline.projects || []).some(project => project.name === projectKey)) {
   console.error(`fm-task-usage: saved baseline does not identify codeburn project ${projectKey}; refusing an unbounded total`)
   process.exit(1)
 }
-const before = baseline.overview || {}
-const after = current.overview || {}
 const counter = (object, key, label) => {
   if (!Object.prototype.hasOwnProperty.call(object, key)
       || typeof object[key] !== 'number' || !Number.isFinite(object[key]) || object[key] < 0) {
@@ -270,6 +408,21 @@ const counter = (object, key, label) => {
   }
   return object[key]
 }
+const reportedProject = (report, label) => {
+  const matches = (Array.isArray(report.projects) ? report.projects : [])
+    .filter(candidate => candidate?.name === projectKey)
+  if (matches.length !== 1) {
+    console.error(`fm-task-usage: ${label} report does not contain one exact project row; refusing attribution`)
+    process.exit(1)
+  }
+  const row = matches[0]
+  for (const key of ['cost', 'calls', 'sessions']) counter(row, key, `${label} project ${key}`)
+  return row
+}
+const beforeProject = zeroBaseline
+  ? {cost: 0, calls: 0, sessions: 0}
+  : reportedProject(baseline, 'baseline')
+const afterProject = reportedProject(current, 'current')
 const diff = (currentObject, baselineObject, key, label) => {
   const currentValue = counter(currentObject, key, `current ${label}`)
   const baselineValue = counter(baselineObject, key, `baseline ${label}`)
@@ -279,7 +432,7 @@ const diff = (currentObject, baselineObject, key, label) => {
   }
   return currentValue - baselineValue
 }
-if (!Array.isArray(baseline.models) || !Array.isArray(current.models)) {
+if ((!zeroBaseline && !Array.isArray(baseline.models)) || !Array.isArray(current.models)) {
   console.error('fm-task-usage: invalid model counters; refusing plausible-zero attribution')
   process.exit(1)
 }
@@ -290,7 +443,7 @@ const normalizedModel = model => {
   return {name, provider, identity: `${provider}\u0000${name}`}
 }
 const beforeModels = new Map()
-for (const model of baseline.models) {
+for (const model of zeroBaseline ? [] : baseline.models) {
   const normalized = normalizedModel(model)
   if (!normalized.name || beforeModels.has(normalized.identity)) {
     console.error('fm-task-usage: invalid baseline model identity; refusing plausible-zero attribution')
@@ -310,10 +463,13 @@ for (const model of current.models) {
 }
 const models = (current.models || []).map(model => {
   const normalized = normalizedModel(model)
-  const old = beforeModels.get(normalized.identity)
-  if (!old) {
-    console.error(`fm-task-usage: model ${model.name} lacks baseline counters; refusing plausible-zero attribution`)
-    process.exit(1)
+  const old = beforeModels.get(normalized.identity) || {
+    calls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    cost: 0,
   }
   return {
     name: normalized.name,
@@ -326,8 +482,22 @@ const models = (current.models || []).map(model => {
     cost_usd: diff(model, old, 'cost', `model ${model.name} cost`),
   }
 }).filter(model => model.name !== '<synthetic>' && (model.calls || model.input_tokens || model.output_tokens || model.cache_read_tokens || model.cache_write_tokens || model.cost_usd))
-const tokens = after.tokens || {}
-const oldTokens = before.tokens || {}
+for (const [identity, model] of beforeModels) {
+  if (!currentModelIdentities.has(identity)
+      && modelKeys.some(key => counter(model, key, `baseline model ${model.name} ${key}`) !== 0)) {
+    console.error(`fm-task-usage: model ${model.name} disappeared from cumulative counters; refusing attribution`)
+    process.exit(1)
+  }
+}
+const sum = key => models.reduce((total, model) => total + model[key], 0)
+const projectCost = diff(afterProject, beforeProject, 'cost', 'cost')
+const projectCalls = diff(afterProject, beforeProject, 'calls', 'calls')
+const modelCost = sum('cost_usd')
+const modelCalls = sum('calls')
+if (Math.abs(projectCost - modelCost) > 1e-8 || projectCalls !== modelCalls) {
+  console.error('fm-task-usage: filtered project and model counters disagree; refusing attribution')
+  process.exit(1)
+}
 const capturedAt = new Date().toISOString()
 const started = Date.parse(spawnedAt)
 const captured = Date.parse(capturedAt)
@@ -343,18 +513,24 @@ const summary = {
   actual_models: models.map(model => model.name),
   models,
   tokens: {
-    input: diff(tokens, oldTokens, 'input', 'input tokens'),
-    output: diff(tokens, oldTokens, 'output', 'output tokens'),
-    cache_read: diff(tokens, oldTokens, 'cacheRead', 'cache read tokens'),
-    cache_write: diff(tokens, oldTokens, 'cacheWrite', 'cache write tokens'),
+    input: sum('input_tokens'),
+    output: sum('output_tokens'),
+    cache_read: sum('cache_read_tokens'),
+    cache_write: sum('cache_write_tokens'),
   },
-  cost_usd: diff(after, before, 'cost', 'cost'),
-  calls: diff(after, before, 'calls', 'calls'),
-  sessions: diff(after, before, 'sessions', 'sessions'),
+  cost_usd: projectCost,
+  calls: projectCalls,
+  sessions: diff(afterProject, beforeProject, 'sessions', 'sessions'),
   spawned_at: spawnedAt || null,
   captured_at: capturedAt,
   duration_seconds: Number.isFinite(started) && Number.isFinite(captured) ? Math.max(0, Math.floor((captured - started) / 1000)) : null,
-  correlation: {worktree, project_key: projectKey, project_match: 'reported-path', baseline: baselinePresent},
+  correlation: {
+    worktree,
+    project_key: projectKey,
+    project_match: 'reported-path',
+    baseline: baselinePresent,
+    baseline_kind: zeroBaseline ? 'fresh-worktree-zero' : 'reported-project',
+  },
 }
 process.stdout.write(JSON.stringify(summary) + '\n')
 NODE

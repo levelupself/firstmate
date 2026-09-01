@@ -21,6 +21,7 @@
 #
 # Usage:
 #   fm-effort-store.sh rebuild [--db <path>] [--no-import-graph]
+#   fm-effort-store.sh backfill-codeburn <export.json>
 #   fm-effort-store.sh report [<task-id>] [--db <path>]
 #   fm-effort-store.sh fingerprint [--db <path>]
 #   fm-effort-store.sh annotate <task-id> [annotation options]
@@ -53,7 +54,7 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 ENGINE="$SCRIPT_DIR/fm-effort-store.mjs"
 
 usage() {
-  sed -n '2,45s/^# \{0,1\}//p' "$0"
+  sed -n '2,46s/^# \{0,1\}//p' "$0"
 }
 
 die() {
@@ -64,7 +65,7 @@ die() {
 COMMAND=${1:-}
 case "$COMMAND" in
   -h|--help|help|'') usage; exit 0 ;;
-  rebuild|report|fingerprint|annotate|capture|path) shift ;;
+  rebuild|backfill-codeburn|report|fingerprint|annotate|capture|path) shift ;;
   *) usage >&2; exit 2 ;;
 esac
 
