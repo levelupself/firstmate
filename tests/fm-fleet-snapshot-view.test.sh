@@ -1707,6 +1707,8 @@ test_deleted_home_does_not_evict_a_live_exact_pane() {
   done
   [ -e "$home/state/.fleet-painter-w9:p2.lock" ] \
     || { reap_painter "$pid"; fail "the recorded banner did not claim its pane before home deletion: $(cat "$home/bound.err")"; }
+  wait_for_paint "$home/bound.out" 'YOUR DECISIONS' \
+    || { reap_painter "$pid"; fail "the recorded banner painted nothing before home deletion: $(cat "$home/bound.err")"; }
   waited=0
   rm -rf "$home"
   while jobs -pr | grep -qx "$pid" && [ "$waited" -lt 300 ]; do

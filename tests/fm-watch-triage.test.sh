@@ -220,9 +220,9 @@ test_classifier_primitives() {
   printf 'needs-decision: should docs mention [key=prose]?\nneeds-decision [key=q1]: real choice\nresolved: docs still mention [key=q1]\nneeds-decision [key=bad key]: malformed\n' > "$state/keys.status"
   open=$(status_open_decisions "$state/keys.status")
   printf '%s' "$open" | grep -F $'q1\t' >/dev/null \
-    || fail "a key token in resolved note prose closed the keyed decision"
+    && fail "reserved key syntax in resolved note prose did not close the matching decision"
   printf '%s' "$open" | grep -F $'prose\t' >/dev/null \
-    && fail "a key token in note prose changed the decision key"
+    || fail "the first complete key marker in note prose did not open its decision"
   printf '%s' "$open" | grep -F $'bad key\t' >/dev/null \
     && fail "an invalid key slug entered the open-decision set"
   printf 'needs-decision: choose a release route\ncaptain-held: parked at the review gate\n' > "$state/parked-decision.status"
