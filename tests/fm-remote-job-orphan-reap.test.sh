@@ -41,6 +41,19 @@ pgid_of() { ps -p "$1" -o pgid= 2>/dev/null | tr -d '[:space:]'; }
 
 ppid_of() { ps -p "$1" -o ppid= 2>/dev/null | tr -d '[:space:]'; }
 
+# 0 when <pid> is somewhere below <ancestor-pid> in the process tree.
+is_descendant_of() { # <pid> <ancestor-pid>
+  local pid=$1 ancestor=$2 hops=0
+  while [ "$hops" -lt 64 ]; do
+    pid=$(ppid_of "$pid")
+    case "$pid" in ''|0) return 1 ;; esac
+    [ "$pid" = "$ancestor" ] && return 0
+    [ "$pid" = 1 ] && return 1
+    hops=$((hops + 1))
+  done
+  return 1
+}
+
 # Wait up to <seconds> for <pid> to exit; 0 when it did.
 wait_gone() { # <pid> <seconds>
   local pid=$1 deadline=$(( $(date +%s) + $2 ))
@@ -123,8 +136,18 @@ SERVE=$(pgrep -P "$WORKER" | head -n 1)
   fail "the serving child is outside the worker's process group"
 pass "the Linux start path puts the whole worker tree in its own process group"
 
-[ "$(ppid_of "$WORKER")" = 1 ] ||
-  fail "the fixture worker is not orphaned to init, so this case does not reproduce the leak"
+# The leak's precondition is that the worker outlived the shell that started it
+# and now sits outside this test's own process tree, so nothing the test tears
+# down can still reach it. Which process adopts it is an operating-system
+# detail: init on a plain Linux or macOS, but a systemd --user manager or a
+# container init wherever a child subreaper is registered, and orphans never
+# reach pid 1 on those hosts. Requiring ppid 1 silently voided this whole case
+# there - the reap condition itself is the pruned code root named in the
+# worker's own command line, with no dependence on the adopting parent.
+alive "$WORKER" || fail "the fixture worker did not survive the shell that started it"
+if is_descendant_of "$WORKER" "$$"; then
+  fail "the fixture worker is still inside this test's process tree, so this case does not reproduce the leak"
+fi
 
 # The exact teardown shape that leaked in production: a fixture cleanup removes
 # the worker's state root and then stops only the single recorded worker pid -
@@ -137,7 +160,7 @@ kill -KILL "$SERVE" 2>/dev/null || true
 wait_gone "$SERVE" 10 || fail "the recorded serving child did not stop"
 alive "$WORKER" || fail "the fixture supervisor did not survive a lone child kill, so this case no longer covers the leak"
 wait_child "$WORKER" 15 || fail "the supervisor did not respawn after its recorded child pid was killed"
-pass "removing the state root and killing the recorded worker pid leaves the tree running at ppid 1"
+pass "removing the state root and killing the recorded worker pid leaves the adopted tree running"
 
 # A worker whose code root is intact is never a reap candidate, which is what
 # keeps the account's healthy LaunchAgent worker out of scope.

@@ -100,11 +100,22 @@ run_settle_spawn() {
     "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
 }
 
+# How many times the settle loop read pane_current_path. The loop sleeps once
+# per read, so this count IS its cycle count - and unlike wall-clock seconds it
+# is the same number on an idle machine and a saturated one. Wall clock cannot
+# stand in for it: a busy host stretches the identical two-read path from about
+# two seconds to seventeen without the loop doing anything different.
+settle_pane_reads() {
+  cat "$COUNTFILE"
+}
+
 # A single stale first read (the exact incident) must not be accepted: the
 # loop should keep polling until two consecutive reads agree, landing on the
-# real settled worktree instead.
+# real settled worktree instead. A mismatch must make the stale path the new
+# candidate rather than reset the wait, so this costs exactly three reads: the
+# stale one, the first real one, and one confirming read.
 test_single_stale_first_read_is_not_accepted() {
-  local rec id out status
+  local rec id out status reads
   id=settle-single-stale-z1
   rec=$(make_settle_case settle-single "$id" 1)
   read_settle_record "$rec"
@@ -117,27 +128,27 @@ test_single_stale_first_read_is_not_accepted() {
     "meta did not record the settled worktree"
   assert_no_grep "worktree=$STALE_DIR" "$HOME_DIR/state/$id.meta" \
     "meta wrongly recorded the transient stale path as the worktree"
+  reads=$(settle_pane_reads)
+  [ "$reads" = 3 ] || fail "a single stale first read cost $reads pane_current_path reads - expected the stale read, the first real read, and one confirming read"
   pass "a single transient stale pane_current_path read is not accepted as the worktree"
 }
 
 # A pane that reports the real worktree from the very first read still only
 # costs the loop's existing one-second inter-poll sleep to confirm - not an
-# extra full cycle on top of that.
+# extra full cycle on top of that. That is exactly two reads.
 test_already_settled_pane_costs_one_confirm_sleep() {
-  local rec id out status start end elapsed
+  local rec id out status reads
   id=settle-already-settled-z2
   rec=$(make_settle_case settle-already-settled "$id" 0)
   read_settle_record "$rec"
 
-  start=$(date +%s)
   out=$(run_settle_spawn "$id")
   status=$?
-  end=$(date +%s)
-  elapsed=$((end - start))
   expect_code 0 "$status" "spawn should succeed when the pane is already settled"
   assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id.meta" \
     "meta did not record the already-settled worktree"
-  [ "$elapsed" -le 5 ] || fail "already-settled pane took ${elapsed}s to confirm - expected close to the single inter-poll sleep"
+  reads=$(settle_pane_reads)
+  [ "$reads" = 2 ] || fail "an already-settled pane cost $reads pane_current_path reads - expected the first read plus one confirming read"
   pass "an already-settled pane confirms via the existing inter-poll sleep, not an extra full cycle"
 }
 
