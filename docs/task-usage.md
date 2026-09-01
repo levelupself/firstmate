@@ -1,7 +1,7 @@
 # Task usage
 
 Firstmate records codeburn usage automatically for each crewmate and scout cycle.
-`bin/fm-spawn.sh` records `spawned_at=` and saves the worktree's pre-launch codeburn totals in `data/<id>/usage-baseline.json`.
+`bin/fm-spawn.sh` records `spawned_at=` and saves a bounded pre-launch baseline in `data/<id>/usage-baseline.json`.
 Codeburn does not publish a new worktree key until that directory records its first call.
 Spawn initializes an append-only project-scoped history under `data/worktree-allocations/` with that canonical project's complete Git boundary inventory of exact normalized working-copy identities, records later allocations, and teardown records releases without deleting prior identities.
 Task metadata retains the canonical allocation-project identity so baseline validation and teardown always address the same project history even when the registered project path uses a symlink.

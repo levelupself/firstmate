@@ -5,17 +5,18 @@
 # The reported project name is then the filter key; a path is never guessed into
 # a slug. fm-spawn captures a baseline before launch, so subtracting it excludes
 # earlier occupants of a pooled worktree. When codeburn has not published a key
-# yet, a worktree with no earlier same-day owner gets an explicit zero baseline;
-# a reused worktree stays unavailable rather than inheriting another task's cost.
+# yet, durable lifecycle and allocation evidence can prove an explicit zero
+# baseline for a first owner over the complete report period; a reused worktree
+# stays unavailable rather than inheriting another task's cost.
 # fm-teardown writes data/<id>/usage.json before removing the task metadata.
-# Old metadata without spawned_at or a baseline still works, but its live total
-# is only date/project scoped and can therefore include an earlier same-day occupant.
+# Metadata without spawned_at or a bounded baseline remains unavailable rather
+# than producing a date-scoped total that may include an earlier occupant.
 # The codeburn call is bounded by FM_TASK_USAGE_TIMEOUT (default 15s) so a hung
 # report never stalls spawn, teardown, or fleet-snapshot generation.
 #
 # Usage: fm-task-usage.sh <task-id> [--json|--baseline|--snapshot]
 #   --json      print the compact summary as JSON
-#   --baseline  save the pre-launch codeburn report
+#   --baseline  save a bounded pre-launch codeburn baseline
 #   --snapshot  save data/<id>/usage.json and print its compact text form
 set -u
 
