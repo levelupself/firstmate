@@ -888,6 +888,52 @@ NODE
   || fail "backfill snapshot lacks auditable bounded provenance: $BACKFILL_CORRELATION"
 pass 'codeburn export records backfill exact task windows and classify every unattributed dollar'
 
+COLLISION_EXACT="$ROOTDIR/worktrees/collision-a-b"
+COLLISION_OTHER="$ROOTDIR/worktrees/collision-a/b"
+fm_write_meta "$FM_HOME/state/924-backfill-collision-exact.meta" \
+  "worktree=$COLLISION_EXACT" \
+  "project=$PROJECT" \
+  "harness=codex" \
+  "model=configured-gpt" \
+  "effort=xhigh" \
+  "kind=ship" \
+  "spawned_at=2026-07-01T12:00:00Z" \
+  "teardown_at=2026-07-01T12:30:00Z" \
+  "outcome=forced"
+"$STORE" capture 924-backfill-collision-exact --outcome forced >/dev/null \
+  || fail 'exact collision lifecycle capture failed'
+fm_write_meta "$FM_HOME/state/925-backfill-collision-other.meta" \
+  "worktree=$COLLISION_OTHER" \
+  "project=$PROJECT" \
+  "harness=codex" \
+  "model=configured-gpt" \
+  "effort=xhigh" \
+  "kind=ship" \
+  "spawned_at=2026-07-01T12:00:00Z" \
+  "teardown_at=2026-07-01T12:30:00Z" \
+  "outcome=forced"
+"$STORE" capture 925-backfill-collision-other --outcome forced >/dev/null \
+  || fail 'other collision lifecycle capture failed'
+COLLISION_EXPORT="$ROOTDIR/codeburn-backfill-collision.json"
+cat > "$COLLISION_EXPORT" <<JSON
+{"schema":"codeburn.export.v2","generated":"2026-07-02T00:00:00.000Z","summary":[{"Period":"2026-07-01 to 2026-07-01","Cost (USD)":3,"API Calls":2}],"records":[
+  {"project":"$COLLISION_EXACT","sessionId":"collision-exact","timestamp":"2026-07-01T12:05:00.000Z","provider":"openai","model":"gpt-5.6-sol","inputTokens":10,"outputTokens":2,"reasoningTokens":1,"cacheWriteTokens":0,"cacheReadTokens":20,"cost":1},
+  {"project":"$ROOTDIR/worktrees/collision_a_b","sessionId":"collision-ambiguous","timestamp":"2026-07-01T12:10:00.000Z","provider":"openai","model":"gpt-5.6-sol","inputTokens":20,"outputTokens":4,"reasoningTokens":2,"cacheWriteTokens":0,"cacheReadTokens":40,"cost":2}
+]}
+JSON
+COLLISION_OUT=$("$STORE" backfill-codeburn "$COLLISION_EXPORT" 2>&1) \
+  || fail "collision backfill failed: $COLLISION_OUT"
+assert_contains "$COLLISION_OUT" 'attributed 1 records / $1.0000 to 1 tasks' \
+  'separator-normalized exact path did not win over a lossy collision'
+assert_contains "$COLLISION_OUT" 'ambiguous-worktree-key: 1 records / $2.0000' \
+  'lossy collision without an exact path did not refuse attribution'
+COLLISION_COST=$(query "SELECT notional_cost_usd FROM task WHERE task_id = '924-backfill-collision-exact'")
+[ "$COLLISION_COST" = '1' ] \
+  || fail "exact collision task did not retain its exact cost: $COLLISION_COST"
+[ ! -e "$FM_HOME/data/925-backfill-collision-other/usage.json" ] \
+  || fail 'ambiguous lossy collision invented a task cost'
+pass 'backfill prefers separator-normalized exact paths and refuses lossy ambiguity'
+
 BACKFILL_BEFORE=$(cat "$FM_HOME/data/920-backfill-a/usage.json")
 rm -f "$FM_HOME/data/920-backfill-a/usage.json"
 printf '%s\n' '{"schema":"fm-task-usage.v2","id":"921-backfill-b","correlation":{"baseline":true}}' \

@@ -1598,6 +1598,10 @@ function normalizedObservedPath(value) {
     .toLowerCase()
 }
 
+function slashNormalizedObservedPath(value) {
+  return String(value || '').replace(/\\/g, '/')
+}
+
 function codeburnExportPeriod(record) {
   const summaries = Array.isArray(record?.summary) ? record.summary : []
   if (summaries.length !== 1) throw new Error('codeburn export must declare exactly one summary period')
@@ -1765,6 +1769,7 @@ function backfillCodeburn(options, argv) {
   const raw = readRawCapture(options.rawFile, [])
   const latest = new Map()
   for (const row of raw.rows) latest.set(row.task, row)
+  const byExactWorktree = new Map()
   const byWorktree = new Map()
   for (const row of latest.values()) {
     const startedAt = canonicalTimestamp(row.started_at)
@@ -1783,6 +1788,9 @@ function backfillCodeburn(options, argv) {
     }
     const task = {...row, started_at: startedAt, ended_at: endedAt, start, end,
       completeCoverage, missingCoverage}
+    const exactWorktree = slashNormalizedObservedPath(row.worktree)
+    if (!byExactWorktree.has(exactWorktree)) byExactWorktree.set(exactWorktree, [])
+    byExactWorktree.get(exactWorktree).push(task)
     const worktree = normalizedObservedPath(row.worktree)
     if (!byWorktree.has(worktree)) byWorktree.set(worktree, [])
     byWorktree.get(worktree).push(task)
@@ -1828,7 +1836,10 @@ function backfillCodeburn(options, argv) {
       cache_write_tokens: number(record.cacheWriteTokens, 'cache-write tokens', {integer: true}),
       cost_usd: number(record.cost, 'cost'),
     }
-    const worktreeTasks = byWorktree.get(normalizedObservedPath(projectKey)) || []
+    const exactWorktreeTasks = byExactWorktree.get(slashNormalizedObservedPath(projectKey)) || []
+    const worktreeTasks = exactWorktreeTasks.length > 0
+      ? exactWorktreeTasks
+      : (byWorktree.get(normalizedObservedPath(projectKey)) || [])
     const matches = worktreeTasks.filter(task => timestamp >= task.start && timestamp <= task.end)
     const distinctWorktrees = new Set(worktreeTasks.map(task => task.worktree))
     let reason
