@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Render a backlog-format Markdown file as machine-readable TSV.
 #
-# The backlog format itself is owned by AGENTS.md section 10; this script only
-# reads it. It accepts every item form that format allows - "- [ ] <id> ...",
+# The backlog format itself is owned by .tasks.toml, docs/configuration.md, and
+# current tasks-axi help; this script only reads it. It accepts every item form
+# that format allows - "- [ ] <id> ...",
 # "- [x] <id> ...", and the bold in-flight "- **<id>** ..." - and it also reads
 # data/done-archive.md, whose "## Archived <date>" sections carry the Done
 # entries tasks-axi pruned out of the backlog.

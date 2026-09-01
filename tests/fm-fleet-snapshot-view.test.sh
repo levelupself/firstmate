@@ -1554,11 +1554,11 @@ reap_painter() {  # <pid>
 
 wait_for_painter_exit() {  # <pid>
   local pid=$1 waited=0
-  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 100 ]; do
+  while jobs -pr | grep -qx "$pid" && [ "$waited" -lt 100 ]; do
     sleep 0.1
     waited=$((waited + 1))
   done
-  ! kill -0 "$pid" 2>/dev/null
+  ! jobs -pr | grep -qx "$pid"
 }
 
 # Wait for a banner to actually paint rather than for a fixed interval: these
@@ -1709,11 +1709,11 @@ test_deleted_home_does_not_evict_a_live_exact_pane() {
     || { reap_painter "$pid"; fail "the recorded banner did not claim its pane before home deletion: $(cat "$home/bound.err")"; }
   waited=0
   rm -rf "$home"
-  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 300 ]; do
+  while jobs -pr | grep -qx "$pid" && [ "$waited" -lt 300 ]; do
     sleep 0.1
     waited=$((waited + 1))
   done
-  kill -0 "$pid" 2>/dev/null && { reap_painter "$pid"; rc=1; }
+  jobs -pr | grep -qx "$pid" && { reap_painter "$pid"; rc=1; }
   wait "$pid" 2>/dev/null || true
   [ "$rc" -eq 0 ] || fail "a painter with a deleted home did not retire"
   [ "$(grep -c '^pane close w9:p2' "$calls" 2>/dev/null || true)" -eq 0 ] \
