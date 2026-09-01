@@ -375,20 +375,44 @@ env -u HERDR_SESSION -u HERDR_PANE_ID \
 
 lab pane run "$FLEET_FIRST" clear >/dev/null \
   || fail "could not clear the fleet pane before the current stripped-identity relaunch"
-relaunch_painter "$FLEET_FIRST" "$FLEET_SECTION" "$ROOT" stripped
+POST_FIX_CAPTURE="$HOME_DIR/state/post-fix-stripped-painter.log"
+POST_FIX_RUNNER="$HOME_DIR/state/post-fix-stripped-painter.sh"
+cat > "$POST_FIX_RUNNER" <<SH
+#!/usr/bin/env bash
+"$ROOT/bin/fm-fleet-view.sh" --geometry-command "$ROOT/bin/fm-herdr-pane-geometry.sh" \
+  --watch 1 --section "$FLEET_SECTION" > "$POST_FIX_CAPTURE" 2>&1
+status=\$?
+printf '\nrc=%s\n' "\$status" >> "$POST_FIX_CAPTURE"
+SH
+chmod +x "$POST_FIX_RUNNER"
+lab pane run "$FLEET_FIRST" \
+  "env -u HERDR_SESSION -u HERDR_PANE_ID FM_HOME=$HOME_DIR FM_HERDR_LAB_HELPER=$LAB_HELPER FM_HERDR_LAB_SESSION=$SESSION $POST_FIX_RUNNER" \
+  >/dev/null \
+  || fail "could not launch the current stripped-identity painter capture"
 POST_FIX_WAITED=0
-while [ "$POST_FIX_WAITED" -lt 100 ]; do
+while [ "$POST_FIX_WAITED" -lt 300 ]; do
   if cockpit_env "$ROOT/bin/fm-cockpit.sh" status >/dev/null 2>&1; then
     fail "current stripped-identity relaunch was reported live"
   fi
-  [ -n "$(fleet_painter_pids "$FLEET_FIRST")" ] || break
+  if [ -f "$POST_FIX_CAPTURE" ] && grep -q '^rc=' "$POST_FIX_CAPTURE"; then
+    break
+  fi
   sleep 0.1
   POST_FIX_WAITED=$((POST_FIX_WAITED + 1))
 done
-POST_FIX_TEXT=$(lab pane read "$FLEET_FIRST" --source visible) \
-  || fail "could not read the current stripped-identity relaunch"
+[ -f "$POST_FIX_CAPTURE" ] && grep -q '^rc=' "$POST_FIX_CAPTURE" \
+  || fail "current stripped-identity relaunch never recorded its exit status: $(lab pane read "$FLEET_FIRST" --source visible 2>/dev/null)"
+POST_FIX_TEXT=$(cat "$POST_FIX_CAPTURE")
+POST_FIX_RC=$(sed -n 's/^rc=//p' "$POST_FIX_CAPTURE" | tail -n 1)
+case "$POST_FIX_RC" in
+  ''|0|*[!0-9]*) fail "current stripped-identity painter did not terminate unsuccessfully: rc=[$POST_FIX_RC] output=[$POST_FIX_TEXT]" ;;
+esac
 case "$POST_FIX_TEXT" in
-  *"FLEET STATUS"*) fail "current stripped-identity relaunch painted a fleet frame: $POST_FIX_TEXT" ;;
+  *"FLEET VIEW STOPPING"*"authoritative pane state or cwd is permanently unavailable"*) ;;
+  *) fail "current stripped-identity painter did not report unusable pane identity: $POST_FIX_TEXT" ;;
+esac
+case "$POST_FIX_TEXT" in
+  *"FLEET STATUS"*|*"YOUR DECISIONS"*) fail "current stripped-identity relaunch painted a fleet section: $POST_FIX_TEXT" ;;
 esac
 pass "current stripped identity is permanent and never reports a live fleet frame"
 
