@@ -112,7 +112,8 @@ The subagent tool presents to the model as `Agent`, and on Claude Code 2.1.217 b
 
 ## Primary session start
 
-AGENTS.md section 3 remains the behavioral owner for session start, while tracked native adapters enforce it idempotently at session open through one of two tiers.
+AGENTS.md section 3 owns the always-loaded session-start safety boundaries, while `bin/fm-session-start.sh` owns command composition, ordering, stage behavior, and digest contents.
+Tracked native adapters enforce that contract idempotently at session open through one of two tiers.
 Before inspecting or changing session-open behavior, read `docs/sessionstart-nudge.md`, the single owner of tier assignment, per-surface transports, source routing, the runtime bound, and fail-open behavior.
 `docs/verification/supervision.md` "Native session-start delivery" owns active dated commands, payloads, and evidence.
 
