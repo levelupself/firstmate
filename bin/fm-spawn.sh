@@ -1704,6 +1704,16 @@ BRIEF_REAL="$BRIEF_DIR_REAL/$(basename "$BRIEF")"
 # once here so every downstream comparison uses the same physical form
 # (docs/herdr-backend.md "Known gaps").
 PROJ_ABS_REAL=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P) || PROJ_ABS_REAL="$PROJ_ABS"
+SPAWN_WORKTREE_ALLOCATION=
+WORKTREE_INVENTORY=
+WORKTREE_INVENTORY_VALID=0
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+  if WORKTREE_INVENTORY=$(git -C "$PROJ_ABS" worktree list --porcelain 2>/dev/null) \
+    && printf '%s\n' "$WORKTREE_INVENTORY" | grep -Eq '^worktree /' \
+    && ! printf '%s\n' "$WORKTREE_INVENTORY" | grep -Eq '^worktree "'; then
+    WORKTREE_INVENTORY_VALID=1
+  fi
+fi
 
 real_path_or_raw() {  # <path>
   local path=$1 real
@@ -2322,6 +2332,18 @@ fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
 fi
+if [ "$RELAUNCH" -eq 1 ]; then
+  SPAWN_WORKTREE_ALLOCATION=$(fm_meta_get "$RELAUNCH_META" worktree_allocation)
+elif [ "$KIND" != secondmate ]; then
+  if [ "$BACKEND" = orca ]; then
+    SPAWN_WORKTREE_ALLOCATION=fresh
+  elif [ "$WORKTREE_INVENTORY_VALID" -eq 1 ] \
+    && ! printf '%s\n' "$WORKTREE_INVENTORY" | sed -n 's/^worktree //p' | grep -Fx -- "$(real_path_or_raw "$WT")" >/dev/null; then
+    SPAWN_WORKTREE_ALLOCATION=fresh
+  else
+    SPAWN_WORKTREE_ALLOCATION=reused
+  fi
+fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
 # create GOTMPDIR, so mkdir before it is used; fm-teardown removes the whole root.
@@ -2716,7 +2738,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree worktree_allocation project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2726,6 +2748,7 @@ preserve_relaunch_meta() {
   echo "window=$META_WINDOW"
   echo "endpoint_task_id=$ID"
   echo "worktree=$WT"
+  [ -z "$SPAWN_WORKTREE_ALLOCATION" ] || echo "worktree_allocation=$SPAWN_WORKTREE_ALLOCATION"
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
   echo "kind=$KIND"

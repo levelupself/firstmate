@@ -241,6 +241,12 @@ printf '%s\n' '# schema=firstmate-effort-attribution-v2' \
   > "$HOME_DIR/data/cost-attribution.tsv"
 printf 'task\tworktree\tharness\tmodel\teffort\tkind\tproject\tstarted_at\tended_at\n' \
   >> "$HOME_DIR/data/cost-attribution.tsv"
+if FM_HOME="$HOME_DIR" "$USAGE" fresh-late-key --baseline >/dev/null 2>"$TMP_ROOT/header-only-ledger.err"; then
+  fail "a header-only lifecycle ledger proved a fresh zero baseline"
+fi
+assert_contains "$(cat "$TMP_ROOT/header-only-ledger.err")" "could not be verified" \
+  "a header-only ledger without allocation provenance did not preserve uncertainty"
+printf '%s\n' 'worktree_allocation=fresh' >> "$HOME_DIR/state/fresh-late-key.meta"
 FM_HOME="$HOME_DIR" "$USAGE" fresh-late-key --baseline \
   || fail "a fresh worktree without a pre-call codeburn key did not record a zero baseline"
 export FM_CODEBURN_FIXTURE="$TMP_ROOT/fresh-after-first-call.json"
@@ -264,6 +270,7 @@ fm_write_meta "$HOME_DIR/state/reused-late-key.meta" \
   "project=/srv/projects/firstmate" \
   "harness=codex" \
   "kind=ship" \
+  "worktree_allocation=reused" \
   "spawned_at=2026-07-19T17:00:00Z"
 export FM_CODEBURN_FIXTURE="$TMP_ROOT/reused-before-key.json"
 write_fixture "$FM_CODEBURN_FIXTURE" 3.25 7 4 7 11
@@ -301,6 +308,7 @@ fm_write_meta "$HOME_DIR/state/cross-day-next.meta" \
   "project=/srv/projects/fresh" \
   "harness=codex" \
   "kind=ship" \
+  "worktree_allocation=fresh" \
   "spawned_at=2026-07-20T10:30:00Z"
 export FM_CODEBURN_FIXTURE="$TMP_ROOT/cross-day-before-key.json"
 write_fixture "$FM_CODEBURN_FIXTURE" 3.25 7 4 7 11

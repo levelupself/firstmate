@@ -126,6 +126,8 @@ test_single_stale_first_read_is_not_accepted() {
   assert_contains "$out" "spawned $id" "spawn did not report success"
   assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id.meta" \
     "meta did not record the settled worktree"
+  assert_grep 'worktree_allocation=reused' "$HOME_DIR/state/$id.meta" \
+    "meta did not preserve that the pooled worktree predated this allocation"
   assert_no_grep "worktree=$STALE_DIR" "$HOME_DIR/state/$id.meta" \
     "meta wrongly recorded the transient stale path as the worktree"
   reads=$(settle_pane_reads)

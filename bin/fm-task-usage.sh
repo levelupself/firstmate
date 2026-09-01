@@ -82,6 +82,7 @@ if [ "$KIND" = secondmate ]; then
 fi
 
 WORKTREE=$(meta_value "$META" worktree)
+WORKTREE_ALLOCATION=$(meta_value "$META" worktree_allocation)
 PROJECT=$(meta_value "$META" project)
 HARNESS=$(meta_value "$META" harness)
 CONFIGURED_MODEL=$(meta_value "$META" model)
@@ -266,10 +267,10 @@ if [ "$PROJECT_MATCH_STATUS" -eq 3 ] && [ "$MODE" = --baseline ]; then
   # owner for this worktree in the report period. This is intentionally stricter
   # than checking whether the directory is clean: pool cleanup does not erase
   # codeburn's cumulative same-day counters.
-  if node - "$DATA/cost-attribution.tsv" "$STATE" "$ID" "$WORKTREE" "$FROM" "$SPAWNED_AT" <<'NODE'
+  if node - "$DATA/cost-attribution.tsv" "$STATE" "$ID" "$WORKTREE" "$FROM" "$SPAWNED_AT" "$WORKTREE_ALLOCATION" <<'NODE'
 const fs = require('fs')
 const path = require('path')
-const [rawFile, stateDir, taskId, worktree, from, spawnedAt] = process.argv.slice(2)
+const [rawFile, stateDir, taskId, worktree, from, spawnedAt, allocation] = process.argv.slice(2)
 const normalize = value => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 const target = normalize(worktree)
 const periodStart = Date.parse(`${from}T00:00:00.000Z`)
@@ -291,7 +292,8 @@ const priorOwnerOverlapsPeriod = (row, source) => {
   return ended > periodStart
 }
 
-if (!Number.isFinite(periodStart) || !Number.isFinite(currentStart)) process.exit(2)
+if (allocation === 'reused') process.exit(1)
+if (!Number.isFinite(periodStart) || !Number.isFinite(currentStart) || allocation !== 'fresh') process.exit(2)
 
 try {
   for (const entry of fs.readdirSync(stateDir, {withFileTypes: true})) {
