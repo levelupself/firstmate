@@ -8,6 +8,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/remote-herdr-fixture.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
+command -v tasks-axi >/dev/null 2>&1 || { echo "skip: tasks-axi not found"; exit 0; }
+command -v node >/dev/null 2>&1 || { echo "skip: node not found"; exit 0; }
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 TMP_ROOT=$(fm_test_tmproot fm-remote-secondmate-e2e)
 mkdir -p "$TMP_ROOT"
@@ -95,6 +97,14 @@ SH
 chmod +x "$REMOTE_ROOT/bin/tmux"
 install_remote_herdr_fixture "$REMOTE_ROOT" "$HERDR_STATE" "$HERDR_LOG" \
   "$TMP_ROOT/herdr-send-fail" "$TMP_ROOT/herdr.sock"
+# fm-remote-entrypoint.sh runs the remote command under the composed operator
+# PATH, which is a fixed list of well-known install locations and deliberately
+# ignores the caller's PATH. A runner whose tasks-axi or node lives anywhere else
+# (a user-level npm prefix, for instance) would otherwise make every remote
+# fm-fleet-snapshot.sh call fail its own dependency check, so publish both on the
+# remote code root's bin, which the child PATH always resolves first.
+ln -s "$(command -v tasks-axi)" "$REMOTE_ROOT/bin/tasks-axi"
+ln -s "$(command -v node)" "$REMOTE_ROOT/bin/node"
 git -C "$REMOTE_ROOT" init -q -b main
 git -C "$REMOTE_ROOT" config user.email test@example.com
 git -C "$REMOTE_ROOT" config user.name Test
