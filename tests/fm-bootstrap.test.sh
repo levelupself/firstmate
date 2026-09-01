@@ -967,6 +967,7 @@ make_routine_bootstrap_fixture() {
     printf '%s\n' 'config/crew-dispatch.json'
     printf '%s\n' 'config/startup-memory-budget'
     printf '%s\n' 'config/agents-md-budget'
+    printf '%s\n' 'config/session-start-budget'
   } > "$root/.gitignore"
   printf '%s\n' 'instructions' > "$root/AGENTS.md"
   mkdir -p "$root/bin" "$root/.agents/skills"

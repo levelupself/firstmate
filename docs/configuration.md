@@ -201,6 +201,28 @@ The next locked bootstrap convergence or `bin/fm-config-push.sh` propagates a va
 Use `bin/fm-agents-md-budget.sh read` to validate and print the effective value, or `bin/fm-agents-md-budget.sh report` to measure `AGENTS.md` and compare it with the budget.
 The report reuses the startup-memory estimator, `ceil(UTF-8 bytes / 3)`, so both prompt-surface measurements remain directly comparable.
 Bootstrap prints an actionable `AGENTS_MD_BUDGET:` diagnostic when the setting is invalid or the measured file exceeds it, but it never trims or rewrites `AGENTS.md`.
+
+## Session-start briefing budget (config/session-start-budget)
+
+`config/session-start-budget` is the primary-authoritative per-home allowance for the complete briefing emitted by `bin/fm-session-start.sh`.
+
+The default is `20000` estimated tokens.
+
+The file uses the same exact one-line positive-decimal format and safe publication rules as `config/startup-memory-budget`.
+
+Use `bin/fm-session-start-budget.sh read` to validate and print the effective value, or `bin/fm-session-start-budget.sh report <captured-briefing-file>` to measure a captured digest with the shared conservative estimator.
+
+Every completed session start prints its measurement and budget status.
+
+An over-budget report states the estimated-token overage and directs the operator to trim fleet detail or raise `config/session-start-budget` above the measured total.
+
+`FM_SESSION_START_TASK_DETAIL_LIMIT` bounds full metadata and status-tail detail to six metadata records and six orphan status records by default.
+
+Records beyond either ceiling remain explicitly listed by task id with endpoint state and full source paths, so the expensive detail is bounded without silently hiding a task.
+
+The wake queue remains verbatim and unbounded because it is durable work, and context files retain their independent `config/startup-memory-budget` contract.
+
+The reproducible fixture measurement and capped-digest description are recorded in [`verification/session-start-budget.md`](verification/session-start-budget.md).
 The helper's header owns exact parsing, publication, and report output mechanics.
 
 ## Secondmate routes (data/secondmates.md)
@@ -382,7 +404,7 @@ When a running home advances and its loaded instruction surface (`AGENTS.md`, `b
 If that send fails, bootstrap keeps an idempotent retry marker and emits `NUDGE_SECONDMATES:` with the failure reason.
 The same bootstrap run emits `SECONDMATE_LIVENESS:` only when a registered secondmate is skipped or its relaunch fails; already-live and successfully relaunched secondmates are handled silently.
 For a mid-session inherited local-material edit where tracked-file sync is not needed, run `bin/fm-config-push.sh`.
-It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `backlog-backend`, `backend`, `herdr-presentation-spaces`, `startup-memory-budget`, `agents-md-budget`, `trace-context`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero for real propagation errors or config-reread send failures.
+It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `backlog-backend`, `backend`, `herdr-presentation-spaces`, `startup-memory-budget`, `agents-md-budget`, `session-start-budget`, `trace-context`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero for real propagation errors or config-reread send failures.
 When an allowlisted config item changes for an already-running local home, it sends the literal-content reread pointer described in [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md); unchanged allowlisted config sends no pointer unless a previous delivery is pending.
 A changed remote home instead receives one durably recorded marked re-read instruction after the allowlisted bytes have transferred because primary-local generation paths are not meaningful on another host.
 The locked bootstrap inheritance pass uses the same placement-specific behavior; see `secondmate-provisioning` for the single contract owner.
@@ -605,6 +627,7 @@ FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6  # herdr-only: minimum per-Enter confirmat
 FM_ZELLIJ_SESSION=firstmate  # zellij-only: named session for normal backend ops and test isolation (docs/zellij-backend.md)
 CMUX_SOCKET_PASSWORD=   # cmux-only: socket password fallback when config/cmux-socket-password is absent (docs/cmux-backend.md)
 FM_SESSION_START_STATUS_TAIL=5   # state/*.status lines printed per task in the session-start digest; each line is capped by bin/fm-line-cap-lib.sh
+FM_SESSION_START_TASK_DETAIL_LIMIT=6   # metadata records and orphan status logs that receive full detail; every remaining task stays compactly listed with source paths
 FM_SESSION_START_QUEUED_LIMIT=20   # plain queued backlog rows in the session-start digest; in-flight, held, and blocked rows are never bounded and done rows are never listed
 FM_BOOTSTRAP_DETECT_ONLY=0   # internal/read-only session-start mode: skip bootstrap's mutating sweeps and print advisory TANGLE wording
 FM_BOOTSTRAP_NETWORK=all   # internal session-start phase split: all, skip (local steps only), or only (network steps only); see bin/fm-bootstrap.sh

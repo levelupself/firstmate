@@ -45,7 +45,8 @@
 #   5. read-once contract - the do-not-re-read contract covering every source
 #                       represented by the two digests below.
 #   6. fleet digest   - a compact data/backlog.md identity/metadata listing,
-#                       every state/*.meta, a bounded state/*.status tail,
+#                       bounded full detail for state/*.meta and state/*.status,
+#                       compact recoverable accounting for every remaining task,
 #                       state/.afk, and a cheap per-task endpoint-liveness read:
 #                       read-only, always runs.
 #   7. network checks - the result of the deferred network stage started back at
@@ -154,11 +155,17 @@
 # compatible tasks-axi is available, or `data/backlog.md` when the file body is
 # truly needed.
 #
-# STATUS TAILS: FM_SESSION_START_STATUS_TAIL bounds how many lines each task's
-# tail prints, and bin/fm-line-cap-lib.sh bounds how long each of those lines
-# may be. Both bounds are safe because the section prints every task's full
-# status log path, and AGENTS.md section 8 treats a status line as a wake EVENT
-# rather than current state - bin/fm-crew-state.sh owns current state.
+# FLEET DETAIL: FM_SESSION_START_TASK_DETAIL_LIMIT bounds how many metadata
+# files and how many orphan status logs receive full detail, default 6 for each
+# group. Every record past either ceiling remains explicitly present by task id,
+# with endpoint liveness and full source paths, but its metadata and status tail
+# are labelled trimmed. This leaves the irreducible task-accounting spine while
+# bounding the large per-task multiplier. FM_SESSION_START_STATUS_TAIL bounds
+# how many lines each full task tail prints, and bin/fm-line-cap-lib.sh bounds
+# how long each of those lines may be. Every trim is safe because the section
+# prints the complete source path, and AGENTS.md section 8 treats a status line
+# as a wake EVENT rather than current state - bin/fm-crew-state.sh owns current
+# state.
 #
 # RUNTIME BOUND: the digest is now executed on a session-open hook (see
 # bin/fm-sessionstart-run.sh), which blocks session initialization while it
@@ -178,6 +185,15 @@
 # that tells a child it is the child - the parent never recurses.
 # Hosts without timeout, gtimeout, or perl use the shared pure-Bash watchdog, so
 # the digest never runs without the same hard bound and process-group cleanup.
+#
+# BRIEFING BUDGET: the bounded parent streams the child through a private
+# capture, then appends the report from bin/fm-session-start-budget.sh only after
+# a complete run. The reporter iterates its small footer size into the measured
+# byte total, so `total_bytes` covers the entire emitted briefing rather than
+# excluding its own accounting. A runtime-truncated digest is explicitly
+# unmeasured because it is incomplete. The budget reports excess but never
+# drops the verbatim wake queue; the fleet-detail ceiling above is the enforced
+# bound on the session surface that scales with worker count.
 #
 # Usage: fm-session-start.sh [--reemit] [--source <source>]
 #   Prints the full ordered digest to stdout and always exits 0: this is a
@@ -278,26 +294,22 @@ if [ -z "${FM_SESSION_START_STAGE_FILE:-}" ]; then
     # is lost, so the child still runs bounded.
     SESSION_START_STAGE_FILE=/dev/null
   fi
-  if [ "$REEMIT" -eq 1 ]; then
-    if [ -n "$SESSION_SOURCE" ]; then
-      fm_run_timed "$SESSION_START_BUDGET" \
-        env FM_SESSION_START_STAGE_FILE="$SESSION_START_STAGE_FILE" \
-        "$SCRIPT_DIR/fm-session-start.sh" --reemit --source "$SESSION_SOURCE"
-    else
-      fm_run_timed "$SESSION_START_BUDGET" \
-        env FM_SESSION_START_STAGE_FILE="$SESSION_START_STAGE_FILE" \
-        "$SCRIPT_DIR/fm-session-start.sh" --reemit
-    fi
-  elif [ -n "$SESSION_SOURCE" ]; then
+  SESSION_START_CAPTURE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-briefing.XXXXXX" 2>/dev/null) || SESSION_START_CAPTURE=
+  SESSION_START_CHILD_ARGS=()
+  [ "$REEMIT" -eq 0 ] || SESSION_START_CHILD_ARGS+=(--reemit)
+  [ -z "$SESSION_SOURCE" ] || SESSION_START_CHILD_ARGS+=(--source "$SESSION_SOURCE")
+  if [ -n "$SESSION_START_CAPTURE" ]; then
     fm_run_timed "$SESSION_START_BUDGET" \
       env FM_SESSION_START_STAGE_FILE="$SESSION_START_STAGE_FILE" \
-      "$SCRIPT_DIR/fm-session-start.sh" --source "$SESSION_SOURCE"
+      "$SCRIPT_DIR/fm-session-start.sh" "${SESSION_START_CHILD_ARGS[@]}" \
+      | tee "$SESSION_START_CAPTURE"
+    SESSION_START_RC=${PIPESTATUS[0]}
   else
     fm_run_timed "$SESSION_START_BUDGET" \
       env FM_SESSION_START_STAGE_FILE="$SESSION_START_STAGE_FILE" \
-      "$SCRIPT_DIR/fm-session-start.sh"
+      "$SCRIPT_DIR/fm-session-start.sh" "${SESSION_START_CHILD_ARGS[@]}"
+    SESSION_START_RC=$?
   fi
-  SESSION_START_RC=$?
   if [ "$SESSION_START_RC" -eq 124 ]; then
     SESSION_START_LAST_STAGE=$(cat "$SESSION_START_STAGE_FILE" 2>/dev/null) || SESSION_START_LAST_STAGE=
     [ -n "$SESSION_START_LAST_STAGE" ] || SESSION_START_LAST_STAGE=unknown
@@ -318,6 +330,51 @@ if [ -z "${FM_SESSION_START_STAGE_FILE:-}" ]; then
     printf '●  cannot finish inside the bound is a fleet problem, not a reporting detail.\n'
     printf '%s\n' "$BAR"
   fi
+  if [ "$SESSION_START_RC" -ne 124 ] && [ -n "$SESSION_START_CAPTURE" ]; then
+    SESSION_START_BUDGET_BLOCK=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-budget-block.XXXXXX" 2>/dev/null) || SESSION_START_BUDGET_BLOCK=
+    SESSION_START_BUDGET_REPORT=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-budget-report.XXXXXX" 2>/dev/null) || SESSION_START_BUDGET_REPORT=
+    if [ -n "$SESSION_START_BUDGET_BLOCK" ] && [ -n "$SESSION_START_BUDGET_REPORT" ]; then
+      printf '\n%s\n%s\n%s\n' \
+        '================================================================================' \
+        'SESSION START BUDGET' \
+        '================================================================================' > "$SESSION_START_BUDGET_BLOCK"
+      SESSION_START_BUDGET_HEADER_BYTES=$(LC_ALL=C wc -c < "$SESSION_START_BUDGET_BLOCK" | tr -d '[:space:]')
+      SESSION_START_BUDGET_ADDITIONAL_BYTES=$SESSION_START_BUDGET_HEADER_BYTES
+      SESSION_START_BUDGET_REPORT_OK=0
+      for _session_start_budget_pass in 1 2 3 4 5; do
+        if FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG" \
+          FM_SESSION_START_BUDGET_ADDITIONAL_BYTES="$SESSION_START_BUDGET_ADDITIONAL_BYTES" \
+          FM_SESSION_START_BUDGET_LABEL=session-start-briefing \
+          "$SCRIPT_DIR/fm-session-start-budget.sh" report "$SESSION_START_CAPTURE" \
+          > "$SESSION_START_BUDGET_REPORT" 2>&1; then
+          SESSION_START_BUDGET_REPORT_OK=1
+        else
+          SESSION_START_BUDGET_REPORT_OK=0
+          break
+        fi
+        SESSION_START_BUDGET_REPORT_BYTES=$(LC_ALL=C wc -c < "$SESSION_START_BUDGET_REPORT" | tr -d '[:space:]')
+        SESSION_START_BUDGET_NEW_ADDITIONAL_BYTES=$((SESSION_START_BUDGET_HEADER_BYTES + SESSION_START_BUDGET_REPORT_BYTES))
+        [ "$SESSION_START_BUDGET_NEW_ADDITIONAL_BYTES" != "$SESSION_START_BUDGET_ADDITIONAL_BYTES" ] || break
+        SESSION_START_BUDGET_ADDITIONAL_BYTES=$SESSION_START_BUDGET_NEW_ADDITIONAL_BYTES
+      done
+      if [ "$SESSION_START_BUDGET_REPORT_OK" -eq 1 ]; then
+        cat "$SESSION_START_BUDGET_REPORT" >> "$SESSION_START_BUDGET_BLOCK"
+      else
+        cat "$SESSION_START_BUDGET_REPORT" >> "$SESSION_START_BUDGET_BLOCK"
+        printf 'budget_status=unavailable\n' >> "$SESSION_START_BUDGET_BLOCK"
+      fi
+      cat "$SESSION_START_BUDGET_BLOCK"
+    else
+      printf '\nSESSION_START_BUDGET: not reported - could not create safe accounting files.\n'
+    fi
+    [ -z "${SESSION_START_BUDGET_BLOCK:-}" ] || rm -f "$SESSION_START_BUDGET_BLOCK" 2>/dev/null || true
+    [ -z "${SESSION_START_BUDGET_REPORT:-}" ] || rm -f "$SESSION_START_BUDGET_REPORT" 2>/dev/null || true
+  elif [ "$SESSION_START_RC" -eq 124 ]; then
+    printf '\nSESSION_START_BUDGET: not reported - the captured briefing is incomplete.\n'
+  else
+    printf '\nSESSION_START_BUDGET: not reported - could not create a safe local capture.\n'
+  fi
+  [ -z "$SESSION_START_CAPTURE" ] || rm -f "$SESSION_START_CAPTURE" 2>/dev/null || true
   rm -f "$SESSION_START_STAGE_FILE" 2>/dev/null || true
   exit 0
 fi
@@ -350,6 +407,8 @@ STATUS_TAIL=${FM_SESSION_START_STATUS_TAIL:-5}
 case "$STATUS_TAIL" in ''|*[!0-9]*) STATUS_TAIL=5 ;; esac
 QUEUED_LIMIT=${FM_SESSION_START_QUEUED_LIMIT:-20}
 case "$QUEUED_LIMIT" in ''|*[!0-9]*|0) QUEUED_LIMIT=20 ;; esac
+TASK_DETAIL_LIMIT=${FM_SESSION_START_TASK_DETAIL_LIMIT:-6}
+case "$TASK_DETAIL_LIMIT" in ''|*[!0-9]*) TASK_DETAIL_LIMIT=6 ;; esac
 BACKLOG_FIELDS=blocked_by,hold_kind,hold_reason
 
 RULE='================================================================================'
@@ -773,8 +832,9 @@ fi
 stage read-once
 section "READ-ONCE CONTRACT"
 cat <<'EOF'
-Everything below is printed in full for this session start: every state/*.meta,
-a compact data/backlog.md listing, a bounded tail of every state/*.status,
+Everything below is accounted for in this session start: a compact
+data/backlog.md listing, bounded full detail plus compact accounting for every
+state/*.meta, a bounded tail of every state/*.status that receives full detail,
 data/projects.md, data/secondmates.md, data/captain.md, data/captain-shared.md,
 and data/learnings.md.
 Do NOT re-read any of them after reading this digest, and do NOT bulk-read
@@ -787,6 +847,8 @@ Go to a source directly only when:
   - an individual full status log is needed for older wake-event history, or a
     status line was capped and its tail matters (each task's full log path is
     printed with its tail),
+  - fleet task detail was trimmed and its printed full meta or status path is
+    needed for targeted recovery,
   - a full task body is needed (tasks-axi show <id> --full, or data/backlog.md),
   - the backlog listing disclosed omitted queued items and this turn needs them,
   - the NETWORK CHECKS section reported its checks still IN PROGRESS and this
@@ -803,13 +865,26 @@ section "FLEET STATE"
 print_backlog_compact "$DATA/backlog.md" "data/backlog.md"
 
 subsection "Work under way (state/*.meta)"
-META_FOUND=0
+META_FILES=()
 for meta in "$STATE"/*.meta; do
   [ -f "$meta" ] || continue
-  META_FOUND=1
+  META_FILES+=("$meta")
+done
+printf 'full task detail limit: %s; %s task metadata file(s) found; every task remains listed below.\n' \
+  "$TASK_DETAIL_LIMIT" "${#META_FILES[@]}"
+META_INDEX=0
+for meta in "${META_FILES[@]}"; do
+  META_INDEX=$((META_INDEX + 1))
   id=$(basename "$meta" .meta)
   printf '\n--- %s ---\n' "$id"
-  cat "$meta"
+  if [ "$META_INDEX" -le "$TASK_DETAIL_LIMIT" ]; then
+    printf 'detail: full\n'
+    cat "$meta"
+  else
+    printf 'detail: trimmed (full meta: %s)\n' "$meta"
+    kind=$(fm_meta_get "$meta" kind)
+    fm_cap_line "kind: ${kind:-unknown}"
+  fi
 
   window=$(fm_meta_get "$meta" window)
   target=$(fm_backend_target_of_meta "$meta")
@@ -826,24 +901,47 @@ for meta in "$STATE"/*.meta; do
 
   status="$STATE/$id.status"
   if [ -f "$status" ]; then
-    print_status_tail "$status"
+    if [ "$META_INDEX" -le "$TASK_DETAIL_LIMIT" ]; then
+      print_status_tail "$status"
+    elif [ -s "$status" ]; then
+      printf 'status detail: trimmed (full log: %s)\n' "$status"
+    else
+      printf 'status detail: trimmed (present, empty; full log: %s)\n' "$status"
+    fi
   else
-    printf 'status tail: (no status file yet: %s)\n' "$status"
+    if [ "$META_INDEX" -le "$TASK_DETAIL_LIMIT" ]; then
+      printf 'status tail: (no status file yet: %s)\n' "$status"
+    else
+      printf 'status detail: ABSENT (no status file yet; expected path: %s)\n' "$status"
+    fi
   fi
 done
-[ "$META_FOUND" -eq 1 ] || printf '(none)\n'
+[ "${#META_FILES[@]}" -gt 0 ] || printf '(none)\n'
 
 subsection "Orphan status logs (state/*.status without matching .meta)"
-ORPHAN_STATUS_FOUND=0
+ORPHAN_STATUS_FILES=()
 for status in "$STATE"/*.status; do
   [ -f "$status" ] || continue
   id=$(basename "$status" .status)
   [ -f "$STATE/$id.meta" ] && continue
-  ORPHAN_STATUS_FOUND=1
-  printf '\n--- %s ---\n' "$id"
-  print_status_tail "$status"
+  ORPHAN_STATUS_FILES+=("$status")
 done
-[ "$ORPHAN_STATUS_FOUND" -eq 1 ] || printf '(none)\n'
+printf 'full orphan status detail limit: %s; %s orphan status log(s) found; every log remains listed below.\n' \
+  "$TASK_DETAIL_LIMIT" "${#ORPHAN_STATUS_FILES[@]}"
+ORPHAN_STATUS_INDEX=0
+for status in "${ORPHAN_STATUS_FILES[@]}"; do
+  ORPHAN_STATUS_INDEX=$((ORPHAN_STATUS_INDEX + 1))
+  id=$(basename "$status" .status)
+  printf '\n--- %s ---\n' "$id"
+  if [ "$ORPHAN_STATUS_INDEX" -le "$TASK_DETAIL_LIMIT" ]; then
+    print_status_tail "$status"
+  elif [ -s "$status" ]; then
+    printf 'status detail: trimmed (full log: %s)\n' "$status"
+  else
+    printf 'status detail: trimmed (present, empty; full log: %s)\n' "$status"
+  fi
+done
+[ "${#ORPHAN_STATUS_FILES[@]}" -gt 0 ] || printf '(none)\n'
 
 subsection "AFK"
 if [ -e "$STATE/.afk" ]; then
