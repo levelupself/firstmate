@@ -282,22 +282,23 @@ test_pre_fix_cursor_refolds_corr_tagged_decision() {
   out="$dir/drain.out"
   probe="$dir/probe.tsv"
 
-  printf 'needs-decision [corr=d448ea86afa4bf67] [key=loan-installment-cadence-amount]: pick the cadence\n' > "$status"
+  printf 'needs-decision: corr=d448ea86afa4bf67 [key=loan-installment-cadence-amount] pick the cadence\n' > "$status"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
     || fail "bootstrap drain for the corr-tag cursor migration failed"
   ident=$(sed -n 's/^ident=//p' "$cursor")
   [ -n "$ident" ] || fail "bootstrap drain did not persist a file identity"
   status_bytes=$(LC_ALL=C wc -c < "$status" | tr -d '[:space:]')
   {
-    printf 'version=3\n'
+    printf 'version=5\n'
     printf 'offset=%s\n' "$status_bytes"
     printf 'ident=%s\n' "$ident"
+    printf 'default\tneeds-decision\tcorr=d448ea86afa4bf67 [key=loan-installment-cadence-amount] pick the cadence\n'
   } > "$cursor"
   : > "$probe"
 
   FM_STATE_OVERRIDE="$state" FM_OPEN_DECISIONS_READ_PROBE="$probe" "$DRAIN" > "$out" \
     || fail "drain failed while migrating the pre-fix corr-tag cursor"
-  grep -F 'task7 [key=loan-installment-cadence-amount] needs-decision: pick the cadence' "$out" >/dev/null \
+  grep -F 'task7 [key=loan-installment-cadence-amount] needs-decision: corr=d448ea86afa4bf67 [key=loan-installment-cadence-amount] pick the cadence' "$out" >/dev/null \
     || fail "the pre-fix cursor hid the corr-tagged decision after migration: $(cat "$out")"
   probe_bytes=$(last_probe_bytes "$probe" "$status")
   [ "$probe_bytes" = "$status_bytes" ] \

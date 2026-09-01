@@ -2,13 +2,13 @@
 # tests/fm-classify-decision-key.test.sh - decision-key position tolerance in
 # the open-decisions fold (bin/fm-classify-lib.sh). A "[key=<slug>]" token is
 # documented between the verb and the colon (needs-decision [key=x]: note), but
-# workers commonly write the colon first (needs-decision: [key=x] note); that
-# stated key must be honored, never silently folded into the shared "default"
-# bucket where an answer can close the wrong record (issue #2109). Also covers
-# status_line_verb's bracket-tag stripping: a remote secondmate reply prepends
-# a "[corr=...]" correlation tag before (or without) "[key=...]", and every
-# such tag before the colon must be stripped so the leading word is the bare
-# verb, regardless of order or count. These tests drive the REAL
+# workers may put it anywhere in the note after status metadata. That stated key
+# must be honored, never silently folded into the shared "default" bucket where
+# an answer can close the wrong record. Also covers status_line_verb's
+# bracket-tag stripping: a remote secondmate reply may prepend a "[corr=...]"
+# correlation tag before (or without) "[key=...]", and every such tag before the
+# colon must be stripped so the leading word is the bare verb, regardless of
+# order or count. These tests drive the REAL
 # status_line_verb / status_open_decisions / status_open_decisions_incremental
 # functions over crafted status files and assert their folded output, never the
 # fold's own source text. Cross-drain cursor persistence and the incremental
@@ -122,22 +122,31 @@ test_two_colon_form_decisions_stay_distinct() {
   pass "two colon-form keyed decisions never collapse into one shared bucket"
 }
 
-test_mid_note_prose_mention_is_not_a_stated_key() {
+test_first_key_marker_anywhere_in_note_is_authoritative() {
   local dir
-  dir=$(case_dir prose)
-  # Only a token at the head of the note states a key; a summary merely
-  # mentioning "[key=x]" deeper in must neither open nor close that key.
-  printf 'needs-decision: pick a [key=red] or [key=blue] theme\n' > "$dir/t.status"
+  dir=$(case_dir first-marker)
+  # Status key syntax is reserved even inside quoted prose. The first complete
+  # marker wins, so later marker-shaped text cannot change the record identity.
+  printf 'needs-decision: corr=abcd "show [key=alpha] before [key=beta]"\n' > "$dir/t.status"
   assert_fold "$dir/t.status" \
-    "$(printf 'default\tneeds-decision\tpick a [key=red] or [key=blue] theme\n')" \
-    "mid-note prose mention"
+    "$(printf 'alpha\tneeds-decision\tcorr=abcd "show [key=alpha] before [key=beta]"\n')" \
+    "first marker in quoted note prose"
+  pass "the first [key=x] anywhere in a note is authoritative, including inside quoted prose"
+}
 
-  printf 'needs-decision [key=red]: which shade\n' >> "$dir/t.status"
-  printf 'working: still thinking about [key=red] here\n' >> "$dir/t.status"
+test_corr_prefixed_routed_decisions_stay_distinct_and_close_by_matching_key() {
+  local dir expected
+  dir=$(case_dir routed-distinct)
+  printf 'needs-decision: corr=1111 [key=alpha] first routed question\n' > "$dir/t.status"
+  printf 'needs-decision: corr=2222 [key=beta] second routed question\n' >> "$dir/t.status"
+  expected=$(printf 'alpha\tneeds-decision\tcorr=1111 [key=alpha] first routed question\nbeta\tneeds-decision\tcorr=2222 [key=beta] second routed question\n')
+  assert_fold "$dir/t.status" "$expected" "two corr-prefixed routed decisions"
+
+  printf 'resolved [key=alpha]: corr=3333 answered first question\n' >> "$dir/t.status"
   assert_fold "$dir/t.status" \
-    "$(printf 'default\tneeds-decision\tpick a [key=red] or [key=blue] theme\nred\tneeds-decision\twhich shade\n')" \
-    "prose mention leaves the open set untouched"
-  pass "a [key=x] mentioned mid-note is prose, never an opened or closed key"
+    "$(printf 'beta\tneeds-decision\tcorr=2222 [key=beta] second routed question\n')" \
+    "matching resolution closes only one routed decision"
+  pass "corr-prefixed routed decisions retain separate keys and close only on a matching key"
 }
 
 test_malformed_stated_key_never_collapses_to_default() {
@@ -147,9 +156,11 @@ test_malformed_stated_key_never_collapses_to_default() {
   # and never rewritten into the shared default bucket.
   printf 'needs-decision [key=bad key]: before-colon malformed\n' > "$dir/before.status"
   printf 'needs-decision: [key=bad key] colon-first malformed\n' > "$dir/after.status"
+  printf 'needs-decision: corr=abcd [key=bad key] mid-note malformed\n' > "$dir/mid.status"
   assert_fold "$dir/before.status" "" "malformed before-colon key"
   assert_fold "$dir/after.status" "" "malformed colon-first key"
-  pass "a malformed stated key is rejected in both positions, never folded as default"
+  assert_fold "$dir/mid.status" "" "malformed mid-note key"
+  pass "a malformed stated key is rejected in every position, never folded as default"
 }
 
 # A remote secondmate reply routinely prepends a "[corr=<hex>]" correlation
@@ -264,7 +275,8 @@ test_bare_keyless_line_still_folds_to_default
 test_resolution_closes_across_positions
 test_blocked_is_position_tolerant_like_needs_decision
 test_two_colon_form_decisions_stay_distinct
-test_mid_note_prose_mention_is_not_a_stated_key
+test_first_key_marker_anywhere_in_note_is_authoritative
+test_corr_prefixed_routed_decisions_stay_distinct_and_close_by_matching_key
 test_malformed_stated_key_never_collapses_to_default
 test_status_line_verb_strips_every_bracket_tag_before_colon
 test_corr_and_key_tags_open_and_close_under_the_stated_key

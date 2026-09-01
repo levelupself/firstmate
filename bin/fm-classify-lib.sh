@@ -162,22 +162,22 @@ status_is_paused_or_captain_held() {  # <status-line>
 #
 # Decision key grammar (backward-compatible with the existing "<verb>: <note>"
 # format): an OPTIONAL "[key=<slug>]" token names the decision. Its documented
-# position sits between the verb and the colon, and a complete token at the
-# head of the note is accepted as an EQUIVALENT position, because that
-# misplaced-colon shape is common real worker output whose stated key must
-# never silently collapse into the shared "default" bucket (issue #2109):
+# position sits between the verb and the colon, but a complete token anywhere
+# in the line is accepted because status metadata such as corr=<id> may precede
+# it and must never make the stated key silently collapse into the shared
+# "default" bucket:
 #   needs-decision [key=api-shape]: <summary>
 #   needs-decision: [key=api-shape] <summary>
+#   needs-decision: corr=<id> [key=api-shape] <summary>
 #   resolved       [key=api-shape]: <how it was decided>
-# Both positions state the same key and yield the same note (a consumed
-# note-head token is key metadata, stripped from the note); when both positions
-# carry a token, the documented before-colon one wins and the note-head token
-# stays note text. A token deeper inside the note is prose, never a stated key,
-# so a summary merely MENTIONING "[key=x]" cannot open or close that decision.
-# A line with no token in either position uses the key "default", preserving
-# the historical one-open-decision-per-task behavior (a bare "resolved:" closes
-# "default"). A stated key whose slug fails the charset below is rejected (the
-# folds skip the line), never rewritten to "default".
+# The first complete marker wins when a line carries more than one. Marker
+# syntax is reserved even inside quoted prose; quote characters do not escape
+# it. A note-head marker remains key metadata and is stripped from the note, so
+# the two historical positions still yield the same note. A line with no marker
+# uses the key "default", preserving the historical one-open-decision-per-task
+# behavior (a bare "resolved:" closes "default"). A stated key whose slug fails
+# the charset below is rejected (the folds skip the line), never rewritten to
+# "default".
 # The parsers are pure reads of a single line. Status metadata may contain any
 # number of "[name=value]" tags before the colon, in any order, so verb parsing
 # ends at the first tag rather than special-casing "[key=...]".
@@ -237,14 +237,11 @@ status_line_note() {  # <status-line> -> text after the first colon, trimmed
   printf '%s' "$n"
 }
 _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
-  local k
-  if _fm_key_before_colon "$1"; then
-    k=${1%%:*}
-    k=${k#*\[key=}
-    k=${k%%\]*}
-  else
-    k=$(_fm_key_at_note_head "$1") || { printf 'default'; return 0; }
-  fi
+  local k=$1
+  case "$k" in
+    *\[key=*\]*) k=${k#*\[key=}; k=${k%%\]*} ;;
+    *) printf 'default'; return 0 ;;
+  esac
   _fm_decision_slug_ok "$k" || return 1
   printf '%s' "$k"
 }
@@ -437,7 +434,7 @@ _fm_open_decisions_cursor_path() {  # <status-file>
   printf '%s/.%s.open-decisions-cursor' "$dir" "${base%.status}"
 }
 
-FM_OPEN_DECISIONS_FOLD_VERSION=5
+FM_OPEN_DECISIONS_FOLD_VERSION=6
 
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> "dev:inode", empty on I/O failure
