@@ -924,9 +924,9 @@ cat > "$COLLISION_EXPORT" <<JSON
 JSON
 COLLISION_OUT=$("$STORE" backfill-codeburn "$COLLISION_EXPORT" 2>&1) \
   || fail "collision backfill failed: $COLLISION_OUT"
-assert_contains "$COLLISION_OUT" 'attributed 1 records / $1.0000 to 1 tasks' \
+assert_contains "$COLLISION_OUT" "attributed 1 records / \$1.0000 to 1 tasks" \
   'separator-normalized exact path did not win over a lossy collision'
-assert_contains "$COLLISION_OUT" 'ambiguous-worktree-key: 1 records / $2.0000' \
+assert_contains "$COLLISION_OUT" "ambiguous-worktree-key: 1 records / \$2.0000" \
   'lossy collision without an exact path did not refuse attribution'
 COLLISION_COST=$(query "SELECT notional_cost_usd FROM task WHERE task_id = '924-backfill-collision-exact'")
 [ "$COLLISION_COST" = '1' ] \
