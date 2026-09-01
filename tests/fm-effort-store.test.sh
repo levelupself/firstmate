@@ -857,6 +857,7 @@ assert_contains "$BACKFILL_OUT" 'outside-task-window: 1 records / $4.0000' \
 # shellcheck disable=SC2016 # Literal currency amount, not shell expansion.
 assert_contains "$BACKFILL_OUT" 'unmapped-worktree: 1 records / $8.0000' \
   'backfill did not classify spend whose worktree has no lifecycle mapping'
+# shellcheck disable=SC2016 # Literal currency amount, not shell expansion.
 assert_contains "$BACKFILL_OUT" 'incomplete-export-window: 1 records / $3.0000' \
   'backfill did not classify spend for a lifecycle crossing the export boundary'
 assert_contains "$BACKFILL_OUT" 'missing coverage 922-backfill-boundary: [2026-06-30T23:50:00Z, 2026-07-01T00:00:00.000Z)' \
