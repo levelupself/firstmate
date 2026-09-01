@@ -284,6 +284,15 @@ if (u.correlation.baseline_kind !== "fresh-worktree-zero") process.exit(1)
 pass "a fresh worktree reports real usage on its first read after codeburn publishes the key"
 FM_HOME="$HOME_DIR" "$ALLOCATION" release fresh-late-key /srv/projects/fresh "$FRESH_WORKTREE" 2026-07-20T10:20:00Z \
   || fail "fresh allocation release history failed"
+REACQUIRED_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire fresh-late-key /srv/projects/fresh "$FRESH_WORKTREE" 2026-07-20T10:21:00Z reused) \
+  || fail "same-task pooled worktree reacquisition failed"
+[ "$REACQUIRED_DISPOSITION" = reused ] \
+  || fail "same-task pooled worktree reacquisition lost its prior-owner history"
+FM_HOME="$HOME_DIR" "$ALLOCATION" release fresh-late-key /srv/projects/fresh "$FRESH_WORKTREE" 2026-07-20T10:22:00Z \
+  || fail "same-task pooled worktree second release collided with its earlier lifecycle"
+FM_HOME="$HOME_DIR" "$ALLOCATION" release fresh-late-key /srv/projects/fresh "$FRESH_WORKTREE" 2026-07-20T10:22:00Z \
+  || fail "same-task pooled worktree second release was not idempotent"
+pass "release idempotency is scoped to the latest same-task pooled worktree lifecycle"
 RECREATED_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire recreated-slot /srv/projects/fresh "$FRESH_WORKTREE" 2026-07-20T10:25:00Z fresh) \
   || fail "recreated allocation history failed"
 [ "$RECREATED_DISPOSITION" = reused ] \

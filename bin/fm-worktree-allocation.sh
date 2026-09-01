@@ -110,9 +110,10 @@ if (command === 'acquire') {
   write(records)
   process.stdout.write(`${disposition}\n`)
 } else {
-  const acquire = [...events].reverse().find(record => record.event === 'acquire' && record.task_id === taskId && record.identity === identity)
+  const acquireIndex = events.findLastIndex(record => record.event === 'acquire' && record.task_id === taskId && record.identity === identity)
+  const acquire = acquireIndex >= 0 ? events[acquireIndex] : null
   const record = {event: 'release', task_id: taskId, worktree, identity, event_at: eventAt, disposition: acquire?.disposition || 'unknown'}
-  const duplicate = events.find(item => item.event === 'release' && item.task_id === taskId && item.identity === identity)
+  const duplicate = events.slice(acquireIndex + 1).find(item => item.event === 'release' && item.task_id === taskId && item.identity === identity)
   if (duplicate) {
     if (JSON.stringify(duplicate) !== JSON.stringify(record)) process.exit(1)
     process.exit(0)
