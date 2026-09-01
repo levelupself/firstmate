@@ -114,6 +114,8 @@ test_primary_bootstrap_materializes_visible_default() {
     || fail "bootstrap did not materialize the visible 7500 default"
   [ "$(<"$home/config/agents-md-budget")" = 25000 ] \
     || fail "bootstrap did not materialize the visible 25000 AGENTS.md default"
+  [ "$(<"$home/config/session-start-budget")" = 20000 ] \
+    || fail "bootstrap did not materialize the visible 20000 session-start default"
   [ "$(FM_HOME="$home" "$BUDGET" read)" = 7500 ] \
     || fail "read command did not expose the generated default"
 

@@ -14,6 +14,7 @@
 #                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
 #                 "AGENTS_MD_BUDGET: invalid config/agents-md-budget - <reason>",
+#                 "SESSION_START_BUDGET: invalid config/session-start-budget - <reason>",
 #                 "AGENTS_MD_BUDGET: over budget - estimated_tokens=<total> budget_tokens=<budget>; trim AGENTS.md or raise config/agents-md-budget",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
@@ -86,6 +87,8 @@
 #          The same path materializes config/agents-md-budget=25000, measures
 #          AGENTS.md with the startup-memory estimator, and reports invalid or
 #          over-budget state without changing the instruction file.
+#          It also materializes config/session-start-budget=20000. The session
+#          start reporter measures each completed briefing against that setting.
 #          X mode is OPTIONAL and inert unless FM_HOME/.env has a non-empty
 #          FMX_PAIRING_TOKEN. When opted in, bootstrap requires curl+jq, writes
 #          the relay poll shim and 30s cadence config, and prints an FMX line.
@@ -171,6 +174,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-startup-memory-budget-lib.sh"
 # shellcheck source=bin/fm-agents-md-budget-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-agents-md-budget-lib.sh"
+# shellcheck source=bin/fm-session-start-budget-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-session-start-budget-lib.sh"
 # shellcheck source=bin/fm-x-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-x-lib.sh"
 # shellcheck source=bin/fm-backend.sh disable=SC1091
@@ -1160,6 +1165,13 @@ agents_md_budget_setup() {
   fi
 }
 
+session_start_budget_setup() {
+  if ! fm_session_start_budget_materialize "$CONFIG"; then
+    echo "SESSION_START_BUDGET: invalid config/$FM_SESSION_START_BUDGET_FILE - $FM_SESSION_START_BUDGET_ERROR"
+    return 1
+  fi
+}
+
 agents_md_budget_validate() {
   local budget tokens
   if ! fm_agents_md_budget_read "$CONFIG" >/dev/null; then
@@ -1203,6 +1215,7 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
   startup_memory_budget_setup
   if [ ! -e "$FM_HOME/.fm-secondmate-home" ] && [ ! -L "$FM_HOME/.fm-secondmate-home" ]; then
     agents_md_budget_setup || FM_AGENTS_MD_BUDGET_SETUP_FAILED=1
+    session_start_budget_setup || true
   fi
 fi
 

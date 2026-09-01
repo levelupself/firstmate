@@ -50,6 +50,10 @@ Its secondmate-home summary classifies an actionable captain hold as `captain_de
 It excludes completed kind `captain` records from Recently Landed.
 The projection remains read-only and does not inspect historical prose.
 
+`bin/fm-decision-surface.mjs` consumes the same fleet snapshot and an agent-authored evidence brief to render a self-contained Lavish board.
+It accepts only actionable structured main-home holds and structured-home secondmate decisions, so presentation input cannot replace a hold's durable identity, title, or reason.
+The normative presentation policy remains in `.agents/skills/decision-hold-lifecycle/SKILL.md`, while the executable's header owns its input schema and invocation mechanics.
+
 ## Verification record
 
 Verification date: 2026-07-14.
@@ -57,6 +61,7 @@ Additional quoted `blocked_by` regression verification date: 2026-07-17.
 Plural blocker-readiness and mixed-home projection verification date: 2026-07-22.
 Unrouted close-path verification date: 2026-08-13.
 Status-fold parking safety verification date: 2026-08-17.
+Decision-surface generator verification date: 2026-08-31.
 
 The focused end-to-end regression uses only synthetic `sample` identities and decision text.
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
@@ -110,6 +115,9 @@ ok - a completed scout with decision-like report prose is a pointer, not pending
 ok - an authoritative captain hold surfaces end-to-end
 ok - action-free items (working/done/queued/landed) do not leak into Captain's Call
 ok - main and secondmate captain actionability use the same blocker readiness
+
+$ bash tests/fm-decision-surface.test.sh
+ok - decision surfaces render durable holds and queue one complete answer per submit
 
 $ bash tests/fm-brief.test.sh
 ok - fm-brief.sh: investigation and visual-review completions load the shared decision policy

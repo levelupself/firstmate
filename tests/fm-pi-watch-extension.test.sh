@@ -839,10 +839,12 @@ if (!successorAliveAtFallback || !pidAlive(successorPid)) throw new Error(`succe
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
 // The restored third arm announces itself, and an actionable late close also
-// has to reach a second wake. Both are awaited as events, so neither depends
-// on 5s of polling being long enough for a late close to land.
-await bus.reached("armed");
+// has to reach a second wake. The actionable path starts its successor before
+// delivering that wake, so observing delivery first also establishes that a
+// producer exists before the checkpoint bus applies its liveness verdict.
+// Both are awaited as events, so neither depends on polling duration.
 if (process.env.FM_LATE_KIND === "actionable") await wakes.reached(2);
+await bus.reached("armed");
 if (rows().length !== 3) throw new Error(`late close did not restore one successor: ${rows().join(" | ")}`);
 if (process.env.FM_LATE_KIND === "actionable") {
   if (prompts.length !== 2 || !prompts[1].includes("late wake")) throw new Error(`late actionable close was not delivered: ${prompts.join(" | ")}`);

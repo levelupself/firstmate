@@ -246,9 +246,10 @@ function noteProgress() {
 }
 
 function yieldOneTurn() {
-  // A referenced timer this module does not count, purely to give the loop one
-  // more turn so anything already in flight can land.
-  nativeSetTimeout(() => {}, 1);
+  // A referenced check-phase callback gives the poll phase a chance to deliver
+  // pipe input that is already in flight. A timer can run again before poll on
+  // a loaded event loop and falsely declare that checkpoint unreachable.
+  setImmediate(() => {});
 }
 
 function checkLiveness() {

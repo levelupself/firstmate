@@ -59,7 +59,7 @@ The tracked root contains the shared instructions, documentation, workflows, ski
 `projects/` remains read-only to firstmate except under hard rule 1's narrow exceptions.
 
 `secondmate-provisioning` owns inherited local material.
-The primary-authoritative inherited set is `config/crew-dispatch.json`, `config/crew-harness`, `config/backlog-backend`, `config/backend`, `config/herdr-presentation-spaces`, `config/startup-memory-budget`, `config/agents-md-budget`, `config/trace-context`, and `data/captain-shared.md`.
+The primary-authoritative inherited set is `config/crew-dispatch.json`, `config/crew-harness`, `config/backlog-backend`, `config/backend`, `config/herdr-presentation-spaces`, `config/startup-memory-budget`, `config/agents-md-budget`, `config/session-start-budget`, `config/trace-context`, and `data/captain-shared.md`.
 Inheritance copies the literal `config/crew-harness` file, and `data/captain-shared.md` remains main-authoritative in the primary and read-only in secondmate homes.
 `config/secondmate-harness`, `config/calm`, `config/cockpit-layout`, and `config/cockpit-sections` are not inherited.
 `config/secondmate-harness` is the primary's own launch setting because secondmates do not spawn secondmates.
@@ -309,18 +309,19 @@ That skill owns the guarded update procedure and never touches anything under `p
 These skills are not captain-invocable; load them only at their precise triggers.
 
 - `task-lifecycle` - load at intake before project resolution, routing, classification, task records, work, resume, or promotion.
-- `bootstrap-diagnostics` - load on actionable session-start bootstrap or network diagnostics; silence and `BOOTSTRAP_INFO:` need no load.
-- `diagnostic-reasoning` - load before scoping a bug or acting on its diagnostic report.
-- `ask-user-authority` - load before deciding any ask-user finding.
-- `quota-array-dispatch` - load before choosing from a matched dispatch-profile array.
-- `harness-adapters` - load before spawn, recovery, trust, harness invocation or control, or adapter verification, then load its routed detail.
-- `firstmate-orca` - load before switching to, operating, testing, debugging, or reconciling Orca-backed work.
-- `project-management` - load before adding, cloning, registering, creating, removing, or initializing a project.
-- `stuck-crewmate-recovery` - load on a dead or windowless direct report, stale wake, looping or confused pane, answered-by-brief question, unresponsive worker, or failed steer.
-- `secondmate-provisioning` - load before any secondmate lifecycle, handoff, inherited-material push, or registry edit.
-- `decision-hold-lifecycle` - load before completing an investigation or visual review and when routing its decision or answer.
-- `credential-handling` - load before any credential or secret-store operation.
-- `process-event-sources` - load before arming a long poll, registering a condition-to-action watch, or handling a `procevent` wake.
+- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line (`MISSING:`, `MISSING_OPTIONAL:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `NEEDS_HARNESS_AUTH:`, `NEEDS_OPTIONAL_AUTH:`, `TANGLE:`, `STARTUP_MEMORY_BUDGET:`, `AGENTS_MD_BUDGET:`, `SESSION_START_BUDGET:`, `CREW_DISPATCH: invalid`, `FLEET_SYNC:`, `NETWORK_CHECKS:`, `PR_CHECK_MIGRATION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, or `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
+- `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
+- `ask-user-authority` - load before deciding any ask-user finding, regardless of the project's `yolo` posture.
+- `quota-array-dispatch` - load before choosing among a matched crew-dispatch profile array from current quota-axi output.
+- `harness-adapters` - load before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter; after resolving the harness, follow its route to exactly one adapter-detail skill.
+- `firstmate-orca` - load before switching to Orca, spawning or supervising Orca-backed work, smoke-testing Orca backend behavior, debugging Orca task state, or reconciling Orca-backed task metadata.
+- `project-management` - load before adding, creating, removing, or initializing a project.
+  Cloning or registering a project is add intake and uses the same trigger.
+- `stuck-crewmate-recovery` - load when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
+- `secondmate-provisioning` - load before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
+- `decision-hold-lifecycle` - load before treating an investigation or visual review as complete, before ending a visual review that exposed a decision, and when recording or routing the captain's answer.
+- `credential-handling` - load before reading, writing, moving, rotating, or creating any credential, and before running any command against a secret store.
+- `process-event-sources` - load before arming a long-polling source, before registering a deterministic condition->action watch (do X as soon as Y is true), and on any `procevent <adapter> <source-id> <sequence>` check wake.
   Never run a registered source's blocking command yourself in a conversational turn.
 - `fmx-respond` - with Relay on, load on `x-mention`, `x-mode-error`, or `public-followup` wakes, startup commitments, and Relay-linked milestone or terminal wakes.
 - `firstmate-codexapp` - load before coordinating, evaluating, or reconciling a visible Codex Desktop thread.
