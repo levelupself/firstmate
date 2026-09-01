@@ -53,6 +53,9 @@
 #   FM_TEST_SUMMARY_FAMILY family=<name> count=<n> duration_ms=<n> failed=<n>
 #   FM_TEST_SLOWEST rank=<k> script=<path> duration_ms=<n>
 #
+# Every selected test receives an EOF-only stdin descriptor. Tests attach their
+# own input fixtures explicitly instead of inheriting an open caller stream.
+#
 # Exit status is non-zero if any selected script exits non-zero, a configured
 # --fail-on-gate-skip token appears, or a family declaring expected_gate_skip=none
 # gate-skips. Declared gate skips remain successful and count as skipped_gate.
@@ -1567,7 +1570,7 @@ run_one_serial() {
   set +e
   # Stream live output while retaining a copy for gate-skip detection.
   # PIPESTATUS[0] is the test script; tee's exit is ignored for aggregate.
-  bash "$script" 2>&1 | tee "$out"
+  bash "$script" </dev/null 2>&1 | tee "$out"
   rc=${PIPESTATUS[0]}
   set -e
   : "${rc:=1}"
@@ -1674,7 +1677,7 @@ else
         FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
       cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
-      bash "$script" >"$work/output" 2>&1
+      bash "$script" </dev/null >"$work/output" 2>&1
       rc=$?
       end_ms=$(now_ms)
       duration=$((end_ms - begin_ms))

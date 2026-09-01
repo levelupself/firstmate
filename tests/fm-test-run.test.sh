@@ -276,6 +276,78 @@ assert "family" in doc["scripts"][0]
   pass "timing markers and JSON artifact are valid"
 }
 
+test_scripts_receive_dedicated_eof_instead_of_runner_stdin() {
+  local tmp fixture input probe release producer_pid runner_pid event fixture_pid rc
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-stdin.XXXXXX")
+  fixture="$tmp/stdin-reader.test.sh"
+  input="$tmp/runner-input"
+  probe="$tmp/reader-probe"
+  release="$tmp/producer-release"
+  mkfifo "$input" "$probe" "$release"
+  cat >"$fixture" <<'SH'
+#!/usr/bin/env bash
+if IFS= read -r -n 1 _; then
+  printf 'inherited %s\n' "$$" >"$FM_STDIN_PROBE"
+  exec head -c 1048577 >/dev/null
+fi
+printf 'eof %s\n' "$$" >"$FM_STDIN_PROBE"
+printf 'ok - fixture received EOF-only stdin\n'
+SH
+  chmod +x "$fixture"
+
+  (
+    exec 3>"$input"
+    printf 'short-input' >&3
+    IFS= read -r _ <"$release"
+  ) &
+  producer_pid=$!
+  FM_STDIN_PROBE="$probe" "$RUNNER" "$fixture" <"$input" >"$tmp/out" 2>"$tmp/err" &
+  runner_pid=$!
+
+  IFS= read -r event <"$probe"
+  case "$event" in
+    inherited\ *)
+      fixture_pid=${event#inherited }
+      kill "$fixture_pid" 2>/dev/null || true
+      printf 'release\n' >"$release"
+      wait "$producer_pid" 2>/dev/null || true
+      wait "$runner_pid" 2>/dev/null || true
+      rm -rf "$tmp"
+      fail "runner exposed its still-open stdin to a bounded test reader"
+      ;;
+    eof\ *) ;;
+    *)
+      kill "$producer_pid" "$runner_pid" 2>/dev/null || true
+      wait "$producer_pid" 2>/dev/null || true
+      wait "$runner_pid" 2>/dev/null || true
+      rm -rf "$tmp"
+      fail "stdin reader reported an unexpected event: $event"
+      ;;
+  esac
+
+  set +e
+  wait "$runner_pid"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || {
+    kill "$producer_pid" 2>/dev/null || true
+    wait "$producer_pid" 2>/dev/null || true
+    cat "$tmp/out" "$tmp/err"
+    rm -rf "$tmp"
+    fail "runner failed after giving the fixture EOF-only stdin"
+  }
+  kill -0 "$producer_pid" 2>/dev/null || {
+    rm -rf "$tmp"
+    fail "short-input producer closed before the bounded reader completed"
+  }
+  printf 'release\n' >"$release"
+  wait "$producer_pid" 2>/dev/null || true
+  grep -q 'FM_TEST_SUMMARY total=1 failed=0' "$tmp/out" \
+    || { rm -rf "$tmp"; fail "stdin-isolated fixture was not recorded as passing"; }
+  rm -rf "$tmp"
+  pass "test scripts receive dedicated EOF while a short inherited producer remains open"
+}
+
 test_aggregate_exit_behavior() {
   local tmp pass_f fail_f rc
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-agg.XXXXXX")
@@ -811,6 +883,7 @@ test_changed_file_selection_is_conservative
 test_changed_dependency_selection_and_unmapped_failure
 test_empty_selection_emits_summary
 test_timing_markers_and_json
+test_scripts_receive_dedicated_eof_instead_of_runner_stdin
 test_aggregate_exit_behavior
 test_undeclared_gate_skip_fails
 test_declared_gate_skip_stays_successful
