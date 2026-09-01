@@ -3,7 +3,8 @@
 Firstmate records codeburn usage automatically for each crewmate and scout cycle.
 `bin/fm-spawn.sh` records `spawned_at=` and saves the worktree's pre-launch codeburn totals in `data/<id>/usage-baseline.json`.
 Codeburn does not publish a new worktree key until that directory records its first call.
-Spawn initializes the append-only `data/worktree-allocations.jsonl` history with a complete boundary inventory of exact normalized working-copy identities, records later allocations, and teardown records releases without deleting prior identities.
+Spawn initializes an append-only project-scoped history under `data/worktree-allocations/` with that canonical project's complete Git boundary inventory of exact normalized working-copy identities, records later allocations, and teardown records releases without deleting prior identities.
+Task metadata retains the canonical allocation-project identity so baseline validation and teardown always address the same project history even when the registered project path uses a symlink.
 An incomplete boundary remains unknown, a boundary or previously recorded path remains reused after cleanup or recreation, and only a positively created identity observed after complete tracking began is a first owner.
 When the key is absent at launch, the baseline producer records an explicit zero only if allocation tracking covers the full report period, the durable allocation record proves first ownership, and the declared lifecycle ledger is present, completely parseable, and shows no contradictory earlier owner whose lifecycle overlaps that period.
 A missing or incomplete ledger and a reused worktree with an overlapping owner remain unavailable until a real bounded baseline exists.

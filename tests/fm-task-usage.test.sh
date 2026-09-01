@@ -248,9 +248,9 @@ if FM_HOME="$HOME_DIR" "$USAGE" fresh-late-key --baseline >/dev/null 2>"$TMP_ROO
 fi
 assert_contains "$(cat "$TMP_ROOT/header-only-ledger.err")" "could not be verified" \
   "a header-only ledger without allocation provenance did not preserve uncertainty"
-FM_HOME="$HOME_DIR" "$ALLOCATION" initialize 2026-07-20T09:00:00Z complete "$OTHER_WORKTREE" \
+FM_HOME="$HOME_DIR" "$ALLOCATION" initialize /srv/projects/fresh 2026-07-20T09:00:00Z complete "$OTHER_WORKTREE" \
   || fail "late allocation history initialization failed"
-LATE_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire fresh-late-key "$FRESH_WORKTREE" 2026-07-20T10:00:00Z fresh) \
+LATE_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire fresh-late-key /srv/projects/fresh "$FRESH_WORKTREE" 2026-07-20T10:00:00Z fresh) \
   || fail "late fresh allocation provenance failed"
 [ "$LATE_DISPOSITION" = first-owner ] || fail "late tracking did not record the positively created identity"
 printf '%s\n' 'worktree_allocation=first-owner' >> "$HOME_DIR/state/fresh-late-key.meta"
@@ -260,10 +260,11 @@ fi
 assert_contains "$(cat "$TMP_ROOT/late-tracking.err")" "could not be verified" \
   "late allocation tracking did not preserve attribution uncertainty"
 sed -i.bak '/^worktree_allocation=first-owner$/d' "$HOME_DIR/state/fresh-late-key.meta"
-rm -f "$HOME_DIR/state/fresh-late-key.meta.bak" "$HOME_DIR/data/worktree-allocations.jsonl"
-FM_HOME="$HOME_DIR" "$ALLOCATION" initialize 2026-07-19T23:00:00Z complete "$OTHER_WORKTREE" \
+rm -f "$HOME_DIR/state/fresh-late-key.meta.bak"
+rm -rf "$HOME_DIR/data/worktree-allocations"
+FM_HOME="$HOME_DIR" "$ALLOCATION" initialize /srv/projects/fresh 2026-07-19T23:00:00Z complete "$OTHER_WORKTREE" \
   || fail "allocation history initialization failed"
-FRESH_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire fresh-late-key "$FRESH_WORKTREE" 2026-07-20T10:00:00Z fresh) \
+FRESH_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire fresh-late-key /srv/projects/fresh "$FRESH_WORKTREE" 2026-07-20T10:00:00Z fresh) \
   || fail "fresh allocation provenance failed"
 [ "$FRESH_DISPOSITION" = first-owner ] || fail "new working-copy identity was not recorded as first owner"
 printf '%s\n' 'worktree_allocation=first-owner' >> "$HOME_DIR/state/fresh-late-key.meta"
@@ -281,13 +282,22 @@ if (u.tokens.input !== 120 || u.tokens.output !== 30 || u.tokens.cache_read !== 
 if (u.correlation.baseline_kind !== "fresh-worktree-zero") process.exit(1)
 ' "$fresh_usage" || fail "the first post-work read did not measure a late-published key from zero: $fresh_usage"
 pass "a fresh worktree reports real usage on its first read after codeburn publishes the key"
-FM_HOME="$HOME_DIR" "$ALLOCATION" release fresh-late-key "$FRESH_WORKTREE" 2026-07-20T10:20:00Z \
+FM_HOME="$HOME_DIR" "$ALLOCATION" release fresh-late-key /srv/projects/fresh "$FRESH_WORKTREE" 2026-07-20T10:20:00Z \
   || fail "fresh allocation release history failed"
-RECREATED_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire recreated-slot "$FRESH_WORKTREE" 2026-07-20T10:25:00Z fresh) \
+RECREATED_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire recreated-slot /srv/projects/fresh "$FRESH_WORKTREE" 2026-07-20T10:25:00Z fresh) \
   || fail "recreated allocation history failed"
 [ "$RECREATED_DISPOSITION" = reused ] \
   || fail "recreated path identity lost its durable prior-owner history"
 pass "recreated working-copy paths retain prior-owner allocation history"
+OTHER_PROJECT=/srv/projects/other
+OTHER_PROJECT_SLOT="$HOME_DIR/other-project-slot"
+FM_HOME="$HOME_DIR" "$ALLOCATION" initialize "$OTHER_PROJECT" 2026-07-19T23:00:00Z complete "$OTHER_PROJECT_SLOT" \
+  || fail "other-project allocation boundary failed"
+OTHER_PROJECT_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire other-project-task "$OTHER_PROJECT" "$OTHER_PROJECT_SLOT" 2026-07-20T10:40:00Z fresh) \
+  || fail "other-project allocation failed"
+[ "$OTHER_PROJECT_DISPOSITION" = reused ] \
+  || fail "a dormant worktree from another project was omitted from its project boundary"
+pass "project-scoped boundaries preserve dormant worktree ownership"
 rm -f "$HOME_DIR/state/fresh-late-key.meta"
 
 # The same absent-key observation is not a zero when a prior task already held
@@ -337,7 +347,7 @@ fm_write_meta "$HOME_DIR/state/cross-day-next.meta" \
   "kind=ship" \
   "worktree_allocation=first-owner" \
   "spawned_at=2026-07-20T10:30:00Z"
-FM_HOME="$HOME_DIR" "$ALLOCATION" acquire cross-day-next "$CROSS_WORKTREE" 2026-07-20T10:30:00Z fresh >/dev/null \
+FM_HOME="$HOME_DIR" "$ALLOCATION" acquire cross-day-next /srv/projects/fresh "$CROSS_WORKTREE" 2026-07-20T10:30:00Z fresh >/dev/null \
   || fail "cross-day allocation provenance failed"
 export FM_CODEBURN_FIXTURE="$TMP_ROOT/cross-day-before-key.json"
 write_fixture "$FM_CODEBURN_FIXTURE" 3.25 7 4 7 11

@@ -1733,21 +1733,8 @@ if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
     while IFS= read -r boundary_worktree; do
       [ -n "$boundary_worktree" ] && ALLOCATION_BOUNDARY_WORKTREES+=("$boundary_worktree")
     done < <(printf '%s\n' "$WORKTREE_INVENTORY" | sed -n 's/^worktree //p')
-    for boundary_meta in "$STATE"/*.meta; do
-      [ -e "$boundary_meta" ] || continue
-      if [ ! -f "$boundary_meta" ] || [ -L "$boundary_meta" ]; then
-        ALLOCATION_BOUNDARY_STATUS=incomplete
-        continue
-      fi
-      boundary_worktree=$(fm_meta_get "$boundary_meta" worktree)
-      if [ -z "$boundary_worktree" ]; then
-        ALLOCATION_BOUNDARY_STATUS=incomplete
-      else
-        ALLOCATION_BOUNDARY_WORKTREES+=("$boundary_worktree")
-      fi
-    done
   fi
-  "$SCRIPT_DIR/fm-worktree-allocation.sh" initialize "$ALLOCATION_BOUNDARY_AT" \
+  "$SCRIPT_DIR/fm-worktree-allocation.sh" initialize "$PROJ_ABS_REAL" "$ALLOCATION_BOUNDARY_AT" \
     "$ALLOCATION_BOUNDARY_STATUS" "${ALLOCATION_BOUNDARY_WORKTREES[@]}" || true
 fi
 
@@ -2373,7 +2360,7 @@ elif [ "$KIND" != secondmate ]; then
     SPAWN_WORKTREE_ALLOCATION=reused
   fi
   SPAWN_WORKTREE_ALLOCATION=$("$SCRIPT_DIR/fm-worktree-allocation.sh" acquire \
-    "$ID" "$WT" "$SPAWNED_AT" "$SPAWN_WORKTREE_ALLOCATION") || SPAWN_WORKTREE_ALLOCATION=unknown
+    "$ID" "$PROJ_ABS_REAL" "$WT" "$SPAWNED_AT" "$SPAWN_WORKTREE_ALLOCATION") || SPAWN_WORKTREE_ALLOCATION=unknown
 else
   SPAWNED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 fi
@@ -2770,7 +2757,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree worktree_allocation project harness kind mode yolo tasktmp spawned_at model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree worktree_allocation allocation_project project harness kind mode yolo tasktmp spawned_at model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2781,6 +2768,7 @@ preserve_relaunch_meta() {
   echo "endpoint_task_id=$ID"
   echo "worktree=$WT"
   [ -z "$SPAWN_WORKTREE_ALLOCATION" ] || echo "worktree_allocation=$SPAWN_WORKTREE_ALLOCATION"
+  echo "allocation_project=$PROJ_ABS_REAL"
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
   echo "kind=$KIND"

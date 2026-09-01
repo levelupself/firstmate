@@ -3,51 +3,56 @@ set -u
 
 COMMAND=${1:-}
 TASK_ID=${2:-}
-WORKTREE=${3:-}
-EVENT_AT=${4:-}
-CANDIDATE=${5:-}
+PROJECT=${3:-}
+WORKTREE=${4:-}
+EVENT_AT=${5:-}
+CANDIDATE=${6:-}
 FM_HOME=${FM_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 DATA=${FM_DATA_OVERRIDE:-$FM_HOME/data}
 STATE=${FM_STATE_OVERRIDE:-$FM_HOME/state}
-LEDGER="$DATA/worktree-allocations.jsonl"
 
 case "$COMMAND" in
   initialize)
-    EVENT_AT=$TASK_ID
-    COMPLETENESS=$WORKTREE
-    shift 3
+    PROJECT=$TASK_ID
+    EVENT_AT=${3:-}
+    COMPLETENESS=${4:-}
+    shift 4
     [ "$COMPLETENESS" = complete ] || COMPLETENESS=incomplete
     ;;
   acquire)
     [ "$CANDIDATE" = fresh ] || [ "$CANDIDATE" = reused ] || CANDIDATE=unknown
     ;;
   release) ;;
-  *) echo "fm-worktree-allocation: usage: $0 initialize <timestamp> <complete|incomplete> [worktree ...] | acquire|release <task-id> <worktree> <timestamp> [fresh|reused]" >&2; exit 2 ;;
+  *) echo "fm-worktree-allocation: usage: $0 initialize <project> <timestamp> <complete|incomplete> [worktree ...] | acquire|release <task-id> <project> <worktree> <timestamp> [fresh|reused]" >&2; exit 2 ;;
 esac
 if [ "$COMMAND" = initialize ]; then
-  [ -n "$EVENT_AT" ] || exit 2
+  [ -n "$PROJECT" ] && [ -n "$EVENT_AT" ] || exit 2
 else
-  [ -n "$TASK_ID" ] && [ -n "$WORKTREE" ] && [ -n "$EVENT_AT" ] || exit 2
+  [ -n "$TASK_ID" ] && [ -n "$PROJECT" ] && [ -n "$WORKTREE" ] && [ -n "$EVENT_AT" ] || exit 2
 fi
 
-mkdir -p "$DATA" "$STATE"
+PROJECT_ID=$(node -e 'const c=require("crypto"); const p=process.argv[1].replace(/\\/g,"/").replace(/\/+$/g,"").toLowerCase(); process.stdout.write(c.createHash("sha256").update(p).digest("hex"))' "$PROJECT") || exit 1
+LEDGER_DIR="$DATA/worktree-allocations"
+LEDGER="$LEDGER_DIR/$PROJECT_ID.jsonl"
+mkdir -p "$LEDGER_DIR" "$STATE"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/fm-wake-lib.sh"
 LOCK="$STATE/.worktree-allocation.lock"
 fm_lock_acquire_wait "$LOCK" || exit 1
 trap 'fm_lock_release "$LOCK" || true' EXIT
 
-node - "$LEDGER" "$COMMAND" "$TASK_ID" "$WORKTREE" "$EVENT_AT" "$CANDIDATE" "${COMPLETENESS:-}" "$@" <<'NODE'
+node - "$LEDGER" "$COMMAND" "$TASK_ID" "$PROJECT" "$WORKTREE" "$EVENT_AT" "$CANDIDATE" "${COMPLETENESS:-}" "$@" <<'NODE'
 const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
-const [file, command, taskId, worktree, eventAt, candidate, completeness, ...boundaryWorktrees] = process.argv.slice(2)
+const [file, command, taskId, project, worktree, eventAt, candidate, completeness, ...boundaryWorktrees] = process.argv.slice(2)
+const projectIdentity = String(project).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 const identity = String(worktree).replace(/\\/g, '/').replace(/^\/+/, '').replace(/[-/_]+/g, '/').replace(/\/+$/, '').toLowerCase()
 const canonical = value => {
   const time = Date.parse(value)
   return Number.isFinite(time) && new Date(time).toISOString().replace('.000Z', 'Z') === value ? value : null
 }
-if (!canonical(eventAt) || (command !== 'initialize' && (!taskId || !identity))) process.exit(2)
+if (!projectIdentity || !canonical(eventAt) || (command !== 'initialize' && (!taskId || !identity))) process.exit(2)
 let existed = true
 let lines = []
 try {
@@ -60,6 +65,7 @@ let records = []
 if (existed) {
   try { records = lines.map(line => JSON.parse(line)) } catch { process.exit(1) }
   if (records[0]?.schema !== 'fm-worktree-allocations.v1' || !canonical(records[0]?.tracking_started_at)
+      || records[0]?.project_identity !== projectIdentity
       || typeof records[0]?.boundary_complete !== 'boolean') process.exit(1)
   for (const record of records.slice(1)) {
     if (!['boundary', 'acquire', 'release'].includes(record?.event) || !record.task_id || !record.identity
@@ -69,7 +75,8 @@ if (existed) {
 if (command === 'initialize') {
   if (existed) process.exit(0)
   const boundaryComplete = completeness === 'complete'
-  records.push({schema: 'fm-worktree-allocations.v1', tracking_started_at: eventAt, boundary_complete: boundaryComplete})
+  records.push({schema: 'fm-worktree-allocations.v1', project_identity: projectIdentity,
+    tracking_started_at: eventAt, boundary_complete: boundaryComplete})
   const seen = new Set()
   for (const item of boundaryWorktrees) {
     const itemIdentity = String(item).replace(/\\/g, '/').replace(/^\/+/, '').replace(/[-/_]+/g, '/').replace(/\/+$/, '').toLowerCase()
@@ -81,7 +88,8 @@ if (command === 'initialize') {
   process.exit(0)
 }
 if (!existed) {
-  records.push({schema: 'fm-worktree-allocations.v1', tracking_started_at: eventAt, boundary_complete: false})
+  records.push({schema: 'fm-worktree-allocations.v1', project_identity: projectIdentity,
+    tracking_started_at: eventAt, boundary_complete: false})
 }
 const events = records.slice(1)
 if (command === 'acquire') {

@@ -84,6 +84,8 @@ fi
 WORKTREE=$(meta_value "$META" worktree)
 WORKTREE_ALLOCATION=$(meta_value "$META" worktree_allocation)
 PROJECT=$(meta_value "$META" project)
+ALLOCATION_PROJECT=$(meta_value "$META" allocation_project)
+[ -n "$ALLOCATION_PROJECT" ] || ALLOCATION_PROJECT=$PROJECT
 HARNESS=$(meta_value "$META" harness)
 CONFIGURED_MODEL=$(meta_value "$META" model)
 DELIVERY_MODE=$(meta_value "$META" mode)
@@ -267,10 +269,13 @@ if [ "$PROJECT_MATCH_STATUS" -eq 3 ] && [ "$MODE" = --baseline ]; then
   # owner for this worktree in the report period. This is intentionally stricter
   # than checking whether the directory is clean: pool cleanup does not erase
   # codeburn's cumulative same-day counters.
-  if node - "$DATA/cost-attribution.tsv" "$DATA/worktree-allocations.jsonl" "$STATE" "$ID" "$WORKTREE" "$FROM" "$SPAWNED_AT" "$WORKTREE_ALLOCATION" <<'NODE'
+  if node - "$DATA/cost-attribution.tsv" "$DATA" "$STATE" "$ID" "$ALLOCATION_PROJECT" "$WORKTREE" "$FROM" "$SPAWNED_AT" "$WORKTREE_ALLOCATION" <<'NODE'
 const fs = require('fs')
 const path = require('path')
-const [rawFile, allocationFile, stateDir, taskId, worktree, from, spawnedAt, allocation] = process.argv.slice(2)
+const crypto = require('crypto')
+const [rawFile, dataDir, stateDir, taskId, project, worktree, from, spawnedAt, allocation] = process.argv.slice(2)
+const projectIdentity = String(project || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+const allocationFile = path.join(dataDir, 'worktree-allocations', crypto.createHash('sha256').update(projectIdentity).digest('hex') + '.jsonl')
 const normalize = value => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 const target = normalize(worktree)
 const periodStart = Date.parse(`${from}T00:00:00.000Z`)
@@ -302,6 +307,7 @@ try {
 }
 const allocationManifest = allocationRecords[0]
 if (allocationManifest?.schema !== 'fm-worktree-allocations.v1'
+    || allocationManifest.project_identity !== projectIdentity
     || allocationManifest.boundary_complete !== true
     || !Number.isFinite(Date.parse(allocationManifest.tracking_started_at))
     || Date.parse(allocationManifest.tracking_started_at) > periodStart) process.exit(2)

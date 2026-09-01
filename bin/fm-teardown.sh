@@ -2547,7 +2547,9 @@ fi
 if [ "$KIND" != secondmate ]; then
   RELEASED_AT=$(meta_value "$META" teardown_at)
   [ -n "$RELEASED_AT" ] || RELEASED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  "$SCRIPT_DIR/fm-worktree-allocation.sh" release "$ID" "$WT" "$RELEASED_AT" || {
+  ALLOCATION_PROJECT=$(meta_value "$META" allocation_project)
+  [ -n "$ALLOCATION_PROJECT" ] || ALLOCATION_PROJECT=$PROJ
+  "$SCRIPT_DIR/fm-worktree-allocation.sh" release "$ID" "$ALLOCATION_PROJECT" "$WT" "$RELEASED_AT" || {
     echo "error: could not record worktree release for $ID; retaining task state" >&2
     exit 1
   }
