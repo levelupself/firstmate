@@ -149,6 +149,23 @@ not ok - the first fleet pane was not launched bound to its own recorded pane (m
 Their proof-file lists are `tests/fm-herdr-pane-geometry.test.sh` with `bin/fm-herdr-pane-geometry.sh`, and `tests/fm-cockpit.test.sh` with `bin/backends/herdr.sh`.
 Both test files carried then-new uncommitted assertion content, so each observation binds the code under test to the stated SHA without claiming clean-commit provenance for the test bytes.
 
+The real-Herdr relaunch reproduction could not run red before the implementation existed, because its positive case needs the adapter to launch a painter with the identity at all.
+It was instead confirmed at the shipped head `10c73740a78c83bbcf872fa269346cec8a0d83b5` with `bin/fm-fleet-view.sh`, `bin/fm-herdr-pane-geometry.sh`, and `bin/backends/herdr.sh` restored to `d00d218c95eb6b6af8855089343ddf929713fca8`, and produced this exact failure:
+
+```text
+not ok - a painter relaunched with no pane identity was reported live: COCKPIT: live session=fm-lab-cockpit-e2e-3933537-19182 workspace=w1 tab=w1:t1 head=w1:p1 viewport=w1:p6 display=all-homes steer=current-home
+```
+
+That is the reported defect through its own path: a painter relaunched into an existing recorded pane, unable to resolve a rectangle, while frame status called the region live.
+Its proof-file list is `tests/fm-cockpit-herdr-e2e.test.sh`, `bin/backends/herdr.sh`, `bin/fm-fleet-view.sh`, and `bin/fm-herdr-pane-geometry.sh`.
+
+### Limitations
+
+The identity-transport observations are specific to herdr 0.8.0 on Linux.
+The reported 2026-08-30 field symptom was captured before this measurement and claimed the two variables were absent from a relaunched painter; that claim was not reproducible here and is contradicted by the first two blocks above.
+Which herdr build, if any, omits them is therefore unresolved, and no attempt was made to install an older build to settle it.
+The correction does not depend on the answer: the painter no longer reads its identity from that channel, so a build that omits, injects, or lets a caller overwrite the variables all reach the same result.
+
 ## Deleted fixture directories caused the repeated redraw failure
 
 Verified on 2026-08-30 from the public-followup startup reproduction and its guarded Herdr and non-Herdr counterfactuals.
