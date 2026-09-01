@@ -404,8 +404,9 @@ while [ "$POST_FIX_WAITED" -lt 300 ]; do
   sleep 0.1
   POST_FIX_WAITED=$((POST_FIX_WAITED + 1))
 done
-[ -f "$POST_FIX_CAPTURE" ] && grep -q '^rc=' "$POST_FIX_CAPTURE" \
-  || fail "current stripped-identity relaunch never recorded its exit status: $(lab pane read "$FLEET_FIRST" --source visible 2>/dev/null)"
+if [ ! -f "$POST_FIX_CAPTURE" ] || ! grep -q '^rc=' "$POST_FIX_CAPTURE"; then
+  fail "current stripped-identity relaunch never recorded its exit status: $(lab pane read "$FLEET_FIRST" --source visible 2>/dev/null)"
+fi
 POST_FIX_TEXT=$(cat "$POST_FIX_CAPTURE")
 POST_FIX_RC=$(sed -n 's/^rc=//p' "$POST_FIX_CAPTURE" | tail -n 1)
 case "$POST_FIX_RC" in
