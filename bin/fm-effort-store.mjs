@@ -1773,12 +1773,12 @@ function backfillCodeburn(options, argv) {
     const start = Date.parse(startedAt)
     const end = Date.parse(endedAt)
     if (end < period.start || start >= period.endExclusive) continue
-    const completeCoverage = start >= period.start && end < period.endExclusive
+    const completeCoverage = start >= period.start && end <= period.endExclusive
     const missingCoverage = []
     if (start < period.start) {
       missingCoverage.push(`[${startedAt}, ${new Date(period.start).toISOString()})`)
     }
-    if (end >= period.endExclusive) {
+    if (end > period.endExclusive) {
       missingCoverage.push(`[${new Date(period.endExclusive).toISOString()}, ${endedAt}]`)
     }
     const task = {...row, started_at: startedAt, ended_at: endedAt, start, end,

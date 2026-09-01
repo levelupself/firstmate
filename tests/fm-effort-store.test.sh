@@ -782,6 +782,7 @@ pass 'lifecycle capture is idempotent and delete-and-rebuild reproduces it'
 BACKFILL_A="$ROOTDIR/worktrees/backfill-a"
 BACKFILL_B="$ROOTDIR/worktrees/backfill-b"
 BACKFILL_C="$ROOTDIR/worktrees/backfill-c"
+BACKFILL_D="$ROOTDIR/worktrees/backfill-d"
 fm_write_meta "$FM_HOME/state/920-backfill-a.meta" \
   "worktree=$BACKFILL_A" \
   "project=$PROJECT" \
@@ -818,21 +819,34 @@ fm_write_meta "$FM_HOME/state/922-backfill-boundary.meta" \
   "outcome=forced"
 "$STORE" capture 922-backfill-boundary --outcome forced >/dev/null \
   || fail 'boundary-crossing historical lifecycle capture failed'
+fm_write_meta "$FM_HOME/state/923-backfill-exact-boundary.meta" \
+  "worktree=$BACKFILL_D" \
+  "project=$PROJECT" \
+  "harness=codex" \
+  "model=configured-gpt" \
+  "effort=xhigh" \
+  "kind=ship" \
+  "spawned_at=2026-07-01T23:00:00Z" \
+  "teardown_at=2026-07-02T00:00:00Z" \
+  "outcome=forced"
+"$STORE" capture 923-backfill-exact-boundary --outcome forced >/dev/null \
+  || fail 'exact-boundary historical lifecycle capture failed'
 
 BACKFILL_EXPORT="$ROOTDIR/codeburn-backfill.json"
 cat > "$BACKFILL_EXPORT" <<JSON
-{"schema":"codeburn.export.v2","generated":"2026-07-02T00:00:00.000Z","summary":[{"Period":"2026-07-01 to 2026-07-01","Cost (USD)":18.5,"API Calls":5}],"records":[
+{"schema":"codeburn.export.v2","generated":"2026-07-02T00:00:00.000Z","summary":[{"Period":"2026-07-01 to 2026-07-01","Cost (USD)":19,"API Calls":6}],"records":[
   {"project":"$BACKFILL_A","sessionId":"session-a","timestamp":"2026-07-01T10:05:00.000Z","provider":"openai","model":"gpt-5.6-sol","inputTokens":100,"outputTokens":20,"reasoningTokens":5,"cacheWriteTokens":7,"cacheReadTokens":900,"cost":1.25},
   {"project":"$BACKFILL_B","sessionId":"session-b","timestamp":"2026-07-01T10:10:00.000Z","provider":"claude","model":"claude-opus-5","inputTokens":200,"outputTokens":40,"reasoningTokens":0,"cacheWriteTokens":9,"cacheReadTokens":800,"cost":2.25},
   {"project":"$BACKFILL_A","sessionId":"outside-a","timestamp":"2026-07-01T11:00:00.000Z","provider":"openai","model":"gpt-5.6-sol","inputTokens":300,"outputTokens":60,"reasoningTokens":0,"cacheWriteTokens":0,"cacheReadTokens":700,"cost":4},
   {"project":"$BACKFILL_C","sessionId":"boundary-c","timestamp":"2026-07-01T10:15:00.000Z","provider":"openai","model":"gpt-5.6-sol","inputTokens":50,"outputTokens":10,"reasoningTokens":0,"cacheWriteTokens":0,"cacheReadTokens":100,"cost":3},
+  {"project":"$BACKFILL_D","sessionId":"boundary-d","timestamp":"2026-07-01T23:30:00.000Z","provider":"openai","model":"gpt-5.6-sol","inputTokens":25,"outputTokens":5,"reasoningTokens":0,"cacheWriteTokens":0,"cacheReadTokens":50,"cost":0.5},
   {"project":"/unmanaged/project","sessionId":"unmanaged","timestamp":"2026-07-01T10:00:00.000Z","provider":"claude","model":"claude-opus-5","inputTokens":400,"outputTokens":80,"reasoningTokens":0,"cacheWriteTokens":0,"cacheReadTokens":600,"cost":8}
 ]}
 JSON
 BACKFILL_OUT=$("$STORE" backfill-codeburn "$BACKFILL_EXPORT" 2>&1) \
   || fail "bounded codeburn backfill failed: $BACKFILL_OUT"
 # shellcheck disable=SC2016 # Literal currency amount, not shell expansion.
-assert_contains "$BACKFILL_OUT" 'attributed 2 records / $3.5000 to 2 tasks' \
+assert_contains "$BACKFILL_OUT" 'attributed 3 records / $4.0000 to 3 tasks' \
   'backfill did not report its exact attributed subtotal'
 # shellcheck disable=SC2016 # Literal currency amount, not shell expansion.
 assert_contains "$BACKFILL_OUT" 'per-record rounding delta $0.0000' \
@@ -849,6 +863,9 @@ assert_contains "$BACKFILL_OUT" 'missing coverage 922-backfill-boundary: [2026-0
   'backfill did not report the missing lifecycle coverage bounds'
 [ ! -e "$FM_HOME/data/922-backfill-boundary/usage.json" ] \
   || fail 'backfill wrote a partial snapshot for a boundary-crossing lifecycle'
+EXACT_BOUNDARY_COST=$(query "SELECT notional_cost_usd FROM task WHERE task_id = '923-backfill-exact-boundary'")
+[ "$EXACT_BOUNDARY_COST" = '0.5' ] \
+  || fail "backfill did not attribute an exactly covered end-boundary lifecycle: $EXACT_BOUNDARY_COST"
 BACKFILLED=$(query "SELECT task_id, project_path, tokens_in, tokens_out, tokens_reasoning, tokens_cached_read, tokens_cached_write, notional_cost_usd, api_calls, sessions FROM task WHERE task_id IN ('920-backfill-a','921-backfill-b') ORDER BY task_id")
 [ "$BACKFILLED" = "920-backfill-a|$PROJECT|100|20|5|900|7|1.25|1|1
 921-backfill-b|$PROJECT|200|40|0|800|9|2.25|1|1" ] \
