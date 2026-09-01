@@ -6,6 +6,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 CHECKPOINT="$ROOT/bin/fm-watch-checkpoint.sh"
+WATCH="$ROOT/bin/fm-watch.sh"
 TMP_ROOT=$(fm_test_tmproot fm-watch-checkpoint)
 
 make_home() {
@@ -87,7 +88,77 @@ test_existing_singleton_watcher_is_not_success() {
   pass "checkpoint rejects an existing watcher singleton as unowned"
 }
 
+test_term_during_nested_command_substitution_runs_cleanup() {
+  local home state fakebin out err trigger pid status i proc_stat real_cut
+  home=$(make_home term-cleanup)
+  state="$home/state"
+  fakebin="$home/fakebin"
+  out="$home/out.txt"
+  err="$home/err.txt"
+  trigger="$home/signal-on-backend-cut"
+  real_cut=$(command -v cut)
+  mkdir -p "$fakebin"
+  cat > "$fakebin/cut" <<'SH'
+#!/usr/bin/env bash
+set -u
+input=$(cat)
+case "$input" in
+  backend=*)
+    if [ -e "$FM_SIGNAL_TRIGGER" ]; then
+      rm -f "$FM_SIGNAL_TRIGGER"
+      watcher_pid=$(cat "$FM_STATE_OVERRIDE/.watch.lock/pid")
+      kill -TERM "$watcher_pid"
+    fi
+    ;;
+esac
+printf '%s\n' "$input" | "$FM_REAL_CUT" "$@"
+SH
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  capture-pane) printf 'fresh pane output\n'; exit 0 ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/cut" "$fakebin/tmux"
+  printf 'window=test:fm-term-cleanup\nbackend=tmux\nkind=ship\n' > "$state/term-cleanup.meta"
+  : > "$trigger"
+
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
+    FM_SIGNAL_TRIGGER="$trigger" FM_REAL_CUT="$real_cut" FM_POLL=5 \
+    FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" 2> "$err" &
+  pid=$!
+
+  i=0
+  while [ "$i" -lt 50 ]; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      break
+    fi
+    proc_stat=$(ps -p "$pid" -o stat= 2>/dev/null || true)
+    case "$proc_stat" in Z*) break ;; esac
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ "$i" -eq 50 ]; then
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "watcher survived TERM during nested command substitution: $(cat "$err")"
+  fi
+  status=0
+  wait "$pid" || status=$?
+
+  [ "$status" -eq 143 ] \
+    || fail "TERM cleanup watcher exit: expected 143, got $status: $(cat "$err")"
+  [ ! -s "$err" ] || fail "TERM cleanup printed a shell diagnostic: $(cat "$err")"
+  assert_absent "$state/.watch.lock/pid" "watch lock pid survived TERM cleanup"
+  assert_contains "$(cat "$state/.watcher-down" 2>/dev/null || true)" \
+    "pending:downtime:" "TERM cleanup did not publish watcher downtime"
+  pass "TERM during nested command substitution exits through watcher cleanup"
+}
+
 test_quiet_checkpoint_exits_124_cleanly
 test_signal_passes_through_and_exits_zero
 test_registered_check_uses_preserved_watcher_environment
 test_existing_singleton_watcher_is_not_success
+test_term_during_nested_command_substitution_runs_cleanup

@@ -574,7 +574,10 @@ run_check_capture() {
   FM_ACTIVE_CHECK_PGID=$FM_ACTIVE_CHECK_PID
   set +m
   pgid=$(ps -o pgid= -p "$FM_ACTIVE_CHECK_PID" 2>/dev/null | tr -d '[:space:]')
-  trap 'exit 1' HUP INT TERM
+  # The temporary handler above defers termination only until the check group is
+  # identity-bound. Restore Bash's default terminating-signal path afterward so
+  # the EXIT cleanup runs without reparsing a signal action inside an expansion.
+  trap - HUP INT TERM
   if [ -n "$pgid" ] && [ "$pgid" != "$FM_ACTIVE_CHECK_PGID" ]; then
     fm_active_check_stop || true
     fm_check_output_cleanup
@@ -764,7 +767,12 @@ watcher_cleanup() {
   return "$cleanup_status"
 }
 trap watcher_cleanup EXIT
-trap 'exit 1' HUP INT TERM
+# Bash runs EXIT traps when its default HUP, INT, or TERM disposition terminates
+# a non-interactive shell. Keep those defaults: on affected Bash 5.2 releases a
+# custom terminating-signal action can fail to parse when the signal arrives
+# during nested command substitution, skipping cleanup and leaving the watcher
+# alive. run_check_capture installs its narrow deferral handler only while a
+# newly started check process group is not yet safe to terminate.
 # This watcher's own pid, as recorded in the lock by fm_lock_claim (which writes
 # ${BASHPID:-$$} from this same main shell). Read directly, never via a command
 # substitution, so it matches the stored holder pid for the self-eviction check.
