@@ -1,9 +1,17 @@
 # Task usage
 
 Firstmate records codeburn usage automatically for each crewmate and scout cycle.
-`bin/fm-spawn.sh` records `spawned_at=` and saves the worktree's pre-launch codeburn totals in `data/<id>/usage-baseline.json`.
+`bin/fm-spawn.sh` records `spawned_at=` and saves a bounded pre-launch baseline in `data/<id>/usage-baseline.json`.
+Codeburn does not publish a new worktree key until that directory records its first call.
+Spawn initializes an append-only project-scoped history under `data/worktree-allocations/` with that canonical project's complete Git boundary inventory of exact normalized working-copy identities, records later allocations, and teardown records releases without deleting prior identities.
+Task metadata retains the canonical allocation-project identity so baseline validation and teardown always address the same project history even when the registered project path uses a symlink.
+An incomplete boundary remains unknown, a boundary or previously recorded path remains reused after cleanup or recreation, and only a positively created identity observed after complete tracking began is a first owner.
+When the key is absent at launch, the baseline producer records an explicit zero only if allocation tracking covers the full report period, the durable allocation record proves first ownership, and the declared lifecycle ledger is present, completely parseable, and shows no contradictory earlier owner whose lifecycle overlaps that period.
+A missing or incomplete ledger and a reused worktree with an overlapping owner remain unavailable until a real bounded baseline exists.
 `bin/fm-task-usage.sh <id>` first lists codeburn's reported project inventory and matches the worktree against those reported paths.
 It uses the uniquely matched reported project name as codeburn's filter key, then subtracts the same filtered baseline to exclude previous occupants of a pooled worktree slot.
+Codeburn can leave the top-level `overview` account-wide even when `--project` filters the project and model rows.
+Task totals therefore come from the exact filtered project row and its model rows, and capture refuses a disagreement between them.
 An absent, ambiguous, or ineffective project match is an attribution error and never becomes a zero-usage report.
 `bin/fm-teardown.sh` saves the final delta as `data/<id>/usage.json` before deleting volatile task metadata.
 The durable snapshot keeps completed-task usage in `fm-fleet-snapshot.v1` after worktree return and pool reuse.
@@ -13,7 +21,7 @@ The JSON contract is owned by `bin/fm-task-usage.sh` and identified by `fm-task-
 It reports the task id, title, kind, project, delivery mode, dispatched harness, configured model, actual model names and per-model totals, tokens, cost, calls, sessions, spawn and capture timestamps, and wall-clock duration.
 The compact text form also surfaces the harness, actual models, tokens, cost, calls, sessions, and elapsed wall-clock time.
 Existing `fm-task-usage.v1` snapshots remain readable and accepted by the fleet snapshot, but they are not rewritten or silently treated as v2 records.
-Usage capture without `spawned_at=`, a uniquely matched reported project, or a saved baseline fails instead of emitting an unbounded or plausible-zero total.
+Usage capture without `spawned_at=`, a uniquely matched reported project, or either a saved reported-project baseline or a proven fresh-worktree zero baseline fails instead of emitting an unbounded or plausible-zero total.
 The effort store treats legacy v1 snapshots and failed or mismatched v2 attribution as missing rather than inventing a backfill.
 
 Usage collection is best effort.

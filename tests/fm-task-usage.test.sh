@@ -7,12 +7,15 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 USAGE="$ROOT/bin/fm-task-usage.sh"
+ALLOCATION="$ROOT/bin/fm-worktree-allocation.sh"
 TMP_ROOT=$(fm_test_tmproot fm-task-usage)
 HOME_DIR="$TMP_ROOT/home"
 FAKEBIN=$(fm_fakebin "$TMP_ROOT")
 POOLED_WORKTREE="$HOME_DIR/pooled-worktree"
 OTHER_WORKTREE="$HOME_DIR/other-worktree"
-mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$POOLED_WORKTREE" "$OTHER_WORKTREE"
+FRESH_WORKTREE="$HOME_DIR/fresh-worktree"
+CROSS_WORKTREE="$HOME_DIR/cross-worktree"
+mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$POOLED_WORKTREE" "$OTHER_WORKTREE" "$FRESH_WORKTREE" "$CROSS_WORKTREE"
 
 cat > "$FAKEBIN/codeburn" <<'SH'
 #!/usr/bin/env bash
@@ -54,8 +57,8 @@ write_fixture() { # <file> <pooled cost> <pooled calls> <pooled sessions> <other
   local file=$1 pooled_cost=$2 pooled_calls=$3 pooled_sessions=$4 other_cost=$5 other_calls=$6
   cat > "$file" <<JSON
 {"projects":[
-  {"name":"opaque-key-reported-by-codeburn","path":"$pooled_reported_path","report":{"overview":{"cost":$pooled_cost,"calls":$pooled_calls,"sessions":$pooled_sessions,"tokens":{"input":$((pooled_calls * 10)),"output":$((pooled_calls * 20)),"cacheRead":$((pooled_calls * 30)),"cacheWrite":$((pooled_calls * 40))}},"projects":[{"name":"opaque-key-reported-by-codeburn","path":"$pooled_reported_path"}],"models":[{"name":"gpt-5.6-sol","calls":$pooled_calls,"inputTokens":$((pooled_calls * 10)),"outputTokens":$((pooled_calls * 20)),"cacheReadTokens":$((pooled_calls * 30)),"cacheWriteTokens":$((pooled_calls * 40)),"cost":$pooled_cost}]}},
-  {"name":"another-opaque-codeburn-key","path":"$other_reported_path","report":{"overview":{"cost":$other_cost,"calls":$other_calls,"sessions":1,"tokens":{"input":$((other_calls * 11)),"output":$((other_calls * 21)),"cacheRead":$((other_calls * 31)),"cacheWrite":$((other_calls * 41))}},"projects":[{"name":"another-opaque-codeburn-key","path":"$other_reported_path"}],"models":[{"name":"Opus 5","calls":$other_calls,"inputTokens":$((other_calls * 11)),"outputTokens":$((other_calls * 21)),"cacheReadTokens":$((other_calls * 31)),"cacheWriteTokens":$((other_calls * 41)),"cost":$other_cost}]}}
+  {"name":"opaque-key-reported-by-codeburn","path":"$pooled_reported_path","report":{"overview":{"cost":$pooled_cost,"calls":$pooled_calls,"sessions":$pooled_sessions,"tokens":{"input":$((pooled_calls * 10)),"output":$((pooled_calls * 20)),"cacheRead":$((pooled_calls * 30)),"cacheWrite":$((pooled_calls * 40))}},"projects":[{"name":"opaque-key-reported-by-codeburn","path":"$pooled_reported_path","cost":$pooled_cost,"calls":$pooled_calls,"sessions":$pooled_sessions}],"models":[{"name":"gpt-5.6-sol","calls":$pooled_calls,"inputTokens":$((pooled_calls * 10)),"outputTokens":$((pooled_calls * 20)),"cacheReadTokens":$((pooled_calls * 30)),"cacheWriteTokens":$((pooled_calls * 40)),"cost":$pooled_cost}]}},
+  {"name":"another-opaque-codeburn-key","path":"$other_reported_path","report":{"overview":{"cost":$other_cost,"calls":$other_calls,"sessions":1,"tokens":{"input":$((other_calls * 11)),"output":$((other_calls * 21)),"cacheRead":$((other_calls * 31)),"cacheWrite":$((other_calls * 41))}},"projects":[{"name":"another-opaque-codeburn-key","path":"$other_reported_path","cost":$other_cost,"calls":$other_calls,"sessions":1}],"models":[{"name":"Opus 5","calls":$other_calls,"inputTokens":$((other_calls * 11)),"outputTokens":$((other_calls * 21)),"cacheReadTokens":$((other_calls * 31)),"cacheWriteTokens":$((other_calls * 41)),"cost":$other_cost}]}}
 ]}
 JSON
 }
@@ -160,6 +163,217 @@ if (a.cost_usd === b.cost_usd || a.calls === b.calls || a.tokens.input === b.tok
 ' "$json_a" "$json_b" || fail "different tasks were not independently attributed: a=$json_a b=$json_b"
 pass "a later pooled-worktree occupant subtracts the earlier occupant and two tasks have different totals"
 
+# codeburn 0.9.19 applies --project to projects/models but leaves overview at
+# the account-wide total. The filtered rows, not overview, own task attribution.
+fm_write_meta "$HOME_DIR/state/filtered-overview.meta" \
+  "worktree=$OTHER_WORKTREE" \
+  "project=/srv/projects/other" \
+  "harness=claude" \
+  "kind=ship" \
+  "spawned_at=2026-07-19T14:00:00Z"
+export FM_CODEBURN_FIXTURE="$TMP_ROOT/filtered-overview-baseline.json"
+write_fixture "$FM_CODEBURN_FIXTURE" 3.25 7 4 1 2
+node - "$FM_CODEBURN_FIXTURE" <<'NODE'
+const fs = require('fs')
+const file = process.argv[2]
+const fixture = JSON.parse(fs.readFileSync(file, 'utf8'))
+fixture.projects[1].report.overview = {
+  cost: 101,
+  calls: 1002,
+  sessions: 101,
+  tokens: {input: 10000, output: 20000, cacheRead: 30000, cacheWrite: 40000},
+}
+fs.writeFileSync(file, `${JSON.stringify(fixture)}\n`)
+NODE
+FM_HOME="$HOME_DIR" "$USAGE" filtered-overview --baseline
+export FM_CODEBURN_FIXTURE="$TMP_ROOT/filtered-overview-current.json"
+write_fixture "$FM_CODEBURN_FIXTURE" 3.25 7 4 2.5 5
+node - "$FM_CODEBURN_FIXTURE" <<'NODE'
+const fs = require('fs')
+const file = process.argv[2]
+const fixture = JSON.parse(fs.readFileSync(file, 'utf8'))
+fixture.projects[1].report.overview = {
+  cost: 202.5,
+  calls: 2005,
+  sessions: 202,
+  tokens: {input: 20000, output: 40000, cacheRead: 60000, cacheWrite: 80000},
+}
+fs.writeFileSync(file, `${JSON.stringify(fixture)}\n`)
+NODE
+filtered_usage=$(FM_HOME="$HOME_DIR" "$USAGE" filtered-overview --json)
+node -e '
+const u=JSON.parse(process.argv[1])
+if (u.cost_usd !== 1.5 || u.calls !== 3 || u.sessions !== 0) process.exit(1)
+if (JSON.stringify(u.tokens) !== JSON.stringify({input:33,output:63,cache_read:93,cache_write:123})) process.exit(1)
+' "$filtered_usage" || fail "account-wide overview leaked into filtered task usage: $filtered_usage"
+pass "filtered project and model rows override codeburn's unfiltered account-wide overview"
+
+# A slot with no earlier same-day owner has a true zero at launch even though
+# codeburn does not publish its key until the first call lands.
+fresh_reported_path=${FRESH_WORKTREE#/}
+fresh_reported_path=${fresh_reported_path//-/\/}
+fm_write_meta "$HOME_DIR/state/fresh-late-key.meta" \
+  "worktree=$FRESH_WORKTREE" \
+  "project=/srv/projects/fresh" \
+  "harness=codex" \
+  "kind=ship" \
+  "spawned_at=2026-07-20T10:00:00Z"
+export FM_CODEBURN_FIXTURE="$TMP_ROOT/fresh-before-first-call.json"
+write_fixture "$FM_CODEBURN_FIXTURE" 3.25 7 4 7 11
+node - "$FM_CODEBURN_FIXTURE" <<'NODE'
+const fs = require('fs')
+const file = process.argv[2]
+const fixture = JSON.parse(fs.readFileSync(file, 'utf8'))
+fixture.projects = fixture.projects.filter(project => project.name === 'another-opaque-codeburn-key')
+fs.writeFileSync(file, `${JSON.stringify(fixture)}\n`)
+NODE
+rm -f "$HOME_DIR/data/cost-attribution.tsv"
+if FM_HOME="$HOME_DIR" "$USAGE" fresh-late-key --baseline >/dev/null 2>"$TMP_ROOT/missing-ledger.err"; then
+  fail "a missing ownership ledger proved a fresh zero baseline"
+fi
+assert_contains "$(cat "$TMP_ROOT/missing-ledger.err")" "could not be verified" \
+  "a missing ownership ledger did not preserve attribution uncertainty"
+printf '%s\n' 'unstructured ownership data' > "$HOME_DIR/data/cost-attribution.tsv"
+if FM_HOME="$HOME_DIR" "$USAGE" fresh-late-key --baseline >/dev/null 2>"$TMP_ROOT/incomplete-ledger.err"; then
+  fail "an incomplete ownership ledger proved a fresh zero baseline"
+fi
+assert_contains "$(cat "$TMP_ROOT/incomplete-ledger.err")" "could not be verified" \
+  "an incomplete ownership ledger did not preserve attribution uncertainty"
+printf '%s\n' '# schema=firstmate-effort-attribution-v2' \
+  > "$HOME_DIR/data/cost-attribution.tsv"
+printf 'task\tworktree\tharness\tmodel\teffort\tkind\tproject\tstarted_at\tended_at\n' \
+  >> "$HOME_DIR/data/cost-attribution.tsv"
+if FM_HOME="$HOME_DIR" "$USAGE" fresh-late-key --baseline >/dev/null 2>"$TMP_ROOT/header-only-ledger.err"; then
+  fail "a header-only lifecycle ledger proved a fresh zero baseline"
+fi
+assert_contains "$(cat "$TMP_ROOT/header-only-ledger.err")" "could not be verified" \
+  "a header-only ledger without allocation provenance did not preserve uncertainty"
+FM_HOME="$HOME_DIR" "$ALLOCATION" initialize /srv/projects/fresh 2026-07-20T09:00:00Z complete "$OTHER_WORKTREE" \
+  || fail "late allocation history initialization failed"
+LATE_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire fresh-late-key /srv/projects/fresh "$FRESH_WORKTREE" 2026-07-20T10:00:00Z fresh) \
+  || fail "late fresh allocation provenance failed"
+[ "$LATE_DISPOSITION" = first-owner ] || fail "late tracking did not record the positively created identity"
+printf '%s\n' 'worktree_allocation=first-owner' >> "$HOME_DIR/state/fresh-late-key.meta"
+if FM_HOME="$HOME_DIR" "$USAGE" fresh-late-key --baseline >/dev/null 2>"$TMP_ROOT/late-tracking.err"; then
+  fail "allocation tracking that began after report FROM proved a zero baseline"
+fi
+assert_contains "$(cat "$TMP_ROOT/late-tracking.err")" "could not be verified" \
+  "late allocation tracking did not preserve attribution uncertainty"
+sed -i.bak '/^worktree_allocation=first-owner$/d' "$HOME_DIR/state/fresh-late-key.meta"
+rm -f "$HOME_DIR/state/fresh-late-key.meta.bak"
+rm -rf "$HOME_DIR/data/worktree-allocations"
+FM_HOME="$HOME_DIR" "$ALLOCATION" initialize /srv/projects/fresh 2026-07-19T23:00:00Z complete "$OTHER_WORKTREE" \
+  || fail "allocation history initialization failed"
+FRESH_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire fresh-late-key /srv/projects/fresh "$FRESH_WORKTREE" 2026-07-20T10:00:00Z fresh) \
+  || fail "fresh allocation provenance failed"
+[ "$FRESH_DISPOSITION" = first-owner ] || fail "new working-copy identity was not recorded as first owner"
+printf '%s\n' 'worktree_allocation=first-owner' >> "$HOME_DIR/state/fresh-late-key.meta"
+FM_HOME="$HOME_DIR" "$USAGE" fresh-late-key --baseline \
+  || fail "a fresh worktree without a pre-call codeburn key did not record a zero baseline"
+export FM_CODEBURN_FIXTURE="$TMP_ROOT/fresh-after-first-call.json"
+cat > "$FM_CODEBURN_FIXTURE" <<JSON
+{"projects":[{"name":"late-codeburn-key","path":"$fresh_reported_path","report":{"overview":{"cost":999,"calls":999,"sessions":999,"tokens":{"input":999,"output":999,"cacheRead":999,"cacheWrite":999}},"projects":[{"name":"late-codeburn-key","path":"$fresh_reported_path","cost":0.75,"calls":4,"sessions":1}],"models":[{"name":"gpt-5.6-sol","calls":4,"inputTokens":120,"outputTokens":30,"cacheReadTokens":400,"cacheWriteTokens":0,"cost":0.75}]}}]}
+JSON
+fresh_usage=$(FM_HOME="$HOME_DIR" "$USAGE" fresh-late-key --json)
+node -e '
+const u=JSON.parse(process.argv[1])
+if (u.cost_usd !== 0.75 || u.calls !== 4 || u.sessions !== 1) process.exit(1)
+if (u.tokens.input !== 120 || u.tokens.output !== 30 || u.tokens.cache_read !== 400) process.exit(1)
+if (u.correlation.baseline_kind !== "fresh-worktree-zero") process.exit(1)
+' "$fresh_usage" || fail "the first post-work read did not measure a late-published key from zero: $fresh_usage"
+pass "a fresh worktree reports real usage on its first read after codeburn publishes the key"
+FM_HOME="$HOME_DIR" "$ALLOCATION" release fresh-late-key /srv/projects/fresh "$FRESH_WORKTREE" 2026-07-20T10:20:00Z \
+  || fail "fresh allocation release history failed"
+REACQUIRED_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire fresh-late-key /srv/projects/fresh "$FRESH_WORKTREE" 2026-07-20T10:21:00Z reused) \
+  || fail "same-task pooled worktree reacquisition failed"
+[ "$REACQUIRED_DISPOSITION" = reused ] \
+  || fail "same-task pooled worktree reacquisition lost its prior-owner history"
+FM_HOME="$HOME_DIR" "$ALLOCATION" release fresh-late-key /srv/projects/fresh "$FRESH_WORKTREE" 2026-07-20T10:22:00Z \
+  || fail "same-task pooled worktree second release collided with its earlier lifecycle"
+FM_HOME="$HOME_DIR" "$ALLOCATION" release fresh-late-key /srv/projects/fresh "$FRESH_WORKTREE" 2026-07-20T10:22:00Z \
+  || fail "same-task pooled worktree second release was not idempotent"
+pass "release idempotency is scoped to the latest same-task pooled worktree lifecycle"
+RECREATED_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire recreated-slot /srv/projects/fresh "$FRESH_WORKTREE" 2026-07-20T10:25:00Z fresh) \
+  || fail "recreated allocation history failed"
+[ "$RECREATED_DISPOSITION" = reused ] \
+  || fail "recreated path identity lost its durable prior-owner history"
+pass "recreated working-copy paths retain prior-owner allocation history"
+OTHER_PROJECT=/srv/projects/other
+OTHER_PROJECT_SLOT="$HOME_DIR/other-project-slot"
+FM_HOME="$HOME_DIR" "$ALLOCATION" initialize "$OTHER_PROJECT" 2026-07-19T23:00:00Z complete "$OTHER_PROJECT_SLOT" \
+  || fail "other-project allocation boundary failed"
+OTHER_PROJECT_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire other-project-task "$OTHER_PROJECT" "$OTHER_PROJECT_SLOT" 2026-07-20T10:40:00Z fresh) \
+  || fail "other-project allocation failed"
+[ "$OTHER_PROJECT_DISPOSITION" = reused ] \
+  || fail "a dormant worktree from another project was omitted from its project boundary"
+pass "project-scoped boundaries preserve dormant worktree ownership"
+rm -f "$HOME_DIR/state/fresh-late-key.meta"
+
+# The same absent-key observation is not a zero when a prior task already held
+# the slot during this report period.
+fm_write_meta "$HOME_DIR/state/reused-late-key.meta" \
+  "worktree=$POOLED_WORKTREE" \
+  "project=/srv/projects/firstmate" \
+  "harness=codex" \
+  "kind=ship" \
+  "worktree_allocation=reused" \
+  "spawned_at=2026-07-19T17:00:00Z"
+export FM_CODEBURN_FIXTURE="$TMP_ROOT/reused-before-key.json"
+write_fixture "$FM_CODEBURN_FIXTURE" 3.25 7 4 7 11
+node - "$FM_CODEBURN_FIXTURE" <<'NODE'
+const fs = require('fs')
+const file = process.argv[2]
+const fixture = JSON.parse(fs.readFileSync(file, 'utf8'))
+fixture.projects = fixture.projects.filter(project => project.name === 'another-opaque-codeburn-key')
+fs.writeFileSync(file, `${JSON.stringify(fixture)}\n`)
+NODE
+if FM_HOME="$HOME_DIR" "$USAGE" reused-late-key --baseline >/dev/null 2>"$TMP_ROOT/reused-baseline.err"; then
+  fail "a reused worktree with earlier same-day ownership accepted an unknown zero baseline"
+fi
+assert_contains "$(cat "$TMP_ROOT/reused-baseline.err")" "reused worktree" \
+  "the reused-worktree refusal did not explain why zero was unsafe"
+export FM_CODEBURN_FIXTURE="$TMP_ROOT/current-b.json"
+if FM_HOME="$HOME_DIR" "$USAGE" reused-late-key --json >/dev/null 2>"$TMP_ROOT/reused-read.err"; then
+  fail "a later key caused reused-worktree spend to be attributed without a baseline"
+fi
+assert_contains "$(cat "$TMP_ROOT/reused-read.err")" "saved baseline is unavailable" \
+  "the reused worktree did not preserve missingness after its key appeared"
+pass "a reused worktree with prior period spend refuses an unsafe zero baseline"
+
+# A prior owner that starts before midnight still contaminates the report
+# period when its lifecycle ends after midnight.
+fm_write_meta "$HOME_DIR/state/cross-day-owner.meta" \
+  "worktree=$CROSS_WORKTREE" \
+  "project=/srv/projects/fresh" \
+  "harness=codex" \
+  "kind=ship" \
+  "spawned_at=2026-07-19T23:50:00Z" \
+  "teardown_at=2026-07-20T00:10:00Z"
+fm_write_meta "$HOME_DIR/state/cross-day-next.meta" \
+  "worktree=$CROSS_WORKTREE" \
+  "project=/srv/projects/fresh" \
+  "harness=codex" \
+  "kind=ship" \
+  "worktree_allocation=first-owner" \
+  "spawned_at=2026-07-20T10:30:00Z"
+FM_HOME="$HOME_DIR" "$ALLOCATION" acquire cross-day-next /srv/projects/fresh "$CROSS_WORKTREE" 2026-07-20T10:30:00Z fresh >/dev/null \
+  || fail "cross-day allocation provenance failed"
+export FM_CODEBURN_FIXTURE="$TMP_ROOT/cross-day-before-key.json"
+write_fixture "$FM_CODEBURN_FIXTURE" 3.25 7 4 7 11
+node - "$FM_CODEBURN_FIXTURE" <<'NODE'
+const fs = require('fs')
+const file = process.argv[2]
+const fixture = JSON.parse(fs.readFileSync(file, 'utf8'))
+fixture.projects = fixture.projects.filter(project => project.name === 'another-opaque-codeburn-key')
+fs.writeFileSync(file, `${JSON.stringify(fixture)}\n`)
+NODE
+if FM_HOME="$HOME_DIR" "$USAGE" cross-day-next --baseline >/dev/null 2>"$TMP_ROOT/cross-day.err"; then
+  fail "a cross-midnight prior owner accepted an unsafe zero baseline"
+fi
+assert_contains "$(cat "$TMP_ROOT/cross-day.err")" "overlapping the report period" \
+  "the cross-midnight ownership refusal did not identify lifecycle overlap"
+pass "cross-midnight lifecycle overlap refuses an unsafe zero baseline"
+
 fm_write_meta "$HOME_DIR/state/task-zero.meta" \
   "worktree=$POOLED_WORKTREE" \
   "harness=codex" \
@@ -193,10 +407,10 @@ for invalid_counter in missing nonnumeric decreasing; do
 const fs = require('fs')
 const [file, kind] = process.argv.slice(2)
 const fixture = JSON.parse(fs.readFileSync(file, 'utf8'))
-const overview = fixture.projects[0].report.overview
-if (kind === 'missing') delete overview.tokens.input
-if (kind === 'nonnumeric') overview.calls = '5'
-if (kind === 'decreasing') overview.sessions = 0
+const report = fixture.projects[0].report
+if (kind === 'missing') delete report.models[0].inputTokens
+if (kind === 'nonnumeric') report.projects[0].calls = '5'
+if (kind === 'decreasing') report.projects[0].sessions = 0
 fs.writeFileSync(file, `${JSON.stringify(fixture)}\n`)
 NODE
   FM_HOME="$HOME_DIR" "$USAGE" "$task" --snapshot >"$TMP_ROOT/$task.out" 2>"$TMP_ROOT/$task.err"
