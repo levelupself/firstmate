@@ -512,7 +512,7 @@ test_spawn_writes_orca_metadata_and_launches_harness() {
   printf '{"ok":true,"result":{"repo":{"id":"repo-spawn"}}}\n' > "$RESP/2.out"
   printf '{"ok":true,"result":{"worktree":{"id":"wt-spawn","path":"%s"},"terminal":{"handle":"term-spawn"}}}\n' "$wt" > "$RESP/3.out"
   FM_DATA_OVERRIDE="$data" FM_STATE_OVERRIDE="$state" \
-    "$ROOT/bin/fm-worktree-allocation.sh" acquire history-start "$proj" 2026-07-01T00:00:00Z reused >/dev/null \
+    "$ROOT/bin/fm-worktree-allocation.sh" initialize 2026-07-01T00:00:00Z complete "$proj" \
     || fail "Orca allocation history initialization failed"
   out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
     FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \

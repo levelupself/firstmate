@@ -12,13 +12,23 @@ STATE=${FM_STATE_OVERRIDE:-$FM_HOME/state}
 LEDGER="$DATA/worktree-allocations.jsonl"
 
 case "$COMMAND" in
+  initialize)
+    EVENT_AT=$TASK_ID
+    COMPLETENESS=$WORKTREE
+    shift 3
+    [ "$COMPLETENESS" = complete ] || COMPLETENESS=incomplete
+    ;;
   acquire)
     [ "$CANDIDATE" = fresh ] || [ "$CANDIDATE" = reused ] || CANDIDATE=unknown
     ;;
   release) ;;
-  *) echo "fm-worktree-allocation: usage: $0 acquire|release <task-id> <worktree> <timestamp> [fresh|reused]" >&2; exit 2 ;;
+  *) echo "fm-worktree-allocation: usage: $0 initialize <timestamp> <complete|incomplete> [worktree ...] | acquire|release <task-id> <worktree> <timestamp> [fresh|reused]" >&2; exit 2 ;;
 esac
-[ -n "$TASK_ID" ] && [ -n "$WORKTREE" ] && [ -n "$EVENT_AT" ] || exit 2
+if [ "$COMMAND" = initialize ]; then
+  [ -n "$EVENT_AT" ] || exit 2
+else
+  [ -n "$TASK_ID" ] && [ -n "$WORKTREE" ] && [ -n "$EVENT_AT" ] || exit 2
+fi
 
 mkdir -p "$DATA" "$STATE"
 # shellcheck source=bin/fm-wake-lib.sh
@@ -27,17 +37,17 @@ LOCK="$STATE/.worktree-allocation.lock"
 fm_lock_acquire_wait "$LOCK" || exit 1
 trap 'fm_lock_release "$LOCK" || true' EXIT
 
-node - "$LEDGER" "$COMMAND" "$TASK_ID" "$WORKTREE" "$EVENT_AT" "$CANDIDATE" <<'NODE'
+node - "$LEDGER" "$COMMAND" "$TASK_ID" "$WORKTREE" "$EVENT_AT" "$CANDIDATE" "${COMPLETENESS:-}" "$@" <<'NODE'
 const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
-const [file, command, taskId, worktree, eventAt, candidate] = process.argv.slice(2)
+const [file, command, taskId, worktree, eventAt, candidate, completeness, ...boundaryWorktrees] = process.argv.slice(2)
 const identity = String(worktree).replace(/\\/g, '/').replace(/^\/+/, '').replace(/[-/_]+/g, '/').replace(/\/+$/, '').toLowerCase()
 const canonical = value => {
   const time = Date.parse(value)
   return Number.isFinite(time) && new Date(time).toISOString().replace('.000Z', 'Z') === value ? value : null
 }
-if (!taskId || !identity || !canonical(eventAt)) process.exit(2)
+if (!canonical(eventAt) || (command !== 'initialize' && (!taskId || !identity))) process.exit(2)
 let existed = true
 let lines = []
 try {
@@ -49,20 +59,39 @@ try {
 let records = []
 if (existed) {
   try { records = lines.map(line => JSON.parse(line)) } catch { process.exit(1) }
-  if (records[0]?.schema !== 'fm-worktree-allocations.v1' || !canonical(records[0]?.tracking_started_at)) process.exit(1)
+  if (records[0]?.schema !== 'fm-worktree-allocations.v1' || !canonical(records[0]?.tracking_started_at)
+      || typeof records[0]?.boundary_complete !== 'boolean') process.exit(1)
   for (const record of records.slice(1)) {
-    if (!['acquire', 'release'].includes(record?.event) || !record.task_id || !record.identity
+    if (!['boundary', 'acquire', 'release'].includes(record?.event) || !record.task_id || !record.identity
         || !canonical(record.event_at) || !record.worktree) process.exit(1)
   }
-} else {
-  records.push({schema: 'fm-worktree-allocations.v1', tracking_started_at: eventAt})
+}
+if (command === 'initialize') {
+  if (existed) process.exit(0)
+  const boundaryComplete = completeness === 'complete'
+  records.push({schema: 'fm-worktree-allocations.v1', tracking_started_at: eventAt, boundary_complete: boundaryComplete})
+  const seen = new Set()
+  for (const item of boundaryWorktrees) {
+    const itemIdentity = String(item).replace(/\\/g, '/').replace(/^\/+/, '').replace(/[-/_]+/g, '/').replace(/\/+$/, '').toLowerCase()
+    if (!itemIdentity || seen.has(itemIdentity)) continue
+    seen.add(itemIdentity)
+    records.push({event: 'boundary', task_id: '-', worktree: item, identity: itemIdentity, event_at: eventAt, disposition: 'unknown'})
+  }
+  write(records)
+  process.exit(0)
+}
+if (!existed) {
+  records.push({schema: 'fm-worktree-allocations.v1', tracking_started_at: eventAt, boundary_complete: false})
 }
 const events = records.slice(1)
 if (command === 'acquire') {
   const prior = events.some(record => record.identity === identity)
+  const provenCreation = records[0].boundary_complete === true
+    && Date.parse(eventAt) >= Date.parse(records[0].tracking_started_at) && !prior
   const disposition = candidate === 'reused' || prior ? 'reused'
-    : candidate === 'fresh' && existed ? 'first-owner' : 'unknown'
-  const record = {event: 'acquire', task_id: taskId, worktree, identity, event_at: eventAt, disposition}
+    : candidate === 'fresh' && provenCreation ? 'first-owner' : 'unknown'
+  const record = {event: 'acquire', task_id: taskId, worktree, identity, event_at: eventAt, disposition,
+    origin: disposition === 'first-owner' ? 'created-after-tracking' : 'unproven'}
   const duplicate = events.find(item => item.event === 'acquire' && item.task_id === taskId && item.event_at === eventAt)
   if (duplicate) {
     if (JSON.stringify(duplicate) !== JSON.stringify(record)) process.exit(1)

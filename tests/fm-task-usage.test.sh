@@ -248,7 +248,20 @@ if FM_HOME="$HOME_DIR" "$USAGE" fresh-late-key --baseline >/dev/null 2>"$TMP_ROO
 fi
 assert_contains "$(cat "$TMP_ROOT/header-only-ledger.err")" "could not be verified" \
   "a header-only ledger without allocation provenance did not preserve uncertainty"
-FM_HOME="$HOME_DIR" "$ALLOCATION" acquire history-start "$OTHER_WORKTREE" 2026-07-20T09:00:00Z reused >/dev/null \
+FM_HOME="$HOME_DIR" "$ALLOCATION" initialize 2026-07-20T09:00:00Z complete "$OTHER_WORKTREE" \
+  || fail "late allocation history initialization failed"
+LATE_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire fresh-late-key "$FRESH_WORKTREE" 2026-07-20T10:00:00Z fresh) \
+  || fail "late fresh allocation provenance failed"
+[ "$LATE_DISPOSITION" = first-owner ] || fail "late tracking did not record the positively created identity"
+printf '%s\n' 'worktree_allocation=first-owner' >> "$HOME_DIR/state/fresh-late-key.meta"
+if FM_HOME="$HOME_DIR" "$USAGE" fresh-late-key --baseline >/dev/null 2>"$TMP_ROOT/late-tracking.err"; then
+  fail "allocation tracking that began after report FROM proved a zero baseline"
+fi
+assert_contains "$(cat "$TMP_ROOT/late-tracking.err")" "could not be verified" \
+  "late allocation tracking did not preserve attribution uncertainty"
+sed -i.bak '/^worktree_allocation=first-owner$/d' "$HOME_DIR/state/fresh-late-key.meta"
+rm -f "$HOME_DIR/state/fresh-late-key.meta.bak" "$HOME_DIR/data/worktree-allocations.jsonl"
+FM_HOME="$HOME_DIR" "$ALLOCATION" initialize 2026-07-19T23:00:00Z complete "$OTHER_WORKTREE" \
   || fail "allocation history initialization failed"
 FRESH_DISPOSITION=$(FM_HOME="$HOME_DIR" "$ALLOCATION" acquire fresh-late-key "$FRESH_WORKTREE" 2026-07-20T10:00:00Z fresh) \
   || fail "fresh allocation provenance failed"

@@ -1724,6 +1724,33 @@ real_path_or_raw() {  # <path>
   fi
 }
 
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+  ALLOCATION_BOUNDARY_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  ALLOCATION_BOUNDARY_STATUS=incomplete
+  ALLOCATION_BOUNDARY_WORKTREES=()
+  if [ "$WORKTREE_INVENTORY_VALID" -eq 1 ]; then
+    ALLOCATION_BOUNDARY_STATUS=complete
+    while IFS= read -r boundary_worktree; do
+      [ -n "$boundary_worktree" ] && ALLOCATION_BOUNDARY_WORKTREES+=("$boundary_worktree")
+    done < <(printf '%s\n' "$WORKTREE_INVENTORY" | sed -n 's/^worktree //p')
+    for boundary_meta in "$STATE"/*.meta; do
+      [ -e "$boundary_meta" ] || continue
+      if [ ! -f "$boundary_meta" ] || [ -L "$boundary_meta" ]; then
+        ALLOCATION_BOUNDARY_STATUS=incomplete
+        continue
+      fi
+      boundary_worktree=$(fm_meta_get "$boundary_meta" worktree)
+      if [ -z "$boundary_worktree" ]; then
+        ALLOCATION_BOUNDARY_STATUS=incomplete
+      else
+        ALLOCATION_BOUNDARY_WORKTREES+=("$boundary_worktree")
+      fi
+    done
+  fi
+  "$SCRIPT_DIR/fm-worktree-allocation.sh" initialize "$ALLOCATION_BOUNDARY_AT" \
+    "$ALLOCATION_BOUNDARY_STATUS" "${ALLOCATION_BOUNDARY_WORKTREES[@]}" || true
+fi
+
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
 # a herdr spawn goes through the version-gated, workspace-per-HOME,

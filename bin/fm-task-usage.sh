@@ -300,13 +300,22 @@ try {
 } catch {
   process.exit(2)
 }
-if (allocationRecords[0]?.schema !== 'fm-worktree-allocations.v1') process.exit(2)
+const allocationManifest = allocationRecords[0]
+if (allocationManifest?.schema !== 'fm-worktree-allocations.v1'
+    || allocationManifest.boundary_complete !== true
+    || !Number.isFinite(Date.parse(allocationManifest.tracking_started_at))
+    || Date.parse(allocationManifest.tracking_started_at) > periodStart) process.exit(2)
 const allocationIdentity = String(worktree).replace(/\\/g, '/').replace(/^\/+/, '').replace(/[-/_]+/g, '/').replace(/\/+$/, '').toLowerCase()
+for (const record of allocationRecords.slice(1)) {
+  if (!['boundary', 'acquire', 'release'].includes(record?.event) || !record.task_id || !record.identity
+      || !record.worktree || !Number.isFinite(Date.parse(record.event_at))) process.exit(2)
+}
 const allocationMatches = allocationRecords.slice(1).filter(record => record.event === 'acquire'
   && record.task_id === taskId && record.identity === allocationIdentity && record.event_at === spawnedAt)
 if (allocationMatches.length !== 1 || allocationMatches[0].disposition !== 'first-owner'
+    || allocationMatches[0].origin !== 'created-after-tracking'
     || allocationRecords.slice(1).some(record => record.identity === allocationIdentity
-      && record.event === 'acquire' && record !== allocationMatches[0]
+      && ['boundary', 'acquire'].includes(record.event) && record !== allocationMatches[0]
       && Date.parse(record.event_at) <= currentStart)) process.exit(2)
 
 try {
