@@ -1772,8 +1772,17 @@ function backfillCodeburn(options, argv) {
     if (!startedAt || !endedAt || !row.worktree || !row.project) continue
     const start = Date.parse(startedAt)
     const end = Date.parse(endedAt)
-    if (start < period.start || end >= period.endExclusive) continue
-    const task = {...row, started_at: startedAt, ended_at: endedAt, start, end}
+    if (end < period.start || start >= period.endExclusive) continue
+    const completeCoverage = start >= period.start && end < period.endExclusive
+    const missingCoverage = []
+    if (start < period.start) {
+      missingCoverage.push(`[${startedAt}, ${new Date(period.start).toISOString()})`)
+    }
+    if (end >= period.endExclusive) {
+      missingCoverage.push(`[${new Date(period.endExclusive).toISOString()}, ${endedAt}]`)
+    }
+    const task = {...row, started_at: startedAt, ended_at: endedAt, start, end,
+      completeCoverage, missingCoverage}
     const worktree = normalizedObservedPath(row.worktree)
     if (!byWorktree.has(worktree)) byWorktree.set(worktree, [])
     byWorktree.get(worktree).push(task)
@@ -1784,6 +1793,7 @@ function backfillCodeburn(options, argv) {
     ['unmapped-worktree', {records: 0, cost_usd: 0}],
     ['ambiguous-worktree-key', {records: 0, cost_usd: 0}],
     ['ambiguous-task-window', {records: 0, cost_usd: 0}],
+    ['incomplete-export-window', {records: 0, cost_usd: 0, missing: new Set()}],
   ])
   const assigned = new Map()
   const number = (value, label, {integer = false} = {}) => {
@@ -1826,10 +1836,14 @@ function backfillCodeburn(options, argv) {
     else if (distinctWorktrees.size > 1) reason = 'ambiguous-worktree-key'
     else if (matches.length === 0) reason = 'outside-task-window'
     else if (matches.length > 1) reason = 'ambiguous-task-window'
+    else if (!matches[0].completeCoverage) reason = 'incomplete-export-window'
     if (reason) {
       const classified = classifications.get(reason)
       classified.records += 1
       classified.cost_usd += values.cost_usd
+      if (reason === 'incomplete-export-window') {
+        classified.missing.add(`${matches[0].task}: ${matches[0].missingCoverage.join(', ')}`)
+      }
       continue
     }
     const task = matches[0]
@@ -2085,6 +2099,9 @@ if (command === 'rebuild') {
   process.stdout.write(`attributed ${attributedRecords} records / $${attributedCost.toFixed(4)} to ${result.assigned.size} tasks\n`)
   for (const [kind, summary] of result.classifications) {
     process.stdout.write(`${kind}: ${summary.records} records / $${summary.cost_usd.toFixed(4)}\n`)
+    if (kind === 'incomplete-export-window') {
+      for (const missing of summary.missing) process.stdout.write(`  missing coverage ${missing}\n`)
+    }
   }
   process.stdout.write(`export sha256: ${result.exportHash}\n`)
   const rebuilt = rebuild(config)

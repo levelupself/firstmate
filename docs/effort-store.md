@@ -65,12 +65,13 @@ An existing byte-equivalent snapshot makes the command an idempotent no-op, whil
 Explicit replacement preserves the previous bytes beside `usage.json` under their SHA-256 before atomically installing the recovered snapshot.
 The entire target batch and every existing preservation artifact are preflighted before any task snapshot is written.
 The command joins each export record to the one lifecycle row whose normalized worktree matches and whose launch-through-end window contains the record timestamp.
-It writes a durable task snapshot only when at least one record has exactly one owner.
+It writes a durable task snapshot only when at least one record has exactly one owner and the export covers that owner's complete lifecycle.
 No-record windows remain missing because an empty export window cannot prove that every worker runtime was observable.
 Overlapping windows remain unassigned instead of choosing one.
+Lifecycle windows that cross an export boundary retain their worktree mapping, but their matching records and dollars are classified as `incomplete-export-window`, their missing coverage bounds are printed, and task cost remains absent.
 
 Every recovered snapshot records the task window, record count, worktree key, and SHA-256 of the export.
-The command reports the attributed subtotal and classifies every remaining record and dollar as `unmapped-worktree`, `outside-task-window`, `ambiguous-worktree-key`, or `ambiguous-task-window`.
+The command reports the attributed subtotal and classifies every remaining record and dollar as `unmapped-worktree`, `outside-task-window`, `ambiguous-worktree-key`, `ambiguous-task-window`, or `incomplete-export-window`.
 It also prints codeburn's summary total, the sum of per-record costs used for task attribution, and their exact rounding delta.
 This matters because codeburn exports task-addressable record costs at cent precision while its summary and interactive report retain aggregate pricing precision.
 The raw export record is the bounded attribution evidence, so no difference is hidden or interpolated.
