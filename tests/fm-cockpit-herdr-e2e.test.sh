@@ -289,7 +289,8 @@ relaunch_painter() {  # <pane> <section> [<identity arguments...>]
   local pane=$1 section=$2
   shift 2
   lab pane run "$pane" \
-    env "FM_HOME=$HOME_DIR" "FM_HERDR_LAB_HELPER=$LAB_HELPER" "FM_HERDR_LAB_SESSION=$SESSION" \
+    env -u HERDR_SESSION -u HERDR_PANE_ID \
+    "FM_HOME=$HOME_DIR" "FM_HERDR_LAB_HELPER=$LAB_HELPER" "FM_HERDR_LAB_SESSION=$SESSION" \
     "$ROOT/bin/fm-fleet-view.sh" \
     --geometry-command "$ROOT/bin/fm-herdr-pane-geometry.sh" \
     "$@" --watch --section "$section" >/dev/null \
@@ -300,12 +301,41 @@ stop_fleet_painter "$FLEET_FIRST"
 wait_for_fleet_state fleet-no-fleet-process \
   || fail "status kept reporting a live region after its painter stopped"
 
-# Unidentified relaunch: the exact executable, the exact home, the recorded
-# section, and --geometry-command - everything the old liveness check looked at.
+# Unidentified relaunch: explicitly remove the ambient identity while retaining
+# the exact executable, home, recorded section, and geometry command that the
+# old liveness check inspected.
+TRANSIENT_GEOMETRY="$TMP_ROOT/transient-geometry"
+cat > "$TRANSIENT_GEOMETRY" <<SH
+#!/usr/bin/env bash
+exit 75
+SH
+chmod +x "$TRANSIENT_GEOMETRY"
+lab pane run "$FLEET_FIRST" \
+  env -u HERDR_SESSION -u HERDR_PANE_ID \
+  "FM_HOME=$HOME_DIR" "FM_HERDR_LAB_HELPER=$LAB_HELPER" \
+  "FM_HERDR_LAB_SESSION=$SESSION" "$ROOT/bin/fm-fleet-view.sh" \
+  --geometry-command "$TRANSIENT_GEOMETRY" \
+  --section "$FLEET_SECTION" >/dev/null \
+  || fail "could not run the unidentified degraded-painter reproduction"
+UNIDENTIFIED_TEXT=
+UNIDENTIFIED_WAITED=0
+while [ "$UNIDENTIFIED_WAITED" -lt 150 ]; do
+  UNIDENTIFIED_TEXT=$(lab pane read "$FLEET_FIRST" --source visible) \
+    || fail "could not read the unidentified relaunched pane"
+  case "$UNIDENTIFIED_TEXT" in
+    *"FLEET VIEW DEGRADED"*"Drawn pane"*"unavail"*) break ;;
+  esac
+  sleep 0.2
+  UNIDENTIFIED_WAITED=$((UNIDENTIFIED_WAITED + 1))
+done
+case "$UNIDENTIFIED_TEXT" in
+  *"FLEET VIEW DEGRADED"*"Drawn pane"*"unavail"*) ;;
+  *) fail "the unidentified relaunch did not exhibit the reported degraded panel: $UNIDENTIFIED_TEXT" ;;
+esac
 relaunch_painter "$FLEET_FIRST" "$FLEET_SECTION"
-wait_for_fleet_state fleet-no-pane-identity \
+wait_for_fleet_state fleet-no- \
   || fail "a painter relaunched with no pane identity was reported live: $(cockpit_env "$ROOT/bin/fm-cockpit.sh" status 2>&1)"
-pass "a painter relaunched into an existing pane without its identity is never reported live"
+pass "a painter relaunched without ambient identity degrades visibly and is never reported live"
 
 # Identified relaunch: the shape the adapter itself uses.
 stop_fleet_painter "$FLEET_FIRST"

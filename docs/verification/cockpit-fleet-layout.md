@@ -135,7 +135,7 @@ HERDR_LAB_HELPER=/absolute/path/to/bin/fm-herdr-lab.sh \
   bash tests/fm-cockpit-herdr-e2e.test.sh
 ```
 
-The real-Herdr suite relaunches a painter into an already-recorded fleet pane twice: once without the identity, which frame validation must refuse as `fleet-no-pane-identity`, and once with it, which must reach a live frame, read a usable rectangle, and leave no degraded panel on the pane.
+The real-Herdr suite relaunches a painter into an already-recorded fleet pane twice: once after explicitly removing both ambient identity variables, which must render the reported degraded panel and which frame validation must refuse as unavailable, and once with explicit identity arguments, which must reach a live frame, read a usable rectangle, and leave no degraded panel on the pane.
 
 ### Red-first provenance
 
@@ -156,7 +156,7 @@ It was instead confirmed at the shipped head `10c73740a78c83bbcf872fa269346cec8a
 not ok - a painter relaunched with no pane identity was reported live: COCKPIT: live session=fm-lab-cockpit-e2e-3933537-19182 workspace=w1 tab=w1:t1 head=w1:p1 viewport=w1:p6 display=all-homes steer=current-home
 ```
 
-That is the reported defect through its own path: a painter relaunched into an existing recorded pane, unable to resolve a rectangle, while frame status called the region live.
+That historical red-first result proves only that frame status called the unidentified relaunch live; the current real-Herdr regression separately requires the stripped-identity relaunch to render the reported degraded panel before it checks that status refuses the frame.
 Its proof-file list is `tests/fm-cockpit-herdr-e2e.test.sh`, `bin/backends/herdr.sh`, `bin/fm-fleet-view.sh`, and `bin/fm-herdr-pane-geometry.sh`.
 
 ### Limitations
