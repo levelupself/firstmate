@@ -1115,6 +1115,8 @@ EOF
     "the read-once contract lost its core instruction"
   assert_contains "$out" "STARTUP TRUNCATED banner named the stage that would have printed it" \
     "the read-once contract does not void itself for a stage that never ran"
+  assert_contains "$out" "absence meaning declared in this command's header" \
+    "the read-once contract still routes ABSENT interpretation to AGENTS.md"
   assert_contains "$out" "The READ-ONCE CONTRACT" \
     "the closing reminder does not point back at the contract"
 
