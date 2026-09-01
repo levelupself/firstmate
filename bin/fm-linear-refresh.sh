@@ -5,6 +5,7 @@
 # Linear a browsable view regenerated on request. This is that regeneration, and
 # it is repeatable: a second run updates the issues the first run created instead
 # of doubling the board.
+# Run --dry-run first when the refresh plan is worth showing before it mutates the mirror.
 #
 # Usage: fm-linear-refresh.sh [--dry-run] [--team <KEY>] [--backlog <file>] [--archive <file>]
 #

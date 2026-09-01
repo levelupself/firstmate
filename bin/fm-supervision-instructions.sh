@@ -9,6 +9,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$REPO_ROOT}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 DOC_DIR="$REPO_ROOT/docs/supervision-protocols"
+COMMON_SNIPPET="$DOC_DIR/common.md"
 
 HARNESS=
 READ_ONLY=0
@@ -210,6 +211,8 @@ else
   printf '%s\n' '- X mode: inactive; use the default watcher cadence.'
 fi
 ordinary_wake_line
+printf '\n'
+cat "$COMMON_SNIPPET"
 printf '\n'
 render_snippet
 printf '\n'

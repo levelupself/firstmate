@@ -418,11 +418,13 @@ section() { printf '\n%s\n%s\n%s\n' "$RULE" "$1" "$RULE"; }
 subsection() { printf '\n%s\n%s\n' "$1" "$SUBRULE"; }
 
 # print_file_or_absent <path> <label>: full contents under a labeled
-# subsection, or an explicit ABSENT marker. Absence is semantically
-# meaningful for every one of these files (captain.md absent = firstmate
-# repo built-in defaults, projects.md absent = rebuild from clones, etc. -
-# AGENTS.md section 3) and must never be confused with an empty-but-present
-# file, so the two cases print differently.
+# subsection, or an explicit ABSENT marker. Absence is semantically meaningful
+# for every one of these files: captain.md absent means firstmate's built-in
+# defaults, captain-shared.md absent means no shared captain preferences,
+# secondmates.md absent means no registered secondmates, learnings.md absent
+# means no captured learnings, and projects.md absent means rebuild the project
+# registry from the clones before dispatch. None may be confused with an
+# empty-but-present file, so the two cases print differently.
 print_file_or_absent() {
   local path=$1 label=$2
   subsection "$label"
@@ -842,7 +844,8 @@ data/backlog.md or state/*.status: re-reading everything defeats the entire
 point of this command.
 
 Go to a source directly only when:
-  - this digest flagged it ABSENT (then rebuild or create it per AGENTS.md),
+  - this digest flagged it ABSENT (then rebuild or create it from the
+    absence meaning declared in this command's header),
   - its contents looked unparseable or corrupt,
   - an individual full status log is needed for older wake-event history, or a
     status line was capped and its tail matters (each task's full log path is

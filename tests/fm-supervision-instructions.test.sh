@@ -27,6 +27,26 @@ test_unknown_fallback() {
   pass "renderer falls back to unknown.md for unverified harness names"
 }
 
+test_common_wake_contract_is_emitted_for_every_harness() {
+  local out
+  out=$("$RENDER" --harness codex)
+  assert_contains "$out" "Common wake-handling procedure." \
+    "codex supervision omitted the common wake-handling procedure"
+  assert_contains "$out" "For \`signal:\`" \
+    "codex supervision omitted signal handling"
+  assert_contains "$out" "For \`stale:\`" \
+    "codex supervision omitted stale handling"
+  assert_contains "$out" "For \`check:\`" \
+    "codex supervision omitted check handling"
+  assert_contains "$out" "For \`heartbeat:\`" \
+    "codex supervision omitted heartbeat handling"
+
+  out=$("$RENDER" --harness not-real)
+  assert_contains "$out" "Common wake-handling procedure." \
+    "unknown-harness supervision omitted the common wake-handling procedure"
+  pass "renderer includes the harness-neutral wake procedure in every supervision block"
+}
+
 test_conditional_stanzas() {
   local home config out
   home="$TMP_ROOT/conditional-home"
@@ -178,6 +198,7 @@ test_pi_snippet_uses_effective_extension_path() {
 
 test_selected_harness_block_only
 test_unknown_fallback
+test_common_wake_contract_is_emitted_for_every_harness
 test_conditional_stanzas
 test_repair_lines
 test_cross_harness_ordinary_continuation_and_repair_matrix
