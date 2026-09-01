@@ -1635,7 +1635,7 @@ function readBackfillTitle(dataDir, taskId) {
   return lines.slice(taskHeader + 1).find(line => line.trim())?.trim() || taskId
 }
 
-function writeBackfillSnapshot(options, task, aggregation, exportHash, replaceExisting) {
+function planBackfillSnapshot(options, task, aggregation, exportHash, replaceExisting) {
   const models = sortedBy([...aggregation.models.values()], model =>
     [model.provider, model.name].join(KEY_SEPARATOR))
   const snapshot = {
@@ -1684,39 +1684,57 @@ function writeBackfillSnapshot(options, task, aggregation, exportHash, replaceEx
     },
   }
   const taskDir = path.join(options.dataDir, task.task)
+  let taskDirExists = true
   try {
     const stat = fs.lstatSync(taskDir)
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('task usage directory is not a regular directory')
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error
-    fs.mkdirSync(taskDir, {recursive: true, mode: 0o700})
+    taskDirExists = false
   }
   const target = path.join(taskDir, 'usage.json')
   let existing = null
-  try {
-    const stat = fs.lstatSync(target)
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('task usage snapshot is not a regular file')
-    existing = fs.readFileSync(target)
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error
+  if (taskDirExists) {
+    try {
+      const stat = fs.lstatSync(target)
+      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('task usage snapshot is not a regular file')
+      existing = fs.readFileSync(target)
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
   }
   const snapshotBytes = Buffer.from(`${JSON.stringify(snapshot)}\n`)
-  if (existing?.equals(snapshotBytes)) return
+  if (existing?.equals(snapshotBytes)) return {taskDir, target, snapshotBytes, existing, backup: null, noop: true}
   if (existing !== null && !replaceExisting) {
     throw new Error(`task ${task.task} already has a different usage snapshot; pass --replace-existing to preserve and replace it`)
   }
+  let backup = null
   if (existing !== null) {
     const priorHash = crypto.createHash('sha256').update(existing).digest('hex')
-    const backup = path.join(taskDir, `usage.pre-backfill.${priorHash}.json`)
+    backup = path.join(taskDir, `usage.pre-backfill.${priorHash}.json`)
     try {
-      fs.writeFileSync(backup, existing, {mode: 0o600, flag: 'wx'})
+      const stat = fs.lstatSync(backup)
+      if (!stat.isFile() || stat.isSymbolicLink() || !fs.readFileSync(backup).equals(existing)) {
+        throw new Error(`task ${task.task} has a conflicting preserved usage artifact`)
+      }
     } catch (error) {
-      if (error?.code !== 'EEXIST' || !fs.readFileSync(backup).equals(existing)) throw error
+      if (error?.code !== 'ENOENT') throw error
     }
   }
+  return {taskDir, target, snapshotBytes, existing, backup, noop: false}
+}
+
+function applyBackfillSnapshot(plan) {
+  if (plan.noop) return
+  fs.mkdirSync(plan.taskDir, {recursive: true, mode: 0o700})
+  if (plan.existing !== null && plan.backup !== null && !fs.existsSync(plan.backup)) {
+    fs.writeFileSync(plan.backup, plan.existing, {mode: 0o600, flag: 'wx'})
+  }
+  const taskDir = plan.taskDir
+  const target = plan.target
   const staged = path.join(taskDir, `.usage.backfill.${process.pid}.${crypto.randomBytes(8).toString('hex')}`)
   try {
-    fs.writeFileSync(staged, snapshotBytes, {mode: 0o600, flag: 'wx'})
+    fs.writeFileSync(staged, plan.snapshotBytes, {mode: 0o600, flag: 'wx'})
     fs.renameSync(staged, target)
   } finally {
     try { fs.unlinkSync(staged) } catch {}
@@ -1853,9 +1871,9 @@ function backfillCodeburn(options, argv) {
     modelAggregation.calls += 1
     for (const [key, value] of Object.entries(values)) modelAggregation[key] += value
   }
-  for (const aggregation of assigned.values()) {
-    writeBackfillSnapshot(options, aggregation.task, aggregation, exportHash, replaceExisting)
-  }
+  const plans = [...assigned.values()].map(aggregation =>
+    planBackfillSnapshot(options, aggregation.task, aggregation, exportHash, replaceExisting))
+  for (const plan of plans) applyBackfillSnapshot(plan)
   return {
     period: period.label,
     exportHash,

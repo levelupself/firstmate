@@ -308,16 +308,17 @@ let text
 try {
   text = fs.readFileSync(rawFile, 'utf8')
 } catch (error) {
-  if (error?.code === 'ENOENT') process.exit(0)
   process.exit(2)
 }
 let section = 'preamble'
 let columns = null
+let declaredLedger = false
 for (const line of text.split('\n')) {
   if (!line) continue
   if (line.startsWith('# schema=')) {
     section = line.trim() === '# schema=firstmate-effort-attribution-v2' ? 'v2' : 'unknown'
     columns = null
+    if (section === 'unknown') process.exit(2)
     continue
   }
   const fields = line.split('\t')
@@ -327,16 +328,17 @@ for (const line of text.split('\n')) {
     const knownV2 = section === 'v2' && fields[0] === 'task' && fields[1] === 'worktree'
     if (knownV1 || knownV2) {
       columns = fields
+      declaredLedger = true
       continue
     }
-    if (section === 'v2') process.exit(2)
-    continue
+    process.exit(2)
   }
   if (fields.length !== columns.length) process.exit(2)
   const row = Object.fromEntries(columns.map((name, index) => [name, fields[index]]))
   if (section === 'preamble' && normalize(row.worktree) === target && row.task !== taskId) process.exit(1)
   if (priorOwnerOverlapsPeriod(row, 'raw')) process.exit(1)
 }
+if (!declaredLedger) process.exit(2)
 NODE
   then
     ZERO_STATUS=0

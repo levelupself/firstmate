@@ -225,6 +225,22 @@ const fixture = JSON.parse(fs.readFileSync(file, 'utf8'))
 fixture.projects = fixture.projects.filter(project => project.name === 'another-opaque-codeburn-key')
 fs.writeFileSync(file, `${JSON.stringify(fixture)}\n`)
 NODE
+rm -f "$HOME_DIR/data/cost-attribution.tsv"
+if FM_HOME="$HOME_DIR" "$USAGE" fresh-late-key --baseline >/dev/null 2>"$TMP_ROOT/missing-ledger.err"; then
+  fail "a missing ownership ledger proved a fresh zero baseline"
+fi
+assert_contains "$(cat "$TMP_ROOT/missing-ledger.err")" "could not be verified" \
+  "a missing ownership ledger did not preserve attribution uncertainty"
+printf '%s\n' 'unstructured ownership data' > "$HOME_DIR/data/cost-attribution.tsv"
+if FM_HOME="$HOME_DIR" "$USAGE" fresh-late-key --baseline >/dev/null 2>"$TMP_ROOT/incomplete-ledger.err"; then
+  fail "an incomplete ownership ledger proved a fresh zero baseline"
+fi
+assert_contains "$(cat "$TMP_ROOT/incomplete-ledger.err")" "could not be verified" \
+  "an incomplete ownership ledger did not preserve attribution uncertainty"
+printf '%s\n' '# schema=firstmate-effort-attribution-v2' \
+  > "$HOME_DIR/data/cost-attribution.tsv"
+printf 'task\tworktree\tharness\tmodel\teffort\tkind\tproject\tstarted_at\tended_at\n' \
+  >> "$HOME_DIR/data/cost-attribution.tsv"
 FM_HOME="$HOME_DIR" "$USAGE" fresh-late-key --baseline \
   || fail "a fresh worktree without a pre-call codeburn key did not record a zero baseline"
 export FM_CODEBURN_FIXTURE="$TMP_ROOT/fresh-after-first-call.json"

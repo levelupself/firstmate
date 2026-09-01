@@ -851,6 +851,18 @@ NODE
 pass 'codeburn export records backfill exact task windows and classify every unattributed dollar'
 
 BACKFILL_BEFORE=$(cat "$FM_HOME/data/920-backfill-a/usage.json")
+rm -f "$FM_HOME/data/920-backfill-a/usage.json"
+printf '%s\n' '{"schema":"fm-task-usage.v2","id":"921-backfill-b","correlation":{"baseline":true}}' \
+  > "$FM_HOME/data/921-backfill-b/usage.json"
+if "$STORE" backfill-codeburn "$BACKFILL_EXPORT" >/dev/null 2>"$ROOTDIR/backfill-batch-refusal.err"; then
+  fail 'backfill accepted a later conflicting usage snapshot'
+fi
+[ ! -e "$FM_HOME/data/920-backfill-a/usage.json" ] \
+  || fail 'backfill wrote an earlier task before detecting a later conflict'
+[ "$(cat "$FM_HOME/data/921-backfill-b/usage.json")" = '{"schema":"fm-task-usage.v2","id":"921-backfill-b","correlation":{"baseline":true}}' ] \
+  || fail 'failed batch changed the conflicting usage snapshot'
+"$STORE" backfill-codeburn --replace-existing "$BACKFILL_EXPORT" >/dev/null \
+  || fail 'explicit batch restoration failed'
 printf '%s\n' '{"schema":"fm-task-usage.v2","id":"920-backfill-a","correlation":{"baseline":true}}' \
   > "$FM_HOME/data/920-backfill-a/usage.json"
 if "$STORE" backfill-codeburn "$BACKFILL_EXPORT" >/dev/null 2>"$ROOTDIR/backfill-refusal.err"; then
