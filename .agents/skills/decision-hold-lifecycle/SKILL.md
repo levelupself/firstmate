@@ -26,6 +26,7 @@ When the captain's answer routes no follow-up work at all, such as a declined pr
 A hold closed outside this owner leaves no durable answer, so the completion gate keeps failing until `bin/fm-decision-hold.sh repair` records the decision the captain actually gave; neither unrouted path may stand in for an answer the captain has not given.
 Resolved findings, recommendations that need no captain choice, and prose that merely sounds decision-like do not create holds.
 Bearings reads the resulting structured state and must never compensate by scraping historical reports, visual-review artifacts, terminal output, chat, or other prose.
+When several actionable decisions benefit from a Lavish board, generate it with `bin/fm-decision-surface.mjs`; let the fleet snapshot supply each hold's identity, title, and reason, while the agent-authored input supplies evidence, precise option consequences, an honest recommendation when one exists, grouping, and optional free-text prompts.
 
 ## Operating sequence
 
@@ -33,10 +34,11 @@ Bearings reads the resulting structured state and must never compensate by scrap
 2. Inventory only genuine unresolved choices that require the captain.
 3. For each choice, choose a stable key and use the script's `hold` command with a concise title, reason, and repository.
 4. Run the script's `complete` command with the full unresolved-key inventory for that review pass.
-5. Relay the choices to the captain as decisions from Bearings' Captain's Call section under `AGENTS.md` section 9; do not use the word hold in captain chat.
+5. Relay the choices to the captain as decisions from Bearings' Captain's Call section under `AGENTS.md` section 9; use `bin/fm-decision-surface.mjs` when a structured Lavish board is warranted, and do not use the word hold in captain chat.
 6. If the captain authorizes dependent work, record it with normal tasks-axi commands and block it by the hold identity.
 7. Put the captain's exact durable decision in a file and close the hold with the script's `resolve` command and every routed task, its `decline` command when the answer routes no work, or its `repair` command when the hold was already closed outside the script.
 8. Confirm Bearings no longer shows the closed hold and that any routed work remains in structured backlog state.
 
 `bin/fm-decision-hold.sh --help` owns command syntax, identity construction, completion attestation, retry behavior, and close ordering.
+`bin/fm-decision-surface.mjs --help` and its header own the decision-board input schema and invocation mechanics.
 `docs/decision-hold-lifecycle.md` records the mechanism and regression evidence without restating this policy.
