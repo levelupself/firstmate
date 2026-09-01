@@ -1489,9 +1489,13 @@ if [ "${1:-}" = pane ] && [ "${2:-}" = get ]; then
   tab=$(cat "$PAINTER_HOME/reported-tab" 2>/dev/null || printf 'w9:t1')
   cwd=$PAINTER_HOME
   [ "$mode" != home ] || cwd=/wrong/home
-  jq -cn --arg pane "${HERDR_PANE_ID:?}" --arg tab "$tab" --arg cwd "$cwd" \
+  jq -cn --arg pane "${3:-${HERDR_PANE_ID:?}}" --arg tab "$tab" --arg cwd "$cwd" \
     '{result:{pane:{pane_id:$pane,workspace_id:"w9",tab_id:$tab,foreground_cwd:$cwd}}}'
   exit 0
+fi
+asked_pane=${HERDR_PANE_ID:-}
+if [ "${1:-}" = pane ] && [ "${2:-}" = process-info ] && [ "${3:-}" = --pane ]; then
+  asked_pane=${4:-$asked_pane}
 fi
 case "$mode" in
   executable) script=/wrong/checkout/bin/not-fleet-view.sh ;;
@@ -1502,11 +1506,13 @@ if [ "$mode" = watch ]; then
     '["bash",$script,"--geometry-command",$geometry]')
 else
   argv=$(jq -cn --arg script "$script" --arg geometry "$geometry" \
+    --arg session "${PAINTER_REPORTED_SESSION:-lab-session}" --arg pane "$asked_pane" \
     --arg sections "${PAINTER_REPORTED_SECTIONS:-}" '
-    ["bash",$script,"--geometry-command",$geometry,"--watch","0.1"]
+    ["bash",$script,"--geometry-command",$geometry,
+     "--herdr-session",$session,"--herdr-pane",$pane,"--watch","0.1"]
     + (if $sections == "" then [] else ["--section",$sections] end)')
 fi
-jq -cn --arg pane "${HERDR_PANE_ID:?}" --argjson argv "$argv" '
+jq -cn --arg pane "${asked_pane:?}" --argjson argv "$argv" '
   {result:{type:"pane_process_info",process_info:{pane_id:$pane,foreground_processes:[{argv:$argv}]}}}'
 SH
   chmod +x "$fakebin/herdr"
@@ -1600,6 +1606,79 @@ test_watch_outside_an_adopted_frame_keeps_painting() {
   reap_painter "$pid"
   [ "$rc" = 0 ] || fail "a banner on another tab must not be treated as part of the frame: $(cat "$home/other-tab.out")"
   pass "a watched banner outside the adopted fleet region keeps painting"
+}
+
+# --- explicit pane identity -------------------------------------------------
+#
+# A cockpit painter is started by bin/backends/herdr.sh with `herdr pane run`,
+# and the only pane identity it had until now was whatever Herdr happened to
+# leave in the pane environment. Nothing in this repo sets those variables, so
+# the painter could not tell a correct ambient identity from a missing or forged
+# one, and a painter that cannot resolve an identity cannot read a rectangle and
+# degrades on every redraw. The adapter knows exactly which pane it recorded, so
+# it states that identity on the command line and the painter uses it.
+test_an_explicitly_bound_painter_needs_no_ambient_identity() {
+  local home dir pid geometry args
+  home=$(make_home painter-explicit-identity)
+  dir=$(painter_bin "$home")
+  # The strict painter-ownership check matches the geometry command by its exact
+  # basename, so a recording stand-in has to keep that name and live in its own
+  # directory rather than take a new one.
+  mkdir -p "$home/recording-bin"
+  geometry="$home/recording-bin/fm-herdr-pane-geometry.sh"
+  args="$home/geometry-args"
+  cat > "$geometry" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$args"
+printf '45 20\n'
+SH
+  chmod +x "$geometry"
+  write_cockpit_record "$home" 'w9:p2' 'waiting'
+  # Deliberately no HERDR_SESSION and no HERDR_PANE_ID: the command line is the
+  # whole identity, which is the point of the channel.
+  env -u HERDR_SESSION -u HERDR_PANE_ID \
+    FM_HOME="$home" COLUMNS=45 LINES=20 HERDR_TAB_ID=w9:t1 \
+    PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" \
+    PAINTER_GEOMETRY="$geometry" PAINTER_REPORTED_SECTIONS=waiting \
+    PATH="$home/fakebin:$PATH" \
+    "$dir/fm-fleet-view.sh" --geometry-command "$geometry" \
+      --herdr-session lab-session --herdr-pane w9:p2 --watch 0.1 --section waiting \
+    > "$home/explicit.out" 2> "$home/explicit.err" &
+  pid=$!
+  wait_for_paint "$home/explicit.out" 'YOUR DECISIONS' \
+    || { reap_painter "$pid"; fail "an explicitly bound painter never painted: $(cat "$home/explicit.err")"; }
+  [ -e "$home/state/.fleet-painter-w9:p2.lock" ] \
+    || { reap_painter "$pid"; fail "an explicitly bound painter did not claim its recorded pane"; }
+  reap_painter "$pid"
+  LC_ALL=C grep -q -- '--session lab-session --pane w9:p2' "$args" \
+    || fail "the painter did not hand its bound identity to the geometry command: $(cat "$args" 2>/dev/null)"
+  pass "a painter bound on the command line resolves geometry with no ambient pane identity"
+}
+
+test_a_half_given_pane_identity_is_refused() {
+  local home dir out rc
+  home=$(make_home painter-half-identity)
+  dir=$(painter_bin "$home")
+  write_cockpit_record "$home" 'w9:p2' 'waiting'
+  rc=0
+  out=$(fm_run_timed 30 env FM_HOME="$home" COLUMNS=45 LINES=20 \
+    PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" PATH="$home/fakebin:$PATH" \
+    "$dir/fm-fleet-view.sh" --herdr-pane w9:p2 --watch 0.1 2>&1) || rc=$?
+  expect_code 2 "$rc" "a pane without its session must be refused before any paint"
+  assert_not_contains "$out" 'FLEET STATUS' \
+    "a half-given identity must not paint a frame"
+  rc=0
+  fm_run_timed 30 env FM_HOME="$home" COLUMNS=45 LINES=20 \
+    PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" PATH="$home/fakebin:$PATH" \
+    "$dir/fm-fleet-view.sh" --herdr-session lab-session --watch 0.1 >/dev/null 2>&1 || rc=$?
+  expect_code 2 "$rc" "a session without its pane must be refused before any paint"
+  rc=0
+  fm_run_timed 30 env FM_HOME="$home" COLUMNS=45 LINES=20 \
+    PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" PATH="$home/fakebin:$PATH" \
+    "$dir/fm-fleet-view.sh" --herdr-session lab-session --herdr-pane 'w9 p2' --watch 0.1 \
+    >/dev/null 2>&1 || rc=$?
+  expect_code 2 "$rc" "a malformed pane value must be refused before any paint"
+  pass "an incomplete or malformed explicit pane identity is refused rather than guessed at"
 }
 
 test_watch_refuses_to_paint_inside_a_bound_frame_it_is_not_recorded_for() {
@@ -1997,6 +2076,8 @@ test_read_paths_do_not_mutate_fleet_state
 test_watch_redraws_and_exits_cleanly
 test_watch_computes_before_paint_and_erases_shorter_frames
 test_watch_outside_an_adopted_frame_keeps_painting
+test_an_explicitly_bound_painter_needs_no_ambient_identity
+test_a_half_given_pane_identity_is_refused
 test_watch_refuses_to_paint_inside_a_bound_frame_it_is_not_recorded_for
 test_watch_retires_when_its_pane_leaves_the_binding
 test_watch_retires_when_its_bound_frame_record_disappears

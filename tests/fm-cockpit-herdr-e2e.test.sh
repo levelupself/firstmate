@@ -229,6 +229,118 @@ RECORD_AFTER=$(sha256sum "$HOME_DIR/state/.herdr-cockpit" | awk '{print $1}')
 assert_contains "$RESTART_OUT" "re-adopted Herdr frame" "restart did not report re-adoption"
 pass "real Herdr restart re-adopts the recorded frame without rebuilding it"
 
+# Acceptance: a fleet painter started into a pane that already exists resolves
+# its drawn rectangle exactly as the one the region build created, and a painter
+# started into that same pane WITHOUT its identity is never reported live.
+#
+# The region build splits a pane and runs the painter into it in one motion, so
+# every painter this adapter had ever started came from a brand-new pane. A
+# painter relaunched into an existing recorded pane is the path an operator and
+# every recovery take, and it is the one that was never exercised end to end.
+# It has to reach the same result, and when it cannot it has to be visible as
+# not-live rather than passing every argv check while painting a degraded panel.
+FLEET_FIRST=$(grep '^fleet_pane_ids=' "$HOME_DIR/state/.herdr-cockpit" | cut -d= -f2- | cut -d, -f1)
+FLEET_SECTION=$(grep '^fleet_pane_sections=' "$HOME_DIR/state/.herdr-cockpit" | cut -d= -f2- | cut -d'|' -f1)
+[ -n "$FLEET_FIRST" ] && [ -n "$FLEET_SECTION" ] \
+  || fail "the adopted frame recorded no fleet pane to relaunch into"
+
+# The painter's own foreground process, reported by the server rather than
+# matched against this host's whole process table, so nothing outside this lab
+# session can be selected.
+fleet_painter_pids() {  # <pane> -> pids of fleet-view processes the server reports
+  local pid cmd
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null) || continue
+    case "$cmd" in *fm-fleet-view.sh*) ;; *) continue ;; esac
+    grep -qa "FM_HOME=$HOME_DIR" "/proc/$pid/environ" 2>/dev/null || continue
+    printf '%s\n' "$pid"
+  done < <(lab pane process-info --pane "$1" \
+    | jq -r '.result.process_info.foreground_processes[]?.pid // empty')
+}
+
+stop_fleet_painter() {  # <pane>
+  local pid waited=0
+  while IFS= read -r pid; do
+    kill "$pid" 2>/dev/null || true
+  done < <(fleet_painter_pids "$1")
+  while [ -n "$(fleet_painter_pids "$1")" ] && [ "$waited" -lt 100 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  [ -z "$(fleet_painter_pids "$1")" ] || fail "the painter in $1 would not stop"
+}
+
+wait_for_fleet_state() {  # <expected> -> 0 once status settles, 1 on timeout
+  local want=$1 waited=0
+  while [ "$waited" -lt 150 ]; do
+    if [ "$want" = live ]; then
+      cockpit_env "$ROOT/bin/fm-cockpit.sh" status >/dev/null 2>&1 && return 0
+    else
+      cockpit_env "$ROOT/bin/fm-cockpit.sh" status 2>&1 >/dev/null | grep -q "$want" && return 0
+    fi
+    sleep 0.2
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+relaunch_painter() {  # <pane> <section> [<identity arguments...>]
+  local pane=$1 section=$2
+  shift 2
+  lab pane run "$pane" \
+    env "FM_HOME=$HOME_DIR" "FM_HERDR_LAB_HELPER=$LAB_HELPER" "FM_HERDR_LAB_SESSION=$SESSION" \
+    "$ROOT/bin/fm-fleet-view.sh" \
+    --geometry-command "$ROOT/bin/fm-herdr-pane-geometry.sh" \
+    "$@" --watch --section "$section" >/dev/null \
+    || fail "could not relaunch a painter into the existing pane $pane"
+}
+
+stop_fleet_painter "$FLEET_FIRST"
+wait_for_fleet_state fleet-no-fleet-process \
+  || fail "status kept reporting a live region after its painter stopped"
+
+# Unidentified relaunch: the exact executable, the exact home, the recorded
+# section, and --geometry-command - everything the old liveness check looked at.
+relaunch_painter "$FLEET_FIRST" "$FLEET_SECTION"
+wait_for_fleet_state fleet-no-pane-identity \
+  || fail "a painter relaunched with no pane identity was reported live: $(cockpit_env "$ROOT/bin/fm-cockpit.sh" status 2>&1)"
+pass "a painter relaunched into an existing pane without its identity is never reported live"
+
+# Identified relaunch: the shape the adapter itself uses.
+stop_fleet_painter "$FLEET_FIRST"
+relaunch_painter "$FLEET_FIRST" "$FLEET_SECTION" --herdr-session "$SESSION" --herdr-pane "$FLEET_FIRST"
+wait_for_fleet_state live \
+  || fail "a painter relaunched with its own identity never became live: $(cockpit_env "$ROOT/bin/fm-cockpit.sh" status 2>&1)"
+
+RELAUNCH_DRAWN=$(FM_HERDR_LAB_HELPER="$LAB_HELPER" FM_HERDR_LAB_SESSION="$SESSION" \
+  "$ROOT/bin/fm-herdr-pane-geometry.sh" --session "$SESSION" --pane "$FLEET_FIRST") \
+  || fail "the relaunched pane's authoritative rectangle could not be read"
+case "$RELAUNCH_DRAWN" in
+  [1-9]*' '[1-9]*) ;;
+  *) fail "the relaunched pane reported an unusable rectangle: $RELAUNCH_DRAWN" ;;
+esac
+
+# Liveness is satisfied as soon as the process exists, which can be before its
+# first repaint, so the screen is read until the previous generation's degraded
+# frame is gone rather than once at an arbitrary moment.
+RELAUNCH_TEXT=
+RELAUNCH_WAITED=0
+while [ "$RELAUNCH_WAITED" -lt 150 ]; do
+  RELAUNCH_TEXT=$(lab pane read "$FLEET_FIRST" --source visible) \
+    || fail "could not read the relaunched pane"
+  case "$RELAUNCH_TEXT" in
+    *"FLEET VIEW DEGRADED"*) ;;
+    *) break ;;
+  esac
+  sleep 0.2
+  RELAUNCH_WAITED=$((RELAUNCH_WAITED + 1))
+done
+case "$RELAUNCH_TEXT" in
+  *"FLEET VIEW DEGRADED"*) fail "the relaunched painter degraded instead of drawing: $RELAUNCH_TEXT" ;;
+esac
+pass "a painter relaunched into an existing recorded pane draws from the same authoritative rectangle"
+
 for id in cockpit-one cockpit-two cockpit-three; do
   cockpit_env env FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_CONFIG_OVERRIDE="$HOME_DIR/config" "$ROOT/bin/fm-teardown.sh" "$id" >/dev/null \

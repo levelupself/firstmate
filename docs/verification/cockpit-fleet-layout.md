@@ -89,6 +89,66 @@ HERDR_LAB_HELPER=/absolute/path/to/bin/fm-herdr-lab.sh \
 
 The focused probe distinguished a deleted cwd from a transient layout failure, the watch suite observed recovery on the third read with no close and one exact-pane close for both terminal cases, and two full public-followup runs left the guarded lab's pane inventory byte-identical to its baseline.
 
+## A painter's ambient pane identity is not a guarantee
+
+Verified on 2026-08-31 against herdr 0.8.0 on Linux, in an isolated `fm-lab-` session provisioned through `bin/fm-herdr-lab.sh` with the default-session tripwire.
+The question was whether a fleet painter can rely on the `HERDR_SESSION` and `HERDR_PANE_ID` its pane environment carries, since nothing in this repository sets them.
+
+A command run into a pane with no environment prefix receives the pane's own injected identity:
+
+```sh
+$ herdr pane run w1:p2 <probe>
+HERDR_PANE_ID=w1:p2
+HERDR_SESSION=fm-lab-pane-identity-ev-3598091-4233
+```
+
+The same command run with an `env` prefix receives whatever the caller wrote, unchanged:
+
+```sh
+$ herdr pane run w1:p2 env HERDR_SESSION=BOGUS-SESSION HERDR_PANE_ID=w99:p99 <probe>
+HERDR_PANE_ID=w99:p99
+HERDR_SESSION=BOGUS-SESSION
+```
+
+At pane creation the precedence is the other way round, and Herdr's own injection replaces a `--env` value for the same name:
+
+```sh
+$ herdr pane split w1:p2 --env HERDR_PANE_ID=PLACEHOLDER --direction down --ratio 0.5 --no-focus
+$ herdr pane run w1:p3 <probe>
+HERDR_PANE_ID=w1:p3
+HERDR_SESSION=fm-lab-pane-identity-ev-3598091-4233
+```
+
+Herdr 0.8.0 therefore neither reserves nor strips the `HERDR_` prefix on `pane run`.
+A painter relaunched into an existing recorded pane receives exactly the same ambient identity as one started into a pane the region build had just created, so that identity is not what separates the two paths.
+
+The operative fact is the second block: on this transport an ambient identity can be correct, absent, or forged, and the painter cannot tell which it holds.
+It is also unverifiable from outside the process, so frame validation could not distinguish a painter that can resolve its rectangle from one that cannot.
+`bin/backends/herdr.sh` therefore states the identity on the painter's command line, `bin/fm-fleet-view.sh` passes that same pair to its geometry probe, and frame validation requires the painter's argv to carry the exact recorded session and pane.
+The ambient variables remain the documented fallback for running `bin/fm-herdr-pane-geometry.sh` by hand.
+
+```sh
+bash tests/fm-herdr-pane-geometry.test.sh
+bash tests/fm-cockpit.test.sh
+bash tests/fm-fleet-snapshot-view.test.sh
+HERDR_LAB_HELPER=/absolute/path/to/bin/fm-herdr-lab.sh \
+  bash tests/fm-cockpit-herdr-e2e.test.sh
+```
+
+The real-Herdr suite relaunches a painter into an already-recorded fleet pane twice: once without the identity, which frame validation must refuse as `fleet-no-pane-identity`, and once with it, which must reach a live frame, read a usable rectangle, and leave no degraded panel on the pane.
+
+### Red-first provenance
+
+The portable identity-channel reproduction ran against code under test at exact full SHA `d00d218c95eb6b6af8855089343ddf929713fca8` and produced these exact pre-fix failures:
+
+```text
+not ok - an explicitly bound pane did not report geometry
+not ok - the first fleet pane was not launched bound to its own recorded pane (missing: '--herdr-session fmtest --herdr-pane w3:p18')
+```
+
+Their proof-file lists are `tests/fm-herdr-pane-geometry.test.sh` with `bin/fm-herdr-pane-geometry.sh`, and `tests/fm-cockpit.test.sh` with `bin/backends/herdr.sh`.
+Both test files carried then-new uncommitted assertion content, so each observation binds the code under test to the stated SHA without claiming clean-commit provenance for the test bytes.
+
 ## Deleted fixture directories caused the repeated redraw failure
 
 Verified on 2026-08-30 from the public-followup startup reproduction and its guarded Herdr and non-Herdr counterfactuals.
