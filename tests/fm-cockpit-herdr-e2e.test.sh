@@ -21,7 +21,7 @@ cleanup() {
   local id status=0
   [ "$CLEANED" = 0 ] || return 0
   CLEANED=1
-  for id in cockpit-one cockpit-two cockpit-three; do
+  for id in cockpit-one cockpit-two cockpit-three readyflip; do
     if [ -f "$HOME_DIR/state/$id.meta" ]; then
       PATH="$FAKEBIN:$PATH" HERDR_SESSION="$SESSION" FM_HOME="$HOME_DIR" \
         FM_COCKPIT_LAB_HELPER="$LAB_HELPER" FM_COCKPIT_LAB_SESSION="$SESSION" \
@@ -221,6 +221,69 @@ assert_contains "$PANEL_OUT" "FLEET STATUS" \
   "real cockpit panel omitted the read-only fleet view"
 pass "real Herdr cockpit panel renders the navigator, pinned head, and viewport"
 
+# Acceptance: the fleet region drops queued work the moment a worker takes it,
+# from a real dispatch rather than a rewritten backlog document.
+#
+# Dispatch publishes state/<id>.meta and nothing else; the backlog row is moved
+# to In flight later, by hand. Between the two the captain was being offered
+# work that already had a worker on it, on a pane he is meant to act from
+# without cross-checking. The panel has to reconcile that itself, on its own
+# redraw, with no focus change and no manual refresh.
+fleet_pane_for_section() {  # <section> -> the recorded pane painting it
+  local want=$1 ids sections index=0 spec
+  ids=$(grep '^fleet_pane_ids=' "$HOME_DIR/state/.herdr-cockpit" | cut -d= -f2-)
+  sections=$(grep '^fleet_pane_sections=' "$HOME_DIR/state/.herdr-cockpit" | cut -d= -f2-)
+  while IFS= read -r spec; do
+    index=$((index + 1))
+    [ "$spec" = "$want" ] || continue
+    printf '%s' "$ids" | cut -d, -f"$index"
+    return 0
+  done <<EOF
+$(printf '%s' "$sections" | tr '|' '\n')
+EOF
+  return 1
+}
+
+wait_for_pane_text() {  # <pane> <needle> <present|absent> -> 0 once it settles
+  local pane=$1 needle=$2 want=$3 waited=0 text
+  while [ "$waited" -lt 400 ]; do
+    text=$(lab pane read "$pane" --source visible 2>/dev/null || printf '')
+    case "$text" in
+      *"$needle"*) [ "$want" != present ] || return 0 ;;
+      *) [ "$want" != absent ] || return 0 ;;
+    esac
+    sleep 0.25
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+READY_PANE=$(fleet_pane_for_section ready) \
+  || fail "the adopted frame records no pane painting the ready section"
+cat > "$HOME_DIR/data/backlog.md" <<'EOF'
+# Backlog
+
+## Queued
+- [ ] readyflip - Queued work a worker is about to take (repo: alpha) (kind: ship)
+  Implement the thing, with acceptance criteria.
+EOF
+wait_for_pane_text "$READY_PANE" readyflip present \
+  || fail "the ready pane never showed the queued work: $(lab pane read "$READY_PANE" --source visible 2>/dev/null)"
+mkdir -p "$HOME_DIR/data/readyflip"
+printf 'Run the supplied verification command and stop.\nDelivery contract: mode=no-mistakes\n' \
+  > "$HOME_DIR/data/readyflip/brief.md"
+BACKLOG_BEFORE=$(sha256sum "$HOME_DIR/data/backlog.md" | awk '{print $1}')
+spawn_real readyflip readyflip-ok >/dev/null \
+  || fail "could not dispatch the queued work for real"
+[ -f "$HOME_DIR/state/readyflip.meta" ] \
+  || fail "the real dispatch published no worker record"
+wait_for_pane_text "$READY_PANE" readyflip absent \
+  || fail "the ready pane kept offering work a worker already held: $(lab pane read "$READY_PANE" --source visible 2>/dev/null)"
+BACKLOG_AFTER=$(sha256sum "$HOME_DIR/data/backlog.md" | awk '{print $1}')
+[ "$BACKLOG_BEFORE" = "$BACKLOG_AFTER" ] \
+  || fail "the backlog document changed, so this proved nothing about dispatch-driven membership"
+pass "a real dispatch clears the ready pane on its own redraw, before the backlog is edited"
+
 COUNT_BEFORE=$(lab pane list --workspace "$WORKSPACE" | jq '.result.panes | length')
 RECORD_BEFORE=$(sha256sum "$HOME_DIR/state/.herdr-cockpit" | awk '{print $1}')
 RESTART_OUT=$(cockpit_env "$ROOT/bin/fm-cockpit.sh" adopt) \
@@ -243,8 +306,10 @@ pass "real Herdr restart re-adopts the recorded frame without rebuilding it"
 # every recovery take, and it is the one that was never exercised end to end.
 # It has to reach the same result, and when it cannot it has to be visible as
 # not-live rather than passing every argv check while painting a degraded panel.
-FLEET_FIRST=$(grep '^fleet_pane_ids=' "$HOME_DIR/state/.herdr-cockpit" | cut -d= -f2- | cut -d, -f1)
-FLEET_SECTION=$(grep '^fleet_pane_sections=' "$HOME_DIR/state/.herdr-cockpit" | cut -d= -f2- | cut -d'|' -f1)
+FLEET_IDS=$(grep '^fleet_pane_ids=' "$HOME_DIR/state/.herdr-cockpit" | cut -d= -f2-)
+FLEET_SECTIONS=$(grep '^fleet_pane_sections=' "$HOME_DIR/state/.herdr-cockpit" | cut -d= -f2-)
+FLEET_FIRST=$(printf '%s' "$FLEET_IDS" | cut -d, -f1)
+FLEET_SECTION=$(printf '%s' "$FLEET_SECTIONS" | cut -d'|' -f1)
 [ -n "$FLEET_FIRST" ] && [ -n "$FLEET_SECTION" ] \
   || fail "the adopted frame recorded no fleet pane to relaunch into"
 
@@ -298,15 +363,31 @@ wait_for_fleet_state() {  # <expected> -> 0 once status settles, 1 on timeout
 relaunch_painter() {  # <pane> <section> <root> <environment-mode> [<interval>]
   local pane=$1 section=$2 root=$3 environment_mode=$4 interval=${5:-2}
   local -a identity_environment=()
+  local -a stated_identity=()
   [ "$environment_mode" != stripped ] \
     || identity_environment=(-u HERDR_SESSION -u HERDR_PANE_ID)
+  # The identity the adapter states on the command line, which is the only
+  # channel that does not depend on what Herdr chose to publish into the pane.
+  [ "$environment_mode" != identified ] \
+    || stated_identity=(--herdr-session "$SESSION" --herdr-pane "$pane")
   lab pane run "$pane" \
     env "${identity_environment[@]}" \
     "FM_HOME=$HOME_DIR" "FM_HERDR_LAB_HELPER=$LAB_HELPER" "FM_HERDR_LAB_SESSION=$SESSION" \
     "$root/bin/fm-fleet-view.sh" \
     --geometry-command "$root/bin/fm-herdr-pane-geometry.sh" \
+    "${stated_identity[@]}" \
     --watch "$interval" --section "$section" >/dev/null \
     || fail "could not relaunch a painter into the existing pane $pane"
+}
+
+wait_for_fleet_painter() {  # <pane> -> 0 once the server reports one
+  local pane=$1 waited=0
+  while [ "$waited" -lt 200 ]; do
+    [ -z "$(fleet_painter_pids "$pane")" ] || return 0
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  return 1
 }
 
 stop_fleet_painter "$FLEET_FIRST"
@@ -413,15 +494,114 @@ case "$POST_FIX_RC" in
   ''|0|*[!0-9]*) fail "current stripped-identity painter did not terminate unsuccessfully: rc=[$POST_FIX_RC] output=[$POST_FIX_TEXT]" ;;
 esac
 case "$POST_FIX_TEXT" in
-  *"FLEET VIEW STOPPING"*"authoritative pane state or cwd is permanently unavailable"*) ;;
+  *"FLEET VIEW STOPPING"*"no Herdr pane identity available"*) ;;
   *) fail "current stripped-identity painter did not report unusable pane identity: $POST_FIX_TEXT" ;;
+esac
+case "$POST_FIX_TEXT" in
+  *"cwd is gone"*|*"cwd is permanently unavailable"*)
+    fail "current stripped-identity painter blamed a cwd it never read: $POST_FIX_TEXT" ;;
 esac
 case "$POST_FIX_TEXT" in
   *"FLEET STATUS"*|*"YOUR DECISIONS"*) fail "current stripped-identity relaunch painted a fleet section: $POST_FIX_TEXT" ;;
 esac
 pass "current stripped identity is permanent and never reports a live fleet frame"
 
-for id in cockpit-one cockpit-two cockpit-three; do
+# Acceptance: the captain's observed cockpit split, end to end on real Herdr -
+# two fleet panes stopped while the third rendered normally beside them. Herdr
+# publishes HERDR_PANE_ID into a pane but never HERDR_SESSION, so a banner
+# relaunched without the adapter's stated identity holds half a pane identity
+# and can never resolve a rectangle, whatever the pane itself is doing. Its
+# sibling, still carrying the identity the adapter gave it, is untouched.
+# The two that stop must name the identity, because "geometry unavailable" is
+# what left three healthy panes looking like a broken cockpit.
+SPLIT_RENDERING=$(fleet_pane_for_section ready) \
+  || fail "the adopted frame records no pane painting the ready section"
+SPLIT_ONE=$(printf '%s' "$FLEET_IDS" | cut -d, -f1)
+SPLIT_THREE=$(printf '%s' "$FLEET_IDS" | cut -d, -f3)
+SPLIT_ONE_SECTION=$(printf '%s' "$FLEET_SECTIONS" | cut -d'|' -f1)
+SPLIT_THREE_SECTION=$(printf '%s' "$FLEET_SECTIONS" | cut -d'|' -f3)
+[ -n "$SPLIT_THREE" ] && [ "$SPLIT_THREE" != "$SPLIT_ONE" ] \
+  && [ "$SPLIT_RENDERING" != "$SPLIT_ONE" ] && [ "$SPLIT_RENDERING" != "$SPLIT_THREE" ] \
+  || fail "the adopted frame did not record three distinct fleet panes: [$FLEET_IDS]"
+
+stripped_capture() {  # <pane> <section> <capture-file> <tag>
+  local pane=$1 section=$2 capture=$3 tag=$4 runner
+  runner="$HOME_DIR/state/stripped-$tag.sh"
+  rm -f "$capture"
+  cat > "$runner" <<SH
+#!/usr/bin/env bash
+"$ROOT/bin/fm-fleet-view.sh" --geometry-command "$ROOT/bin/fm-herdr-pane-geometry.sh" \
+  --watch 1 --section "$section" > "$capture" 2>&1
+status=\$?
+printf '\nrc=%s\n' "\$status" >> "$capture"
+SH
+  chmod +x "$runner"
+  lab pane run "$pane" clear >/dev/null \
+    || fail "could not clear $pane before its stripped-identity relaunch"
+  lab pane run "$pane" \
+    "env -u HERDR_SESSION -u HERDR_PANE_ID FM_HOME=$HOME_DIR FM_HERDR_LAB_HELPER=$LAB_HELPER FM_HERDR_LAB_SESSION=$SESSION $runner" \
+    >/dev/null || fail "could not launch the stripped-identity painter in $pane"
+}
+
+wait_for_capture() {  # <capture-file>
+  local capture=$1 waited=0
+  while [ "$waited" -lt 400 ]; do
+    if [ -f "$capture" ] && grep -q '^rc=' "$capture"; then
+      return 0
+    fi
+    sleep 0.25
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+SPLIT_RENDERING_SECTION=$(printf '%s' "$FLEET_SECTIONS" | cut -d'|' -f2)
+stop_fleet_painter "$SPLIT_RENDERING"
+stop_fleet_painter "$SPLIT_THREE"
+relaunch_painter "$SPLIT_RENDERING" "$SPLIT_RENDERING_SECTION" "$ROOT" identified 1
+wait_for_fleet_painter "$SPLIT_RENDERING" \
+  || fail "the identity-bearing relaunch never started in $SPLIT_RENDERING"
+SPLIT_ONE_CAPTURE="$HOME_DIR/state/split-one.log"
+SPLIT_THREE_CAPTURE="$HOME_DIR/state/split-three.log"
+stripped_capture "$SPLIT_ONE" "$SPLIT_ONE_SECTION" "$SPLIT_ONE_CAPTURE" one
+stripped_capture "$SPLIT_THREE" "$SPLIT_THREE_SECTION" "$SPLIT_THREE_CAPTURE" three
+
+for capture in "$SPLIT_ONE_CAPTURE" "$SPLIT_THREE_CAPTURE"; do
+  wait_for_capture "$capture" \
+    || fail "a half-identified fleet banner never terminated: $(cat "$capture" 2>/dev/null)"
+  SPLIT_TEXT=$(cat "$capture")
+  SPLIT_RC=$(sed -n 's/^rc=//p' "$capture" | tail -n 1)
+  case "$SPLIT_RC" in
+    ''|0|*[!0-9]*) fail "a half-identified fleet banner did not stop unsuccessfully: rc=[$SPLIT_RC] $SPLIT_TEXT" ;;
+  esac
+  case "$SPLIT_TEXT" in
+    *"no Herdr pane identity available"*) ;;
+    *) fail "a half-identified fleet banner did not name the missing identity: $SPLIT_TEXT" ;;
+  esac
+  case "$SPLIT_TEXT" in
+    *"cwd is gone"*|*"cwd is permanently unavailable"*)
+      fail "a half-identified fleet banner blamed a cwd it never read: $SPLIT_TEXT" ;;
+  esac
+  case "$SPLIT_TEXT" in
+    *"FLEET STATUS"*|*"READY"*|*"YOUR DECISIONS"*)
+      fail "a half-identified fleet banner painted a section it could not size: $SPLIT_TEXT" ;;
+  esac
+done
+
+wait_for_pane_text "$SPLIT_RENDERING" READY present \
+  || fail "the fleet pane that kept its identity stopped with its peers: $(lab pane read "$SPLIT_RENDERING" --source visible 2>/dev/null)"
+[ -n "$(fleet_painter_pids "$SPLIT_RENDERING")" ] \
+  || fail "the fleet pane that kept its identity lost its painter"
+SPLIT_RENDERING_TEXT=$(lab pane read "$SPLIT_RENDERING" --source visible)
+case "$SPLIT_RENDERING_TEXT" in
+  *"no Herdr pane identity available"*|*"FLEET VIEW"*)
+    fail "the fleet pane that kept its identity did not render its section: $SPLIT_RENDERING_TEXT" ;;
+esac
+stop_fleet_painter "$SPLIT_RENDERING"
+pass "on real Herdr a half-supplied identity stops exactly its own two panes and names why"
+
+
+for id in cockpit-one cockpit-two cockpit-three readyflip; do
   cockpit_env env FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_CONFIG_OVERRIDE="$HOME_DIR/config" "$ROOT/bin/fm-teardown.sh" "$id" >/dev/null \
     || fail "could not tear down $id"

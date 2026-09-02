@@ -8,6 +8,15 @@
 # could not be read yet, so the caller may retry briefly. Exit 2 is a caller
 # error in the arguments themselves.
 #
+# Every non-zero exit also prints ONE `fm-herdr-pane-geometry: <reason>` line on
+# stderr naming the exact condition that stopped it. The exit code says whether
+# a retry can help; the reason says what to fix, and the three permanent causes
+# need three different answers - a banner that was never told which pane it
+# paints has to be relaunched with its identity, a closed pane has to be
+# rebuilt, and a deleted foreground cwd has to be resolved at the home. A caller
+# that paints a pane must CAPTURE this stream rather than let it reach the
+# terminal, because a diagnostic written mid-frame corrupts the frame.
+#
 # usage: fm-herdr-pane-geometry.sh [--session <session>] [--pane <pane-id>]
 #
 # --session and --pane are the identity channel bin/backends/herdr.sh owns: the
@@ -29,7 +38,14 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
-  sed -n '11,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '20,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+# Every non-zero exit leaves through here, so a caller never has to guess which
+# of the several conditions below actually fired.
+stop() {  # <exit-code> <reason>
+  printf 'fm-herdr-pane-geometry: %s\n' "$2" >&2
+  exit "$1"
 }
 
 # A usable identity is one this probe can hand back to the server verbatim.
@@ -48,21 +64,21 @@ EXPLICIT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --session)
-      [ $# -gt 1 ] || { usage >&2; exit 2; }
+      [ $# -gt 1 ] || { usage >&2; stop 2 '--session needs a session name'; }
       shift
       SESSION=$1
       EXPLICIT=1
       ;;
     --session=*) SESSION=${1#--session=}; EXPLICIT=1 ;;
     --pane)
-      [ $# -gt 1 ] || { usage >&2; exit 2; }
+      [ $# -gt 1 ] || { usage >&2; stop 2 '--pane needs a pane id'; }
       shift
       PANE=$1
       EXPLICIT=1
       ;;
     --pane=*) PANE=${1#--pane=}; EXPLICIT=1 ;;
     -h|--help) usage; exit 0 ;;
-    *) usage >&2; exit 2 ;;
+    *) usage >&2; stop 2 "unknown argument: $1" ;;
   esac
   shift
 done
@@ -70,15 +86,16 @@ done
 if [ "$EXPLICIT" = 1 ]; then
   if ! identity_is_usable "$SESSION" || ! identity_is_usable "$PANE"; then
     usage >&2
-    exit 2
+    stop 2 'a stated identity needs both --session and --pane as non-empty values without whitespace'
   fi
 else
   SESSION=${HERDR_SESSION:-}
   PANE=${HERDR_PANE_ID:-}
   # No identity, or one that cannot be sent to the server, is permanent: a
-  # retry cannot invent the pane this probe was never told about.
+  # retry cannot invent the pane this probe was never told about. Say that
+  # plainly, because it is not the same trouble as a pane that has gone away.
   if ! identity_is_usable "$SESSION" || ! identity_is_usable "$PANE"; then
-    exit 64
+    stop 64 'no Herdr pane identity available; neither --session/--pane nor HERDR_SESSION/HERDR_PANE_ID named a pane'
   fi
 fi
 
@@ -98,8 +115,8 @@ PANE_OUT=$(herdr_call pane get "$PANE" 2>&1)
 PANE_STATUS=$?
 if [ "$PANE_STATUS" -ne 0 ]; then
   PANE_CODE=$(printf '%s' "$PANE_OUT" | jq -r '.error.code // empty' 2>/dev/null) || PANE_CODE=
-  [ "$PANE_CODE" != pane_not_found ] || exit 64
-  exit 75
+  [ "$PANE_CODE" != pane_not_found ] || stop 64 "session $SESSION no longer has pane $PANE"
+  stop 75 "session $SESSION could not be read for pane $PANE"
 fi
 printf '%s' "$PANE_OUT" | jq -e --arg pane "$PANE" '
   .result.pane as $record
@@ -107,14 +124,15 @@ printf '%s' "$PANE_OUT" | jq -e --arg pane "$PANE" '
     and $record.pane_id == $pane
     and ($record | has("foreground_cwd"))
     and (($record.foreground_cwd | type) == "string" or $record.foreground_cwd == null)
-' >/dev/null 2>&1 || exit 75
+' >/dev/null 2>&1 || stop 75 "session $SESSION returned an unusable record for pane $PANE"
 PANE_CWD=$(printf '%s' "$PANE_OUT" | jq -r --arg pane "$PANE" '
   .result.pane.foreground_cwd // empty
-') || exit 75
-[ -n "$PANE_CWD" ] || exit 64
-[ -d "$PANE_CWD" ] || exit 64
+') || stop 75 "session $SESSION returned an unreadable cwd for pane $PANE"
+[ -n "$PANE_CWD" ] || stop 64 "pane $PANE reports no foreground cwd"
+[ -d "$PANE_CWD" ] || stop 64 "pane $PANE foreground cwd is gone: $PANE_CWD"
 
-OUT=$(herdr_call pane layout --pane "$PANE") || exit 75
+OUT=$(herdr_call pane layout --pane "$PANE") \
+  || stop 75 "session $SESSION could not read the drawn layout for pane $PANE"
 
 printf '%s' "$OUT" | jq -e '
   .result.layout.panes
@@ -130,10 +148,10 @@ printf '%s' "$OUT" | jq -e '
       and (.rect.height | type) == "number"
       and .rect.width > 0
       and .rect.height > 0)
-' >/dev/null 2>&1 || exit 75
+' >/dev/null 2>&1 || stop 75 "session $SESSION returned an unusable drawn layout for pane $PANE"
 printf '%s' "$OUT" | jq -e --arg pane "$PANE" '
   any(.result.layout.panes[]; .pane_id == $pane)
-' >/dev/null 2>&1 || exit 64
+' >/dev/null 2>&1 || stop 64 "pane $PANE is not in session $SESSION's drawn layout"
 
 printf '%s' "$OUT" | jq -er --arg pane "$PANE" '
   [.result.layout.panes[]? | select(.pane_id == $pane) | .rect]
@@ -142,4 +160,4 @@ printf '%s' "$OUT" | jq -er --arg pane "$PANE" '
     then "\(.[0].width) \(.[0].height)"
     else error("authoritative pane rectangle unavailable")
     end
-' || exit 75
+' || stop 75 "pane $PANE has no single usable drawn rectangle"

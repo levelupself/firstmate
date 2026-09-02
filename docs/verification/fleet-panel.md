@@ -11,7 +11,11 @@ The implementation is shared by `bin/fm-fleet-view.sh` and `bin/fm-cockpit.sh`, 
 The read-only snapshot calls `tasks-axi list` and `tasks-axi ready` once each for the primary home and once each for every readable registered secondmate home during a redraw.
 The two primary-home calls measured about 92 ms together locally, so the redraw cost scales as `2 * (1 + readable secondmate homes)` tasks-axi invocations.
 The focused regression compares both the snapshot and rendered READY identities directly with `tasks-axi ready`, checks that only open queued dependency blockers enter BLOCKED, and verifies that the displayed counts describe the complete represented lists even when pane-height truncation hides rows.
+That identity agreement holds for a queue no worker has taken yet.
 It also covers the narrower dispatch question READY answers on top of that set: a queued row recording no body and a queued row still naming a `blocked-by` id the backlog no longer carries each render with a reason and stay out of the confirmed-clear count, while both remain present in the rendered READY set and retain the snapshot's `dispatchable` value.
+The one row the rendered queue sections withhold from that set is a queued row whose id already has a live task record, which the same regression covers for READY and BLOCKED alongside its appearance under IN FLIGHT.
+
+## Watch-mode repaint leaves no residual rows
 
 Verified on 2026-08-05 in an isolated tmux 3.4 pane on Linux.
 
@@ -62,6 +66,29 @@ done
 ```
 
 The observed pane changed directly between complete frames without a visible blank refresh.
+
+## Ready membership follows dispatch, not the backlog edit
+
+Verified on 2026-09-02 against Herdr 0.8.0 in a guarded lab session.
+
+Dispatch publishes `state/<id>.meta` and changes nothing else; the backlog row is moved to In flight afterwards, by hand.
+Between the two the panel was offering work that already had a worker on it, on a surface meant to be acted on without cross-checking, while the sibling in-flight section already showed the same id from the same snapshot.
+The rendered queue sections therefore withhold a queued row whose id appears in the snapshot's live task rows, so the reconciliation happens on the panel's own next redraw with no focus change and no manual refresh.
+
+`tests/fm-cockpit-herdr-e2e.test.sh` proves it from a real transition rather than a fixture: it writes a dispatchable queued row, waits for the recorded ready pane to display it, dispatches it with `bin/fm-spawn.sh` into the guarded lab, and requires the pane to drop it while the backlog document's checksum is unchanged across the whole transition.
+`tests/fm-fleet-snapshot-view.test.sh` pins the same rule portably for READY and BLOCKED, together with the row's continued appearance under IN FLIGHT.
+
+```sh
+bash tests/fm-fleet-snapshot-view.test.sh
+HERDR_LAB_HELPER=/absolute/path/to/bin/fm-herdr-lab.sh \
+  bash tests/fm-cockpit-herdr-e2e.test.sh
+```
+
+```text
+ok - ready membership follows the live task records, not the later backlog edit
+ok - the blocked queue drops rows a worker already holds
+ok - a real dispatch clears the ready pane on its own redraw, before the backlog is edited
+```
 
 ## Project groups and fair row limits
 

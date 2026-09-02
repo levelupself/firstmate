@@ -53,8 +53,10 @@ For whole-fleet read-only review, `bin/fm-fleet-snapshot.sh --json` emits schema
 `bin/fm-fleet-view.sh` renders that snapshot as a height-bounded panel ordered around decisions, ready queued capacity, in-flight work, and genuinely blocked queued work, while finished and failed history remains available through independent section filters.
 Live rows are grouped by project and share limited height fairly across projects while retaining state and priority order within each group.
 Unknown live runtime state stays in the in-flight projection, and each shortened live project group discloses its omitted row count.
-READY still holds exactly the queued set that `tasks-axi ready` returns, but it separates that set: rows the snapshot marks `dispatch_clear` render plainly, while rows whose own durable contract stops the backlog from confirming dispatch render with a `?` marker and the reason, and the heading counts the two apart.
+READY separates the queued set `tasks-axi ready` returns: rows the snapshot marks `dispatch_clear` render plainly, while rows whose own durable contract stops the backlog from confirming dispatch render with a `?` marker and the reason, and the heading counts the two apart.
 The snapshot owns that judgement so the renderer keeps deriving no backlog state of its own.
+The queue sections drop one row from that set: a queued row whose id already appears in the snapshot's live task rows is work a worker holds, because dispatch publishes `state/<id>.meta` immediately while the backlog row is moved to In flight afterwards by hand.
+Those task rows are the authoritative live inventory, so the panel renders such a row as in-flight work on its own next redraw instead of offering it again as work to hand out.
 `bin/fm-bearings-snapshot.sh` provides the bounded bearings projection, so both views consume one structured contract instead of reparsing raw fleet files.
 The script header owns the exact JSON schema.
 
