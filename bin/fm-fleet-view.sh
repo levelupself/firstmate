@@ -99,10 +99,11 @@ the sections are always rendered in that priority order, whatever order they
 were asked for. Without --section the panel renders its default banner:
 a heading followed by waiting, ready, in-flight, and blocked.
 
-READY holds every queued task with no open dependency and no active hold. Rows
-that can be handed to a worker now are listed with a bullet; rows the backlog
-cannot confirm are listed with a "?" and the reason, and the heading counts the
-two apart.
+READY holds queued tasks with no open dependency and no active hold, except a
+task whose id already has a live task record. That task is shown under IN FLIGHT
+instead of being offered again. Rows that can be handed to a worker now are
+listed with a bullet; rows the backlog cannot confirm are listed with a "?" and
+the reason, and the heading counts the two apart.
 
 Inside a Herdr cockpit frame, --watch paints only while that home's frame
 record still names this pane for these sections, and only one banner paints a

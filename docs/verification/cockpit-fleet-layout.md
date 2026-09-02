@@ -96,6 +96,8 @@ exit=0
 ```
 
 The same pane resolves its drawn rectangle as soon as the session half of the identity is present, so an unresolvable rectangle on a live pane is an identity fact and not a pane fact, and the terminal report has to say which.
+This exact-cause verification was recorded at full SHA `a51694832910fcdde11aba87886be65049273acf`.
+Its proof-file list is `bin/fm-herdr-pane-geometry.sh`, `bin/fm-fleet-view.sh`, and `tests/fm-fleet-snapshot-view.test.sh`.
 
 ```sh
 bash tests/fm-herdr-pane-geometry.test.sh
@@ -176,6 +178,9 @@ HERDR_LAB_HELPER=/absolute/path/to/bin/fm-herdr-lab.sh \
 ok - a half-supplied pane identity stops its own banner and leaves its rendering sibling alone
 ok - on real Herdr a half-supplied identity stops exactly its own two panes and names why
 ```
+
+This split verification was recorded at full SHA `a51694832910fcdde11aba87886be65049273acf`.
+Its proof-file list is `bin/fm-herdr-pane-geometry.sh`, `bin/fm-fleet-view.sh`, `bin/backends/herdr.sh`, `tests/fm-fleet-snapshot-view.test.sh`, and `tests/fm-cockpit-herdr-e2e.test.sh`.
 
 ### Red-first provenance
 

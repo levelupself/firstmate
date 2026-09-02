@@ -71,7 +71,7 @@ The observed pane changed directly between complete frames without a visible bla
 
 Verified on 2026-09-02 against Herdr 0.8.0 in a guarded lab session.
 
-Dispatch publishes `state/<id>.meta` and changes nothing else; the backlog row is moved to In flight afterwards, by hand.
+Dispatch publishes `state/<id>.meta` before the backlog row is moved to In flight afterwards, by hand.
 Between the two the panel was offering work that already had a worker on it, on a surface meant to be acted on without cross-checking, while the sibling in-flight section already showed the same id from the same snapshot.
 The rendered queue sections therefore withhold a queued row whose id appears in the snapshot's live task rows, so the reconciliation happens on the panel's own next redraw with no focus change and no manual refresh.
 
@@ -89,6 +89,9 @@ ok - ready membership follows the live task records, not the later backlog edit
 ok - the blocked queue drops rows a worker already holds
 ok - a real dispatch clears the ready pane on its own redraw, before the backlog is edited
 ```
+
+This dispatch-driven redraw verification was recorded at full SHA `a51694832910fcdde11aba87886be65049273acf`.
+Its proof-file list is `bin/fm-fleet-view.sh`, `bin/fm-fleet-snapshot.sh`, `bin/fm-spawn.sh`, `tests/fm-fleet-snapshot-view.test.sh`, and `tests/fm-cockpit-herdr-e2e.test.sh`.
 
 ## Project groups and fair row limits
 
