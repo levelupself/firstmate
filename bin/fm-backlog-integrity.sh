@@ -29,7 +29,7 @@ show_field() {
 }
 
 guarded_start() {
-  local id=$1 show state spawned_at binding tmp
+  local id=$1 show state spawned_at binding tmp transitioned=0
   backend_enabled || return 0
   show=$(tasks_axi show "$id" --full 2>/dev/null) || fail "task $id is absent from the backlog"
   state=$(show_field "$show" state)
@@ -38,21 +38,43 @@ guarded_start() {
     queued|in_flight)
       spawned_at=$(sed -n 's/^spawned_at=//p' "$STATE/$id.meta" 2>/dev/null | tail -1)
       valid_timestamp "$spawned_at" || fail "task $id has no valid launch identity"
+      if [ "$state" = queued ]; then
+        tasks_axi start "$id" >/dev/null || fail "could not start task $id"
+        transitioned=1
+      fi
       binding="$STATE/$id.launch-receipt"
       if [ -e "$binding" ] || [ -L "$binding" ]; then
-        [ -f "$binding" ] && [ ! -L "$binding" ] \
+        if [ "$transitioned" = 1 ]; then
+          rm -f "$binding" 2>/dev/null || true
+        fi
+        if [ -e "$binding" ] || [ -L "$binding" ]; then
+          [ -f "$binding" ] && [ ! -L "$binding" ] \
           && [ "$(grep -c '^schema=fm-task-launch.v1$' "$binding" 2>/dev/null || true)" -eq 1 ] \
           && [ "$(grep -c "^task_id=$id$" "$binding" 2>/dev/null || true)" -eq 1 ] \
           && [ "$(grep -c "^spawned_at=$spawned_at$" "$binding" 2>/dev/null || true)" -eq 1 ] \
-          || fail "task $id launch identity conflicts with its durable binding"
-      else
+          || {
+            [ "$transitioned" = 0 ] || tasks_axi reopen "$id" >/dev/null \
+              || fail "task $id launch binding conflicted and its start could not be rolled back"
+            fail "task $id launch identity conflicts with its durable binding"
+          }
+        fi
+      fi
+      if [ ! -e "$binding" ] && [ ! -L "$binding" ]; then
         umask 077
-        tmp=$(mktemp "$STATE/.$id.launch-receipt.XXXXXX") || fail "could not prepare launch binding for $id"
+        tmp=$(mktemp "$STATE/.$id.launch-receipt.XXXXXX") || {
+          [ "$transitioned" = 0 ] || tasks_axi reopen "$id" >/dev/null \
+            || fail "task $id launch binding failed and its start could not be rolled back"
+          fail "could not prepare launch binding for $id"
+        }
         printf '%s\n' 'schema=fm-task-launch.v1' "task_id=$id" "spawned_at=$spawned_at" > "$tmp" \
           && chmod 600 "$tmp" && mv "$tmp" "$binding" \
-          || { rm -f "$tmp"; fail "could not record launch binding for $id"; }
+          || {
+            rm -f "$tmp"
+            [ "$transitioned" = 0 ] || tasks_axi reopen "$id" >/dev/null \
+              || fail "task $id launch binding failed and its start could not be rolled back"
+            fail "could not record launch binding for $id"
+          }
       fi
-      [ "$state" = in_flight ] || tasks_axi start "$id" >/dev/null || fail "could not start task $id"
       ;;
     *) fail "refusing to start task $id from state $state" ;;
   esac

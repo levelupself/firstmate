@@ -9,6 +9,7 @@ INTEGRITY="$ROOT/bin/fm-backlog-integrity.sh"
 TMP_ROOT=$(fm_test_tmproot fm-backlog-integrity)
 
 command -v tasks-axi >/dev/null 2>&1 || { echo "skip: tasks-axi not found"; exit 0; }
+REAL_TASKS_AXI=$(command -v tasks-axi)
 
 make_home() {
   local home="$TMP_ROOT/$1"
@@ -129,10 +130,42 @@ test_landing_receipt_must_match_durable_launch() {
   pass "valid merged receipt closes only its bound launch"
 }
 
+test_failed_start_does_not_poison_retry_binding() {
+  local home id=retry-start fakebin rc
+  home=$(make_home failed-start-retry)
+  fakebin="$home/fakebin"
+  mkdir -p "$fakebin"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'if [ "${1:-}" = start ] && [ -f "$FM_FAIL_START_ONCE" ]; then' \
+    '  rm -f "$FM_FAIL_START_ONCE"' \
+    '  exit 1' \
+    'fi' \
+    'exec "$REAL_TASKS_AXI" "$@"' > "$fakebin/tasks-axi"
+  chmod +x "$fakebin/tasks-axi"
+  (cd "$home" && tasks-axi add "$id" "$id" >/dev/null)
+  printf 'spawned_at=2026-09-02T12:00:00Z\n' > "$home/state/$id.meta"
+  : > "$home/fail-start-once"
+  set +e
+  REAL_TASKS_AXI="$REAL_TASKS_AXI" FM_FAIL_START_ONCE="$home/fail-start-once" \
+    PATH="$fakebin:$PATH" run_integrity "$home" start "$id" >/dev/null 2>&1
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "simulated backlog start failure unexpectedly succeeded"
+  [ ! -e "$home/state/$id.launch-receipt" ] || fail "failed start left a poisoned launch binding"
+  printf 'spawned_at=2026-09-02T12:05:00Z\n' > "$home/state/$id.meta"
+  run_integrity "$home" start "$id"
+  [ "$(cd "$home" && tasks-axi show "$id" | sed -n 's/^  state: //p')" = in_flight ] \
+    || fail "fresh dispatch could not retry after start failure"
+  grep -Fx 'spawned_at=2026-09-02T12:05:00Z' "$home/state/$id.launch-receipt" >/dev/null \
+    || fail "retry did not publish the fresh launch identity"
+  pass "failed backlog start leaves no binding that poisons retry"
+}
+
 test_finished_row_cannot_be_resurrected
 test_three_orphans_are_repaired_without_blinding
 test_resolved_blocker_edge_is_removed
 test_failed_outcome_is_never_closed_as_done
 test_invalid_landing_receipts_do_not_close_orphans
 test_landing_receipt_must_match_durable_launch
+test_failed_start_does_not_poison_retry_binding
 echo '# all fm-backlog-integrity tests passed'
