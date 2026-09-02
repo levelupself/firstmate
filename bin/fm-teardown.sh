@@ -921,10 +921,14 @@ work_is_landed() {
 }
 
 backlog_refresh_reminder() {
-  local pr report_path
+  local pr report_path show task_state
   local -a done_args
   [ "$KIND" = secondmate ] && return 0
   if fm_tasks_axi_backend_available "$CONFIG"; then
+    if [ ! -f "$DATA/backlog.md" ]; then
+      printf '%s\n' "Backlog: $ID just finished. Update data/backlog.md, then re-scan Queued and dispatch only work whose blockers are gone and date is due."
+      return 0
+    fi
     if [ "$FORCE" = --force ]; then
       "$SCRIPT_DIR/fm-backlog-integrity.sh" failed "$ID" \
         || { echo "error: could not preserve failed backlog outcome for $ID" >&2; return 1; }
@@ -942,7 +946,20 @@ backlog_refresh_reminder() {
         else
           pr=$PR_URL
           if [ -n "$pr" ]; then
-            done_args=("done" "$ID" --pr "$pr")
+            show=$(cd "$FM_HOME" && tasks-axi show "$ID" --full 2>/dev/null) \
+              || { echo "error: could not read backlog state for $ID" >&2; return 1; }
+            task_state=$(printf '%s\n' "$show" | sed -n 's/^  state: //p' | head -1)
+            if [ "$task_state" = done ]; then
+              done_args=("done" "$ID" --pr "$pr")
+            elif [ "$task_state" = in_flight ] \
+              && fm_pr_poll_artifacts_valid "$STATE" "$ID" "$SCRIPT_DIR/fm-pr-poll.sh"; then
+              PRESERVE_PR_POLL=1
+              printf '%s\n' "Backlog: $ID remains In flight under its armed merge poll; the open PR was not recorded as Done."
+              return 0
+            else
+              echo "error: open PR task $ID has no valid armed merge poll" >&2
+              return 1
+            fi
           else
             "$SCRIPT_DIR/fm-backlog-integrity.sh" failed "$ID" \
               || { echo "error: could not preserve unfinished backlog outcome for $ID" >&2; return 1; }
@@ -2441,6 +2458,9 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   fi
 fi
 
+PRESERVE_PR_POLL=0
+backlog_refresh_reminder || exit 1
+
 # Every landed/discard-work refusal above has now passed (or --force skipped
 # them). Fix 1 and Fix 2 (see script header) run here, unconditionally on
 # --force, and before ANY destructive step below - a still-parked run or a
@@ -2589,7 +2609,6 @@ if [ "$BACKEND" = herdr ] \
   fi
 fi
 
-backlog_refresh_reminder || exit 1
 if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   # The presentation lock was acquired before the worktree return above; a
   # contended lock already refused this teardown while everything was intact.
@@ -2654,11 +2673,10 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
 [ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
-remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
+[ "$PRESERVE_PR_POLL" = 1 ] || remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
-rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
-  "$STATE/$ID.launch-receipt" \
+rm -f "$STATE/$ID.turn-ended" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
   "$STATE/$ID.muse-session-current" "$STATE/$ID.cursor-session" \
@@ -2667,6 +2685,9 @@ rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.control-relaunch" "$STATE/$ID.control-relaunch.meta-prior" \
   "$STATE/$ID.control-relaunch.brief-prior" "$STATE/$ID.control-relaunch.note" \
   "$STATE/usage-cache/$ID.json"
+if [ "$PRESERVE_PR_POLL" != 1 ]; then
+  rm -f "$STATE/$ID.meta" "$STATE/$ID.launch-receipt"
+fi
 if [ "$KIND" != secondmate ]; then
   "$FM_ROOT/bin/fm-effort-store.sh" rebuild \
     || echo "teardown: warning: could not finalize deterministic effort for $ID" >&2

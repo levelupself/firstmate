@@ -185,6 +185,10 @@ if [ "${1:-}" = --version ]; then
   printf '%s\n' '0.2.4'
   exit 0
 fi
+if [ "${1:-}" = show ]; then
+  printf '%s\n' '  state: in_flight'
+  exit 0
+fi
 if [ "${1:-}" = update ] && [ "${2:-}" = --help ]; then
   printf '%s\n' 'usage: tasks-axi update <id> [flags]'
   printf '%s\n' '  --body-file <path>'
@@ -582,25 +586,29 @@ test_local_only_fork_remote_allows() {
   pass "local-only worktree with HEAD on a fork remote is torn down (fix holds)"
 }
 
-test_teardown_prompts_tasks_axi_done_when_compatible() {
+test_teardown_preserves_open_pr_poll_when_compatible() {
   local case_dir out
   case_dir=$(make_case tasks-axi-reminder)
   write_meta "$case_dir" no-mistakes ship
   printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
   mkdir -p "$case_dir/data"
   printf '## In flight\n\n## Queued\n\n## Done\n' > "$case_dir/data/backlog.md"
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" \
+    PATH="$case_dir/fakebin:$PATH" "$PR_CHECK" task-x1 https://github.com/example/repo/pull/7 >/dev/null \
+    || fail "could not arm open PR poll fixture"
   add_compatible_tasks_axi "$case_dir"
 
   out=$(FM_FAKE_TASKS_LOG="$case_dir/tasks.log" run_teardown "$case_dir") || fail "teardown failed with compatible tasks-axi"
-  grep -Fx 'done task-x1 --pr https://github.com/example/repo/pull/7' "$case_dir/tasks.log" >/dev/null \
-    || fail "teardown did not execute tasks-axi done: $(cat "$case_dir/tasks.log")"
-  printf '%s\n' "$out" | grep -F 'tasks-axi ready' >/dev/null \
-    || fail "teardown did not prompt tasks-axi ready: $out"
-  printf '%s\n' "$out" | grep -F 'check date gates' >/dev/null \
-    || fail "teardown did not preserve date-gate check: $out"
-  printf '%s\n' "$out" | grep -F 'keep Done to the 10 most recent' >/dev/null \
-    && fail "teardown kept manual Done pruning in compatible tasks-axi prompt: $out"
-  pass "teardown records completion through tasks-axi when compatible"
+  grep -E '^(done|reopen) task-x1' "$case_dir/tasks.log" >/dev/null \
+    && fail "teardown changed the open PR backlog outcome: $(cat "$case_dir/tasks.log")"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    && [ -f "$case_dir/state/task-x1.check.sh" ] \
+    && [ -f "$case_dir/state/task-x1.pr-poll" ] \
+    && [ -f "$case_dir/state/task-x1.pr-poll-registration" ] \
+    || fail "teardown orphaned the open PR from its durable poll pair"
+  printf '%s\n' "$out" | grep -F 'remains In flight under its armed merge poll' >/dev/null \
+    || fail "teardown did not report the preserved open PR lifecycle: $out"
+  pass "teardown preserves an open PR as poll-owned in-flight work"
 }
 
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present() {
@@ -2722,7 +2730,7 @@ EOF
 }
 
 test_local_only_fork_remote_allows
-test_teardown_prompts_tasks_axi_done_when_compatible
+test_teardown_preserves_open_pr_poll_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
