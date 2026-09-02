@@ -2917,6 +2917,9 @@ spawn_record_traceparent() {
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.
+if [ "$KIND" != secondmate ]; then
+  "$FM_ROOT/bin/fm-backlog-integrity.sh" start "$ID" || exit 1
+fi
 spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped
@@ -2985,9 +2988,5 @@ SPAWN_DELIVERY=
 [ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
 if [ "$KIND" != secondmate ]; then
   fm_task_effort_capture_launch "$FM_ROOT" "$ID" || exit 1
-  "$FM_ROOT/bin/fm-backlog-integrity.sh" start "$ID" || {
-    echo "error: worker launched but backlog start was refused for $ID" >&2
-    exit 1
-  }
 fi
 echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"

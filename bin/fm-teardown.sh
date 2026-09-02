@@ -944,8 +944,10 @@ backlog_refresh_reminder() {
           if [ -n "$pr" ]; then
             done_args=("done" "$ID" --pr "$pr")
           else
-            echo "error: completed PR task $ID has no recorded PR URL" >&2
-            return 1
+            "$SCRIPT_DIR/fm-backlog-integrity.sh" failed "$ID" \
+              || { echo "error: could not preserve unfinished backlog outcome for $ID" >&2; return 1; }
+            printf '%s\n' "Backlog: $ID was not recorded as Done because no PR was recorded; unfinished work was returned to Queued. Run tasks-axi ready, check date gates, and dispatch only work whose blockers are gone and date is due."
+            return 0
           fi
         fi
         ;;
@@ -2587,6 +2589,7 @@ if [ "$BACKEND" = herdr ] \
   fi
 fi
 
+backlog_refresh_reminder || exit 1
 if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   # The presentation lock was acquired before the worktree return above; a
   # contended lock already refused this teardown while everything was intact.
@@ -2655,6 +2658,7 @@ remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
 rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
+  "$STATE/$ID.launch-receipt" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
   "$STATE/$ID.muse-session-current" "$STATE/$ID.cursor-session" \
@@ -2673,4 +2677,3 @@ if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only 
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi
 echo "teardown $ID complete (window $T, worktree $WT)"
-backlog_refresh_reminder

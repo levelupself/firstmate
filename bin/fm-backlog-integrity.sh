@@ -29,14 +29,31 @@ show_field() {
 }
 
 guarded_start() {
-  local id=$1 show state
+  local id=$1 show state spawned_at binding tmp
   backend_enabled || return 0
   show=$(tasks_axi show "$id" --full 2>/dev/null) || fail "task $id is absent from the backlog"
   state=$(show_field "$show" state)
   case "$state" in
     done) fail "refusing to start completed task $id" ;;
-    in_flight) return 0 ;;
-    queued) tasks_axi start "$id" >/dev/null || fail "could not start task $id" ;;
+    queued|in_flight)
+      spawned_at=$(sed -n 's/^spawned_at=//p' "$STATE/$id.meta" 2>/dev/null | tail -1)
+      valid_timestamp "$spawned_at" || fail "task $id has no valid launch identity"
+      binding="$STATE/$id.launch-receipt"
+      if [ -e "$binding" ] || [ -L "$binding" ]; then
+        [ -f "$binding" ] && [ ! -L "$binding" ] \
+          && [ "$(grep -c '^schema=fm-task-launch.v1$' "$binding" 2>/dev/null || true)" -eq 1 ] \
+          && [ "$(grep -c "^task_id=$id$" "$binding" 2>/dev/null || true)" -eq 1 ] \
+          && [ "$(grep -c "^spawned_at=$spawned_at$" "$binding" 2>/dev/null || true)" -eq 1 ] \
+          || fail "task $id launch identity conflicts with its durable binding"
+      else
+        umask 077
+        tmp=$(mktemp "$STATE/.$id.launch-receipt.XXXXXX") || fail "could not prepare launch binding for $id"
+        printf '%s\n' 'schema=fm-task-launch.v1' "task_id=$id" "spawned_at=$spawned_at" > "$tmp" \
+          && chmod 600 "$tmp" && mv "$tmp" "$binding" \
+          || { rm -f "$tmp"; fail "could not record launch binding for $id"; }
+      fi
+      [ "$state" = in_flight ] || tasks_axi start "$id" >/dev/null || fail "could not start task $id"
+      ;;
     *) fail "refusing to start task $id from state $state" ;;
   esac
 }
@@ -50,9 +67,12 @@ check_start() {
 }
 
 record_done() {
-  local id=$1
+  local id=$1 show state
   shift
   backend_enabled || return 0
+  show=$(tasks_axi show "$id" --full 2>/dev/null) || fail "task $id is absent from the backlog"
+  state=$(show_field "$show" state)
+  [ "$state" != done ] || return 0
   tasks_axi done "$id" "$@" >/dev/null || fail "could not close task $id"
 }
 
@@ -77,30 +97,99 @@ receipt_value() {
   sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -1
 }
 
+receipt_has_one() {
+  [ "$(grep -c "^$2=" "$1" 2>/dev/null || true)" -eq 1 ]
+}
+
+valid_timestamp() {
+  printf '%s\n' "$1" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+}
+
+receipt_matches_launch() {
+  local receipt=$1 id=$2 binding="$STATE/$id.launch-receipt" spawned_at
+  [ -f "$binding" ] && [ ! -L "$binding" ] || return 1
+  [ "$(grep -c '^schema=fm-task-launch.v1$' "$binding" 2>/dev/null || true)" -eq 1 ] || return 1
+  [ "$(grep -c "^task_id=$id$" "$binding" 2>/dev/null || true)" -eq 1 ] || return 1
+  spawned_at=$(receipt_value "$receipt" spawned_at)
+  [ "$(grep -c "^spawned_at=$spawned_at$" "$binding" 2>/dev/null || true)" -eq 1 ]
+}
+
+valid_pr_receipt() {
+  local receipt=$1 id=$2 key schema authorization prepared_epoch merged_at
+  [ -f "$receipt" ] && [ ! -L "$receipt" ] || return 1
+  for key in schema task_id pr spawned_at phase authorization prepared_epoch; do
+    receipt_has_one "$receipt" "$key" || return 1
+  done
+  schema=$(receipt_value "$receipt" schema)
+  [ "$schema" = fm-pr-merge.v1 ] || [ "$schema" = fm-pr-merge.v2 ] || return 1
+  [ "$(receipt_value "$receipt" task_id)" = "$id" ] || return 1
+  printf '%s\n' "$(receipt_value "$receipt" pr)" \
+    | grep -Eq '^https?://[^[:space:]]+/pull/[0-9]+$' || return 1
+  valid_timestamp "$(receipt_value "$receipt" spawned_at)" || return 1
+  receipt_matches_launch "$receipt" "$id" || return 1
+  [ "$(receipt_value "$receipt" phase)" = merged ] || return 1
+  authorization=$(receipt_value "$receipt" authorization)
+  [ "$authorization" = live-meta ] || [ "$authorization" = done-record ] || return 1
+  prepared_epoch=$(receipt_value "$receipt" prepared_epoch)
+  case "$prepared_epoch" in ''|*[!0-9]*) return 1 ;; esac
+  if [ "$schema" = fm-pr-merge.v2 ]; then
+    receipt_has_one "$receipt" merged_at || return 1
+    [ "$(grep -c '^merged_epoch=' "$receipt" 2>/dev/null || true)" -eq 0 ] || return 1
+    merged_at=$(receipt_value "$receipt" merged_at)
+    [ -z "$merged_at" ] || valid_timestamp "$merged_at" || return 1
+  else
+    receipt_has_one "$receipt" merged_epoch || return 1
+    [ "$(grep -c '^merged_at=' "$receipt" 2>/dev/null || true)" -eq 0 ] || return 1
+    case "$(receipt_value "$receipt" merged_epoch)" in ''|*[!0-9]*) return 1 ;; esac
+  fi
+}
+
+valid_local_receipt() {
+  local receipt=$1 id=$2 key
+  [ -f "$receipt" ] && [ ! -L "$receipt" ] || return 1
+  for key in schema task_id spawned_at project branch default_branch before_sha landed_sha phase event_at; do
+    receipt_has_one "$receipt" "$key" || return 1
+  done
+  [ "$(receipt_value "$receipt" schema)" = fm-local-landing.v1 ] || return 1
+  [ "$(receipt_value "$receipt" task_id)" = "$id" ] || return 1
+  valid_timestamp "$(receipt_value "$receipt" spawned_at)" || return 1
+  receipt_matches_launch "$receipt" "$id" || return 1
+  [ -n "$(receipt_value "$receipt" project)" ] || return 1
+  [ -n "$(receipt_value "$receipt" branch)" ] || return 1
+  [ -n "$(receipt_value "$receipt" default_branch)" ] || return 1
+  printf '%s\n' "$(receipt_value "$receipt" before_sha)" | grep -Eq '^[0-9a-f]{40,64}$' || return 1
+  printf '%s\n' "$(receipt_value "$receipt" landed_sha)" | grep -Eq '^[0-9a-f]{40,64}$' || return 1
+  [ "$(receipt_value "$receipt" phase)" = landed ] || return 1
+  valid_timestamp "$(receipt_value "$receipt" event_at)"
+}
+
 reconcile_orphan() {
   local id=$1 receipt pr report
   [ ! -f "$STATE/$id.meta" ] || return 0
   report="$DATA/$id/report.md"
   if [ -s "$report" ]; then
-    tasks_axi done "$id" --report "data/$id/report.md" >/dev/null
+    tasks_axi done "$id" --report "data/$id/report.md" >/dev/null \
+      || fail "could not close orphan scout $id"
     printf 'closed=%s evidence=scout-report\n' "$id"
     return 0
   fi
   receipt="$DATA/pr-merges/$id.receipt"
-  if [ "$(receipt_value "$receipt" phase)" = merged ]; then
+  if valid_pr_receipt "$receipt" "$id"; then
     pr=$(receipt_value "$receipt" pr)
     [ -n "$pr" ] || fail "merged receipt for $id has no PR URL"
-    tasks_axi done "$id" --pr "$pr" >/dev/null
+    tasks_axi done "$id" --pr "$pr" >/dev/null \
+      || fail "could not close merged orphan $id"
     printf 'closed=%s evidence=merged-pr\n' "$id"
     return 0
   fi
   receipt="$DATA/local-landings/$id.receipt"
-  if [ "$(receipt_value "$receipt" phase)" = landed ]; then
-    tasks_axi done "$id" --note "local main" >/dev/null
+  if valid_local_receipt "$receipt" "$id"; then
+    tasks_axi done "$id" --note "local main" >/dev/null \
+      || fail "could not close locally landed orphan $id"
     printf 'closed=%s evidence=local-landing\n' "$id"
     return 0
   fi
-  tasks_axi reopen "$id" >/dev/null
+  tasks_axi reopen "$id" >/dev/null || fail "could not reopen orphan $id"
   printf 'reopened=%s evidence=work-not-landed\n' "$id"
 }
 

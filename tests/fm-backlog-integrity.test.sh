@@ -86,8 +86,53 @@ test_failed_outcome_is_never_closed_as_done() {
   pass "failed work is reopened instead of being falsely recorded done"
 }
 
+test_invalid_landing_receipts_do_not_close_orphans() {
+  local home id
+  home=$(make_home invalid-receipts)
+  id=invalid-pr
+  (cd "$home" && tasks-axi add "$id" "$id" --start >/dev/null)
+  mkdir -p "$home/data/pr-merges"
+  printf '%s\n' 'schema=fm-pr-merge.v2' "task_id=$id" 'pr=https://github.com/example/repo/pull/1' \
+    'spawned_at=2026-09-02T12:00:00Z' 'phase=merged' 'authorization=live-meta' \
+    'prepared_epoch=1' 'merged_at=2026-09-02T12:01:00Z' 'phase=merged' \
+    > "$home/data/pr-merges/$id.receipt"
+  id=invalid-local
+  (cd "$home" && tasks-axi add "$id" "$id" --start >/dev/null)
+  mkdir -p "$home/data/local-landings"
+  printf '%s\n' 'schema=fm-local-landing.v1' 'task_id=another-launch' \
+    'spawned_at=2026-09-02T12:00:00Z' 'project=/project' 'branch=topic' \
+    'default_branch=main' 'before_sha=1111111111111111111111111111111111111111' \
+    'landed_sha=2222222222222222222222222222222222222222' 'phase=landed' \
+    'event_at=2026-09-02T12:01:00Z' > "$home/data/local-landings/$id.receipt"
+  run_integrity "$home" reconcile >/dev/null
+  for id in invalid-pr invalid-local; do
+    [ "$(cd "$home" && tasks-axi show "$id" | sed -n 's/^  state: //p')" = queued ] \
+      || fail "invalid receipt closed orphan $id"
+  done
+  pass "invalid and launch-mismatched receipts cannot close orphan work"
+}
+
+test_landing_receipt_must_match_durable_launch() {
+  local home id=valid-pr result
+  home=$(make_home valid-launch)
+  (cd "$home" && tasks-axi add "$id" "$id" --start >/dev/null)
+  printf '%s\n' 'schema=fm-task-launch.v1' "task_id=$id" \
+    'spawned_at=2026-09-02T12:00:00Z' > "$home/state/$id.launch-receipt"
+  mkdir -p "$home/data/pr-merges"
+  printf '%s\n' 'schema=fm-pr-merge.v2' "task_id=$id" 'pr=https://github.com/example/repo/pull/1' \
+    'spawned_at=2026-09-02T12:00:00Z' 'phase=merged' 'authorization=live-meta' \
+    'prepared_epoch=1' 'merged_at=2026-09-02T12:01:00Z' \
+    > "$home/data/pr-merges/$id.receipt"
+  result=$(run_integrity "$home" reconcile)
+  [ "$(cd "$home" && tasks-axi show "$id" | sed -n 's/^  state: //p')" = done ] \
+    || fail "valid launch-bound merged receipt did not close orphan $id: $result"
+  pass "valid merged receipt closes only its bound launch"
+}
+
 test_finished_row_cannot_be_resurrected
 test_three_orphans_are_repaired_without_blinding
 test_resolved_blocker_edge_is_removed
 test_failed_outcome_is_never_closed_as_done
+test_invalid_landing_receipts_do_not_close_orphans
+test_landing_receipt_must_match_durable_launch
 echo '# all fm-backlog-integrity tests passed'
