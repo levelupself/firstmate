@@ -183,6 +183,10 @@ printf 'Run the supplied verification command and stop.\nDelivery contract: mode
   > "$HOME_DIR/data/cockpit-three/brief.md"
 spawn_real cockpit-three cockpit-three-ok >/dev/null \
   || fail "third executable-path cockpit spawn failed"
+THIRD_META="$HOME_DIR/state/cockpit-three.meta"
+[ -f "$THIRD_META" ] || fail "third cockpit spawn did not publish metadata"
+THIRD_PANE=$(grep '^herdr_pane_id=' "$THIRD_META" | cut -d= -f2-)
+[ -n "$THIRD_PANE" ] || fail "third cockpit spawn published no pane identity"
 [ "$(viewport_workers | wc -l | tr -d ' ')" = 1 ] \
   || fail "three placed workers left more than one agent in the viewport slot"
 [ "$(viewport_workers | tr -d '\n')" = "$SECOND_PANE" ] \
@@ -228,6 +232,194 @@ RECORD_AFTER=$(sha256sum "$HOME_DIR/state/.herdr-cockpit" | awk '{print $1}')
 [ "$RECORD_BEFORE" = "$RECORD_AFTER" ] || fail "restart re-adoption rewrote the frame record"
 assert_contains "$RESTART_OUT" "re-adopted Herdr frame" "restart did not report re-adoption"
 pass "real Herdr restart re-adopts the recorded frame without rebuilding it"
+
+# Acceptance: a fleet painter started into a pane that already exists resolves
+# its drawn rectangle exactly as the one the region build created, and a painter
+# started into that same pane WITHOUT its identity is never reported live.
+#
+# The region build splits a pane and runs the painter into it in one motion, so
+# every painter this adapter had ever started came from a brand-new pane. A
+# painter relaunched into an existing recorded pane is the path an operator and
+# every recovery take, and it is the one that was never exercised end to end.
+# It has to reach the same result, and when it cannot it has to be visible as
+# not-live rather than passing every argv check while painting a degraded panel.
+FLEET_FIRST=$(grep '^fleet_pane_ids=' "$HOME_DIR/state/.herdr-cockpit" | cut -d= -f2- | cut -d, -f1)
+FLEET_SECTION=$(grep '^fleet_pane_sections=' "$HOME_DIR/state/.herdr-cockpit" | cut -d= -f2- | cut -d'|' -f1)
+[ -n "$FLEET_FIRST" ] && [ -n "$FLEET_SECTION" ] \
+  || fail "the adopted frame recorded no fleet pane to relaunch into"
+
+# The painter's own foreground process, reported by the server rather than
+# matched against this host's whole process table, so nothing outside this lab
+# session can be selected.
+fleet_painter_pids() {  # <pane> -> pids of fleet-view processes the server reports
+  local pid cmd
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null) || continue
+    case "$cmd" in *fm-fleet-view.sh*) ;; *) continue ;; esac
+    grep -qa "FM_HOME=$HOME_DIR" "/proc/$pid/environ" 2>/dev/null || continue
+    printf '%s\n' "$pid"
+  done < <(lab pane process-info --pane "$1" \
+    | jq -r '.result.process_info.foreground_processes[]?.pid // empty')
+}
+
+stop_fleet_painter() {  # <pane>
+  local pid waited=0
+  while IFS= read -r pid; do
+    kill "$pid" 2>/dev/null || true
+  done < <(fleet_painter_pids "$1")
+  while [ -n "$(fleet_painter_pids "$1")" ] && [ "$waited" -lt 100 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if [ -n "$(fleet_painter_pids "$1")" ]; then
+    while IFS= read -r pid; do
+      kill -KILL "$pid" 2>/dev/null || true
+    done < <(fleet_painter_pids "$1")
+    sleep 0.2
+  fi
+  [ -z "$(fleet_painter_pids "$1")" ] || fail "the painter in $1 would not stop"
+}
+
+wait_for_fleet_state() {  # <expected> -> 0 once status settles, 1 on timeout
+  local want=$1 waited=0
+  while [ "$waited" -lt 150 ]; do
+    if [ "$want" = live ]; then
+      cockpit_env "$ROOT/bin/fm-cockpit.sh" status >/dev/null 2>&1 && return 0
+    else
+      cockpit_env "$ROOT/bin/fm-cockpit.sh" status 2>&1 >/dev/null | grep -q "$want" && return 0
+    fi
+    sleep 0.2
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+relaunch_painter() {  # <pane> <section> <root> <environment-mode> [<interval>]
+  local pane=$1 section=$2 root=$3 environment_mode=$4 interval=${5:-2}
+  local -a identity_environment=()
+  [ "$environment_mode" != stripped ] \
+    || identity_environment=(-u HERDR_SESSION -u HERDR_PANE_ID)
+  lab pane run "$pane" \
+    env "${identity_environment[@]}" \
+    "FM_HOME=$HOME_DIR" "FM_HERDR_LAB_HELPER=$LAB_HELPER" "FM_HERDR_LAB_SESSION=$SESSION" \
+    "$root/bin/fm-fleet-view.sh" \
+    --geometry-command "$root/bin/fm-herdr-pane-geometry.sh" \
+    --watch "$interval" --section "$section" >/dev/null \
+    || fail "could not relaunch a painter into the existing pane $pane"
+}
+
+stop_fleet_painter "$FLEET_FIRST"
+wait_for_fleet_state fleet-no-fleet-process \
+  || fail "status kept reporting a live region after its painter stopped"
+
+relaunch_painter "$FLEET_FIRST" "$FLEET_SECTION" "$ROOT" ambient
+wait_for_fleet_state fleet-no-pane-identity \
+  || fail "an ambient-only painter did not report fleet-no-pane-identity: $(cockpit_env "$ROOT/bin/fm-cockpit.sh" status 2>&1)"
+pass "an ambient-only relaunch stays running but is refused by exact identity validation"
+
+stop_fleet_painter "$FLEET_FIRST"
+PRE_FIX_ROOT="$TMP_ROOT/pre-fix"
+PRE_FIX_AVAILABLE=1
+mkdir -p "$PRE_FIX_ROOT"
+cp -R "$ROOT/bin" "$PRE_FIX_ROOT/bin"
+for implementation in bin/fm-fleet-view.sh bin/fm-herdr-pane-geometry.sh bin/backends/herdr.sh; do
+  if ! git show "d00d218c95eb6b6af8855089343ddf929713fca8:$implementation" \
+    > "$PRE_FIX_ROOT/$implementation"; then
+    PRE_FIX_AVAILABLE=0
+    break
+  fi
+done
+
+if [ "$PRE_FIX_AVAILABLE" = 1 ]; then
+  chmod +x "$PRE_FIX_ROOT/bin/fm-fleet-view.sh" "$PRE_FIX_ROOT/bin/fm-herdr-pane-geometry.sh"
+  PRE_FIX_RECORD="$TMP_ROOT/pre-fix-cockpit-record"
+  cp "$HOME_DIR/state/.herdr-cockpit" "$PRE_FIX_RECORD"
+  awk -v pane="$FLEET_FIRST" -v section="$FLEET_SECTION" '
+    /^fleet_pane_ids=/ { print "fleet_pane_ids=" pane; next }
+    /^fleet_pane_sections=/ { print "fleet_pane_sections=" section; next }
+    { print }
+  ' "$PRE_FIX_RECORD" > "$HOME_DIR/state/.herdr-cockpit.tmp"
+  mv "$HOME_DIR/state/.herdr-cockpit.tmp" "$HOME_DIR/state/.herdr-cockpit"
+  chmod 0600 "$HOME_DIR/state/.herdr-cockpit"
+  relaunch_painter "$FLEET_FIRST" "$FLEET_SECTION" "$PRE_FIX_ROOT" stripped 20
+  PRE_FIX_TEXT=
+  PRE_FIX_STATUS=
+  PRE_FIX_MATCHED=0
+  PRE_FIX_WAITED=0
+  while [ "$PRE_FIX_WAITED" -lt 100 ]; do
+    PRE_FIX_TEXT=$(lab pane read "$FLEET_FIRST" --source visible) \
+      || fail "could not read the pre-fix stripped-identity relaunch"
+    PRE_FIX_STATUS=$(cockpit_env env FM_ROOT_OVERRIDE="$PRE_FIX_ROOT" \
+      "$PRE_FIX_ROOT/bin/fm-cockpit.sh" status 2>&1) || true
+    if [[ $PRE_FIX_TEXT == *"FLEET VIEW DEGRADED"* ]] \
+      && [[ $PRE_FIX_STATUS == COCKPIT:\ live* ]]; then
+      PRE_FIX_MATCHED=1
+      break
+    fi
+    sleep 0.1
+    PRE_FIX_WAITED=$((PRE_FIX_WAITED + 1))
+  done
+  stop_fleet_painter "$FLEET_FIRST"
+  mv "$PRE_FIX_RECORD" "$HOME_DIR/state/.herdr-cockpit"
+  [ "$PRE_FIX_MATCHED" = 1 ] \
+    || fail "pre-fix stripped identity did not show a degraded pane while status reported live: pane=[$PRE_FIX_TEXT] status=[$PRE_FIX_STATUS]"
+  pass "pre-fix stripped identity degrades while cockpit status reports live"
+else
+  echo "skip: pre-fix relaunch blobs unavailable at d00d218c95eb6b6af8855089343ddf929713fca8"
+fi
+
+STRIPPED_PROBE_STATUS=0
+env -u HERDR_SESSION -u HERDR_PANE_ID \
+  FM_HERDR_LAB_HELPER="$LAB_HELPER" FM_HERDR_LAB_SESSION="$SESSION" \
+  "$ROOT/bin/fm-herdr-pane-geometry.sh" >/dev/null 2>&1 \
+  || STRIPPED_PROBE_STATUS=$?
+[ "$STRIPPED_PROBE_STATUS" -eq 64 ] \
+  || fail "the current production probe did not classify stripped identity as permanent: $STRIPPED_PROBE_STATUS"
+
+lab pane run "$FLEET_FIRST" clear >/dev/null \
+  || fail "could not clear the fleet pane before the current stripped-identity relaunch"
+POST_FIX_CAPTURE="$HOME_DIR/state/post-fix-stripped-painter.log"
+POST_FIX_RUNNER="$HOME_DIR/state/post-fix-stripped-painter.sh"
+cat > "$POST_FIX_RUNNER" <<SH
+#!/usr/bin/env bash
+"$ROOT/bin/fm-fleet-view.sh" --geometry-command "$ROOT/bin/fm-herdr-pane-geometry.sh" \
+  --watch 1 --section "$FLEET_SECTION" > "$POST_FIX_CAPTURE" 2>&1
+status=\$?
+printf '\nrc=%s\n' "\$status" >> "$POST_FIX_CAPTURE"
+SH
+chmod +x "$POST_FIX_RUNNER"
+lab pane run "$FLEET_FIRST" \
+  "env -u HERDR_SESSION -u HERDR_PANE_ID FM_HOME=$HOME_DIR FM_HERDR_LAB_HELPER=$LAB_HELPER FM_HERDR_LAB_SESSION=$SESSION $POST_FIX_RUNNER" \
+  >/dev/null \
+  || fail "could not launch the current stripped-identity painter capture"
+POST_FIX_WAITED=0
+while [ "$POST_FIX_WAITED" -lt 300 ]; do
+  if cockpit_env "$ROOT/bin/fm-cockpit.sh" status >/dev/null 2>&1; then
+    fail "current stripped-identity relaunch was reported live"
+  fi
+  if [ -f "$POST_FIX_CAPTURE" ] && grep -q '^rc=' "$POST_FIX_CAPTURE"; then
+    break
+  fi
+  sleep 0.1
+  POST_FIX_WAITED=$((POST_FIX_WAITED + 1))
+done
+if [ ! -f "$POST_FIX_CAPTURE" ] || ! grep -q '^rc=' "$POST_FIX_CAPTURE"; then
+  fail "current stripped-identity relaunch never recorded its exit status: $(lab pane read "$FLEET_FIRST" --source visible 2>/dev/null)"
+fi
+POST_FIX_TEXT=$(cat "$POST_FIX_CAPTURE")
+POST_FIX_RC=$(sed -n 's/^rc=//p' "$POST_FIX_CAPTURE" | tail -n 1)
+case "$POST_FIX_RC" in
+  ''|0|*[!0-9]*) fail "current stripped-identity painter did not terminate unsuccessfully: rc=[$POST_FIX_RC] output=[$POST_FIX_TEXT]" ;;
+esac
+case "$POST_FIX_TEXT" in
+  *"FLEET VIEW STOPPING"*"authoritative pane state or cwd is permanently unavailable"*) ;;
+  *) fail "current stripped-identity painter did not report unusable pane identity: $POST_FIX_TEXT" ;;
+esac
+case "$POST_FIX_TEXT" in
+  *"FLEET STATUS"*|*"YOUR DECISIONS"*) fail "current stripped-identity relaunch painted a fleet section: $POST_FIX_TEXT" ;;
+esac
+pass "current stripped identity is permanent and never reports a live fleet frame"
 
 for id in cockpit-one cockpit-two cockpit-three; do
   cockpit_env env FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \

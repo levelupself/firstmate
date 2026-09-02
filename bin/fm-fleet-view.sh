@@ -31,6 +31,14 @@
 # snapshot or render prints an explicit degraded panel. Drawn-geometry failures
 # recover within three transient reads or evict the exact bound pane once.
 #
+# Which pane a banner IS comes from --herdr-session and --herdr-pane when the
+# caller states them, and otherwise from the HERDR_SESSION and HERDR_PANE_ID a
+# Herdr pane publishes. The cockpit adapter states them, because it created and
+# recorded the pane and is the only party that knows which one this banner is
+# for; the ambient variables are the fallback for a banner run by hand, and are
+# nobody's guarantee. Everything downstream - the frame binding, the pane lock,
+# eviction, and the drawn-rectangle probe - uses that one resolved identity.
+#
 # A watched banner inside an adopted cockpit frame paints only while that home's
 # frame record still names ITS pane, and only one such banner paints a pane at a
 # time. The frame record written by bin/backends/herdr.sh is the sole authority
@@ -52,6 +60,7 @@ usage() {
   cat <<'EOF'
 usage: fm-fleet-view.sh [--json] [--watch [interval]] [--section <names>]...
                         [--geometry-command <executable>]
+                        [--herdr-session <session> --herdr-pane <pane-id>]
 
 Render a narrow, prioritized fleet side panel from fm-fleet-snapshot.sh.
 Use --json to print the complete underlying snapshot.
@@ -60,6 +69,14 @@ Use --geometry-command to read "<columns> <lines>" from an executable before
 every redraw when an embedding surface has geometry more authoritative than
 the pane pty. The frame is bounded by the smaller of that rectangle and the
 pane's own measurable size, because exceeding either one wraps and scrolls it.
+Use --herdr-session and --herdr-pane to state which Herdr pane this banner is
+painting instead of reading it from the pane environment. Give both or neither;
+either one alone, or a value that is empty or carries whitespace, is refused.
+When they are given the same pair is passed to --geometry-command as
+"--session <session> --pane <pane-id>", so the probe is bound to the same exact
+pane. Without them the banner falls back to HERDR_SESSION and HERDR_PANE_ID and
+calls --geometry-command with no arguments, which is the contract any other
+geometry executable is written against.
 Use --section to render a subset of: waiting, ready, in-flight, blocked,
 finished, failed. The flag may be repeated and accepts a comma-separated list;
 the sections are always rendered in that priority order, whatever order they
@@ -93,6 +110,9 @@ INTERVAL=5
 REQUESTED=
 SECTION_SET=0
 GEOMETRY_COMMAND=
+OPT_HERDR_SESSION=
+OPT_HERDR_PANE=
+HERDR_IDENTITY_SET=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --json) FORMAT=json ;;
@@ -119,11 +139,53 @@ while [ $# -gt 0 ]; do
       shift
       GEOMETRY_COMMAND=$1
       ;;
+    --herdr-session)
+      [ $# -gt 1 ] || { usage >&2; exit 2; }
+      shift
+      OPT_HERDR_SESSION=$1
+      HERDR_IDENTITY_SET=1
+      ;;
+    --herdr-session=*) OPT_HERDR_SESSION=${1#--herdr-session=}; HERDR_IDENTITY_SET=1 ;;
+    --herdr-pane)
+      [ $# -gt 1 ] || { usage >&2; exit 2; }
+      shift
+      OPT_HERDR_PANE=$1
+      HERDR_IDENTITY_SET=1
+      ;;
+    --herdr-pane=*) OPT_HERDR_PANE=${1#--herdr-pane=}; HERDR_IDENTITY_SET=1 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
   shift
 done
+
+# The one pane identity everything else in this file uses. A stated identity is
+# fail-closed: half of a pair, or a value that could not be handed to the server
+# verbatim, is a caller error rather than a silent fall back to the environment,
+# because falling back would paint some other pane's rectangle onto this one.
+# PANE_IDENTITY_ARGS is empty unless the identity was stated, so an operator's
+# own --geometry-command keeps being called exactly the way it always was.
+herdr_identity_is_usable() {  # <value>
+  case "$1" in
+    ''|*[[:space:]]*|-*) return 1 ;;
+  esac
+  return 0
+}
+
+PANE_IDENTITY_ARGS=()
+if [ "$HERDR_IDENTITY_SET" = 1 ]; then
+  if ! herdr_identity_is_usable "$OPT_HERDR_SESSION" \
+     || ! herdr_identity_is_usable "$OPT_HERDR_PANE"; then
+    usage >&2
+    exit 2
+  fi
+  PANE_SESSION=$OPT_HERDR_SESSION
+  PANE_ID=$OPT_HERDR_PANE
+  PANE_IDENTITY_ARGS=(--session "$PANE_SESSION" --pane "$PANE_ID")
+else
+  PANE_SESSION=${HERDR_SESSION:-}
+  PANE_ID=${HERDR_PANE_ID:-}
+fi
 
 # normalize_sections: one comma-separated section list rebuilt in the priority
 # order above, so a repeated or out-of-order request still renders exactly once
@@ -232,7 +294,11 @@ authoritative_geometry() {
   local geometry width height extra status
   [ -n "$GEOMETRY_COMMAND" ] || return 1
   [ -x "$GEOMETRY_COMMAND" ] || return 1
-  geometry=$("$GEOMETRY_COMMAND")
+  if [ "${#PANE_IDENTITY_ARGS[@]}" -gt 0 ]; then
+    geometry=$("$GEOMETRY_COMMAND" "${PANE_IDENTITY_ARGS[@]}")
+  else
+    geometry=$("$GEOMETRY_COMMAND")
+  fi
   status=$?
   if [ "$status" -ne 0 ]; then
     [ "$status" -ne 64 ] || return 64
@@ -596,7 +662,7 @@ painter_binding() {
   else
     PAINTER_BINDING=standalone
   fi
-  [ -n "${HERDR_PANE_ID:-}" ] || return 0
+  [ -n "$PANE_ID" ] || return 0
   if ! declare -F fm_backend_herdr_cockpit_record_snapshot >/dev/null 2>&1; then
     # shellcheck source=bin/fm-backend.sh
     . "$SCRIPT_DIR/fm-backend.sh" 2>/dev/null || return 0
@@ -605,13 +671,13 @@ painter_binding() {
   fm_backend_herdr_cockpit_record_snapshot "$PAINTER_STATE" "$PAINTER_HOME" || return 0
   # A version-1 record predates the fleet region and records no painter at all.
   [ -n "$FM_BACKEND_HERDR_COCKPIT_FLEET_PANE_IDS" ] || return 0
-  [ "$FM_BACKEND_HERDR_COCKPIT_SESSION" = "${HERDR_SESSION:-default}" ] || return 0
+  [ "$FM_BACKEND_HERDR_COCKPIT_SESSION" = "${PANE_SESSION:-default}" ] || return 0
   while IFS= read -r pane; do
     [ -n "$pane" ] || continue
     index=$((index + 1))
-    [ "$pane" = "$HERDR_PANE_ID" ] || continue
+    [ "$pane" = "$PANE_ID" ] || continue
     if ! fm_backend_herdr_cockpit_pane_matches \
-      "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$HERDR_PANE_ID" \
+      "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$PANE_ID" \
       "$FM_BACKEND_HERDR_COCKPIT_WORKSPACE_ID" "$FM_BACKEND_HERDR_COCKPIT_TAB_ID"; then
       PAINTER_BINDING=unbound
       return 0
@@ -621,10 +687,10 @@ painter_binding() {
     # flag existed, so there is no section to disagree with.
     if [ -z "$recorded" ]; then
       fleet_state=$(fm_backend_herdr_cockpit_fleet_state \
-        "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$HERDR_PANE_ID" "$PAINTER_HOME" '' strict)
+        "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$PANE_ID" "$PAINTER_HOME" '' strict)
     elif normalize_sections "$recorded" && [ "$NORMALIZED_SECTIONS" = "$SECTIONS" ]; then
       fleet_state=$(fm_backend_herdr_cockpit_fleet_state \
-        "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$HERDR_PANE_ID" "$PAINTER_HOME" "$recorded" strict)
+        "$FM_BACKEND_HERDR_COCKPIT_SESSION" "$PANE_ID" "$PAINTER_HOME" "$recorded" strict)
     else
       PAINTER_BINDING=unbound
       return 0
@@ -648,26 +714,26 @@ EOF
 painter_retire() {  # <reason>
   fm_terminal_watch_reset
   printf 'fm-fleet-view: %s is not this frame'"'"'s recorded painter for these sections; %s\n' \
-    "$HERDR_PANE_ID" "$1" >&2
+    "$PANE_ID" "$1" >&2
 }
 
 painter_evict() {  # <reason>
   local reason=$1
   fm_terminal_watch_reset
-  printf 'fm-fleet-view: EVICTING fleet pane %s: %s\n' "$HERDR_PANE_ID" "$reason" >&2
+  printf 'fm-fleet-view: EVICTING fleet pane %s: %s\n' "$PANE_ID" "$reason" >&2
   fm_terminal_paint_frame "FLEET VIEW EVICTING
 $reason" || true
-  if ! fm_backend_herdr_cli "${HERDR_SESSION:-default}" pane close "$HERDR_PANE_ID" >/dev/null 2>&1; then
+  if ! fm_backend_herdr_cli "${PANE_SESSION:-default}" pane close "$PANE_ID" >/dev/null 2>&1; then
     printf 'fm-fleet-view: exact pane eviction failed for %s; the painter is stopping without another close attempt.\n' \
-      "$HERDR_PANE_ID" >&2
+      "$PANE_ID" >&2
     return 1
   fi
 }
 
 painter_can_evict() {
   [ "$PAINTER_BOUND_ONCE" = 1 ] \
-    && [ -n "${HERDR_PANE_ID:-}" ] \
-    && [ -n "${HERDR_SESSION:-}" ] \
+    && [ -n "$PANE_ID" ] \
+    && [ -n "$PANE_SESSION" ] \
     && declare -F fm_backend_herdr_cli >/dev/null 2>&1
 }
 
@@ -696,10 +762,10 @@ painter_claim() {
     # shellcheck source=bin/fm-wake-lib.sh
     . "$SCRIPT_DIR/fm-wake-lib.sh"
   fi
-  PAINTER_LOCK="$PAINTER_STATE/.fleet-painter-$HERDR_PANE_ID.lock"
+  PAINTER_LOCK="$PAINTER_STATE/.fleet-painter-$PANE_ID.lock"
   if ! fm_lock_try_acquire "$PAINTER_LOCK"; then
     printf 'fm-fleet-view: another fleet banner (pid %s) is already painting %s; refusing to paint over it.\n' \
-      "${FM_LOCK_HELD_PID:-unknown}" "$HERDR_PANE_ID" >&2
+      "${FM_LOCK_HELD_PID:-unknown}" "$PANE_ID" >&2
     PAINTER_LOCK=
     return 1
   fi

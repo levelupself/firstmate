@@ -263,8 +263,37 @@ case "${1:-} ${2:-}" in
       fleet-live)
         emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
           --arg g "$FM_COCKPIT_ROOT/bin/fm-herdr-pane-geometry.sh" \
+          --arg session "${FM_FAKE_HERDR_SESSION:-fmtest}" --arg pane "$info_pane" \
+          --argjson extra "$(section_argv)" \
+          '["bash",$s,"--geometry-command",$g,
+            "--herdr-session",$session,"--herdr-pane",$pane,"--watch"] + $extra')"
+        ;;
+      fleet-no-pane-identity)
+        # Every other check passes: the exact executable, the exact home, the
+        # recorded sections, and the geometry binding. The one thing missing is
+        # the pane identity that binding needs to resolve a rectangle at all.
+        emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
+          --arg g "$FM_COCKPIT_ROOT/bin/fm-herdr-pane-geometry.sh" \
           --argjson extra "$(section_argv)" \
           '["bash",$s,"--geometry-command",$g,"--watch"] + $extra')"
+        ;;
+      fleet-foreign-pane-identity)
+        # Bound, but to a pane that is not this one. An identity a caller can
+        # spell freely is worth nothing unless it is checked against the pane
+        # the frame actually recorded.
+        emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
+          --arg g "$FM_COCKPIT_ROOT/bin/fm-herdr-pane-geometry.sh" \
+          --arg session "${FM_FAKE_HERDR_SESSION:-fmtest}" \
+          --argjson extra "$(section_argv)" \
+          '["bash",$s,"--geometry-command",$g,
+            "--herdr-session",$session,"--herdr-pane","w9:p9","--watch"] + $extra')"
+        ;;
+      fleet-foreign-session-identity)
+        emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
+          --arg g "$FM_COCKPIT_ROOT/bin/fm-herdr-pane-geometry.sh" \
+          --arg pane "$info_pane" --argjson extra "$(section_argv)" \
+          '["bash",$s,"--geometry-command",$g,
+            "--herdr-session","another-session","--herdr-pane",$pane,"--watch"] + $extra')"
         ;;
       fleet-relative)
         # The same watcher, started by hand from the checkout through a
@@ -276,15 +305,20 @@ case "${1:-} ${2:-}" in
       fleet-env-home)
         emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
           --arg g "$FM_COCKPIT_ROOT/bin/fm-herdr-pane-geometry.sh" \
+          --arg session "${FM_FAKE_HERDR_SESSION:-fmtest}" --arg pane "$info_pane" \
           --arg h "FM_HOME=${FM_FAKE_FLEET_HOME:-}" --argjson extra "$(section_argv)" \
-          '["env",$h,$s,"--geometry-command",$g,"--watch"] + $extra')"
+          '["env",$h,$s,"--geometry-command",$g,
+            "--herdr-session",$session,"--herdr-pane",$pane,"--watch"] + $extra')"
         ;;
       fleet-other-sections)
         # A fleet view for this home, watching, but not the part of the fleet
         # the frame recorded for this pane.
         emit_processes "$(jq -cn --arg s "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
           --arg g "$FM_COCKPIT_ROOT/bin/fm-herdr-pane-geometry.sh" \
-          '["bash",$s,"--geometry-command",$g,"--watch","--section","failed"]')"
+          --arg session "${FM_FAKE_HERDR_SESSION:-fmtest}" --arg pane "$info_pane" \
+          '["bash",$s,"--geometry-command",$g,
+            "--herdr-session",$session,"--herdr-pane",$pane,
+            "--watch","--section","failed"]')"
         ;;
       fleet-stale-painter)
         # A fleet view for the right home, watching, showing exactly the
@@ -1124,6 +1158,15 @@ test_default_layout_warns_before_it_changes_the_screen() {
     "the fleet pane command did not resolve through the tracked code root"
   assert_contains "$body" "--geometry-command $ROOT/bin/fm-herdr-pane-geometry.sh" \
     "the fleet pane did not re-read its authoritative drawn rectangle on redraw"
+  # The adapter is the only party that knows which pane it just recorded, so it
+  # states that identity on the command line instead of trusting the painter to
+  # find it in an environment this repo never sets.
+  assert_contains "$body" "--herdr-session fmtest --herdr-pane $first" \
+    "the first fleet pane was not launched bound to its own recorded pane"
+  assert_contains "$body" "--herdr-session fmtest --herdr-pane $second" \
+    "the second fleet pane was not launched bound to its own recorded pane"
+  assert_contains "$body" "--herdr-session fmtest --herdr-pane $third" \
+    "the third fleet pane was not launched bound to its own recorded pane"
   assert_not_contains "$body" "$LAYOUT_HOME/bin/fm-fleet-view.sh" \
     "the fleet pane command incorrectly resolved code through the operational home"
   assert_contains "$body" "--watch --section waiting" \
@@ -1477,6 +1520,48 @@ test_a_fleet_painter_without_the_geometry_binding_is_not_live() {
   pass "a fleet pane whose painter cannot size itself to the drawn rectangle is not live"
 }
 
+# A painter that is running, from the right executable and home, showing the
+# recorded sections, and carrying --geometry-command still cannot draw anything
+# unless it also knows WHICH pane it is. Without that identity the geometry read
+# fails on every redraw, the pane shows a degraded panel, and the region is
+# reported live the whole time - the frame is satisfied while nothing usable is
+# on screen. Liveness has to mean the painter holds the identity its geometry
+# binding needs, and that it is this pane's identity rather than any pane's.
+test_a_fleet_painter_without_its_pane_identity_is_not_live() {
+  local fleet out
+  reset_layout_frame
+  run_layout_cockpit adopt >/dev/null 2>&1 || fail "banner adoption failed"
+
+  fleet=$(set_fleet_pane_status fleet-no-pane-identity)
+  out=$(run_layout_cockpit status 2>&1) \
+    && fail "status reported a live region for a painter with no pane identity"
+  assert_contains "$out" "(fleet-no-pane-identity)" \
+    "status did not name the missing pane identity as the failing check"
+  assert_contains "$out" "which pane it is painting" \
+    "the refusal did not explain the missing pane identity in plain words"
+  out=$(LINES=40 COLUMNS=120 run_layout_cockpit panel 2>&1) \
+    || fail "panel did not render a region with an unidentified painter"
+  assert_contains "$out" "FLEET column=$fleet [no-pane-identity]" \
+    "the panel did not name the pane whose painter has no identity"
+
+  set_fleet_pane_status fleet-foreign-pane-identity >/dev/null
+  out=$(run_layout_cockpit status 2>&1) \
+    && fail "status accepted a painter bound to a different pane"
+  assert_contains "$out" "(fleet-no-pane-identity)" \
+    "a painter bound to another pane was not named as an identity failure"
+
+  set_fleet_pane_status fleet-foreign-session-identity >/dev/null
+  out=$(run_layout_cockpit status 2>&1) \
+    && fail "status accepted a painter bound to a different session"
+  assert_contains "$out" "(fleet-no-pane-identity)" \
+    "a painter bound to another session was not named as an identity failure"
+
+  set_fleet_pane_status fleet-live >/dev/null
+  run_layout_cockpit status >/dev/null 2>&1 \
+    || fail "a painter carrying its own recorded pane identity was rejected"
+  pass "a fleet pane whose painter does not hold that pane's own identity is not live"
+}
+
 test_fleet_diagnostics_name_the_check_that_failed() {
   local fleet out
   reset_layout_frame
@@ -1675,6 +1760,7 @@ test_cockpit_liveness_requires_exact_painter_ownership
 test_an_unresolved_home_path_still_matches_the_live_banner
 test_fleet_diagnostics_name_the_check_that_failed
 test_a_fleet_painter_without_the_geometry_binding_is_not_live
+test_a_fleet_painter_without_its_pane_identity_is_not_live
 test_every_fleet_pane_must_be_live_and_show_what_the_frame_recorded
 test_a_version_two_frame_stays_live_as_its_single_pane_arrangement
 test_banner_zoom_is_reversible_and_moves_no_pane
