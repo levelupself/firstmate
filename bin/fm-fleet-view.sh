@@ -18,8 +18,16 @@
 # dependency readiness tasks-axi measures. It therefore renders the snapshot's
 # dispatch_clear rows plainly and the rest with a "?" marker and the snapshot's
 # reason, and its heading counts the two apart whenever any row needs a check.
-# No dependency-ready row is dropped: the captain sees the whole queue and the
-# count never claims the backlog confirmed more clear work than it did.
+# No dependency-ready row is dropped for lacking confirmation: the captain sees
+# the whole queue and the count never claims the backlog confirmed more clear
+# work than it did.
+# The one queued row the queue sections do drop is a row a worker already holds.
+# Dispatch publishes state/<id>.meta at once and the backlog document is edited
+# afterwards by hand, so between the two the same id is both queued here and
+# live in the snapshot's own task rows. Those rows are the authoritative live
+# inventory, so a queued row carrying one is rendered as the in-flight work it
+# is and never offered again as work to hand out. Nothing is hidden by that:
+# the row is still on screen, under the section that is true of it.
 # Visible work is grouped under compact project headers in every live section.
 # Each project receives the same row cap for the available pane height, and its
 # header reports that project's hidden count instead of one global list tail.
@@ -30,6 +38,12 @@
 # Watch mode uses only bash, jq, terminal control sequences, and sleep. A failed
 # snapshot or render prints an explicit degraded panel. Drawn-geometry failures
 # recover within three transient reads or evict the exact bound pane once.
+# A geometry command's stderr is CAPTURED rather than passed through, because a
+# diagnostic written between two redraws lands in the middle of a live frame.
+# Its last reason is reported once, on the terminal path, so a banner that stops
+# names the condition that stopped it instead of a generic cause the operator
+# would have to guess at - a missing pane identity, a closed pane, and a deleted
+# foreground cwd need three different answers.
 #
 # Which pane a banner IS comes from --herdr-session and --herdr-pane when the
 # caller states them, and otherwise from the HERDR_SESSION and HERDR_PANE_ID a
@@ -67,7 +81,9 @@ Use --json to print the complete underlying snapshot.
 Use --watch to redraw every 5 seconds, or provide a positive interval in seconds.
 Use --geometry-command to read "<columns> <lines>" from an executable before
 every redraw when an embedding surface has geometry more authoritative than
-the pane pty. The frame is bounded by the smaller of that rectangle and the
+the pane pty. The path must be executable when the banner starts. Anything the
+command writes to stderr is captured, and its last line is reported as the
+reason whenever a geometry failure stops the banner. The frame is bounded by the smaller of that rectangle and the
 pane's own measurable size, because exceeding either one wraps and scrolls it.
 Use --herdr-session and --herdr-pane to state which Herdr pane this banner is
 painting instead of reading it from the pane environment. Give both or neither;
@@ -83,10 +99,11 @@ the sections are always rendered in that priority order, whatever order they
 were asked for. Without --section the panel renders its default banner:
 a heading followed by waiting, ready, in-flight, and blocked.
 
-READY holds every queued task with no open dependency and no active hold. Rows
-that can be handed to a worker now are listed with a bullet; rows the backlog
-cannot confirm are listed with a "?" and the reason, and the heading counts the
-two apart.
+READY holds queued tasks with no open dependency and no active hold, except a
+task whose id already has a live task record. That task is shown under IN FLIGHT
+instead of being offered again. Rows that can be handed to a worker now are
+listed with a bullet; rows the backlog cannot confirm are listed with a "?" and
+the reason, and the heading counts the two apart.
 
 Inside a Herdr cockpit frame, --watch paints only while that home's frame
 record still names this pane for these sections, and only one banner paints a
@@ -242,6 +259,11 @@ if [ "$SECTION_SET" = 1 ]; then
   SECTIONS=$NORMALIZED_SECTIONS
 fi
 
+if [ -n "$GEOMETRY_COMMAND" ] && [ ! -x "$GEOMETRY_COMMAND" ]; then
+  echo "fm-fleet-view: --geometry-command is not executable: $GEOMETRY_COMMAND" >&2
+  exit 2
+fi
+
 if [ "$FORMAT" = json ] && [ "$WATCH" = 1 ]; then
   echo "fm-fleet-view: --json and --watch cannot be combined" >&2
   exit 2
@@ -290,28 +312,82 @@ terminal_height() {
   printf '%s\n' "$height"
 }
 
+# The geometry command's own explanation of a refusal. It is captured into a
+# private file rather than inherited, so it can never be written into a live
+# frame, and only the terminal paths below ever read it back.
+GEOMETRY_REASON=
+GEOMETRY_SCRATCH=
+GEOMETRY_STDERR=/dev/null
+# Resolved once, in the shell that owns the pane. render_once runs inside a
+# command substitution, so a path opened in there could publish neither the
+# reason nor the directory to clean up; the file is the only channel that
+# survives, and both sides have to already agree on where it is. Without a
+# usable scratch file the stream is discarded rather than inherited: a diagnostic
+# in the middle of a live frame is worse than a generic terminal reason.
+geometry_capture_path() {
+  [ -z "$GEOMETRY_SCRATCH" ] || return 0
+  GEOMETRY_SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-fleet-view.XXXXXX" 2>/dev/null) || {
+    GEOMETRY_SCRATCH=
+    return 1
+  }
+  GEOMETRY_STDERR="$GEOMETRY_SCRATCH/geometry.err"
+}
+
+# The last non-empty line the command wrote, bounded so one runaway line cannot
+# become the whole final frame.
+geometry_read_reason() {
+  GEOMETRY_REASON=
+  [ "$GEOMETRY_STDERR" != /dev/null ] || return 0
+  [ -s "$GEOMETRY_STDERR" ] || return 0
+  GEOMETRY_REASON=$(awk 'NF { last = $0 } END { print last }' "$GEOMETRY_STDERR" 2>/dev/null | cut -c1-200)
+}
+
+# geometry_failure_reason: the command's own reason when it gave one, and the
+# caller's generic wording only when it did not. A banner that stops has to name
+# the condition that stopped it; a cause the operator has to guess at is what
+# left a degraded pane unexplained.
+geometry_failure_reason() {  # <fallback>
+  if [ -n "$GEOMETRY_REASON" ]; then
+    printf '%s\n' "$GEOMETRY_REASON"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
 authoritative_geometry() {
   local geometry width height extra status
+  GEOMETRY_REASON=
   [ -n "$GEOMETRY_COMMAND" ] || return 1
-  [ -x "$GEOMETRY_COMMAND" ] || return 1
+  if [ ! -x "$GEOMETRY_COMMAND" ]; then
+    GEOMETRY_REASON="the geometry command is no longer executable: $GEOMETRY_COMMAND"
+    return 75
+  fi
+  : > "$GEOMETRY_STDERR" 2>/dev/null || true
   if [ "${#PANE_IDENTITY_ARGS[@]}" -gt 0 ]; then
-    geometry=$("$GEOMETRY_COMMAND" "${PANE_IDENTITY_ARGS[@]}")
+    geometry=$("$GEOMETRY_COMMAND" "${PANE_IDENTITY_ARGS[@]}" 2>>"$GEOMETRY_STDERR")
   else
-    geometry=$("$GEOMETRY_COMMAND")
+    geometry=$("$GEOMETRY_COMMAND" 2>>"$GEOMETRY_STDERR")
   fi
   status=$?
   if [ "$status" -ne 0 ]; then
+    geometry_read_reason
     [ "$status" -ne 64 ] || return 64
     return 75
   fi
   read -r width height extra <<EOF
 $geometry
 EOF
-  [ -z "${extra:-}" ] || return 75
+  [ -z "${extra:-}" ] || { GEOMETRY_REASON="the geometry command printed more than a rectangle"; return 75; }
   case "$width:$height" in
-    *[!0-9:]*|:*|*:) return 75 ;;
+    *[!0-9:]*|:*|*:)
+      GEOMETRY_REASON="the geometry command printed no numeric rectangle"
+      return 75
+      ;;
   esac
-  [ "$width" -gt 0 ] && [ "$height" -gt 0 ] || return 75
+  [ "$width" -gt 0 ] && [ "$height" -gt 0 ] || {
+    GEOMETRY_REASON="the geometry command printed an empty rectangle"
+    return 75
+  }
   printf '%s %s\n' "$width" "$height"
 }
 
@@ -347,7 +423,7 @@ render_once() {
       status=$?
       if [ "$status" -eq 64 ]; then
         printf '%s\n' "FLEET VIEW EVICTING" \
-          "Authoritative pane geometry is permanently unavailable."
+          "$(geometry_failure_reason 'Authoritative pane geometry is permanently unavailable.')"
         return 64
       fi
       printf '%s\n' "FLEET VIEW DEGRADED" \
@@ -504,12 +580,20 @@ render_once() {
         | (.current_state.state // "unknown") as $state
         | select($state != "done" and $state != "failed")
         | select(.id as $id | $waiting_ids | index($id) | not)] | sort_by(.id)) as $in_flight
+    # A queued row whose id already has a live task record is work a worker
+    # holds. state/<id>.meta is written at dispatch and the backlog document is
+    # edited later by hand, so between the two the same row would be offered as
+    # dispatchable while its worker is already running. The task rows are the
+    # authoritative live inventory, so they decide, and the row renders under
+    # in-flight instead of twice.
     | ([.backlog.records[]?
-        | select(.state == "queued" and .structured == true and .dispatchable == true)]) as $ready
+        | select(.state == "queued" and .structured == true and .dispatchable == true)
+        | select(.id as $id | $current_task_ids | index($id) | not)]) as $ready
     | ([$ready[] | select(.dispatch_clear == true)]) as $ready_clear
     | ([$ready[] | select(.dispatch_clear != true)]) as $ready_review
     | ([.backlog.records[]?
-        | select(.state == "queued" and .structured == true and .blocked == true)]) as $blocked
+        | select(.state == "queued" and .structured == true and .blocked == true)
+        | select(.id as $id | $current_task_ids | index($id) | not)]) as $blocked
     | ([$ready_clear[] | {id:(.id // "unknown"),detail:(.title // "unknown"),marker:"• ",
                          project:backlog_project(.),project_sort:(backlog_project(.) | ascii_downcase),
                          state_rank:0,priority:(.priority // 999999),order:(.order // 999999)}]
@@ -754,7 +838,17 @@ painter_home_available() (
   CDPATH='' cd -- "$PAINTER_HOME" 2>/dev/null || return 1
 )
 
+# One exit owner for everything this banner created: the pane lock it holds and
+# the private capture directory the geometry command's stderr goes to.
 PAINTER_LOCK=
+painter_cleanup() {
+  if [ -n "${PAINTER_LOCK:-}" ] && declare -F fm_lock_release >/dev/null 2>&1; then
+    fm_lock_release "$PAINTER_LOCK" || true
+  fi
+  [ -z "${GEOMETRY_SCRATCH:-}" ] || rm -rf -- "$GEOMETRY_SCRATCH"
+}
+trap painter_cleanup EXIT
+
 painter_claim() {
   [ "$PAINTER_BINDING" = bound ] || return 0
   [ -z "$PAINTER_LOCK" ] || return 0
@@ -769,8 +863,9 @@ painter_claim() {
     PAINTER_LOCK=
     return 1
   fi
-  trap 'fm_lock_release "$PAINTER_LOCK" || true' EXIT
 }
+
+[ -z "$GEOMETRY_COMMAND" ] || geometry_capture_path || true
 
 if [ "$WATCH" = 1 ]; then
   GEOMETRY_FAILURES=0
@@ -794,12 +889,14 @@ if [ "$WATCH" = 1 ]; then
         fi
         geometry_status=$?
         if [ "$geometry_status" -eq 64 ]; then
-          painter_terminal_failure 'authoritative pane state or cwd is permanently unavailable' || true
+          painter_terminal_failure \
+            "$(geometry_failure_reason 'authoritative pane state or cwd is permanently unavailable')" || true
           exit 1
         fi
         GEOMETRY_FAILURES=$((GEOMETRY_FAILURES + 1))
         if [ "$GEOMETRY_FAILURES" -ge "$GEOMETRY_RETRY_LIMIT" ]; then
-          painter_terminal_failure "authoritative pane state stayed unavailable after $GEOMETRY_RETRY_LIMIT consecutive attempts" || true
+          painter_terminal_failure \
+            "$(geometry_failure_reason "authoritative pane state stayed unavailable after $GEOMETRY_RETRY_LIMIT consecutive attempts")" || true
           exit 1
         fi
         frame="FLEET VIEW DEGRADED
@@ -816,15 +913,18 @@ Authoritative pane state unavailable; transient attempt $GEOMETRY_FAILURES of $G
       GEOMETRY_FAILURES=0
     else
       render_status=$?
+      geometry_read_reason
       case "$render_status" in
         64)
-          painter_terminal_failure 'authoritative pane state or cwd is permanently unavailable' || true
+          painter_terminal_failure \
+            "$(geometry_failure_reason 'authoritative pane geometry is permanently unavailable')" || true
           exit 1
           ;;
         75)
           GEOMETRY_FAILURES=$((GEOMETRY_FAILURES + 1))
           if [ "$GEOMETRY_FAILURES" -ge "$GEOMETRY_RETRY_LIMIT" ]; then
-            painter_terminal_failure "drawn geometry stayed unavailable after $GEOMETRY_RETRY_LIMIT consecutive attempts" || true
+            painter_terminal_failure \
+              "$(geometry_failure_reason "drawn geometry stayed unavailable after $GEOMETRY_RETRY_LIMIT consecutive attempts")" || true
             exit 1
           fi
           frame="FLEET VIEW DEGRADED

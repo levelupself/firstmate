@@ -80,6 +80,25 @@ The geometry probe treats a missing exact pane or missing authoritative foregrou
 The bound fleet painter evicts a permanently unavailable pane after the first classified read, retries a transient failure at most three consecutive times, resets the counter after recovery, and evicts once when that boundary is exhausted.
 Each bound terminal path names the exact pane loudly before issuing its single close, while standalone watch mode stops without pane mutation.
 
+Every non-zero probe exit also prints one `fm-herdr-pane-geometry: <reason>` line on stderr naming the condition that fired, because the three permanent causes need three different answers: a banner never told which pane it paints has to be relaunched with its identity, a closed pane has to be rebuilt, and a deleted foreground cwd has to be resolved at the home.
+`bin/fm-fleet-view.sh` captures that stream into a private file rather than inheriting it, so a diagnostic can never be written into the middle of a live frame, and reports the last reason once on the terminal path.
+A `--geometry-command` that is not executable is refused when the banner starts rather than counted as a per-redraw transient failure.
+
+Verified on 2026-09-02 against Herdr 0.8.0 for the exact-cause reporting:
+
+```sh
+$ env -u HERDR_SESSION HERDR_PANE_ID=<a live fleet pane> bin/fm-herdr-pane-geometry.sh; echo "exit=$?"
+fm-herdr-pane-geometry: no Herdr pane identity available; neither --session/--pane nor HERDR_SESSION/HERDR_PANE_ID named a pane
+exit=64
+$ env HERDR_SESSION=<its session> HERDR_PANE_ID=<the same pane> bin/fm-herdr-pane-geometry.sh; echo "exit=$?"
+31 12
+exit=0
+```
+
+The same pane resolves its drawn rectangle as soon as the session half of the identity is present, so an unresolvable rectangle on a live pane is an identity fact and not a pane fact, and the terminal report has to say which.
+This exact-cause verification was recorded at full SHA `a51694832910fcdde11aba87886be65049273acf`.
+Its proof-file list is `bin/fm-herdr-pane-geometry.sh`, `bin/fm-fleet-view.sh`, and `tests/fm-fleet-snapshot-view.test.sh`.
+
 ```sh
 bash tests/fm-herdr-pane-geometry.test.sh
 bash tests/fm-fleet-snapshot-view.test.sh
@@ -138,6 +157,31 @@ HERDR_LAB_HELPER=/absolute/path/to/bin/fm-herdr-lab.sh \
 The real-Herdr suite relaunches a painter into an already-recorded fleet pane with ambient identity only, which must remain running while frame validation refuses it as `fleet-no-pane-identity`.
 It separately relaunches the pre-fix painter and production geometry probe after removing both ambient identity variables, which must show a degraded panel while the pre-fix frame validator reports live, then verifies that the current probe classifies the same missing identity as permanent and the current frame never reports live.
 
+### Half a pane identity splits one cockpit frame
+
+Verified on 2026-09-02 against Herdr 0.8.0, on a live cockpit whose three fleet panes were launched together and on the guarded lab.
+
+Two of a home's three fleet-pane painters carried `HERDR_PANE_ID` with no `HERDR_SESSION`, and the third carried both.
+Those two rendered a degraded panel while the third rendered its section normally, and the geometry probe reproduced that split exactly: with the session half absent it stopped permanently, and with the session half supplied the same pane returned its rectangle (output above).
+Half an ambient identity is therefore not a degraded identity but no identity at all, and it splits one frame into panes that work and panes that cannot, from the same code against the same live panes.
+
+`tests/fm-fleet-snapshot-view.test.sh` pins the split portably over the production probe: three banners share one recorded frame, two are launched with the session half removed, and only those two stop, naming the missing identity and never blaming a cwd they did not read.
+`tests/fm-cockpit-herdr-e2e.test.sh` pins the same split against real Herdr, with the identity-bearing sibling relaunched through the adapter's own stated-identity form.
+
+```sh
+bash tests/fm-fleet-snapshot-view.test.sh
+HERDR_LAB_HELPER=/absolute/path/to/bin/fm-herdr-lab.sh \
+  bash tests/fm-cockpit-herdr-e2e.test.sh
+```
+
+```text
+ok - a half-supplied pane identity stops its own banner and leaves its rendering sibling alone
+ok - on real Herdr a half-supplied identity stops exactly its own two panes and names why
+```
+
+This split verification was recorded at full SHA `a51694832910fcdde11aba87886be65049273acf`.
+Its proof-file list is `bin/fm-herdr-pane-geometry.sh`, `bin/fm-fleet-view.sh`, `bin/backends/herdr.sh`, `tests/fm-fleet-snapshot-view.test.sh`, and `tests/fm-cockpit-herdr-e2e.test.sh`.
+
 ### Red-first provenance
 
 The portable identity-channel reproduction ran against code under test at exact full SHA `d00d218c95eb6b6af8855089343ddf929713fca8` and produced these exact pre-fix failures:
@@ -164,8 +208,9 @@ Its proof-file list is `tests/fm-cockpit-herdr-e2e.test.sh`, `bin/backends/herdr
 ### Limitations
 
 The identity-transport observations are specific to herdr 0.8.0 on Linux.
-The reported 2026-08-30 field symptom was captured before this measurement and claimed the two variables were absent from a relaunched painter; that claim was not reproducible here and is contradicted by the first two blocks above.
-Which herdr build, if any, omits them is therefore unresolved, and no attempt was made to install an older build to settle it.
+The 2026-08-30 field symptom claimed `HERDR_SESSION` was absent from a relaunched painter, which the `herdr pane run` measurement above did not reproduce.
+The 2026-09-02 live cockpit did carry that absence in two of three fleet panes, so the ambient channel demonstrably reaches a painter without its session half even where a direct `pane run` injects it.
+Which creation path or build drops it is still unidentified, and no attempt was made to install an older build to settle it; the stated identity is what removes the dependency either way.
 The correction does not depend on the answer: the painter no longer reads its identity from that channel, so a build that omits, injects, or lets a caller overwrite the variables all reach the same result.
 
 ## Deleted fixture directories caused the repeated redraw failure

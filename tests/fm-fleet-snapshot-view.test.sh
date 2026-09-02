@@ -1485,6 +1485,12 @@ if [ "${1:-}" = pane ] && [ "${2:-}" = close ]; then
   printf '{"result":{"type":"ok"}}\n'
   exit 0
 fi
+if [ "${1:-}" = pane ] && [ "${2:-}" = layout ]; then
+  layout_pane=${4:-${HERDR_PANE_ID:-}}
+  jq -cn --arg pane "$layout_pane" \
+    '{result:{layout:{panes:[{pane_id:$pane,rect:{x:0,y:0,width:45,height:20}}]}}}'
+  exit 0
+fi
 if [ "${1:-}" = pane ] && [ "${2:-}" = get ]; then
   tab=$(cat "$PAINTER_HOME/reported-tab" 2>/dev/null || printf 'w9:t1')
   cwd=$PAINTER_HOME
@@ -2051,6 +2057,267 @@ test_watch_refuses_a_recorded_pane_with_wrong_process_identity() {
   pass "a recorded pane paints only with the authoritative process identity"
 }
 
+# --- ready membership follows the authoritative live-task records ------------
+#
+# Dispatch writes state/<id>.meta immediately; the backlog document is edited
+# later, by hand. READY answers "hand this to a worker now", so a queued row
+# whose id already has a live task record is work a worker holds, and the panel
+# has to say so on its own next redraw rather than waiting for that edit.
+test_ready_excludes_work_a_worker_already_holds() {
+  local home ready in_flight
+  home=$(make_home ready-already-dispatched)
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] handed-out - Work a worker already holds (repo: firstmate) (kind: ship)
+  Implement the thing, with acceptance criteria.
+- [ ] still-queued - Work nobody holds yet (repo: firstmate) (kind: ship)
+  Implement the other thing, with acceptance criteria.
+EOF
+  fm_write_meta "$home/state/handed-out.meta" \
+    "window=firstmate:fm-handed-out" \
+    "worktree=$home/projects/handed-out-worktree" \
+    "project=firstmate" \
+    "harness=claude" \
+    "kind=ship" \
+    "mode=ship" \
+    "yolo=off"
+  ready=$(COLUMNS=100 FM_HOME="$home" "$VIEW" --section ready)
+  assert_contains "$ready" "READY (1)" \
+    "ready must count only the queued work no worker holds"
+  assert_contains "$ready" "still-queued" \
+    "ready must keep the queued row nobody holds"
+  assert_not_contains "$ready" "handed-out" \
+    "ready must drop a queued row whose worker record already exists"
+  in_flight=$(COLUMNS=100 FM_HOME="$home" "$VIEW" --section in-flight)
+  assert_contains "$in_flight" "handed-out" \
+    "in-flight must still show the work the ready section handed over"
+  pass "ready membership follows the live task records, not the later backlog edit"
+}
+
+# The same row must leave the blocked queue too: a worker holding it makes it
+# in-flight work, and the in-flight/blocked pane would otherwise list it twice.
+test_blocked_excludes_work_a_worker_already_holds() {
+  local home blocked
+  home=$(make_home blocked-already-dispatched)
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] blocked-and-held - Blocked work a worker already holds blocked-by: upstream (repo: firstmate) (kind: ship)
+  Implement the thing.
+- [ ] upstream - The dependency (repo: firstmate) (kind: ship)
+  Implement the dependency.
+EOF
+  fm_write_meta "$home/state/blocked-and-held.meta" \
+    "window=firstmate:fm-blocked-and-held" \
+    "worktree=$home/projects/blocked-worktree" \
+    "project=firstmate" \
+    "harness=claude" \
+    "kind=ship" \
+    "mode=ship" \
+    "yolo=off"
+  blocked=$(COLUMNS=100 FM_HOME="$home" "$VIEW" --section blocked)
+  assert_contains "$blocked" "BLOCKED (0)" \
+    "blocked must not count queued work a worker already holds"
+  assert_not_contains "$blocked" "blocked-and-held" \
+    "blocked must drop a queued row whose worker record already exists"
+  pass "the blocked queue drops rows a worker already holds"
+}
+
+# --- the geometry probe names the exact condition that stopped it ------------
+#
+# Every permanent stop looked identical from the pane: one "geometry
+# unavailable" line for a missing identity, a closed pane, and a deleted cwd
+# alike. The captain cannot act on that, so each cause states itself.
+test_geometry_probe_names_its_exact_permanent_cause() {
+  local home fakebin err rc cwd
+  home=$(make_home geometry-probe-reasons)
+  fakebin="$home/fakebin"
+  mkdir -p "$fakebin"
+  cwd="$home/pane-cwd"
+  mkdir -p "$cwd"
+  cat > "$fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = pane ] && [ "${2:-}" = get ]; then
+  case "${PROBE_MODE:-ok}" in
+    pane-gone)
+      printf '{"error":{"code":"pane_not_found"}}\n'
+      exit 1
+      ;;
+    cwd-gone)
+      jq -cn --arg pane "${3:?}" --arg cwd "${PROBE_CWD:?}" \
+        '{result:{pane:{pane_id:$pane,foreground_cwd:$cwd}}}'
+      exit 0
+      ;;
+  esac
+  jq -cn --arg pane "${3:?}" --arg cwd "${PROBE_CWD:?}" \
+    '{result:{pane:{pane_id:$pane,foreground_cwd:$cwd}}}'
+  exit 0
+fi
+if [ "${1:-}" = pane ] && [ "${2:-}" = layout ]; then
+  case "${PROBE_MODE:-ok}" in
+    not-drawn)
+      jq -cn '{result:{layout:{panes:[{pane_id:"w9:other",rect:{x:0,y:0,width:10,height:4}}]}}}'
+      exit 0
+      ;;
+  esac
+  jq -cn --arg pane "${4:?}" \
+    '{result:{layout:{panes:[{pane_id:$pane,rect:{x:0,y:0,width:45,height:20}}]}}}'
+  exit 0
+fi
+exit 1
+SH
+  chmod +x "$fakebin/herdr"
+
+  err=$(env -u HERDR_SESSION -u HERDR_PANE_ID PATH="$fakebin:$PATH" \
+    "$ROOT/bin/fm-herdr-pane-geometry.sh" 2>&1 >/dev/null) && rc=0 || rc=$?
+  expect_code 64 "$rc" "a probe with no identity must stay permanent"
+  assert_contains "$err" "no Herdr pane identity available" \
+    "a probe with no identity must say the identity is what is missing"
+  assert_not_contains "$err" "cwd" \
+    "a probe with no identity must not blame a cwd it never read"
+
+  err=$(env PATH="$fakebin:$PATH" PROBE_MODE=pane-gone PROBE_CWD="$cwd" \
+    "$ROOT/bin/fm-herdr-pane-geometry.sh" --session lab-session --pane w9:p2 2>&1 >/dev/null) \
+    && rc=0 || rc=$?
+  expect_code 64 "$rc" "a closed pane must stay permanent"
+  assert_contains "$err" "no longer has pane w9:p2" \
+    "a closed pane must name the pane that is gone"
+
+  rm -rf "$cwd"
+  err=$(env PATH="$fakebin:$PATH" PROBE_MODE=cwd-gone PROBE_CWD="$cwd" \
+    "$ROOT/bin/fm-herdr-pane-geometry.sh" --session lab-session --pane w9:p2 2>&1 >/dev/null) \
+    && rc=0 || rc=$?
+  expect_code 64 "$rc" "a deleted foreground cwd must stay permanent"
+  assert_contains "$err" "foreground cwd is gone" \
+    "a deleted foreground cwd must name the cwd as the cause"
+  assert_contains "$err" "$cwd" \
+    "a deleted foreground cwd must quote the exact path it looked for"
+
+  mkdir -p "$cwd"
+  err=$(env PATH="$fakebin:$PATH" PROBE_MODE=not-drawn PROBE_CWD="$cwd" \
+    "$ROOT/bin/fm-herdr-pane-geometry.sh" --session lab-session --pane w9:p2 2>&1 >/dev/null) \
+    && rc=0 || rc=$?
+  expect_code 64 "$rc" "a pane absent from the drawn layout must stay permanent"
+  assert_contains "$err" "drawn layout" \
+    "a pane absent from the drawn layout must say so"
+  pass "the geometry probe names the exact condition behind every permanent stop"
+}
+
+# --- the observed two-of-three cockpit split --------------------------------
+#
+# Three fleet banners share one recorded frame. Herdr publishes HERDR_PANE_ID
+# into a pane but never HERDR_SESSION, so a banner relaunched without the
+# adapter's stated identity has half a pane identity and can never resolve a
+# rectangle, while its sibling that still holds the session renders normally.
+# That is the captain's two degraded panes beside one working one, and the two
+# that stop must say the identity is what they are missing.
+test_pane_identity_splits_painters_sharing_one_frame() {
+  local home dir out rc pid
+  home=$(make_home painter-identity-split)
+  dir=$(painter_bin "$home")
+  write_cockpit_record "$home" 'w9:p2,w9:p3,w9:p4' 'waiting|ready|in-flight,blocked'
+
+  PAINTER_GEOMETRY="$ROOT/bin/fm-herdr-pane-geometry.sh" \
+    PAINTER_REPORTED_SECTIONS=ready \
+    start_painter "$home" "$dir" w9:p3 rendering ready
+  pid=$PAINTER_PID
+  wait_for_paint "$home/rendering.out" 'READY' \
+    || { reap_painter "$pid"; fail "the sibling holding a whole pane identity did not render: $(cat "$home/rendering.err")"; }
+
+  local pane section tag
+  for spec in 'w9:p2 waiting stripped-waiting' 'w9:p4 in-flight,blocked stripped-inflight'; do
+    # shellcheck disable=SC2086
+    set -- $spec
+    pane=$1
+    section=$2
+    tag=$3
+    out=$(fm_run_timed 30 env -u HERDR_SESSION FM_HOME="$home" COLUMNS=45 LINES=20 \
+      HERDR_PANE_ID="$pane" HERDR_TAB_ID=w9:t1 \
+      PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" \
+      PAINTER_GEOMETRY="$ROOT/bin/fm-herdr-pane-geometry.sh" \
+      PAINTER_REPORTED_SECTIONS="$section" PATH="$home/fakebin:$PATH" \
+      "$dir/fm-fleet-view.sh" \
+      --geometry-command "$ROOT/bin/fm-herdr-pane-geometry.sh" \
+      --watch 0.1 --section "$section" 2>&1) && rc=0 || rc=$?
+    [ "$rc" -ne 0 ] || { reap_painter "$pid"; fail "$tag kept running without a usable pane identity"; }
+    assert_contains "$out" "no Herdr pane identity available" \
+      "$tag must name the missing pane identity as its cause"
+    assert_not_contains "$out" "cwd is permanently unavailable" \
+      "$tag must not blame pane state or cwd it never read"
+    assert_not_contains "$out" "FLEET STATUS" \
+      "$tag must not paint a fleet section it could not size"
+  done
+
+  kill -0 "$pid" 2>/dev/null \
+    || { reap_painter "$pid"; fail "the sibling holding a whole pane identity stopped with its peers"; }
+  assert_contains "$(cat "$home/rendering.out")" "READY" \
+    "the sibling holding a whole pane identity must keep rendering"
+  reap_painter "$pid"
+  pass "a half-supplied pane identity stops its own banner and leaves its rendering sibling alone"
+}
+
+# A geometry probe explains itself on stderr, and the banner owns the pane it
+# is painting: those diagnostics belong in the terminal report, never
+# interleaved into a live frame once per redraw. A bounded transient
+# exhaustion is still a stop the captain has to act on, so its report carries
+# the probe's own last reason instead of only an attempt count.
+test_transient_geometry_evidence_is_reported_not_interleaved() {
+  local home dir geometry out rc reason occurrences
+  reason='session lab-session could not read the drawn layout for pane w9:p2'
+
+  home=$(make_home painter-transient-recovery-evidence)
+  dir=$(painter_bin "$home")
+  geometry="$home/recovering-geometry"
+  cat > "$geometry" <<SH
+#!/usr/bin/env bash
+count=\$(cat "\$PAINTER_HOME/recovering-count" 2>/dev/null || printf 0)
+count=\$((count + 1))
+printf '%s\\n' "\$count" > "\$PAINTER_HOME/recovering-count"
+if [ "\$count" -lt 3 ]; then
+  echo "fm-herdr-pane-geometry: $reason" >&2
+  exit 75
+fi
+printf '45 20\\n'
+SH
+  chmod +x "$geometry"
+  local pid
+  PAINTER_GEOMETRY="$geometry" start_painter "$home" "$dir" w9:p7 recovered
+  pid=$PAINTER_PID
+  wait_for_paint "$home/recovered.out" 'FLEET STATUS' \
+    || { reap_painter "$pid"; fail "a recovering geometry probe never painted: $(cat "$home/recovered.err")"; }
+  reap_painter "$pid"
+  assert_not_contains "$(cat "$home/recovered.out")" "$reason" \
+    "a recovered transient probe must not interleave its diagnostics into the live frame"
+
+  home=$(make_home painter-transient-evidence)
+  dir=$(painter_bin "$home")
+  geometry="$home/transient-geometry"
+  cat > "$geometry" <<SH
+#!/usr/bin/env bash
+echo "fm-herdr-pane-geometry: $reason" >&2
+exit 75
+SH
+  chmod +x "$geometry"
+  out=$(fm_run_timed 30 env FM_HOME="$home" COLUMNS=45 LINES=20 \
+    PAINTER_HOME="$home" PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" \
+    PATH="$home/fakebin:$PATH" \
+    "$dir/fm-fleet-view.sh" --geometry-command "$geometry" --watch 0.1 2>&1) && rc=0 || rc=$?
+  expect_code 1 "$rc" "transient geometry exhaustion must still terminate"
+  assert_contains "$out" "STOPPING without pane mutation" \
+    "transient exhaustion must keep its non-destructive terminal path"
+  assert_contains "$out" "$reason" \
+    "transient exhaustion must carry the probe's own last reason"
+  # Everything before the terminal report is a live frame the captain was
+  # reading. The probe explained itself on every one of the three attempts, and
+  # none of those explanations may have landed in one of those frames.
+  occurrences=$(printf '%s\n' "$out" \
+    | sed '/STOPPING without pane mutation/q' | sed '$d' \
+    | grep -cF "$reason" || true)
+  [ "$occurrences" -eq 0 ] \
+    || fail "the probe's reason interleaved into $occurrences live frame(s) before the terminal report: $out"
+  pass "geometry probe diagnostics reach the terminal report exactly once and never a live frame"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_main_inventory_orphan_and_unstructured_disclosure
@@ -2068,6 +2335,8 @@ test_ready_set_agrees_with_tasks_axi
 test_ready_separates_dispatchable_from_unconfirmed
 test_sibling_decisions_stay_distinct_at_every_width
 test_ready_counts_stay_plain_without_unconfirmed_work
+test_ready_excludes_work_a_worker_already_holds
+test_blocked_excludes_work_a_worker_already_holds
 test_backlog_projection_uses_one_source_image
 test_view_respects_terminal_height
 test_view_renders_snapshot
@@ -2091,5 +2360,8 @@ test_watch_recovers_within_the_transient_geometry_budget
 test_standalone_geometry_failures_stop_without_pane_mutation
 test_watch_evicts_permanently_unavailable_geometry_once
 test_watch_evicts_after_the_transient_geometry_budget
+test_geometry_probe_names_its_exact_permanent_cause
+test_pane_identity_splits_painters_sharing_one_frame
+test_transient_geometry_evidence_is_reported_not_interleaved
 test_watch_refuses_a_recorded_pane_with_wrong_process_identity
 test_non_watch_outputs_remain_byte_exact
