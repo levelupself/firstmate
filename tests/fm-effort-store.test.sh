@@ -969,6 +969,21 @@ BACKUP_COUNT=$(find "$FM_HOME/data/920-backfill-a" -maxdepth 1 -type f -name 'us
   || fail 'idempotent rerun created another preservation artifact'
 pass 'backfill replacement is explicit, preserving, and byte-idempotent'
 
+COMPLETE_PROJECT="$ROOTDIR/complete-project"
+fm_write_meta "$FM_HOME/state/926-complete-project.meta" \
+  "worktree=$ROOTDIR/worktrees/complete-project" \
+  "project=$COMPLETE_PROJECT" \
+  "harness=codex" \
+  "model=configured-gpt" \
+  "effort=xhigh" \
+  "kind=ship" \
+  "spawned_at=2026-07-03T12:00:00Z" \
+  "teardown_at=2026-07-03T12:30:00Z" \
+  "outcome=forced"
+write_usage 926-complete-project 100 20 0.75 2 gpt-5.6-sol 2026-07-03T12:00:00Z
+"$STORE" capture 926-complete-project --outcome forced >/dev/null \
+  || fail 'complete known-row project capture failed'
+
 REPORT=$("$STORE" report 910-lifecycle) || fail 'single-task report failed'
 assert_contains "$REPORT" '910-lifecycle' 'report should identify the task'
 assert_contains "$REPORT" '15m 0s' 'report should surface launch-to-PR duration'
@@ -982,10 +997,10 @@ assert_contains "$ALL_REPORT" "PROJECT $PROJECT" \
   'cross-task report should aggregate task spend by the recorded project rather than worktree'
 assert_contains "$ALL_REPORT" "PROJECT $PROJECT | unavailable |" \
   'a project with incomplete task coverage should withhold its partial subtotal'
-assert_contains "$ALL_REPORT" 'tasks attributed; remaining historical cost is unattributed' \
-  'project totals should expose missing historical attribution explicitly'
-if printf '%s\n' "$ALL_REPORT" | grep -F "PROJECT $PROJECT" | grep -Fq '$'; then
-  fail 'an incomplete project line quoted a plausible partial dollar total'
+assert_contains "$ALL_REPORT" "PROJECT $COMPLETE_PROJECT | unavailable | 1/1 known tasks have cost evidence; historical population completeness is unproven" \
+  'complete known-row coverage should not be presented as complete historical population coverage'
+if printf '%s\n' "$ALL_REPORT" | grep '^PROJECT ' | grep -Fq '$'; then
+  fail 'a project line quoted a dollar total without a durable population bound'
 fi
 
 USAGE=$("$STORE" --help)

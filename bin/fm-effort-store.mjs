@@ -1965,11 +1965,7 @@ function report(dbPath, taskId) {
     `).all()
     for (const project of projects) {
       const projectName = project.project_path || '(unassigned)'
-      if (project.measured_tasks !== project.tasks) {
-        lines.push(`PROJECT ${projectName} | unavailable | ${project.measured_tasks}/${project.tasks} tasks attributed; remaining historical cost is unattributed`)
-        continue
-      }
-      lines.push(`PROJECT ${projectName} | $${Number(project.cost).toFixed(4)} total | all ${project.tasks} tasks attributed`)
+      lines.push(`PROJECT ${projectName} | unavailable | ${project.measured_tasks}/${project.tasks} known tasks have cost evidence; historical population completeness is unproven`)
     }
   }
   db.close()
