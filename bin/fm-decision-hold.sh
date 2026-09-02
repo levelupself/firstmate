@@ -328,12 +328,20 @@ verify_resolution_identity() {
     "$resolution_prefix"*) resolution_fields=${hold_body#"$resolution_prefix"} ;;
     *) fail "captain hold $id has no retry identity record" ;;
   esac
+  recorded_digest=${resolution_fields%%\\n*}
+  resolution_fields=${resolution_fields#*\\n}
   case "$resolution_fields" in
-    *'\nRouted identities: '*'\n\nCaptain decision:'*) : ;;
+    'Decision file: '*'\nRouted identities: '*)
+      resolution_fields=${resolution_fields#*\\n}
+      ;;
+    'Routed identities: '*) ;;
     *) fail "captain hold $id has an invalid retry identity record" ;;
   esac
-  recorded_digest=${resolution_fields%%\\n*}
-  resolution_fields=${resolution_fields#*\\nRouted identities: }
+  case "$resolution_fields" in
+    'Routed identities: '*'\nResolution mode: '*'\n\nCaptain decision:'*) ;;
+    *) fail "captain hold $id has an invalid retry identity record" ;;
+  esac
+  resolution_fields=${resolution_fields#Routed identities: }
   recorded_routes=${resolution_fields%%\\n*}
   [ "$recorded_digest" = "$decision_digest" ] \
     || fail "captain hold $id records a different captain decision"

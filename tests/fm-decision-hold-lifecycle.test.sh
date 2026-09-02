@@ -789,9 +789,30 @@ test_resolve_accepts_already_completed_routed_work() {
   run_decisions "$home" resolve "$origin" keep-or-revert-exe-patch \
     --decision-file "$home/data/exe-patch-revert.md" --routed-to reverted-patch >/dev/null \
     || fail "resolve refused a late-recorded answer because routed work was already done"
+  run_decisions "$home" resolve "$origin" keep-or-revert-exe-patch \
+    --decision-file "$home/data/exe-patch-revert.md" --routed-to reverted-patch >/dev/null \
+    || fail "resolve retry rejected the durable decision-file identity"
   [ "$(tasks_in "$home" show "$hold" | sed -n 's/^  state: //p')" = "done" ] \
     || fail "late-recorded answer did not close its hold"
   pass "resolve accepts an answer after its routed work already completed"
+}
+
+test_resolution_retry_accepts_legacy_identity_record() {
+  local home origin hold digest body
+  home=$(make_home legacy-resolution-retry)
+  origin=legacy-review
+  write_origin_meta "$home" "$origin"
+  hold=$(run_decisions "$home" hold "$origin" legacy-choice \
+    --title "Choose the legacy option" --reason "answer pending" --repo sample)
+  printf 'Keep the legacy option.\n' > "$home/data/legacy-choice.md"
+  digest=$(printf 'Keep the legacy option.' | sha256sum | awk '{print $1}')
+  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: (none)\nResolution mode: declined\n\nCaptain decision:\nKeep the legacy option.\n\nRouted work:\n(none)' "$digest")
+  tasks_in "$home" update "$hold" --body "$body" >/dev/null
+  tasks_in "$home" done "$hold" >/dev/null
+  run_decisions "$home" decline "$origin" legacy-choice \
+    --decision-file "$home/data/legacy-choice.md" >/dev/null \
+    || fail "decline retry rejected a legacy durable identity record"
+  pass "resolution retry accepts legacy records without decision-file fields"
 }
 
 test_answered_open_hold_closes_from_decision_file() {
@@ -816,6 +837,7 @@ test_answered_open_hold_closes_from_decision_file() {
 }
 
 test_resolve_accepts_already_completed_routed_work
+test_resolution_retry_accepts_legacy_identity_record
 test_answered_open_hold_closes_from_decision_file
 test_uninventoried_report_decision_refuses_completion
 
