@@ -53,7 +53,9 @@ If the matching run or its structured round record is unavailable, all four fiel
 Run `bin/fm-effort-store.sh report` to list every task and aggregate totals.
 Run `bin/fm-effort-store.sh report <task-id>` for one task.
 The report shows launch-to-PR duration, cost, input and output tokens, actual models, and outcome.
-The cross-task report also groups cost by the lifecycle row's project path and shows measured tasks over total tasks for each project.
+The cross-task report groups tasks by the lifecycle row's project path, but project dollar totals remain unavailable because the store has no durable bound for the reporting period's complete historical task population.
+Each project shows cost-evidence coverage for its known lifecycle rows and explicitly states that historical population completeness is unproven instead of presenting the known subtotal as a total.
+A future project-total capability requires a durable reporting-period population bound; this store does not infer that bound from the rows it already contains.
 A pooled worktree is only the codeburn correlation key and never becomes the project bucket.
 A dash means the durable source is missing.
 It never prints a plausible zero for an absent source.
@@ -65,6 +67,7 @@ An existing byte-equivalent snapshot makes the command an idempotent no-op, whil
 Explicit replacement preserves the previous bytes beside `usage.json` under their SHA-256 before atomically installing the recovered snapshot.
 The entire target batch and every existing preservation artifact are preflighted before any task snapshot is written.
 The command joins each export record to the one lifecycle row whose normalized worktree matches and whose launch-through-end window contains the record timestamp.
+Codeburn records the directory where work ran as its project key, so pooled worktree paths in an export are correlation identities rather than product-project identities; the lifecycle row supplies the actual project bucket after the record has one task owner.
 It writes a durable task snapshot only when at least one record has exactly one owner and the export covers that owner's complete lifecycle.
 No-record windows remain missing because an empty export window cannot prove that every worker runtime was observable.
 Overlapping windows remain unassigned instead of choosing one.
