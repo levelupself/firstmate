@@ -980,8 +980,13 @@ ALL_REPORT=$("$STORE" report) || fail 'cross-task report failed'
 assert_contains "$ALL_REPORT" 'TOTAL' 'cross-task report should include aggregate totals'
 assert_contains "$ALL_REPORT" "PROJECT $PROJECT" \
   'cross-task report should aggregate task spend by the recorded project rather than worktree'
-assert_contains "$ALL_REPORT" 'measured' \
-  'project totals should state how many tasks actually have cost evidence'
+assert_contains "$ALL_REPORT" "PROJECT $PROJECT | unavailable |" \
+  'a project with incomplete task coverage should withhold its partial subtotal'
+assert_contains "$ALL_REPORT" 'tasks attributed; remaining historical cost is unattributed' \
+  'project totals should expose missing historical attribution explicitly'
+if printf '%s\n' "$ALL_REPORT" | grep -F "PROJECT $PROJECT" | grep -Fq '$'; then
+  fail 'an incomplete project line quoted a plausible partial dollar total'
+fi
 
 USAGE=$("$STORE" --help)
 assert_contains "$USAGE" 'report [<task-id>]' 'help should document the one reporting command'

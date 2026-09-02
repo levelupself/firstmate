@@ -1964,8 +1964,12 @@ function report(dbPath, taskId) {
       ORDER BY project_path IS NULL, project_path
     `).all()
     for (const project of projects) {
-      const projectCost = project.measured_tasks === 0 ? '-' : `$${Number(project.cost).toFixed(4)}`
-      lines.push(`PROJECT ${project.project_path || '(unassigned)'} | ${project.measured_tasks}/${project.tasks} measured | ${projectCost}`)
+      const projectName = project.project_path || '(unassigned)'
+      if (project.measured_tasks !== project.tasks) {
+        lines.push(`PROJECT ${projectName} | unavailable | ${project.measured_tasks}/${project.tasks} tasks attributed; remaining historical cost is unattributed`)
+        continue
+      }
+      lines.push(`PROJECT ${projectName} | $${Number(project.cost).toFixed(4)} total | all ${project.tasks} tasks attributed`)
     }
   }
   db.close()
