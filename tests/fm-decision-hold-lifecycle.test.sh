@@ -774,6 +774,49 @@ test_unanswered_decision_still_blocks_completion_and_teardown() {
   pass "an unanswered decision still blocks completion and resists both unrouted close paths"
 }
 
+test_resolve_accepts_already_completed_routed_work() {
+  local home origin hold
+  home=$(make_home late-routed-answer)
+  origin=map-every-gamespy-gate-between-local-net-38
+  write_origin_meta "$home" "$origin"
+  hold=$(run_decisions "$home" hold "$origin" keep-or-revert-exe-patch \
+    --title "Keep or revert the two-byte presence-branch patch" \
+    --reason "captain answer pending" --repo ds2-multiplayer)
+  tasks_in "$home" add reverted-patch "Revert the patch" >/dev/null
+  tasks_in "$home" block reverted-patch --by "$hold" >/dev/null
+  tasks_in "$home" "done" reverted-patch >/dev/null
+  printf 'Revert the two-byte presence-branch patch.\n' > "$home/data/exe-patch-revert.md"
+  run_decisions "$home" resolve "$origin" keep-or-revert-exe-patch \
+    --decision-file "$home/data/exe-patch-revert.md" --routed-to reverted-patch >/dev/null \
+    || fail "resolve refused a late-recorded answer because routed work was already done"
+  [ "$(tasks_in "$home" show "$hold" | sed -n 's/^  state: //p')" = "done" ] \
+    || fail "late-recorded answer did not close its hold"
+  pass "resolve accepts an answer after its routed work already completed"
+}
+
+test_answered_open_hold_closes_from_decision_file() {
+  local home origin hold digest body
+  home=$(make_home answered-open-hold)
+  origin=map-every-gamespy-gate-between-local-net-38
+  write_origin_meta "$home" "$origin"
+  hold=$(run_decisions "$home" hold "$origin" keep-or-revert-exe-patch \
+    --title "Keep or revert the two-byte presence-branch patch" \
+    --reason "captain answer pending" --repo ds2-multiplayer)
+  printf 'Revert the two-byte presence-branch patch.\n' > "$home/data/exe-patch-revert.md"
+  digest=$(printf 'Revert the two-byte presence-branch patch.' | sha256sum | awk '{print $1}')
+  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nDecision file: %s\nRouted identities: (none)\nResolution mode: declined\n\nCaptain decision:\nRevert the two-byte presence-branch patch.\n\nRouted work:\n(none)' "$digest" "$home/data/exe-patch-revert.md")
+  tasks_in "$home" update "$hold" --body "$body" >/dev/null
+  [ "$(tasks_in "$home" show "$hold" | sed -n 's/^  state: //p')" = queued ] \
+    || fail "answered-but-open decision failure was not reproduced"
+  run_decisions "$home" reconcile-open >/dev/null \
+    || fail "answered open hold could not reconcile from its decision file"
+  [ "$(tasks_in "$home" show "$hold" | sed -n 's/^  state: //p')" = "done" ] \
+    || fail "answered decision file left its hold open"
+  pass "answered decision closes from its durable decision file"
+}
+
+test_resolve_accepts_already_completed_routed_work
+test_answered_open_hold_closes_from_decision_file
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification

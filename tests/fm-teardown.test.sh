@@ -180,6 +180,7 @@ add_compatible_tasks_axi() {
   local case_dir=$1
   cat > "$case_dir/fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
+[ -z "${FM_FAKE_TASKS_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TASKS_LOG"
 if [ "${1:-}" = --version ]; then
   printf '%s\n' '0.2.4'
   exit 0
@@ -586,18 +587,20 @@ test_teardown_prompts_tasks_axi_done_when_compatible() {
   case_dir=$(make_case tasks-axi-reminder)
   write_meta "$case_dir" no-mistakes ship
   printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/data"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$case_dir/data/backlog.md"
   add_compatible_tasks_axi "$case_dir"
 
-  out=$(run_teardown "$case_dir") || fail "teardown failed with compatible tasks-axi"
-  printf '%s\n' "$out" | grep -F 'tasks-axi done task-x1 --pr https://github.com/example/repo/pull/7' >/dev/null \
-    || fail "teardown did not prompt tasks-axi done: $out"
+  out=$(FM_FAKE_TASKS_LOG="$case_dir/tasks.log" run_teardown "$case_dir") || fail "teardown failed with compatible tasks-axi"
+  grep -Fx 'done task-x1 --pr https://github.com/example/repo/pull/7' "$case_dir/tasks.log" >/dev/null \
+    || fail "teardown did not execute tasks-axi done: $(cat "$case_dir/tasks.log")"
   printf '%s\n' "$out" | grep -F 'tasks-axi ready' >/dev/null \
     || fail "teardown did not prompt tasks-axi ready: $out"
   printf '%s\n' "$out" | grep -F 'check date gates' >/dev/null \
     || fail "teardown did not preserve date-gate check: $out"
   printf '%s\n' "$out" | grep -F 'keep Done to the 10 most recent' >/dev/null \
     && fail "teardown kept manual Done pruning in compatible tasks-axi prompt: $out"
-  pass "teardown prompts tasks-axi backlog refresh when compatible"
+  pass "teardown records completion through tasks-axi when compatible"
 }
 
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present() {

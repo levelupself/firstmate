@@ -285,6 +285,10 @@ fi
   echo "error: merged PR succeeded but its effort record could not be captured" >&2
   exit 1
 }
+"$SCRIPT_DIR/fm-backlog-integrity.sh" "done" "$ID" --pr "$URL" || {
+  echo "error: merged PR succeeded but the backlog outcome could not be recorded" >&2
+  exit 1
+}
 
 # The merge has landed. Record that outcome in Linear - Done, plus the pull
 # request as an attachment - because this is the last moment the task id and the

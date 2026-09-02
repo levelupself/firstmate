@@ -900,6 +900,9 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
 fi
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+  "$FM_ROOT/bin/fm-backlog-integrity.sh" check-start "$ID" || exit 1
+fi
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_CONTROL_LOCK="$STATE/.control-$ID.lock"
   control_owner=$(cat "$SPAWN_CONTROL_LOCK/pid" 2>/dev/null || true)
@@ -2982,5 +2985,9 @@ SPAWN_DELIVERY=
 [ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
 if [ "$KIND" != secondmate ]; then
   fm_task_effort_capture_launch "$FM_ROOT" "$ID" || exit 1
+  "$FM_ROOT/bin/fm-backlog-integrity.sh" start "$ID" || {
+    echo "error: worker launched but backlog start was refused for $ID" >&2
+    exit 1
+  }
 fi
 echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"

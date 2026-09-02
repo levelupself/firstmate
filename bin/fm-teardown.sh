@@ -921,28 +921,38 @@ work_is_landed() {
 }
 
 backlog_refresh_reminder() {
-  local pr done_cmd report_path
+  local pr report_path
+  local -a done_args
   [ "$KIND" = secondmate ] && return 0
   if fm_tasks_axi_backend_available "$CONFIG"; then
+    if [ "$FORCE" = --force ]; then
+      "$SCRIPT_DIR/fm-backlog-integrity.sh" failed "$ID" \
+        || { echo "error: could not preserve failed backlog outcome for $ID" >&2; return 1; }
+      printf '%s\n' "Backlog: $ID was not recorded as Done; unfinished work was returned to Queued."
+      return 0
+    fi
     case "$KIND" in
       scout)
         report_path="data/$ID/report.md"
-        done_cmd="tasks-axi done $ID --report $report_path"
+        done_args=("done" "$ID" --report "$report_path")
         ;;
       *)
         if [ "$MODE" = local-only ]; then
-          done_cmd="tasks-axi done $ID --note \"local main\""
+          done_args=("done" "$ID" --note "local main")
         else
           pr=$PR_URL
           if [ -n "$pr" ]; then
-            done_cmd="tasks-axi done $ID --pr $pr"
+            done_args=("done" "$ID" --pr "$pr")
           else
-            done_cmd="tasks-axi done $ID --pr PR_URL"
+            echo "error: completed PR task $ID has no recorded PR URL" >&2
+            return 1
           fi
         fi
         ;;
     esac
-    printf '%s\n' "Backlog: $ID just finished. Run $done_cmd, then run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
+    "$SCRIPT_DIR/fm-backlog-integrity.sh" "${done_args[@]}" \
+      || { echo "error: could not record the completed backlog outcome for $ID" >&2; return 1; }
+    printf '%s\n' "Backlog: $ID recorded complete. Run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
   else
     printf '%s\n' "Backlog: $ID just finished. Update data/backlog.md - move $ID to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due."
   fi

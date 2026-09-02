@@ -138,6 +138,7 @@ ROUTED_NONE='(none)'
 
 DECISION_TEXT=''
 DECISION_DIGEST=''
+DECISION_FILE=''
 
 load_decision() {  # <path>; sets DECISION_TEXT and DECISION_DIGEST
   local path=$1 decision
@@ -149,6 +150,7 @@ load_decision() {  # <path>; sets DECISION_TEXT and DECISION_DIGEST
     || fail "decision file exceeds 8192 bytes"
   DECISION_TEXT=$decision
   DECISION_DIGEST=$(sha256_text "$decision")
+  DECISION_FILE=$(cd "$(dirname "$path")" && pwd -P)/$(basename "$path")
 }
 
 tasks_axi() {
@@ -219,13 +221,17 @@ body_has_resolution_record() {  # <hold-body>
   return 1
 }
 
+resolution_record_field() {  # <escaped tasks-axi body> <field>
+  printf '%s\n' "$1" | sed -n "s/.*$2: \([^\\]*\)\\\\n.*/\1/p" | head -1
+}
+
 resolution_body() {  # <mode> <routed-csv> [routed-task-id...]
   local mode=$1 routed_csv=$2 body dep
   shift 2
   # Command substitution strips the trailing newline, so restore it before the
   # routed-work list to keep each entry on its own durable backlog line.
-  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: %s\nResolution mode: %s\n\nCaptain decision:\n%s\n\nRouted work:' \
-    "$DECISION_DIGEST" "$routed_csv" "$mode" "$DECISION_TEXT")
+  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nDecision file: %s\nRouted identities: %s\nResolution mode: %s\n\nCaptain decision:\n%s\n\nRouted work:' \
+    "$DECISION_DIGEST" "$DECISION_FILE" "$routed_csv" "$mode" "$DECISION_TEXT")
   body="${body}"$'\n'
   if [ "$#" -eq 0 ]; then
     body="${body}${ROUTED_NONE}"$'\n'
@@ -496,7 +502,7 @@ EOF
 }
 
 command_resolve() {
-  local origin=${1:-} key=${2:-} decision_file='' id='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body resolution_recorded=0
+  local origin=${1:-} key=${2:-} decision_file='' id='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -528,21 +534,20 @@ command_resolve() {
   case "$hold_body" in
     *"Resolution recorded by fm-decision-hold."*)
       verify_resolution_identity "$id" "$hold_body" "$DECISION_DIGEST" "$routed_csv"
-      resolution_recorded=1
       ;;
   esac
 
   for dep in $routed; do
     show=$(task_show "$dep") || fail "routed task $dep does not exist in the active home"
     state=$(show_field "$show" state)
-    [ "$state" != "done" ] || [ "$resolution_recorded" = 1 ] \
-      || fail "routed task $dep is already done"
     blocked=$(normalized_blocked_by "$show")
     if ! list_has_key "$blocked" "$id"; then
-      case "$hold_body" in
-        *"Resolution recorded by fm-decision-hold."*"- $dep"*) : ;;
-        *) fail "routed task $dep is not durably blocked by $id" ;;
-      esac
+      if [ "$state" != "done" ]; then
+        case "$hold_body" in
+          *"Resolution recorded by fm-decision-hold."*"- $dep"*) : ;;
+          *) fail "routed task $dep is not durably blocked by $id" ;;
+        esac
+      fi
     fi
   done
 
@@ -560,6 +565,49 @@ command_resolve() {
   tasks_axi "done" "$id" >/dev/null || fail "could not close resolved captain hold $id"
   verify_hold_resolved "$id" || fail "captain hold $id did not retain its durable resolution record"
   printf 'resolved: %s -> %s\n' "$id" "$routed"
+}
+
+command_reconcile_open() {
+  local rows row id show held kind body decision_file expected_digest routed dep dep_show
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  require_tasks_axi
+  rows=$(tasks_axi list --state queued --kind captain --fields body) \
+    || fail "could not list open captain decisions"
+  while IFS= read -r row; do
+    id=${row%%,*}
+    id=${id// /}
+    case "$id" in ''|id|queued*|help*|*[!A-Za-z0-9._-]*) continue ;; esac
+    show=$(task_show "$id") || continue
+    held=$(show_field "$show" held)
+    kind=$(show_field "$show" hold_kind)
+    [ "$held" = yes ] && [ "$kind" = captain ] || continue
+    body=$(show_field "$show" body)
+    body_has_resolution_record "$body" || continue
+    decision_file=$(resolution_record_field "$body" 'Decision file')
+    [ -n "$decision_file" ] && [ -f "$decision_file" ] || continue
+    load_decision "$decision_file"
+    expected_digest=$(resolution_record_field "$body" 'Decision digest')
+    [ "$DECISION_DIGEST" = "$expected_digest" ] \
+      || fail "decision file digest does not match recorded answer for $id"
+    routed=$(resolution_record_field "$body" 'Routed identities')
+    if [ -n "$routed" ] && [ "$routed" != "$ROUTED_NONE" ]; then
+      while IFS= read -r dep; do
+        [ -n "$dep" ] || continue
+        dep_show=$(task_show "$dep" 2>/dev/null || true)
+        if list_has_key "$(normalized_blocked_by "$dep_show")" "$id"; then
+          tasks_axi unblock "$dep" --by "$id" >/dev/null \
+            || fail "could not finish routing recorded decision $id to $dep"
+        fi
+      done <<EOF
+$(printf '%s\n' "$routed" | tr ',' '\n')
+EOF
+    fi
+    tasks_axi "done" "$id" >/dev/null || fail "could not close answered captain hold $id"
+    verify_hold_resolved "$id" || fail "answered captain hold $id did not close durably"
+    printf 'closed-decision=%s evidence=%s\n' "$id" "$decision_file"
+  done <<EOF
+$rows
+EOF
 }
 
 parse_decision_only_flags() {  # <args...>; prints the --decision-file value
@@ -658,6 +706,7 @@ case "${1:-}" in
   resolve) shift; command_resolve "$@" ;;
   decline) shift; command_decline "$@" ;;
   repair) shift; command_repair "$@" ;;
+  reconcile-open) shift; command_reconcile_open "$@" ;;
   -h|--help) usage ;;
   *) usage >&2; exit 2 ;;
 esac
