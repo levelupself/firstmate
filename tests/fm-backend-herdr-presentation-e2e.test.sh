@@ -6,6 +6,9 @@
 # and the guarded named-session lab helper.
 set -u
 
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+set +e
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 

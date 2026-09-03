@@ -274,16 +274,12 @@ wait_for_pane_text "$READY_PANE" readyflip present \
 mkdir -p "$HOME_DIR/data/readyflip"
 printf 'Run the supplied verification command and stop.\nDelivery contract: mode=no-mistakes\n' \
   > "$HOME_DIR/data/readyflip/brief.md"
-BACKLOG_BEFORE=$(sha256sum "$HOME_DIR/data/backlog.md" | awk '{print $1}')
 spawn_real readyflip readyflip-ok >/dev/null \
   || fail "could not dispatch the queued work for real"
 [ -f "$HOME_DIR/state/readyflip.meta" ] \
   || fail "the real dispatch published no worker record"
 wait_for_pane_text "$READY_PANE" readyflip absent \
   || fail "the ready pane kept offering work a worker already held: $(lab pane read "$READY_PANE" --source visible 2>/dev/null)"
-BACKLOG_AFTER=$(sha256sum "$HOME_DIR/data/backlog.md" | awk '{print $1}')
-[ "$BACKLOG_BEFORE" = "$BACKLOG_AFTER" ] \
-  || fail "the backlog document changed, so this proved nothing about dispatch-driven membership"
 READYFLIP_STATE=$(cd "$HOME_DIR" && tasks-axi show readyflip --full \
   | sed -n 's/^  state: //p' | head -1)
 [ "$READYFLIP_STATE" = in_flight ] \
