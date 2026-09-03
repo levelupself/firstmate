@@ -653,6 +653,9 @@ test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present() {
   write_meta "$case_dir" no-mistakes ship
   printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
   printf '%s\n' manual > "$case_dir/config/backlog-backend"
+  mkdir -p "$case_dir/data"
+  printf '## In flight\n- **task-x1** - Manual lifecycle fixture\n\n## Queued\n\n## Done\n' \
+    > "$case_dir/data/backlog.md"
   add_compatible_tasks_axi "$case_dir"
 
   out=$(run_teardown "$case_dir") || fail "teardown failed with manual backlog backend"
@@ -661,6 +664,39 @@ test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present() {
   printf '%s\n' "$out" | grep -F 'tasks-axi done' >/dev/null \
     && fail "teardown prompted tasks-axi despite manual backend opt-out: $out"
   pass "teardown honors config/backlog-backend=manual even when tasks-axi is compatible"
+}
+
+test_manual_teardown_refuses_missing_backlog_row() {
+  local case_dir rc=0
+  case_dir=$(make_case manual-missing-backlog-row)
+  write_meta "$case_dir" local-only ship
+  printf '%s\n' manual > "$case_dir/config/backlog-backend"
+  mkdir -p "$case_dir/data"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$case_dir/data/backlog.md"
+
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "manual cleanup tolerated a missing backlog row"
+  assert_grep 'task task-x1 is absent from the backlog' "$case_dir/stderr" \
+    "manual cleanup did not identify the missing row"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "manual cleanup retired task state after missing-row refusal"
+  pass "manual cleanup refuses an existing backlog without its task row"
+}
+
+test_manual_teardown_refuses_unverifiable_backlog() {
+  local case_dir rc=0
+  case_dir=$(make_case manual-unverifiable-backlog)
+  write_meta "$case_dir" local-only ship
+  printf '%s\n' manual > "$case_dir/config/backlog-backend"
+  mkdir -p "$case_dir/data/backlog.md"
+
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "manual cleanup treated unverifiable backlog data as absent"
+  assert_grep 'could not verify the backlog record for task-x1' "$case_dir/stderr" \
+    "manual cleanup did not report unverifiable backlog data"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "manual cleanup retired task state after verification refusal"
+  pass "manual cleanup refuses unverifiable backlog data"
 }
 
 test_local_only_truly_unpushed_refuses() {
@@ -2770,6 +2806,8 @@ test_teardown_preserves_open_pr_poll_when_compatible
 test_teardown_without_backlog_reports_and_proceeds
 test_teardown_refuses_when_backlog_row_is_missing
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
+test_manual_teardown_refuses_missing_backlog_row
+test_manual_teardown_refuses_unverifiable_backlog
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
 test_no_mistakes_origin_remote_allows

@@ -924,11 +924,12 @@ backlog_refresh_reminder() {
   local pr report_path show task_state
   local -a done_args
   [ "$KIND" = secondmate ] && return 0
+  "$SCRIPT_DIR/fm-backlog-integrity.sh" check-row "$ID" --allow-absent || return 1
+  if [ ! -e "$DATA/backlog.md" ] && [ ! -L "$DATA/backlog.md" ]; then
+    printf '%s\n' "Backlog: cleanup for $ID proceeded with no backlog present; there was no lifecycle row to update."
+    return 0
+  fi
   if fm_tasks_axi_backend_available "$CONFIG"; then
-    if [ ! -f "$DATA/backlog.md" ]; then
-      printf '%s\n' "Backlog: cleanup for $ID proceeded with no backlog present; there was no lifecycle row to update."
-      return 0
-    fi
     if [ "$FORCE" = --force ]; then
       "$SCRIPT_DIR/fm-backlog-integrity.sh" failed "$ID" \
         || { echo "error: could not preserve failed backlog outcome for $ID" >&2; return 1; }

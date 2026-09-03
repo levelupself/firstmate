@@ -28,15 +28,19 @@ backend_enabled() {
 }
 
 check_row() {
-  local id=$1 allow_absent=${2:-} show
-  if [ ! -f "$DATA/backlog.md" ]; then
+  local id=$1 allow_absent=${2:-} rows
+  if [ ! -e "$DATA/backlog.md" ] && [ ! -L "$DATA/backlog.md" ]; then
     [ "$allow_absent" = --allow-absent ] && return 0
     fail "backlog is absent; refusing lifecycle start for $id"
   fi
+  [ -f "$DATA/backlog.md" ] && [ ! -L "$DATA/backlog.md" ] \
+    || fail "could not verify the backlog record for $id"
   if backend_enabled && tasks_axi show "$id" --full >/dev/null 2>&1; then
     return 0
   fi
-  "$SCRIPT_DIR/fm-backlog-tsv.sh" "$DATA/backlog.md" \
+  rows=$("$SCRIPT_DIR/fm-backlog-tsv.sh" "$DATA/backlog.md") \
+    || fail "could not verify the backlog record for $id"
+  printf '%s\n' "$rows" \
     | awk -F '\t' -v id="$id" '$2 == id { found = 1 } END { exit(found ? 0 : 1) }' \
     || fail "task $id is absent from the backlog"
 }
