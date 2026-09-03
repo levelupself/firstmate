@@ -185,30 +185,50 @@ valid_local_receipt() {
   valid_timestamp "$(receipt_value "$receipt" event_at)"
 }
 
-reconcile_orphan() {
-  local id=$1 receipt pr report
-  [ ! -f "$STATE/$id.meta" ] || return 0
+landed_work_evidence() {
+  local id=$1 show=$2 kind report receipt project default_branch landed_sha terminal
+  LANDED_EVIDENCE=
+  kind=$(show_field "$show" kind)
   report="$DATA/$id/report.md"
-  if [ -s "$report" ]; then
-    tasks_axi done "$id" --report "data/$id/report.md" >/dev/null \
-      || fail "could not close orphan scout $id"
-    printf 'closed=%s evidence=scout-report\n' "$id"
+  terminal=$(grep -E '^(done|failed):' "$STATE/$id.status" 2>/dev/null | tail -1 || true)
+  if [ "$kind" = scout ] && [ -s "$report" ] && [ "${terminal%%:*}" = done ]; then
+    LANDED_EVIDENCE=scout-report
     return 0
   fi
   receipt="$DATA/pr-merges/$id.receipt"
   if valid_pr_receipt "$receipt" "$id"; then
-    pr=$(receipt_value "$receipt" pr)
-    [ -n "$pr" ] || fail "merged receipt for $id has no PR URL"
-    tasks_axi done "$id" --pr "$pr" >/dev/null \
-      || fail "could not close merged orphan $id"
-    printf 'closed=%s evidence=merged-pr\n' "$id"
+    LANDED_EVIDENCE=merged-pr
     return 0
   fi
   receipt="$DATA/local-landings/$id.receipt"
   if valid_local_receipt "$receipt" "$id"; then
-    tasks_axi done "$id" --note "local main" >/dev/null \
-      || fail "could not close locally landed orphan $id"
-    printf 'closed=%s evidence=local-landing\n' "$id"
+    project=$(receipt_value "$receipt" project)
+    default_branch=$(receipt_value "$receipt" default_branch)
+    landed_sha=$(receipt_value "$receipt" landed_sha)
+    if [ -d "$project" ] \
+      && git -C "$project" merge-base --is-ancestor "$landed_sha" "$default_branch" 2>/dev/null; then
+      LANDED_EVIDENCE=local-landing
+      return 0
+    fi
+  fi
+  return 1
+}
+
+reconcile_orphan() {
+  local id=$1 receipt pr show
+  [ ! -f "$STATE/$id.meta" ] || return 0
+  show=$(tasks_axi show "$id" --full 2>/dev/null) || fail "could not read orphan task $id"
+  if landed_work_evidence "$id" "$show"; then
+    case "$LANDED_EVIDENCE" in
+      scout-report) tasks_axi done "$id" --report "data/$id/report.md" >/dev/null || fail "could not close orphan scout $id" ;;
+      merged-pr)
+        receipt="$DATA/pr-merges/$id.receipt"
+        pr=$(receipt_value "$receipt" pr)
+        tasks_axi done "$id" --pr "$pr" >/dev/null || fail "could not close merged orphan $id"
+        ;;
+      local-landing) tasks_axi done "$id" --note "local main" >/dev/null || fail "could not close locally landed orphan $id" ;;
+    esac
+    printf 'closed=%s evidence=%s\n' "$id" "$LANDED_EVIDENCE"
     return 0
   fi
   tasks_axi reopen "$id" >/dev/null || fail "could not reopen orphan $id"
@@ -216,7 +236,7 @@ reconcile_orphan() {
 }
 
 reconcile_blockers() {
-  local rows row id show blockers blocker blocker_show blocker_state
+  local rows row id show blockers blocker blocker_show blocker_error blocker_state
   rows=$(tasks_axi list --state queued --fields deps) \
     || fail "could not list queued backlog rows"
   while IFS= read -r row; do
@@ -227,16 +247,26 @@ reconcile_blockers() {
     [ -n "$blockers" ] || continue
     while IFS= read -r blocker; do
       [ -n "$blocker" ] || continue
-      blocker_show=$(tasks_axi show "$blocker" --full 2>/dev/null || true)
-      blocker_state=$(show_field "$blocker_show" state)
-      case "$blocker_state" in
-        queued|in_flight) ;;
-        *)
-          tasks_axi unblock "$id" --by "$blocker" >/dev/null \
-            || fail "could not clear resolved blocker $blocker from $id"
-          printf 'unblocked=%s blocker=%s state=%s\n' "$id" "$blocker" "${blocker_state:-absent}"
-          ;;
-      esac
+      blocker_error=$(mktemp "$STATE/.backlog-blocker-show.XXXXXX") \
+        || fail "could not prepare blocker read for $blocker"
+      if blocker_show=$(tasks_axi show "$blocker" --full 2>"$blocker_error"); then
+        blocker_state=$(show_field "$blocker_show" state)
+        rm -f "$blocker_error"
+        case "$blocker_state" in
+          queued|in_flight) continue ;;
+          done) ;;
+          *) fail "blocker $blocker has unreadable state" ;;
+        esac
+      elif grep -Fq 'code: NOT_FOUND' "$blocker_error"; then
+        blocker_state=absent
+        rm -f "$blocker_error"
+      else
+        rm -f "$blocker_error"
+        fail "could not read blocker $blocker"
+      fi
+      tasks_axi unblock "$id" --by "$blocker" >/dev/null \
+        || fail "could not clear resolved blocker $blocker from $id"
+      printf 'unblocked=%s blocker=%s state=%s\n' "$id" "$blocker" "$blocker_state"
     done <<EOF
 $(printf '%s\n' "$blockers" | tr ',' '\n')
 EOF
@@ -246,7 +276,7 @@ EOF
 }
 
 reconcile() {
-  local rows row id detail='' line decision_repairs
+  local rows row id detail='' line blocker_repairs decision_repairs
   backend_enabled || { printf 'BACKLOG_INTEGRITY: skipped (tasks-axi backend unavailable)\n'; return 0; }
   rows=$(tasks_axi list --state in_flight) || fail "could not list in-flight backlog rows"
   while IFS= read -r row; do
@@ -256,10 +286,11 @@ reconcile() {
   done <<EOF
 $rows
 EOF
+  blocker_repairs=$(reconcile_blockers) || fail "could not reconcile backlog blockers"
   while IFS= read -r line; do
     [ -z "$line" ] || detail="${detail}${detail:+; }$line"
   done <<EOF
-$(reconcile_blockers)
+$blocker_repairs
 EOF
   if [ -x "$SCRIPT_DIR/fm-decision-hold.sh" ]; then
     decision_repairs=$("$SCRIPT_DIR/fm-decision-hold.sh" reconcile-open) \

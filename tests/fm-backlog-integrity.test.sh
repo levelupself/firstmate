@@ -87,6 +87,41 @@ test_failed_outcome_is_never_closed_as_done() {
   pass "failed work is reopened instead of being falsely recorded done"
 }
 
+test_partial_scout_report_does_not_close_orphan() {
+  local home id=partial-scout
+  home=$(make_home partial-scout)
+  (cd "$home" && tasks-axi add "$id" "$id" --kind scout --start >/dev/null)
+  mkdir -p "$home/data/$id"
+  printf 'Investigation started.\n' > "$home/data/$id/report.md"
+  printf 'working: collecting evidence\n' > "$home/state/$id.status"
+  run_integrity "$home" reconcile >/dev/null
+  [ "$(cd "$home" && tasks-axi show "$id" | sed -n 's/^  state: //p')" = queued ] \
+    || fail "partial scout report closed abandoned work"
+  pass "partial scout reports cannot close abandoned work"
+}
+
+test_unreadable_blocker_is_not_cleared() {
+  local home fakebin rc
+  home=$(make_home unreadable-blocker)
+  (cd "$home" && tasks-axi add blocker-live "blocker" >/dev/null \
+    && tasks-axi add dependent "dependent" >/dev/null \
+    && tasks-axi block dependent --by blocker-live >/dev/null)
+  fakebin="$home/fakebin"
+  mkdir -p "$fakebin"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'if [ "${1:-}" = show ] && [ "${2:-}" = blocker-live ]; then echo transient read failure >&2; exit 1; fi' \
+    'exec "$REAL_TASKS_AXI" "$@"' > "$fakebin/tasks-axi"
+  chmod +x "$fakebin/tasks-axi"
+  set +e
+  REAL_TASKS_AXI="$REAL_TASKS_AXI" PATH="$fakebin:$PATH" run_integrity "$home" reconcile >/dev/null 2>&1
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "unreadable blocker did not fail reconciliation"
+  (cd "$home" && tasks-axi show dependent | grep -F 'blocked-by:blocker-live' >/dev/null) \
+    || fail "unreadable blocker was cleared as resolved"
+  pass "unreadable blocker records fail closed without clearing edges"
+}
+
 test_invalid_landing_receipts_do_not_close_orphans() {
   local home id
   home=$(make_home invalid-receipts)
@@ -165,6 +200,8 @@ test_finished_row_cannot_be_resurrected
 test_three_orphans_are_repaired_without_blinding
 test_resolved_blocker_edge_is_removed
 test_failed_outcome_is_never_closed_as_done
+test_partial_scout_report_does_not_close_orphan
+test_unreadable_blocker_is_not_cleared
 test_invalid_landing_receipts_do_not_close_orphans
 test_landing_receipt_must_match_durable_launch
 test_failed_start_does_not_poison_retry_binding
