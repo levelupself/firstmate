@@ -808,7 +808,7 @@ test_resolution_retry_accepts_legacy_identity_record() {
   digest=$(printf 'Keep the legacy option.' | sha256sum | awk '{print $1}')
   body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: (none)\nResolution mode: declined\n\nCaptain decision:\nKeep the legacy option.\n\nRouted work:\n(none)' "$digest")
   tasks_in "$home" update "$hold" --body "$body" >/dev/null
-  tasks_in "$home" done "$hold" >/dev/null
+  tasks_in "$home" "done" "$hold" >/dev/null
   run_decisions "$home" decline "$origin" legacy-choice \
     --decision-file "$home/data/legacy-choice.md" >/dev/null \
     || fail "decline retry rejected a legacy durable identity record"
@@ -872,7 +872,7 @@ SH
   rm -f "$home/state/fail-routed-show"
   run_decisions "$home" reconcile-open >/dev/null \
     || fail "unreadable-answered-route: reconciliation did not recover after the read succeeded"
-  [ "$(tasks_in "$home" show "$hold" | sed -n 's/^  state: //p')" = done ] \
+  [ "$(tasks_in "$home" show "$hold" | sed -n 's/^  state: //p')" = "done" ] \
     || fail "unreadable-answered-route: recovered reconciliation did not close the decision"
   pass "answered decisions remain open while routed work is unreadable"
 }
@@ -891,7 +891,7 @@ test_answered_open_hold_accepts_confirmed_missing_route() {
 
   run_decisions "$home" reconcile-open >/dev/null \
     || fail "missing-answered-route: confirmed absent routed work blocked reconciliation"
-  [ "$(tasks_in "$home" show "$hold" | sed -n 's/^  state: //p')" = done ] \
+  [ "$(tasks_in "$home" show "$hold" | sed -n 's/^  state: //p')" = "done" ] \
     || fail "missing-answered-route: reconciliation did not close the decision"
   pass "answered decisions close when routed work is authoritatively absent"
 }

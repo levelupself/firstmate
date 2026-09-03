@@ -949,7 +949,7 @@ backlog_refresh_reminder() {
             show=$(cd "$FM_HOME" && tasks-axi show "$ID" --full 2>/dev/null) \
               || { echo "error: could not read backlog state for $ID" >&2; return 1; }
             task_state=$(printf '%s\n' "$show" | sed -n 's/^  state: //p' | head -1)
-            if [ "$task_state" = done ]; then
+            if [ "$task_state" = "done" ]; then
               done_args=("done" "$ID" --pr "$pr")
             elif [ "$task_state" = in_flight ] \
               && fm_pr_poll_artifacts_valid "$STATE" "$ID" "$SCRIPT_DIR/fm-pr-poll.sh"; then

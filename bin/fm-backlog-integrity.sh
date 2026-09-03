@@ -68,14 +68,13 @@ guarded_start() {
             || fail "task $id launch binding failed and its start could not be rolled back"
           fail "could not prepare launch binding for $id"
         }
-        printf '%s\n' 'schema=fm-task-launch.v1' "task_id=$id" "spawned_at=$spawned_at" > "$tmp" \
-          && chmod 600 "$tmp" && mv "$tmp" "$binding" \
-          || {
+        if ! { printf '%s\n' 'schema=fm-task-launch.v1' "task_id=$id" "spawned_at=$spawned_at" > "$tmp" \
+          && chmod 600 "$tmp" && mv "$tmp" "$binding"; }; then
             rm -f "$tmp"
             [ "$transitioned" = 0 ] || tasks_axi reopen "$id" >/dev/null \
               || fail "task $id launch binding failed and its start could not be rolled back"
             fail "could not record launch binding for $id"
-          }
+        fi
       fi
       ;;
     *) fail "refusing to start task $id from state $state" ;;
@@ -96,8 +95,8 @@ record_done() {
   backend_enabled || return 0
   show=$(tasks_axi show "$id" --full 2>/dev/null) || fail "task $id is absent from the backlog"
   state=$(show_field "$show" state)
-  [ "$state" != done ] || return 0
-  tasks_axi done "$id" "$@" >/dev/null || fail "could not close task $id"
+  [ "$state" != "done" ] || return 0
+  tasks_axi "done" "$id" "$@" >/dev/null || fail "could not close task $id"
 }
 
 record_failed() {
@@ -130,7 +129,8 @@ valid_timestamp() {
 }
 
 receipt_matches_launch() {
-  local receipt=$1 id=$2 binding="$STATE/$id.launch-receipt" spawned_at
+  local receipt=$1 id=$2 spawned_at
+  local binding="$STATE/$id.launch-receipt"
   [ -f "$binding" ] && [ ! -L "$binding" ] || return 1
   [ "$(grep -c '^schema=fm-task-launch.v1$' "$binding" 2>/dev/null || true)" -eq 1 ] || return 1
   [ "$(grep -c "^task_id=$id$" "$binding" 2>/dev/null || true)" -eq 1 ] || return 1
@@ -202,7 +202,7 @@ landed_work_evidence() {
   kind=$(show_field "$show" kind)
   report="$DATA/$id/report.md"
   terminal=$(grep -E '^(done|failed):' "$STATE/$id.status" 2>/dev/null | tail -1 || true)
-  if [ "$kind" = scout ] && [ -s "$report" ] && [ "${terminal%%:*}" = done ]; then
+  if [ "$kind" = scout ] && [ -s "$report" ] && [ "${terminal%%:*}" = "done" ]; then
     LANDED_EVIDENCE=scout-report
     return 0
   fi
@@ -231,13 +231,13 @@ reconcile_orphan() {
   show=$(tasks_axi show "$id" --full 2>/dev/null) || fail "could not read orphan task $id"
   if landed_work_evidence "$id" "$show"; then
     case "$LANDED_EVIDENCE" in
-      scout-report) tasks_axi done "$id" --report "data/$id/report.md" >/dev/null || fail "could not close orphan scout $id" ;;
+      scout-report) tasks_axi "done" "$id" --report "data/$id/report.md" >/dev/null || fail "could not close orphan scout $id" ;;
       merged-pr)
         receipt="$DATA/pr-merges/$id.receipt"
         pr=$(receipt_value "$receipt" pr)
-        tasks_axi done "$id" --pr "$pr" >/dev/null || fail "could not close merged orphan $id"
+        tasks_axi "done" "$id" --pr "$pr" >/dev/null || fail "could not close merged orphan $id"
         ;;
-      local-landing) tasks_axi done "$id" --note "local main" >/dev/null || fail "could not close locally landed orphan $id" ;;
+      local-landing) tasks_axi "done" "$id" --note "local main" >/dev/null || fail "could not close locally landed orphan $id" ;;
     esac
     printf 'closed=%s evidence=%s\n' "$id" "$LANDED_EVIDENCE"
     return 0

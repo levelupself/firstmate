@@ -29,7 +29,7 @@ run_integrity() {
 test_finished_row_cannot_be_resurrected() {
   local home rc state
   home=$(make_home finished-start)
-  (cd "$home" && tasks-axi add finished-task "Finished task" >/dev/null && tasks-axi done finished-task >/dev/null)
+  (cd "$home" && tasks-axi add finished-task "Finished task" >/dev/null && tasks-axi "done" finished-task >/dev/null)
   set +e
   run_integrity "$home" start finished-task > "$home/out" 2> "$home/err"
   rc=$?
@@ -38,7 +38,7 @@ test_finished_row_cannot_be_resurrected() {
   assert_grep 'refusing to start completed task finished-task' "$home/err" \
     "completed-row regression did not exercise the lifecycle guard"
   state=$(cd "$home" && tasks-axi show finished-task | sed -n 's/^  state: //p')
-  [ "$state" = done ] || fail "completed row was resurrected as $state"
+  [ "$state" = "done" ] || fail "completed row was resurrected as $state"
   pass "completed row remains done when dispatch start is retried"
 }
 
@@ -68,7 +68,7 @@ test_resolved_blocker_edge_is_removed() {
   (cd "$home" && tasks-axi add 076-retarget-firstmate-prs-to-fork "obsolete blocker" >/dev/null \
     && tasks-axi add 081-backfill-linear-pr-links "blocked work" >/dev/null \
     && tasks-axi block 081-backfill-linear-pr-links --by 076-retarget-firstmate-prs-to-fork >/dev/null \
-    && tasks-axi done 076-retarget-firstmate-prs-to-fork >/dev/null)
+    && tasks-axi "done" 076-retarget-firstmate-prs-to-fork >/dev/null)
   (cd "$home" && tasks-axi show 081-backfill-linear-pr-links | grep -F 'deps: "blocked-by:076-retarget-firstmate-prs-to-fork"' >/dev/null) \
     || fail "081 -> 076 stale edge was not reproduced"
   run_integrity "$home" reconcile >/dev/null
@@ -108,6 +108,7 @@ test_unreadable_blocker_is_not_cleared() {
     && tasks-axi block dependent --by blocker-live >/dev/null)
   fakebin="$home/fakebin"
   mkdir -p "$fakebin"
+  # shellcheck disable=SC2016 # The generated wrapper expands these variables when executed.
   printf '%s\n' '#!/usr/bin/env bash' \
     'if [ "${1:-}" = show ] && [ "${2:-}" = blocker-live ]; then echo transient read failure >&2; exit 1; fi' \
     'exec "$REAL_TASKS_AXI" "$@"' > "$fakebin/tasks-axi"
@@ -173,7 +174,7 @@ esac
 SH
   chmod +x "$fakebin/gh-axi"
   result=$(PATH="$fakebin:$PATH" run_integrity "$home" reconcile)
-  [ "$(cd "$home" && tasks-axi show "$id" | sed -n 's/^  state: //p')" = done ] \
+  [ "$(cd "$home" && tasks-axi show "$id" | sed -n 's/^  state: //p')" = "done" ] \
     || fail "valid launch-bound merged receipt did not close orphan $id: $result"
   pass "valid merged receipt closes only its bound launch"
 }
@@ -254,6 +255,7 @@ test_failed_start_does_not_poison_retry_binding() {
   home=$(make_home failed-start-retry)
   fakebin="$home/fakebin"
   mkdir -p "$fakebin"
+  # shellcheck disable=SC2016 # The generated wrapper expands these variables when executed.
   printf '%s\n' '#!/usr/bin/env bash' \
     'if [ "${1:-}" = start ] && [ -f "$FM_FAIL_START_ONCE" ]; then' \
     '  rm -f "$FM_FAIL_START_ONCE"' \
