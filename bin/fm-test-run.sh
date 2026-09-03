@@ -184,7 +184,7 @@ family_for_basename() {
       printf '%s\n' secondmate
       ;;
     fm-agents-md-budget.test.sh|fm-session-start-budget.test.sh|fm-bootstrap-harness-auth.test.sh|fm-bootstrap.test.sh|\
-    fm-fleet-sync.test.sh|fm-gate-refuse.test.sh|fm-gotmp.test.sh|\
+    fm-fleet-sync.test.sh|fm-gate-refuse.test.sh|fm-gotmp.test.sh|fm-merge-local.test.sh|\
     fm-session-start.test.sh|fm-sessionstart-nudge.test.sh|fm-startup-network.test.sh|\
     fm-tangle-guard.test.sh|fm-update.test.sh)
       printf '%s\n' session-bootstrap
@@ -417,10 +417,11 @@ tests/fm-codex-continuity-live-e2e.test.sh 19
 tests/fm-daemon.test.sh 15140
 tests/fm-documentation-audiences.test.sh 572
 tests/fm-fleet-snapshot-view.test.sh 5902
-tests/fm-fleet-sync.test.sh 16417
+tests/fm-fleet-sync.test.sh 25984
 tests/fm-gate-refuse.test.sh 2839
 tests/fm-gitignore-config.test.sh 28
 tests/fm-gotmp.test.sh 308
+tests/fm-merge-local.test.sh 3150
 tests/fm-grok-continuity-live-e2e.test.sh 19
 tests/fm-grok-stop-live-e2e.test.sh 19
 tests/fm-guard-stale-banner.test.sh 2917
