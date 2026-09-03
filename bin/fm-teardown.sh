@@ -921,7 +921,7 @@ work_is_landed() {
 }
 
 backlog_refresh_reminder() {
-  local pr report_path show task_state show_error
+  local pr report_path show task_state
   local -a done_args
   [ "$KIND" = secondmate ] && return 0
   if fm_tasks_axi_backend_available "$CONFIG"; then
@@ -929,20 +929,6 @@ backlog_refresh_reminder() {
       printf '%s\n' "Backlog: $ID just finished. Update data/backlog.md, then re-scan Queued and dispatch only work whose blockers are gone and date is due."
       return 0
     fi
-    show_error=$(mktemp "$STATE/.teardown-backlog-show.XXXXXX") \
-      || { echo "error: could not prepare backlog state read for $ID" >&2; return 1; }
-    if show=$(cd "$FM_HOME" && tasks-axi show "$ID" --full 2>"$show_error"); then
-      rm -f "$show_error"
-    elif { printf '%s\n' "$show"; cat "$show_error"; } | grep -Fq 'code: NOT_FOUND'; then
-      rm -f "$show_error"
-      printf '%s\n' "Backlog: $ID has no lifecycle row; cleanup left the backlog unchanged."
-      return 0
-    else
-      rm -f "$show_error"
-      echo "error: could not read backlog state for $ID" >&2
-      return 1
-    fi
-    task_state=$(printf '%s\n' "$show" | sed -n 's/^  state: //p' | head -1)
     if [ "$FORCE" = --force ]; then
       "$SCRIPT_DIR/fm-backlog-integrity.sh" failed "$ID" \
         || { echo "error: could not preserve failed backlog outcome for $ID" >&2; return 1; }
@@ -960,6 +946,9 @@ backlog_refresh_reminder() {
         else
           pr=$PR_URL
           if [ -n "$pr" ]; then
+            show=$(cd "$FM_HOME" && tasks-axi show "$ID" --full 2>/dev/null) \
+              || { echo "error: could not read backlog state for $ID" >&2; return 1; }
+            task_state=$(printf '%s\n' "$show" | sed -n 's/^  state: //p' | head -1)
             if [ "$task_state" = "done" ]; then
               done_args=("done" "$ID" --pr "$pr")
             elif [ "$task_state" = in_flight ] \
