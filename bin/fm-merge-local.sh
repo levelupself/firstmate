@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Perform the approved local merge for a local-only ship task: publish the
-# crewmate's fm/<id> branch to every configured remote whose HEAD names the
-# project's default branch, then fast-forward the local default branch.
+# Perform the approved local merge for a local-only ship task: verify publication
+# can fast-forward every configured remote whose HEAD names the project's default
+# branch, fast-forward the local default, then publish it to every participant.
 #
 # This is firstmate's merge gate-action (the captain's merge authority applied
 # locally instead of via a GitHub PR). It is the one sanctioned exception to hard

@@ -391,8 +391,9 @@ In a read-only session that did not get the fleet lock, the same line is advisor
 Session locking uses formatted process inspection on Linux, WSL, and other procps/POSIX systems, and Cygwin's fixed `ps -l`/`ps -f` fields on Git Bash/Cygwin.
 If Cygwin cannot expose the native Windows harness in the shell's parent chain, session start stays read-only and reports that process identity is unavailable without asserting a live-session conflict.
 The locked session-start deferred network stage runs bootstrap's best-effort project clone refresh through `fm-fleet-sync.sh`.
-It emits `FLEET_SYNC:` for skipped refreshes that may matter, recovered self-heals, and `STUCK:` alarms.
-Normal completed runs keep local-only and no-origin skips silent.
+It emits `FLEET_SYNC:` for skipped refreshes that may matter, local-only remote drift, recovered self-heals, and `STUCK:` alarms.
+Local-only projects are not advanced automatically; each configured remote whose advertised default matches the local default is fetched and compared, and drift or an inspection failure is reported.
+Normal completed runs keep no-origin skips silent.
 If bootstrap kills a timed-out refresh, it replays any completed `fm-fleet-sync.sh` output before the aggregate timeout skip so no finished result is lost.
 A killed refresh (or a teardown process kill) can leave an orphaned `.git/packed-refs.lock` in a clone, which makes the next refresh's fetch fail with Git's `Unable to create '...packed-refs.lock': File exists`.
 On that signature only, `fm-fleet-sync.sh` retries the fetch with a bounded wait for the lock to self-clear, then removes the lock and retries once more only when it can prove the lock stale, exactly like the `fm-teardown.sh` `index.lock` recovery.
