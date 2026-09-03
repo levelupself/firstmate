@@ -24,6 +24,8 @@
 # flag and verifies the default fleet session is unchanged after teardown.
 set -u
 
+# shellcheck source=tests/lib.sh
+# shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 set +e
 

@@ -262,13 +262,7 @@ wait_for_pane_text() {  # <pane> <needle> <present|absent> -> 0 once it settles
 
 READY_PANE=$(fleet_pane_for_section ready) \
   || fail "the adopted frame records no pane painting the ready section"
-cat > "$HOME_DIR/data/backlog.md" <<'EOF'
-# Backlog
-
-## Queued
-- [ ] readyflip - Queued work a worker is about to take (repo: alpha) (kind: ship)
-  Implement the thing, with acceptance criteria.
-EOF
+fm_test_backlog_add_queue "$HOME_DIR" readyflip
 wait_for_pane_text "$READY_PANE" readyflip present \
   || fail "the ready pane never showed the queued work: $(lab pane read "$READY_PANE" --source visible 2>/dev/null)"
 mkdir -p "$HOME_DIR/data/readyflip"

@@ -30,6 +30,8 @@
 #   - list-live recovery seeing only its own home's tabs, for both homes
 set -u
 
+# shellcheck source=tests/lib.sh
+# shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 set +e
 
