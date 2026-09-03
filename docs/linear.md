@@ -142,14 +142,17 @@ GitHub is the only complete record of what shipped, so the merged pull request
 list is the input.
 
 **The mapping is the branch name**, `fm/<task-id>`, which firstmate wrote when it
-dispatched the work. That is an exact mechanical join. `data/done-archive.md` is
+dispatched the work. That is an exact mechanical join. Current task ids use a
+numeric prefix; the 26 tasks that predate numbering use their exact
+`psychogen-*` branch suffixes as stable legacy ids. `data/done-archive.md` is
 **not** used to recover it because proximity matching can cross-assign tasks and
 pull requests. The archive is read only to give a created issue a better title
 than the pull request subject, never to derive the id.
 
-A branch that is not `fm/<numbered-task-id>` is **reported as unmapped and
-nothing is written for it**. An unmapped pull request listed honestly is a fine
-outcome; a wrongly attached one is the failure this shape exists to avoid.
+A branch outside the two known `fm/<task-id>` conventions is **reported as
+unmapped and nothing is written for it**. An unmapped pull request listed
+honestly is a fine outcome; a wrongly attached one is the failure this shape
+exists to avoid.
 
 Every run prints one audit line per pull request carrying the verdict, the issue,
 the derived task id, the pull request number, and the branch the id came from. A

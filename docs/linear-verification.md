@@ -252,15 +252,13 @@ the real merged pull requests of `levelupself/psychogenesis`:
 $ gh pr list --repo levelupself/psychogenesis --state merged --limit 200 \
     --json number,headRefName
 71 merged pull requests
-45 derivable  fm/<NNN-slug>, e.g. #41 fm/063-migration-journal-repair -> 063-migration-journal-repair
-26 unmapped   fm/psychogen-*, e.g. #1 fm/psychogen-engine-k1
+45 current ids  fm/<NNN-slug>, e.g. #41 fm/063-migration-journal-repair -> 063-migration-journal-repair
+26 legacy ids   fm/psychogen-*, e.g. #1 fm/psychogen-engine-k1 -> psychogen-engine-k1
 ```
 
-The split is clean rather than ragged: every unmapped branch is a pre-convention
-`fm/psychogen-<word>-<code>` name, and all 26 are pull requests #1 to #27, the
-work that shipped before numbered task ids existed. Nothing ambiguous straddles
-the boundary, so no pull request is mapped on a judgement call.
-
-Those 26 carry no recoverable task id. Attaching them would mean guessing, which
-is the cross-assignment that reading `data/done-archive.md` by proximity
-produced on 2026-08-03, so they are reported and left alone.
+The split is clean rather than ragged: all 26 pre-numbering branches are
+`fm/psychogen-<word>-<code>` and belong to pull requests #1 to #27. Their exact
+branch suffixes are stable legacy task ids, so all 71 pull requests map directly
+from GitHub without a judgement call. Reading `data/done-archive.md` by
+proximity remains forbidden because that produced cross-assignments on
+2026-08-03.
