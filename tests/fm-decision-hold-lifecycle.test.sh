@@ -877,10 +877,30 @@ SH
   pass "answered decisions remain open while routed work is unreadable"
 }
 
+test_answered_open_hold_accepts_confirmed_missing_route() {
+  local home origin hold digest body
+  home=$(make_home missing-answered-route)
+  origin=route-review
+  write_origin_meta "$home" "$origin"
+  hold=$(run_decisions "$home" hold "$origin" retired-route \
+    --title "Confirm the retired route" --reason "answer pending" --repo sample)
+  printf 'The routed work is already retired.\n' > "$home/data/retired-route.md"
+  digest=$(printf 'The routed work is already retired.' | sha256sum | awk '{print $1}')
+  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nDecision file: %s\nRouted identities: pruned-work\nResolution mode: routed\n\nCaptain decision:\nThe routed work is already retired.\n\nRouted work:\npruned-work' "$digest" "$home/data/retired-route.md")
+  tasks_in "$home" update "$hold" --body "$body" >/dev/null
+
+  run_decisions "$home" reconcile-open >/dev/null \
+    || fail "missing-answered-route: confirmed absent routed work blocked reconciliation"
+  [ "$(tasks_in "$home" show "$hold" | sed -n 's/^  state: //p')" = done ] \
+    || fail "missing-answered-route: reconciliation did not close the decision"
+  pass "answered decisions close when routed work is authoritatively absent"
+}
+
 test_resolve_accepts_already_completed_routed_work
 test_resolution_retry_accepts_legacy_identity_record
 test_answered_open_hold_closes_from_decision_file
 test_answered_open_hold_preserves_unreadable_route
+test_answered_open_hold_accepts_confirmed_missing_route
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification

@@ -99,6 +99,9 @@ printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
   "pr merge") echo "error: pr merge failed" >&2 ; exit 1 ;;
 esac
+if [ "${1:-}" = api ] && [[ "${2:-}" = */pulls/* ]]; then
+  printf '%s\n' 'merged: false' 'merged_at: null'
+fi
 exit 0
 SH
   cat > "$case_dir/fakebin/gh" <<'SH'
@@ -257,6 +260,46 @@ SH
   assert_no_grep '^outcome=pr-merged$' "$case_dir/state/task-x1.meta" \
     "merge-unconfirmed: unconfirmed merge stamped an outcome"
   pass "fm-pr-merge stamps no outcome until the forge confirms the merged state"
+}
+
+test_unreadable_merge_state_refuses_before_merge() {
+  local case_dir rc
+  case_dir=$(make_case merge-state-unreadable)
+  mkdir -p "$case_dir/wt"
+  : > "$case_dir/gh-axi.log"
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-}" = api ] && [[ "${2:-}" = */pulls/* ]]; then
+  echo 'transient forge read failure' >&2
+  exit 1
+fi
+if [ "${1:-} ${2:-}" = "pr merge" ]; then
+  echo 'already merged' >&2
+  exit 1
+fi
+exit 0
+SH
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/14 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "merge-state-unreadable: fm-pr-merge should fail closed"
+  assert_grep 'forge merge state is unavailable' "$case_dir/stderr" \
+    "merge-state-unreadable: refusal did not identify unavailable forge state"
+  assert_no_grep '^pr merge ' "$case_dir/gh-axi.log" \
+    "merge-state-unreadable: retry attempted a merge without authoritative state"
+  assert_grep 'phase=prepared' "$case_dir/data/pr-merges/task-x1.receipt" \
+    "merge-state-unreadable: retry did not preserve prepared provenance"
+  pass "fm-pr-merge fails closed when pre-merge forge state is unreadable"
 }
 
 test_extra_merge_args_forwarded() {
@@ -594,6 +637,7 @@ test_parses_pr_url_for_gh_axi() {
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_unconfirmed_merge_remains_prepared
+test_unreadable_merge_state_refuses_before_merge
 test_extra_merge_args_forwarded
 test_torn_down_delivered_task_merges_with_durable_provenance
 test_missing_meta_refuses_before_merge

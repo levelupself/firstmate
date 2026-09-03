@@ -274,7 +274,11 @@ load_merge_evidence() {
     --jq '{merged: .merged, merged_at: .merged_at, merge_commit: .merge_commit_sha, base_ref: .base.ref}' 2>/dev/null) \
     || return 3
   merge_confirmed=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merged: //p' | tail -1)
-  [ "$merge_confirmed" = true ] || return 1
+  case "$merge_confirmed" in
+    true) ;;
+    false) return 1 ;;
+    *) return 3 ;;
+  esac
   DEFAULT_BRANCH=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO" --jq '.default_branch' 2>/dev/null) \
     || return 2
   git check-ref-format --branch "$DEFAULT_BRANCH" >/dev/null 2>&1 || return 2
@@ -300,10 +304,11 @@ if load_merge_evidence; then
   :
 else
   merge_evidence_rc=$?
-  if [ "$merge_evidence_rc" -eq 2 ]; then
-    echo "error: merged PR default-branch evidence is unavailable; provenance remains prepared" >&2
-    exit 1
-  fi
+  case "$merge_evidence_rc" in
+    1) ;;
+    2) echo "error: merged PR default-branch evidence is unavailable; provenance remains prepared" >&2; exit 1 ;;
+    *) echo "error: forge merge state is unavailable; provenance remains prepared" >&2; exit 1 ;;
+  esac
   gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
   load_merge_evidence || {
     echo "error: forge did not confirm the merged PR on its default branch; provenance remains prepared" >&2

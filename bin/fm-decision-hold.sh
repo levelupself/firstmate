@@ -167,6 +167,10 @@ task_show() {  # <id>
   tasks_axi show "$1" --full 2>/dev/null
 }
 
+task_show_typed() {  # <id>
+  tasks_axi show "$1" --full
+}
+
 show_field() {  # <show-output> <field>
   local output=$1 field=$2
   printf '%s\n' "$output" | sed -n "s/^  $field: //p" | head -1
@@ -603,9 +607,10 @@ command_reconcile_open() {
         [ -n "$dep" ] || continue
         dep_error=$(mktemp "$STATE/.decision-route-show.XXXXXX") \
           || fail "could not prepare routed task verification for $dep"
-        if dep_show=$(task_show "$dep" 2>"$dep_error"); then
+        if dep_show=$(task_show_typed "$dep" 2>"$dep_error"); then
           rm -f "$dep_error"
-        elif grep -Fq 'code: NOT_FOUND' "$dep_error"; then
+        elif printf '%s\n' "$dep_show" | grep -Fq 'code: NOT_FOUND' \
+          || grep -Fq 'code: NOT_FOUND' "$dep_error"; then
           rm -f "$dep_error"
           continue
         else
