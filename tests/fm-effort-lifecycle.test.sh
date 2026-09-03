@@ -33,15 +33,24 @@ SH
 cat > "$FAKEBIN/gh-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = api ]; then
-  if [ "${2:-}" = /repos/example/repo/pulls/74 ]; then
-    printf '%s\n' \
-      'merged: true' \
-      'merged_at: "2026-08-29T22:42:58Z"'
-    exit 0
-  fi
-  printf '%s\n' \
-    'merged: true' \
-    'merged_at: "2026-08-29T10:20:00Z"'
+  case "${2:-}" in
+    */pulls/74)
+      printf '%s\n' \
+        'merged: true' \
+        'merged_at: "2026-08-29T22:42:58Z"' \
+        'merge_commit: "7474747474747474747474747474747474747474"' \
+        'base_ref: "main"'
+      ;;
+    */pulls/*)
+      printf '%s\n' \
+        'merged: true' \
+        'merged_at: "2026-08-29T10:20:00Z"' \
+        'merge_commit: "9999999999999999999999999999999999999999"' \
+        'base_ref: "main"'
+      ;;
+    */compare/*) printf '%s\n' ahead ;;
+    *) printf '%s\n' main ;;
+  esac
 fi
 exit 0
 SH
@@ -232,7 +241,7 @@ NODE
 [ "$MERGED_ROW" = '2026-08-29T10:20:00Z|merged|3|2|1|1' ] \
   || fail "PR merge did not capture forge and pipeline facts: $MERGED_ROW"
 pass 'sanctioned PR merge stamps forge time, merged outcome, and structured pipeline cost'
-grep -qx 'schema=fm-pr-merge.v2' "$HOME_DIR/data/pr-merges/pr-task.receipt" \
+grep -qx 'schema=fm-pr-merge.v3' "$HOME_DIR/data/pr-merges/pr-task.receipt" \
   || fail 'PR merge did not write the forge-timestamp receipt schema'
 grep -qx 'merged_at=2026-08-29T10:20:00Z' "$HOME_DIR/data/pr-merges/pr-task.receipt" \
   || fail 'PR merge receipt did not preserve the forge timestamp'
