@@ -268,32 +268,47 @@ if [ "$(receipt_value phase)" != merged ]; then
   write_provenance_receipt prepared "$AUTHORIZATION" "$PREPARED_EPOCH"
 fi
 
+load_merge_evidence() {
+  local merge_confirmed base_ref compare_status
+  MERGE_QUERY=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER" \
+    --jq '{merged: .merged, merged_at: .merged_at, merge_commit: .merge_commit_sha, base_ref: .base.ref}' 2>/dev/null) \
+    || return 3
+  merge_confirmed=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merged: //p' | tail -1)
+  [ "$merge_confirmed" = true ] || return 1
+  DEFAULT_BRANCH=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO" --jq '.default_branch' 2>/dev/null) \
+    || return 2
+  git check-ref-format --branch "$DEFAULT_BRANCH" >/dev/null 2>&1 || return 2
+  MERGE_COMMIT=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merge_commit: "\([0-9a-f]*\)"$/\1/p' | tail -1)
+  base_ref=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^base_ref: "\([^"]*\)"$/\1/p' | tail -1)
+  printf '%s\n' "$MERGE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || return 2
+  [ "$base_ref" = "$DEFAULT_BRANCH" ] || return 2
+  compare_status=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/compare/$MERGE_COMMIT...$DEFAULT_BRANCH" --jq '.status' 2>/dev/null) \
+    || return 2
+  case "$compare_status" in ahead|identical) ;; *) return 2 ;; esac
+  MERGED_AT=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merged_at: "\([^"]*\)"$/\1/p' | tail -1)
+  if ! printf '%s\n' "$MERGED_AT" | grep -Eq '^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
+    MERGED_AT=
+  fi
+}
+
 merge_args=()
 if ! caller_has_merge_method "$@"; then
   merge_args=(--squash)
 fi
 
-gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
-MERGE_QUERY=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER" \
-  --jq '{merged: .merged, merged_at: .merged_at, merge_commit: .merge_commit_sha, base_ref: .base.ref}' 2>/dev/null || true)
-MERGE_CONFIRMED=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merged: //p' | tail -1)
-if [ "$MERGE_CONFIRMED" != true ]; then
-  echo "error: forge did not confirm that the PR merged; provenance remains prepared" >&2
-  exit 1
-fi
-DEFAULT_BRANCH=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO" --jq '.default_branch' 2>/dev/null || true)
-git check-ref-format --branch "$DEFAULT_BRANCH" >/dev/null 2>&1 \
-  || { echo "error: forge default branch is unavailable" >&2; exit 1; }
-MERGE_COMMIT=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merge_commit: "\([0-9a-f]*\)"$/\1/p' | tail -1)
-BASE_REF=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^base_ref: "\([^"]*\)"$/\1/p' | tail -1)
-printf '%s\n' "$MERGE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' \
-  && [ "$BASE_REF" = "$DEFAULT_BRANCH" ] \
-  || { echo "error: merged PR default-branch identity is unavailable" >&2; exit 1; }
-COMPARE_STATUS=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/compare/$MERGE_COMMIT...$DEFAULT_BRANCH" --jq '.status' 2>/dev/null || true)
-case "$COMPARE_STATUS" in ahead|identical) ;; *) echo "error: merge commit is not on the forge default branch" >&2; exit 1 ;; esac
-MERGED_AT=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merged_at: "\([^"]*\)"$/\1/p' | tail -1)
-if ! printf '%s\n' "$MERGED_AT" | grep -Eq '^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
-  MERGED_AT=
+if load_merge_evidence; then
+  :
+else
+  merge_evidence_rc=$?
+  if [ "$merge_evidence_rc" -eq 2 ]; then
+    echo "error: merged PR default-branch evidence is unavailable; provenance remains prepared" >&2
+    exit 1
+  fi
+  gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
+  load_merge_evidence || {
+    echo "error: forge did not confirm the merged PR on its default branch; provenance remains prepared" >&2
+    exit 1
+  }
 fi
 write_provenance_receipt merged "$AUTHORIZATION" "$PREPARED_EPOCH" "$MERGED_AT" "$MERGE_COMMIT"
 if [ -f "$META" ]; then

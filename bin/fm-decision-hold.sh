@@ -576,7 +576,7 @@ command_resolve() {
 }
 
 command_reconcile_open() {
-  local rows row id show held kind body decision_file expected_digest routed dep dep_show
+  local rows row id show held kind body decision_file expected_digest routed dep dep_show dep_error
   [ "$#" -eq 0 ] || { usage >&2; exit 2; }
   require_tasks_axi
   rows=$(tasks_axi list --state queued --kind captain --fields body) \
@@ -601,7 +601,17 @@ command_reconcile_open() {
     if [ -n "$routed" ] && [ "$routed" != "$ROUTED_NONE" ]; then
       while IFS= read -r dep; do
         [ -n "$dep" ] || continue
-        dep_show=$(task_show "$dep" 2>/dev/null || true)
+        dep_error=$(mktemp "$STATE/.decision-route-show.XXXXXX") \
+          || fail "could not prepare routed task verification for $dep"
+        if dep_show=$(task_show "$dep" 2>"$dep_error"); then
+          rm -f "$dep_error"
+        elif grep -Fq 'code: NOT_FOUND' "$dep_error"; then
+          rm -f "$dep_error"
+          continue
+        else
+          rm -f "$dep_error"
+          fail "could not read routed task $dep while reconciling $id"
+        fi
         if list_has_key "$(normalized_blocked_by "$dep_show")" "$id"; then
           tasks_axi unblock "$dep" --by "$id" >/dev/null \
             || fail "could not finish routing recorded decision $id to $dep"
