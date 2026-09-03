@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Own guarded backlog lifecycle writes and repair interrupted lifecycle edges.
 # Usage: fm-backlog-integrity.sh check-start <id>
+#        fm-backlog-integrity.sh check-row <id> [--allow-absent]
 #        fm-backlog-integrity.sh start <id>
 #        fm-backlog-integrity.sh done <id> [--pr <url>|--report <path>|--note <text>]
+#        fm-backlog-integrity.sh landed <id> <pr-merge|local-merge> [done flags]
 #        fm-backlog-integrity.sh failed <id>
 #        fm-backlog-integrity.sh reconcile
 set -eu
@@ -22,8 +24,21 @@ fail() { printf 'fm-backlog-integrity: %s\n' "$*" >&2; exit 1; }
 tasks_axi() { (cd "$FM_HOME" && tasks-axi "$@"); }
 
 backend_enabled() {
-  [ -f "$DATA/backlog.md" ] || return 1
   fm_tasks_axi_backend_available "$CONFIG"
+}
+
+check_row() {
+  local id=$1 allow_absent=${2:-} show
+  if [ ! -f "$DATA/backlog.md" ]; then
+    [ "$allow_absent" = --allow-absent ] && return 0
+    fail "backlog is absent; refusing lifecycle start for $id"
+  fi
+  if backend_enabled && tasks_axi show "$id" --full >/dev/null 2>&1; then
+    return 0
+  fi
+  "$SCRIPT_DIR/fm-backlog-tsv.sh" "$DATA/backlog.md" \
+    | awk -F '\t' -v id="$id" '$2 == id { found = 1 } END { exit(found ? 0 : 1) }' \
+    || fail "task $id is absent from the backlog"
 }
 
 show_field() {
@@ -32,6 +47,7 @@ show_field() {
 
 guarded_start() {
   local id=$1 show state spawned_at binding tmp transitioned=0
+  check_row "$id"
   backend_enabled || return 0
   show=$(tasks_axi show "$id" --full 2>/dev/null) || fail "task $id is absent from the backlog"
   state=$(show_field "$show" state)
@@ -83,6 +99,7 @@ guarded_start() {
 
 check_start() {
   local id=$1 show state
+  check_row "$id"
   backend_enabled || return 0
   show=$(tasks_axi show "$id" --full 2>/dev/null) || fail "task $id is absent from the backlog"
   state=$(show_field "$show" state)
@@ -92,11 +109,23 @@ check_start() {
 record_done() {
   local id=$1 show state
   shift
+  check_row "$id"
   backend_enabled || return 0
   show=$(tasks_axi show "$id" --full 2>/dev/null) || fail "task $id is absent from the backlog"
   state=$(show_field "$show" state)
   [ "$state" != "done" ] || return 0
   tasks_axi "done" "$id" "$@" >/dev/null || fail "could not close task $id"
+}
+
+record_landed() {
+  local id=$1 context=$2
+  shift 2
+  if [ ! -f "$DATA/backlog.md" ]; then
+    printf 'Backlog: %s for %s proceeded with no backlog present; there was no lifecycle row to update.\n' \
+      "$context" "$id"
+    return 0
+  fi
+  record_done "$id" "$@"
 }
 
 record_failed() {
@@ -317,8 +346,10 @@ EOF
 
 case "${1:-}" in
   check-start) [ "$#" -eq 2 ] || exit 2; check_start "$2" ;;
+  check-row) [ "$#" -ge 2 ] && [ "$#" -le 3 ] || exit 2; check_row "$2" "${3:-}" ;;
   start) [ "$#" -eq 2 ] || exit 2; guarded_start "$2" ;;
   done) [ "$#" -ge 2 ] || exit 2; id=$2; shift 2; record_done "$id" "$@" ;;
+  landed) [ "$#" -ge 3 ] || exit 2; id=$2; context=$3; shift 3; record_landed "$id" "$context" "$@" ;;
   failed) [ "$#" -eq 2 ] || exit 2; record_failed "$2" ;;
   reconcile) [ "$#" -eq 1 ] || exit 2; reconcile ;;
   *) exit 2 ;;

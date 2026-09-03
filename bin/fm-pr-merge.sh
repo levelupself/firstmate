@@ -74,6 +74,7 @@ reject_repo_overrides() {
 }
 
 reject_repo_overrides "$@" || exit 1
+"$SCRIPT_DIR/fm-backlog-integrity.sh" check-row "$ID" --allow-absent || exit 1
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
@@ -332,7 +333,7 @@ fi
   echo "error: merged PR succeeded but its effort record could not be captured" >&2
   exit 1
 }
-"$SCRIPT_DIR/fm-backlog-integrity.sh" "done" "$ID" --pr "$URL" || {
+"$SCRIPT_DIR/fm-backlog-integrity.sh" landed "$ID" PR-merge --pr "$URL" || {
   echo "error: merged PR succeeded but the backlog outcome could not be recorded" >&2
   exit 1
 }

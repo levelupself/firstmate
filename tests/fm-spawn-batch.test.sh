@@ -84,6 +84,8 @@ test_projects_path_scoping() {
     home="$TMP_ROOT/$id home"
     projects="$TMP_ROOT/$id projects"
     mkdir -p "$home/data" "$projects/alpha"
+    printf '## In flight\n\n## Queued\n- [ ] %s - Path scoping fixture\n\n## Done\n' "$id" \
+      > "$home/data/backlog.md"
     if [ "$use_override" = yes ]; then
       out=$(FM_ROOT_OVERRIDE='' FM_STATE_OVERRIDE='' FM_DATA_OVERRIDE='' FM_CONFIG_OVERRIDE='' \
         FM_HOME="$home" FM_PROJECTS_OVERRIDE="$projects" FM_SPAWN_NO_GUARD=1 \
@@ -106,6 +108,27 @@ FM_HOME scopes projects/|no|nope-home-z7
 FM_PROJECTS_OVERRIDE scopes projects/|yes|nope-override-z8
 ROWS
   pass "projects/ paths are scoped through the firstmate home for single-task spawn"
+}
+
+test_single_dispatch_refuses_absent_backlog() {
+  local home project id out status
+  home="$TMP_ROOT/absent-backlog-home"
+  project="$home/projects/alpha"
+  id=absent-backlog-dispatch
+  mkdir -p "$home/data/$id" "$project"
+  printf 'Run the supplied verification command and stop.\nDelivery contract: mode=no-mistakes\n' \
+    > "$home/data/$id/brief.md"
+
+  out=$(FM_ROOT_OVERRIDE='' FM_STATE_OVERRIDE='' FM_DATA_OVERRIDE='' FM_PROJECTS_OVERRIDE='' \
+    FM_CONFIG_OVERRIDE='' FM_HOME="$home" FM_SPAWN_NO_GUARD=1 \
+    "$SPAWN" "$id" "$project" codex --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "single dispatch tolerated an absent backlog"
+  printf '%s\n' "$out" | grep -F "backlog is absent; refusing lifecycle start for $id" >/dev/null \
+    || fail "single dispatch did not identify the absent backlog: $out"
+  [ ! -e "$home/state/$id.meta" ] \
+    || fail "single dispatch published worker state despite the absent backlog"
+  pass "single dispatch refuses an absent backlog before worker release"
 }
 
 # A ship batch carries one shared delivery contract. Missing flags must stop the
@@ -146,3 +169,4 @@ test_batch_mode_boundaries
 test_batch_requires_the_shared_delivery_contract
 test_scout_batch_refuses_delivery_flags
 test_projects_path_scoping
+test_single_dispatch_refuses_absent_backlog

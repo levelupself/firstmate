@@ -36,6 +36,7 @@ make_case() {
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
   mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
+  cp "$ROOT/.tasks.toml" "$case_dir/.tasks.toml"
   fm_write_meta "$case_dir/state/task-x1.meta" \
     "window=fm-task-x1" \
     "worktree=$case_dir/wt" \
@@ -132,6 +133,7 @@ test_torn_down_delivered_task_merges_with_durable_provenance() {
   case_dir="$TMP_ROOT/torn-down-delivered"
   fakebin="$case_dir/fakebin"
   mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
+  cp "$ROOT/.tasks.toml" "$case_dir/.tasks.toml"
   add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   : > "$case_dir/gh-axi.log"
   cat > "$case_dir/data/backlog.md" <<'MD'
@@ -172,6 +174,8 @@ test_records_pr_and_head_before_merging() {
   set -e
 
   [ "$rc" -eq 0 ] || fail "records-before-merge: fm-pr-merge failed: $(cat "$case_dir/stderr")"
+  assert_grep 'PR-merge for task-x1 proceeded with no backlog present' "$case_dir/stdout" \
+    "records-before-merge: absent backlog was not explicitly reported"
   assert_grep 'pr=https://github.com/example/repo/pull/9' "$case_dir/state/task-x1.meta" \
     "records-before-merge: pr= was not recorded"
   assert_grep 'pr_head=deadbeefcafefeed0000000000000000deadbeef' "$case_dir/state/task-x1.meta" \
@@ -205,6 +209,23 @@ test_records_pr_and_head_before_merging() {
   assert_grep 'pr=https://github.com/example/repo/pull/10' "$receipt" \
     "records-before-merge: reused task retained the prior delivery identity"
   pass "fm-pr-merge records pr= and pr_head= before invoking gh-axi pr merge"
+}
+
+test_existing_backlog_without_row_refuses_before_merge() {
+  local case_dir rc=0
+  case_dir=$(make_case missing-backlog-row)
+  add_gh_mocks "$case_dir" deadbeefcafefeed0000000000000000deadbeef
+  : > "$case_dir/gh-axi.log"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$case_dir/data/backlog.md"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/15 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "missing-backlog-row: PR merge tolerated a missing task row"
+  assert_grep 'task task-x1 is absent from the backlog' "$case_dir/stderr" \
+    "missing-backlog-row: refusal did not identify the missing row"
+  assert_no_grep '^pr merge ' "$case_dir/gh-axi.log" \
+    "missing-backlog-row: forge merge ran before backlog preflight"
+  pass "PR merge refuses a missing row before forge mutation"
 }
 
 test_merge_failure_propagates_after_recording() {
@@ -347,6 +368,7 @@ test_missing_meta_with_wrong_done_pr_refuses() {
   case_dir="$TMP_ROOT/wrong-done-pr"
   fakebin="$case_dir/fakebin"
   mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
+  cp "$ROOT/.tasks.toml" "$case_dir/.tasks.toml"
   add_gh_mocks "$case_dir" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   : > "$case_dir/gh-axi.log"
   cat > "$case_dir/data/backlog.md" <<'MD'
@@ -635,6 +657,7 @@ test_parses_pr_url_for_gh_axi() {
 }
 
 test_records_pr_and_head_before_merging
+test_existing_backlog_without_row_refuses_before_merge
 test_merge_failure_propagates_after_recording
 test_unconfirmed_merge_remains_prepared
 test_unreadable_merge_state_refuses_before_merge

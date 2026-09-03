@@ -26,6 +26,30 @@ run_integrity() {
     FM_CONFIG_OVERRIDE="$home/config" "$INTEGRITY" "$@"
 }
 
+test_dispatch_refuses_absent_backlog() {
+  local home rc=0
+  home=$(make_home absent-dispatch-backlog)
+  rm "$home/data/backlog.md"
+
+  run_integrity "$home" check-start absent-task > "$home/out" 2> "$home/err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "dispatch lifecycle preflight tolerated an absent backlog"
+  assert_grep 'backlog is absent; refusing lifecycle start for absent-task' "$home/err" \
+    "dispatch lifecycle refusal did not identify the absent backlog"
+  pass "dispatch lifecycle preflight refuses an absent backlog"
+}
+
+test_landed_work_reports_absent_backlog() {
+  local home out
+  home=$(make_home absent-landed-backlog)
+  rm "$home/data/backlog.md"
+
+  out=$(run_integrity "$home" landed landed-task PR-merge --pr https://github.com/example/repo/pull/1) \
+    || fail "landed work was stranded by an absent backlog"
+  printf '%s\n' "$out" | grep -F 'PR-merge for landed-task proceeded with no backlog present' >/dev/null \
+    || fail "landed work did not explicitly report the absent backlog: $out"
+  pass "landed work proceeds and reports an absent backlog"
+}
+
 test_finished_row_cannot_be_resurrected() {
   local home rc state
   home=$(make_home finished-start)
@@ -282,6 +306,8 @@ test_failed_start_does_not_poison_retry_binding() {
   pass "failed backlog start leaves no binding that poisons retry"
 }
 
+test_dispatch_refuses_absent_backlog
+test_landed_work_reports_absent_backlog
 test_finished_row_cannot_be_resurrected
 test_three_orphans_are_repaired_without_blinding
 test_resolved_blocker_edge_is_removed
