@@ -274,11 +274,9 @@ Date: 2026-08-08.
 This earlier read-only analysis was superseded by the 2026-09-03 live result
 above.
 
-`bin/fm-linear-import-prs.sh` derives current numbered task ids from
-`fm/<numbered-task-id>` branches in any repository. It additionally recognizes
-the legacy `fm/psychogen-*` convention only for `levelupself/psychogenesis` and
-reports every other branch as unmapped. Applied to the real merged pull requests
-of `levelupself/psychogenesis`:
+`bin/fm-linear-import-prs.sh` derives task ids from numbered
+`fm/<numbered-task-id>` branches and reports every other branch as unmapped.
+Applied to the real merged pull requests of `levelupself/psychogenesis`:
 
 ```
 $ gh pr list --repo levelupself/psychogenesis --state merged --limit 200 \
@@ -291,7 +289,8 @@ $ gh pr list --repo levelupself/psychogenesis --state merged --limit 200 \
 The earlier sample showed 26 pre-numbering branches under pull requests #1 to
 #27, but the live import later reported 33 legacy `psychogen-*` pull requests as
 unmapped and performed no writes for them.
-The completed recovery therefore consists of the 40 authorized, exactly mapped
-historical issues created by the live run, not every legacy-shaped branch.
+The completed recovery therefore consists of the 40 authorized pull requests
+mechanically joined from numbered branch task ids, not every merged pull
+request or every legacy-shaped branch.
 Reading `data/done-archive.md` by proximity remains forbidden because that
 produced cross-assignments on 2026-08-03.

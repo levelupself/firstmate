@@ -15,10 +15,8 @@
 #
 # THE MAPPING, AND WHY IT IS TRUSTWORTHY. The task id is derived from the branch
 # name firstmate itself created when it dispatched the work: fm/<task-id>. That
-# is an exact, mechanical join, not a guess. Both the current numbered ids and
-# psychogenesis's earlier psychogen-* ids are recognized only in the
-# levelupself/psychogenesis repository. A branch outside those known task-id
-# conventions is REPORTED AS UNMAPPED and nothing is written for it.
+# is an exact, mechanical join, not a guess. A branch that does not match
+# fm/<numbered-task-id> is REPORTED AS UNMAPPED and nothing is written for it.
 # An unmapped pull request listed honestly is a fine outcome; a wrongly attached
 # one is the failure this shape exists to avoid. The backlog and its archive are
 # read only to give a created issue a better title than the pull request subject
@@ -139,20 +137,18 @@ audit() { printf '  %-9s %-12s %-34s PR #%-5s branch %s\n' "$1" "${2:--}" "${3:-
 # line. Nothing accumulates outside a dry run.
 plan() { [ -n "$DRY" ] && printf '      %s\n' "$1" >> "$TMP/plan"; return 0; }
 
-# A firstmate task id as the dispatcher wrote it. Current tasks use a numeric
-# prefix and a slug. The 26 pre-numbering psychogenesis tasks use psychogen-*;
-# GitHub preserves those dispatcher-created branch names as an equally exact
-# join within their repository. Everything else must fail rather than be mapped
-# to something close.
+# A firstmate task id as the dispatcher writes it: a numeric prefix and a slug.
+# Deliberately stricter than the id validation used elsewhere, because the only
+# question here is "did firstmate create this branch for a numbered backlog
+# item", and every legacy hand-named fm/... branch must fail it rather than be
+# mapped to something that looks close.
 derive_task_id() {
   local branch=$1 id
   case "$branch" in
     fm/*) id=${branch#fm/} ;;
     *) return 1 ;;
   esac
-  [[ "$id" =~ ^[0-9]+-[A-Za-z0-9][A-Za-z0-9._-]*$ \
-    || ( "$REPO" = levelupself/psychogenesis \
-      && "$id" =~ ^psychogen-[A-Za-z0-9][A-Za-z0-9._-]*$ ) ]] || return 1
+  [[ "$id" =~ ^[0-9]+-[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
   printf '%s' "$id"
 }
 
