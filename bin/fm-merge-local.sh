@@ -82,6 +82,7 @@ LANDED_SHA=$(git -C "$PROJ" rev-parse "$BRANCH")
 # and remote state untouched. The real pushes remain strict non-force updates;
 # a race or transport failure stops and reports the exact remote.
 PUBLICATION_REMOTES=""
+REMOTE_INSPECTIONS=""
 while IFS= read -r remote; do
   [ -n "$remote" ] || continue
   if ! remote_head_output=$(git -C "$PROJ" ls-remote --symref "$remote" HEAD 2>&1); then
@@ -90,10 +91,24 @@ while IFS= read -r remote; do
   fi
   remote_head=$(printf '%s\n' "$remote_head_output" \
     | sed -n 's/^ref: refs\/heads\/\([^[:space:]]*\)[[:space:]]HEAD$/\1/p')
-  [ "$remote_head" = "$DEFAULT" ] || continue
+  if [ "$remote_head" != "$DEFAULT" ]; then
+    REMOTE_INSPECTIONS="${REMOTE_INSPECTIONS}${REMOTE_INSPECTIONS:+
+}configured remote $remote advertises ${remote_head:-no default branch}, not $DEFAULT"
+    continue
+  fi
   PUBLICATION_REMOTES="${PUBLICATION_REMOTES}${PUBLICATION_REMOTES:+
 }$remote"
 done < <(git -C "$PROJ" remote)
+
+if [ -z "$PUBLICATION_REMOTES" ]; then
+  echo "REFUSED: no configured remote advertises $DEFAULT as its default branch; local landing was not changed" >&2
+  if [ -n "$REMOTE_INSPECTIONS" ]; then
+    printf '%s\n' "$REMOTE_INSPECTIONS" >&2
+  else
+    echo "configured remotes inspected: none" >&2
+  fi
+  exit 1
+fi
 
 while IFS= read -r remote; do
   [ -n "$remote" ] || continue

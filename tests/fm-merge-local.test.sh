@@ -80,4 +80,30 @@ grep -F 'REFUSED: mirror cannot fast-forward refs/heads/main' "$TMP_ROOT/refused
   || fail "refused remote publication rewrote the remote"
 pass "a non-fast-forward remote stops the landing without force or local movement"
 
+unpublished="$TMP_ROOT/unpublished"
+git init -q -b main "$unpublished"
+commit_file "$unpublished" baseline.txt baseline baseline
+git -C "$unpublished" checkout -q -b fm/no-publication-remote
+commit_file "$unpublished" unpublished.txt unpublished unpublished
+git -C "$unpublished" checkout -q main
+unpublished_before=$(git -C "$unpublished" rev-parse main)
+cat > "$home/state/no-publication-remote.meta" <<EOF
+project=$unpublished
+mode=local-only
+spawned_at=2026-09-03T00:02:00Z
+EOF
+
+if FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-merge-local.sh" no-publication-remote >"$TMP_ROOT/no-publication-remote.out" 2>&1; then
+  fail "landing without a publication remote unexpectedly succeeded"
+fi
+grep -F 'REFUSED: no configured remote advertises main as its default branch' \
+  "$TMP_ROOT/no-publication-remote.out" >/dev/null \
+  || fail "missing publication remote refusal was not clear"
+grep -F 'configured remotes inspected: none' "$TMP_ROOT/no-publication-remote.out" >/dev/null \
+  || fail "missing publication remote refusal did not report the inspected set"
+[ "$(git -C "$unpublished" rev-parse main)" = "$unpublished_before" ] \
+  || fail "missing publication remote refusal changed the local default"
+pass "a landing without a discoverable publication remote is refused"
+
 printf '# all fm-merge-local tests passed\n'

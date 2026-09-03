@@ -314,9 +314,15 @@ sync_project() {
       return 0
     }
     found_remote=no
+    inspection_unknown=no
     while IFS= read -r remote; do
       [ -n "$remote" ] || continue
-      remote_default=$(git -C "$PROJ" ls-remote --symref "$remote" HEAD 2>/dev/null \
+      if ! remote_head_output=$(git -C "$PROJ" ls-remote --symref "$remote" HEAD 2>&1); then
+        echo "$label: DRIFT UNKNOWN: local-only remote $remote inspection failed: $(first_line "$remote_head_output")"
+        inspection_unknown=yes
+        continue
+      fi
+      remote_default=$(printf '%s\n' "$remote_head_output" \
         | sed -n 's/^ref: refs\/heads\/\([^[:space:]]*\)[[:space:]]HEAD$/\1/p')
       [ "$remote_default" = "$DEFAULT" ] || continue
       found_remote=yes
@@ -337,7 +343,7 @@ sync_project() {
         echo "$label: DRIFT: local-only default is $ahead ahead, $behind behind $base"
       fi
     done < <(git -C "$PROJ" remote)
-    [ "$found_remote" = yes ] \
+    [ "$found_remote" = yes ] || [ "$inspection_unknown" = yes ] \
       || echo "$label: local-only: no configured remote advertises $DEFAULT as its default branch"
     return 0
   fi
