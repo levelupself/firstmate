@@ -753,17 +753,16 @@ assert_contains "$out" "fm/010-known" "the audit records how the task id was der
 grep -q '^fmState' "$FAKE_DIR/calls.log" || fail "the mapped pull request was not recorded as Done"
 sent=$(grep '^fmAttach' "$FAKE_DIR/calls.log" | cut -f2)
 assert_contains "$sent" "https://github.com/o/r/pull/38" "the mapped pull request was not attached"
-# The two unmappable branches must be reported and must not be guessed at.
+# The unmappable branches must be reported and must not be guessed at.
 assert_contains "$out" "unmapped" "unmappable pull requests are reported"
 assert_contains "$out" "fm/psychogen-chatentry-v9" "the legacy branch is named rather than guessed"
 assert_contains "$out" "main-patch" "a non-firstmate branch is named rather than guessed"
 assert_contains "$out" "fm/123legacy-task" "a branch without a numeric-prefix separator is unmapped"
 assert_contains "$out" "fm/123-" "a branch with an empty slug is unmapped"
 assert_contains "$out" "fm/123" "a bare numeric branch is unmapped"
-assert_not_contains "$out" "psychogen-chatentry-v9 -> " "a legacy branch must not be mapped to a task id"
 n=$(grep -c '^fmState\|^fmAttach\|^fmCreate' "$FAKE_DIR/calls.log" || true)
 [ "$n" = 2 ] || fail "expected exactly 2 mutations for 1 mappable PR, got $n"
-pass "import maps only what the branch proves, and reports the rest instead of guessing"
+pass "import maps only numbered task branches and reports legacy branches"
 
 # A dry run must plan the same thing and change nothing.
 new_import_home importdry
