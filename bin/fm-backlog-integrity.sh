@@ -268,7 +268,7 @@ reconcile_blockers() {
           done) ;;
           *) fail "blocker $blocker has unreadable state" ;;
         esac
-      elif grep -Fq 'code: NOT_FOUND' "$blocker_error"; then
+      elif { printf '%s\n' "$blocker_show"; cat "$blocker_error"; } | grep -Fq 'code: NOT_FOUND'; then
         blocker_state=absent
         rm -f "$blocker_error"
       else

@@ -100,7 +100,21 @@ SH
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
-[ "${1:-}" != api ] || printf '%s\n' 'merged: true' 'merged_at: "2026-08-20T12:45:00Z"'
+case "${1:-} ${2:-}" in
+  "pr merge"*) : > "$FM_HOME/state/.test-pr-merged" ;;
+  "api "*/pulls/*)
+    if [ -f "$FM_HOME/state/.test-pr-merged" ]; then
+      printf '%s\n' 'merged: true' 'merged_at: "2026-08-20T12:45:00Z"' \
+        'merge_commit: "0123456789abcdef0123456789abcdef01234567"' \
+        'base_ref: "main"'
+    else
+      printf '%s\n' 'merged: false' 'merged_at: null' 'merge_commit: null' \
+        'base_ref: "main"'
+    fi
+    ;;
+  "api "*/compare/*) printf '%s\n' ahead ;;
+  "api "*/repos/*) printf '%s\n' main ;;
+esac
 exit "${FM_TEST_GH_AXI_RC:-0}"
 SH
   # Plain glab, reproducing the real CLI's contract: its field output on stdout

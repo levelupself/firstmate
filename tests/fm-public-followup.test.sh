@@ -1134,8 +1134,10 @@ test_cleanup_refuses_while_a_public_reply_is_owed() {
   rc=0
   PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
-    FM_CONFIG_OVERRIDE="$home/config" "$TEARDOWN" ship-task >/dev/null 2>&1 || rc=$?
-  [ "$rc" -eq 0 ] || fail "cleanup must proceed once the public reply has landed (rc=$rc)"
+    FM_CONFIG_OVERRIDE="$home/config" "$TEARDOWN" ship-task \
+    > "$home/teardown-after.out" 2> "$home/teardown-after.err" || rc=$?
+  [ "$rc" -eq 0 ] \
+    || fail "cleanup must proceed once the public reply has landed (rc=$rc): $(cat "$home/teardown-after.err")"
   pass "cleanup refuses while a public reply is owed and proceeds once it has landed"
 }
 
