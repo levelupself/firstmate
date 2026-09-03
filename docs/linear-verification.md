@@ -203,7 +203,7 @@ the setup.
 
 What follows is therefore split: the write shape below was confirmed live by
 reading a real board issue back, while the new scripts' own live execution was
-not performed here and is recorded as outstanding at the end of this section.
+not performed here and remains an acceptance blocker at the end of this section.
 
 `bin/fm-linear-merge-write.sh` writes exactly two things: a `stateId` pointing at
 the team's completed "Done" status (`fml_set_state`) and an
@@ -234,6 +234,11 @@ those scripts themselves wrote. Both require the credential that stays in the
 main home, so both are main-home work rather than something a task worktree can
 close.
 
+Acceptance requires a main-home live import of the authorized psychogenesis
+cohort followed by read-back confirming that an importer-written pull-request
+attachment renders as a link. API mutation success alone does not satisfy this
+requirement.
+
 `fm-linear-import-prs.sh --dry-run` exists so the second one can be reviewed
 before it is run: it prints, per pull request, the title it would use and where
 that title came from, the exact description including the join line and the
@@ -244,9 +249,11 @@ to Done or leave an already-completed one alone, while issuing no mutations.
 
 Date: 2026-08-08. Read-only; nothing was written.
 
-`bin/fm-linear-import-prs.sh` derives the task id from the branch name
-firstmate created, `fm/<numbered-task-id>`, and reports anything else. Applied to
-the real merged pull requests of `levelupself/psychogenesis`:
+`bin/fm-linear-import-prs.sh` derives current numbered task ids from
+`fm/<numbered-task-id>` branches in any repository. It additionally recognizes
+the legacy `fm/psychogen-*` convention only for `levelupself/psychogenesis` and
+reports every other branch as unmapped. Applied to the real merged pull requests
+of `levelupself/psychogenesis`:
 
 ```
 $ gh pr list --repo levelupself/psychogenesis --state merged --limit 200 \

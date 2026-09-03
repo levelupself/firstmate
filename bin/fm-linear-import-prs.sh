@@ -16,9 +16,9 @@
 # THE MAPPING, AND WHY IT IS TRUSTWORTHY. The task id is derived from the branch
 # name firstmate itself created when it dispatched the work: fm/<task-id>. That
 # is an exact, mechanical join, not a guess. Both the current numbered ids and
-# psychogenesis's earlier psychogen-* ids are recognized. A branch outside
-# those two known task-id conventions is REPORTED AS UNMAPPED and nothing is
-# written for it.
+# psychogenesis's earlier psychogen-* ids are recognized only in the
+# levelupself/psychogenesis repository. A branch outside those known task-id
+# conventions is REPORTED AS UNMAPPED and nothing is written for it.
 # An unmapped pull request listed honestly is a fine outcome; a wrongly attached
 # one is the failure this shape exists to avoid. The backlog and its archive are
 # read only to give a created issue a better title than the pull request subject
@@ -142,7 +142,8 @@ plan() { [ -n "$DRY" ] && printf '      %s\n' "$1" >> "$TMP/plan"; return 0; }
 # A firstmate task id as the dispatcher wrote it. Current tasks use a numeric
 # prefix and a slug. The 26 pre-numbering psychogenesis tasks use psychogen-*;
 # GitHub preserves those dispatcher-created branch names as an equally exact
-# join. Everything else must fail rather than be mapped to something close.
+# join within their repository. Everything else must fail rather than be mapped
+# to something close.
 derive_task_id() {
   local branch=$1 id
   case "$branch" in
@@ -150,7 +151,8 @@ derive_task_id() {
     *) return 1 ;;
   esac
   [[ "$id" =~ ^[0-9]+-[A-Za-z0-9][A-Za-z0-9._-]*$ \
-    || "$id" =~ ^psychogen-[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+    || ( "$REPO" = levelupself/psychogenesis \
+      && "$id" =~ ^psychogen-[A-Za-z0-9][A-Za-z0-9._-]*$ ) ]] || return 1
   printf '%s' "$id"
 }
 
