@@ -282,7 +282,11 @@ wait_for_pane_text "$READY_PANE" readyflip absent \
 BACKLOG_AFTER=$(sha256sum "$HOME_DIR/data/backlog.md" | awk '{print $1}')
 [ "$BACKLOG_BEFORE" = "$BACKLOG_AFTER" ] \
   || fail "the backlog document changed, so this proved nothing about dispatch-driven membership"
-pass "a real dispatch clears the ready pane on its own redraw, before the backlog is edited"
+READYFLIP_STATE=$(cd "$HOME_DIR" && tasks-axi show readyflip --full \
+  | sed -n 's/^  state: //p' | head -1)
+[ "$READYFLIP_STATE" = in_flight ] \
+  || fail "the real dispatch did not record readyflip in flight: [$READYFLIP_STATE]"
+pass "a real dispatch records its in-flight transition and clears the ready pane on its own redraw"
 
 COUNT_BEFORE=$(lab pane list --workspace "$WORKSPACE" | jq '.result.panes | length')
 RECORD_BEFORE=$(sha256sum "$HOME_DIR/state/.herdr-cockpit" | awk '{print $1}')
