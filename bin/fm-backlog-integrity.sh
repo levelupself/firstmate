@@ -15,6 +15,8 @@ CONFIG=${FM_CONFIG_OVERRIDE:-$FM_HOME/config}
 
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# shellcheck source=bin/fm-pr-lib.sh
+. "$SCRIPT_DIR/fm-pr-lib.sh"
 
 fail() { printf 'fm-backlog-integrity: %s\n' "$*" >&2; exit 1; }
 tasks_axi() { (cd "$FM_HOME" && tasks-axi "$@"); }
@@ -137,7 +139,7 @@ receipt_matches_launch() {
 }
 
 valid_pr_receipt() {
-  local receipt=$1 id=$2 key schema authorization prepared_epoch merged_at repository default_branch merge_commit compare_status
+  local receipt=$1 id=$2 key schema authorization prepared_epoch merged_at pr repository receipt_repository forge_default receipt_default merge_commit compare_status
   [ -f "$receipt" ] && [ ! -L "$receipt" ] || return 1
   for key in schema task_id pr spawned_at phase authorization prepared_epoch; do
     receipt_has_one "$receipt" "$key" || return 1
@@ -148,8 +150,10 @@ valid_pr_receipt() {
     receipt_has_one "$receipt" "$key" || return 1
   done
   [ "$(receipt_value "$receipt" task_id)" = "$id" ] || return 1
-  printf '%s\n' "$(receipt_value "$receipt" pr)" \
-    | grep -Eq '^https?://[^[:space:]]+/pull/[0-9]+$' || return 1
+  pr=$(receipt_value "$receipt" pr)
+  fm_pr_url_parse "$pr" || return 1
+  [ "$FM_PR_PROVIDER" = github ] || return 1
+  repository="$FM_PR_OWNER/$FM_PR_REPO"
   valid_timestamp "$(receipt_value "$receipt" spawned_at)" || return 1
   receipt_matches_launch "$receipt" "$id" || return 1
   [ "$(receipt_value "$receipt" phase)" = merged ] || return 1
@@ -161,13 +165,15 @@ valid_pr_receipt() {
   [ "$(grep -c '^merged_epoch=' "$receipt" 2>/dev/null || true)" -eq 0 ] || return 1
   merged_at=$(receipt_value "$receipt" merged_at)
   [ -z "$merged_at" ] || valid_timestamp "$merged_at" || return 1
-  repository=$(receipt_value "$receipt" repository)
-  printf '%s\n' "$repository" | grep -Eq '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$' || return 1
-  default_branch=$(receipt_value "$receipt" default_branch)
-  git check-ref-format --branch "$default_branch" >/dev/null 2>&1 || return 1
+  receipt_repository=$(receipt_value "$receipt" repository)
+  [ "$receipt_repository" = "$repository" ] || return 1
+  forge_default=$(gh-axi api "/repos/$repository" --jq '.default_branch' 2>/dev/null) || return 1
+  git check-ref-format --branch "$forge_default" >/dev/null 2>&1 || return 1
+  receipt_default=$(receipt_value "$receipt" default_branch)
+  [ "$receipt_default" = "$forge_default" ] || return 1
   merge_commit=$(receipt_value "$receipt" merge_commit)
   printf '%s\n' "$merge_commit" | grep -Eq '^[0-9a-f]{40}$' || return 1
-  compare_status=$(gh-axi api "/repos/$repository/compare/$merge_commit...$default_branch" --jq '.status' 2>/dev/null || true)
+  compare_status=$(gh-axi api "/repos/$repository/compare/$merge_commit...$forge_default" --jq '.status' 2>/dev/null) || return 1
   [ "$compare_status" = ahead ] || [ "$compare_status" = identical ]
 }
 

@@ -163,7 +163,14 @@ test_landing_receipt_must_match_durable_launch() {
     > "$home/data/pr-merges/$id.receipt"
   fakebin="$home/fakebin"
   mkdir -p "$fakebin"
-  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" ahead' > "$fakebin/gh-axi"
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+case "${2:-}" in
+  */compare/*) printf '%s\n' ahead ;;
+  */repos/*) printf '%s\n' main ;;
+  *) exit 1 ;;
+esac
+SH
   chmod +x "$fakebin/gh-axi"
   result=$(PATH="$fakebin:$PATH" run_integrity "$home" reconcile)
   [ "$(cd "$home" && tasks-axi show "$id" | sed -n 's/^  state: //p')" = done ] \
@@ -186,12 +193,60 @@ test_merge_commit_outside_default_reopens_orphan() {
     > "$home/data/pr-merges/$id.receipt"
   fakebin="$home/fakebin"
   mkdir -p "$fakebin"
-  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" behind' > "$fakebin/gh-axi"
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+case "${2:-}" in
+  */compare/*) printf '%s\n' behind ;;
+  */repos/*) printf '%s\n' main ;;
+  *) exit 1 ;;
+esac
+SH
   chmod +x "$fakebin/gh-axi"
   PATH="$fakebin:$PATH" run_integrity "$home" reconcile >/dev/null
   [ "$(cd "$home" && tasks-axi show "$id" | sed -n 's/^  state: //p')" = queued ] \
     || fail "merge commit outside the default branch closed orphan work"
   pass "unproven default-branch ancestry reopens orphan work"
+}
+
+test_pr_receipt_identity_must_match_forge_authority() {
+  local home id fakebin
+  home=$(make_home mismatched-pr-identity)
+  mkdir -p "$home/data/pr-merges"
+  for id in wrong-repository stale-default; do
+    (cd "$home" && tasks-axi add "$id" "$id" --start >/dev/null)
+    printf '%s\n' 'schema=fm-task-launch.v1' "task_id=$id" \
+      'spawned_at=2026-09-02T12:00:00Z' > "$home/state/$id.launch-receipt"
+  done
+  printf '%s\n' 'schema=fm-pr-merge.v3' 'task_id=wrong-repository' \
+    'pr=https://github.com/example/repo/pull/1' 'repository=unrelated/repo' \
+    'default_branch=main' 'merge_commit=1111111111111111111111111111111111111111' \
+    'spawned_at=2026-09-02T12:00:00Z' 'phase=merged' 'authorization=live-meta' \
+    'prepared_epoch=1' 'merged_at=2026-09-02T12:01:00Z' \
+    > "$home/data/pr-merges/wrong-repository.receipt"
+  printf '%s\n' 'schema=fm-pr-merge.v3' 'task_id=stale-default' \
+    'pr=https://github.com/example/repo/pull/2' 'repository=example/repo' \
+    'default_branch=master' 'merge_commit=2222222222222222222222222222222222222222' \
+    'spawned_at=2026-09-02T12:00:00Z' 'phase=merged' 'authorization=live-meta' \
+    'prepared_epoch=1' 'merged_at=2026-09-02T12:01:00Z' \
+    > "$home/data/pr-merges/stale-default.receipt"
+  fakebin="$home/fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+case "${2:-}" in
+  */compare/*) printf '%s\n' ahead ;;
+  */repos/example/repo) printf '%s\n' main ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/gh-axi"
+
+  PATH="$fakebin:$PATH" run_integrity "$home" reconcile >/dev/null
+  for id in wrong-repository stale-default; do
+    [ "$(cd "$home" && tasks-axi show "$id" | sed -n 's/^  state: //p')" = queued ] \
+      || fail "receipt identity mismatch closed orphan $id"
+  done
+  pass "PR receipts must match their URL repository and current forge default"
 }
 
 test_failed_start_does_not_poison_retry_binding() {
@@ -234,5 +289,6 @@ test_unreadable_blocker_is_not_cleared
 test_invalid_landing_receipts_do_not_close_orphans
 test_landing_receipt_must_match_durable_launch
 test_merge_commit_outside_default_reopens_orphan
+test_pr_receipt_identity_must_match_forge_authority
 test_failed_start_does_not_poison_retry_binding
 echo '# all fm-backlog-integrity tests passed'
