@@ -11,7 +11,9 @@
 # is left untouched and reported as a quantified, loud "STUCK: ... N commits behind
 # ... - needs attention" warning rather than a quiet drift. Nothing is ever forced,
 # stashed, or discarded.
-# Still skips (benignly) local-only/no-origin projects, missing remotes/branches,
+# Local-only projects are never advanced automatically, but every configured
+# remote whose HEAD names the local default is fetched and compared so drift is
+# visible. Still skips (benignly) no-origin projects, missing remote branches,
 # and fetch failures.
 # Pruning never deletes the checked-out branch or a branch that still has a
 # worktree, so it cannot discard unlanded work; set FM_FLEET_PRUNE=0 to disable it.
@@ -307,7 +309,42 @@ sync_project() {
   mode_line=$("$FM_ROOT/bin/fm-project-mode.sh" "$label" 2>/dev/null || echo "no-mistakes off")
   mode=${mode_line%% *}
   if [ "$mode" = "local-only" ]; then
-    echo "$label: skipped: local-only project"
+    DEFAULT=$(default_branch) || {
+      echo "$label: local-only: cannot determine local default branch"
+      return 0
+    }
+    found_remote=no
+    inspection_unknown=no
+    while IFS= read -r remote; do
+      [ -n "$remote" ] || continue
+      if ! remote_head_output=$(git -C "$PROJ" ls-remote --symref "$remote" HEAD 2>&1); then
+        echo "$label: DRIFT UNKNOWN: local-only remote $remote inspection failed: $(first_line "$remote_head_output")"
+        inspection_unknown=yes
+        continue
+      fi
+      remote_default=$(printf '%s\n' "$remote_head_output" \
+        | sed -n 's/^ref: refs\/heads\/\([^[:space:]]*\)[[:space:]]HEAD$/\1/p')
+      [ "$remote_default" = "$DEFAULT" ] || continue
+      found_remote=yes
+      if ! fetch_output=$(git -C "$PROJ" fetch "$remote" --prune --quiet 2>&1); then
+        echo "$label: DRIFT UNKNOWN: local-only remote $remote fetch failed: $(first_line "$fetch_output")"
+        continue
+      fi
+      base="$remote/$DEFAULT"
+      if ! git -C "$PROJ" rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+        echo "$label: DRIFT UNKNOWN: local-only $base does not exist"
+        continue
+      fi
+      ahead=$(git -C "$PROJ" rev-list --count "$base..$DEFAULT" 2>/dev/null || echo "?")
+      behind=$(git -C "$PROJ" rev-list --count "$DEFAULT..$base" 2>/dev/null || echo "?")
+      if [ "$ahead" = 0 ] && [ "$behind" = 0 ]; then
+        echo "$label: local-only remote current: $base"
+      else
+        echo "$label: DRIFT: local-only default is $ahead ahead, $behind behind $base"
+      fi
+    done < <(git -C "$PROJ" remote)
+    [ "$found_remote" = yes ] || [ "$inspection_unknown" = yes ] \
+      || echo "$label: local-only: no configured remote advertises $DEFAULT as its default branch"
     return 0
   fi
   if ! git -C "$PROJ" remote get-url origin >/dev/null 2>&1; then

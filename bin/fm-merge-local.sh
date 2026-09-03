@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Perform the approved local merge for a local-only ship task: fast-forward the
-# project's default branch to the crewmate's fm/<id> branch.
+# Perform the approved local merge for a local-only ship task: verify publication
+# can fast-forward every configured remote whose HEAD names the project's default
+# branch, fast-forward the local default, then publish it to every participant.
 #
 # This is firstmate's merge gate-action (the captain's merge authority applied
 # locally instead of via a GitHub PR). It is the one sanctioned exception to hard
@@ -73,6 +74,50 @@ fi
 before=$(git -C "$PROJ" rev-parse --short "$DEFAULT")
 BEFORE_SHA=$(git -C "$PROJ" rev-parse "$DEFAULT")
 LANDED_SHA=$(git -C "$PROJ" rev-parse "$BRANCH")
+
+# A project may use more than one publication remote, and none need be named
+# origin. A remote participates only when its advertised HEAD explicitly names
+# this project's default branch. Preflight every participant before changing
+# the local default so a known non-fast-forward refusal leaves the landing local
+# and remote state untouched. The real pushes remain strict non-force updates;
+# a race or transport failure stops and reports the exact remote.
+PUBLICATION_REMOTES=""
+REMOTE_INSPECTIONS=""
+while IFS= read -r remote; do
+  [ -n "$remote" ] || continue
+  if ! remote_head_output=$(git -C "$PROJ" ls-remote --symref "$remote" HEAD 2>&1); then
+    echo "REFUSED: cannot inspect configured remote $remote; local landing was not changed: $remote_head_output" >&2
+    exit 1
+  fi
+  remote_head=$(printf '%s\n' "$remote_head_output" \
+    | sed -n 's/^ref: refs\/heads\/\([^[:space:]]*\)[[:space:]]HEAD$/\1/p')
+  if [ "$remote_head" != "$DEFAULT" ]; then
+    REMOTE_INSPECTIONS="${REMOTE_INSPECTIONS}${REMOTE_INSPECTIONS:+
+}configured remote $remote advertises ${remote_head:-no default branch}, not $DEFAULT"
+    continue
+  fi
+  PUBLICATION_REMOTES="${PUBLICATION_REMOTES}${PUBLICATION_REMOTES:+
+}$remote"
+done < <(git -C "$PROJ" remote)
+
+if [ -z "$PUBLICATION_REMOTES" ]; then
+  echo "REFUSED: no configured remote advertises $DEFAULT as its default branch; local landing was not changed" >&2
+  if [ -n "$REMOTE_INSPECTIONS" ]; then
+    printf '%s\n' "$REMOTE_INSPECTIONS" >&2
+  else
+    echo "configured remotes inspected: none" >&2
+  fi
+  exit 1
+fi
+
+while IFS= read -r remote; do
+  [ -n "$remote" ] || continue
+  if ! git -C "$PROJ" push --dry-run --porcelain "$remote" \
+      "$LANDED_SHA:refs/heads/$DEFAULT" >/dev/null; then
+    echo "REFUSED: $remote cannot fast-forward refs/heads/$DEFAULT to $LANDED_SHA; local landing was not changed" >&2
+    exit 1
+  fi
+done <<< "$PUBLICATION_REMOTES"
 SPAWNED_AT=$(sed -n 's/^spawned_at=//p' "$META" | tail -1)
 printf '%s\n' "$SPAWNED_AT" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
   || { echo "error: task launch identity is unavailable" >&2; exit 1; }
@@ -177,6 +222,14 @@ else
 fi
 git -C "$PROJ" merge --ff-only "$BRANCH" >/dev/null
 after=$(git -C "$PROJ" rev-parse --short "$DEFAULT")
+while IFS= read -r remote; do
+  [ -n "$remote" ] || continue
+  if ! git -C "$PROJ" push --porcelain "$remote" \
+      "refs/heads/$DEFAULT:refs/heads/$DEFAULT" >/dev/null; then
+    echo "error: local $DEFAULT landed, but publication to $remote failed; refusing to continue until that remote is updated without force" >&2
+    exit 1
+  fi
+done <<< "$PUBLICATION_REMOTES"
 if [ "$(receipt_value phase)" != landed ]; then
   EVENT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   write_receipt landed "$EVENT_AT" \

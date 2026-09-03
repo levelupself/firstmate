@@ -9,8 +9,9 @@
 #   - every other off-default state is left untouched and reported as a loud,
 #     quantified "STUCK: ... N commits behind ... - needs attention" warning
 #     instead of a quiet skip.
-# The pre-existing fast-forward / already-current / local-only / no-origin paths
-# must be unchanged, and bootstrap must relay the new outcomes as FLEET_SYNC lines.
+# The pre-existing fast-forward / already-current / no-origin paths must be
+# unchanged, local-only remote drift must be visible without moving its branch,
+# and bootstrap must relay the new outcomes as FLEET_SYNC lines.
 #
 # It also pins the orphaned .git/packed-refs.lock recovery in the fetch step
 # (fetch_with_packed_refs_lock_guard, backed by bin/fm-lock-lib.sh's shared
@@ -355,7 +356,7 @@ test_no_origin_skipped() {
   pass "no-origin clone is skipped (benign), not flagged STUCK"
 }
 
-test_local_only_skipped() {
+test_local_only_drift_reported() {
   local home clone out
   home=$(new_home)
   clone=$(build_pair "$home" iota)
@@ -365,9 +366,25 @@ test_local_only_skipped() {
 
   out=$(run_sync "$home" "$clone")
 
-  assert_contains "$out" "iota: skipped: local-only project" "local-only clone is skipped as before"
-  assert_not_contains "$out" "STUCK" "local-only skip is not escalated to STUCK"
-  pass "local-only clone is skipped (benign), not flagged STUCK"
+  assert_contains "$out" "iota: DRIFT: local-only default is 0 ahead, 1 behind origin/main" "local-only drift is quantified"
+  assert_not_contains "$out" "skipped: local-only project" "local-only drift is no longer hidden"
+  pass "local-only clone drift is visible without moving the local branch"
+}
+
+test_local_only_remote_inspection_failure_reported() {
+  local home clone out missing_remote
+  home=$(new_home)
+  clone=$(build_pair "$home" iota-unknown)
+  missing_remote="$home/remotes/missing.git"
+  git -C "$clone" remote add unavailable "file://$missing_remote"
+  mkdir -p "$home/data"
+  printf -- '- iota-unknown [local-only] - test project (added 2026-09-03)\n' > "$home/data/projects.md"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "iota-unknown: DRIFT UNKNOWN: local-only remote unavailable inspection failed:" "inaccessible local-only remote is visible"
+  assert_not_contains "$out" "no configured remote advertises main" "unknown inspection is not reported as no matching remote"
+  pass "local-only remote inspection failures are reported as unknown drift"
 }
 
 test_single_project_by_bare_name_resolves() {
@@ -612,7 +629,8 @@ test_diverged_is_stuck_untouched
 test_on_default_clean_behind_fast_forwards
 test_already_current_unchanged
 test_no_origin_skipped
-test_local_only_skipped
+test_local_only_drift_reported
+test_local_only_remote_inspection_failure_reported
 test_single_project_by_bare_name_resolves
 test_single_project_by_bare_name_ignores_cwd_shadow
 test_single_project_by_projects_relative_name_resolves

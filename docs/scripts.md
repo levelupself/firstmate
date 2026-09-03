@@ -15,7 +15,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-operational-input.sh` | Construct and parse the canonical cross-language operational-input protocol |
 | `fm-bootstrap.sh`        | Detect toolchain and fleet problems, run the locked session-start sweeps, and install approved tools |
 | `fm-startup-network.sh`  | Run session start's network checks off its blocking path in a bounded detached worker, and publish the result inline or as a wake |
-| `fm-fleet-sync.sh`       | Refresh project clones with safe fast-forwards, self-heals, `STUCK:` reports, branch pruning, and bounded recovery from an orphaned `.git/packed-refs.lock` |
+| `fm-fleet-sync.sh`       | Refresh project clones with safe fast-forwards, local-only remote-drift reports, self-heals, `STUCK:` reports, branch pruning, and bounded recovery from an orphaned `.git/packed-refs.lock` |
 | `fm-fleet-snapshot.sh`   | Print the read-only structured fleet snapshot JSON (schema `fm-fleet-snapshot.v1`)   |
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a narrow prioritized panel, optionally in watch mode   |
 | `fm-bearings-snapshot.sh` | Project the fleet snapshot to the compact TOON bearings view; local-only unless `--include-prs` |
@@ -67,7 +67,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `backends/cmux.sh`       | Experimental cmux session-provider adapter                                           |
 | `fm-config-push.sh`      | Push declared inherited local material to live local or remote secondmates and send the placement-specific config reread when changed |
 | `fm-project-mode.sh`     | Resolve a project's registered delivery posture from `data/projects.md` for fleet sync and home seeding |
-| `fm-merge-local.sh`      | Fast-forward a `local-only` project's local default branch after approval            |
+| `fm-merge-local.sh`      | Fast-forward and publish a `local-only` project's default branch to every configured remote that advertises it as default after approval |
 | `fm-review-diff.sh`      | Review a crewmate branch or resolved PR head against the authoritative base          |
 | `fm-review.sh`           | Open a ready task's GitHub pull-request diff in local-only Hunk with optional curated notes |
 | `fm-review-notes.sh`     | Generate a curated Hunk sidecar from delivering-crewmate input                        |
