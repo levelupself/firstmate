@@ -926,7 +926,7 @@ backlog_refresh_reminder() {
   [ "$KIND" = secondmate ] && return 0
   if fm_tasks_axi_backend_available "$CONFIG"; then
     if [ ! -f "$DATA/backlog.md" ]; then
-      printf '%s\n' "Backlog: $ID just finished. Update data/backlog.md, then re-scan Queued and dispatch only work whose blockers are gone and date is due."
+      printf '%s\n' "Backlog: cleanup for $ID proceeded with no backlog present; there was no lifecycle row to update."
       return 0
     fi
     if [ "$FORCE" = --force ]; then

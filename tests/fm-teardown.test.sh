@@ -186,6 +186,10 @@ if [ "${1:-}" = --version ]; then
   exit 0
 fi
 if [ "${1:-}" = show ]; then
+  if [ "${FM_FAKE_TASKS_SHOW_MISSING:-0}" = 1 ]; then
+    printf '%s\n' 'error: task not found' >&2
+    exit 1
+  fi
   printf '%s\n' '  state: in_flight'
   exit 0
 fi
@@ -611,6 +615,38 @@ test_teardown_preserves_open_pr_poll_when_compatible() {
   pass "teardown preserves an open PR as poll-owned in-flight work"
 }
 
+test_teardown_without_backlog_reports_and_proceeds() {
+  local case_dir out
+  case_dir=$(make_case no-backlog-present)
+  write_meta "$case_dir" local-only ship
+  add_compatible_tasks_axi "$case_dir"
+
+  out=$(run_teardown "$case_dir") || fail "teardown refused a home with no backlog"
+  printf '%s\n' "$out" | grep -F 'cleanup for task-x1 proceeded with no backlog present' >/dev/null \
+    || fail "teardown did not explicitly report row-less cleanup: $out"
+  [ ! -f "$case_dir/state/task-x1.meta" ] \
+    || fail "teardown did not retire task state after reporting the absent backlog"
+  pass "teardown reports and proceeds when the home has no backlog"
+}
+
+test_teardown_refuses_when_backlog_row_is_missing() {
+  local case_dir rc=0
+  case_dir=$(make_case missing-backlog-row)
+  write_meta "$case_dir" local-only ship
+  mkdir -p "$case_dir/data"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$case_dir/data/backlog.md"
+  add_compatible_tasks_axi "$case_dir"
+
+  FM_FAKE_TASKS_SHOW_MISSING=1 run_teardown "$case_dir" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "teardown tolerated a missing row in an existing backlog"
+  assert_grep 'task task-x1 is absent from the backlog' "$case_dir/stderr" \
+    "teardown did not identify the missing authoritative row"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "teardown retired task state after the lifecycle write failed"
+  pass "teardown refuses a missing row in an existing backlog"
+}
+
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present() {
   local case_dir out
   case_dir=$(make_case tasks-axi-manual-optout)
@@ -682,8 +718,8 @@ test_no_mistakes_origin_remote_allows() {
 
   expect_code 0 "$rc" "nm-origin: teardown should succeed when HEAD is on origin"
   ! grep -q REFUSED "$case_dir/stderr" || fail "nm-origin: teardown printed a REFUSED line"
-  grep -F 'blockers are gone and date is due' "$case_dir/stdout" >/dev/null \
-    || fail "nm-origin: teardown manual prompt did not preserve date-gate check"
+  grep -F 'cleanup for task-x1 proceeded with no backlog present' "$case_dir/stdout" >/dev/null \
+    || fail "nm-origin: teardown did not report the absent backlog"
   pass "no-mistakes worktree with HEAD on origin is torn down (no regression)"
 }
 
@@ -2731,6 +2767,8 @@ EOF
 
 test_local_only_fork_remote_allows
 test_teardown_preserves_open_pr_poll_when_compatible
+test_teardown_without_backlog_reports_and_proceeds
+test_teardown_refuses_when_backlog_row_is_missing
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
