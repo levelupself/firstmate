@@ -191,6 +191,9 @@ for id in uniqA uniqB dupC dupD staleF smE presU presD; do
 done
 mkdir -p "$PRIMARY_HOME/data/$SM2_ID"
 printf 'trivial secondmate charter brief: nothing to do.\n' > "$PRIMARY_HOME/data/$SM2_ID/brief.md"
+fm_test_backlog_queue "$PRIMARY_HOME" uniqA uniqB dupC dupD staleF smE presU presD "$SM2_ID"
+fm_test_backlog_queue "$SM_HOME" uniqA uniqB dupC dupD staleF smE presU presD
+fm_test_backlog_queue "$PRES_HOME" uniqA uniqB dupC dupD staleF smE presU presD
 
 PROJ="$TMP_ROOT/scratch-project"; make_scratch_project "$PROJ"
 

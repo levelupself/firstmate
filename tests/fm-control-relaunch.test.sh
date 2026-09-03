@@ -142,6 +142,7 @@ add_ship_task() {
   fm_git_worktree "$proj" "$wt" "task-$id"
   mkdir -p "$home/data/$id"
   printf '# brief for %s\n\nDo the thing.\n' "$id" > "$home/data/$id/brief.md"
+  fm_test_backlog_ensure_queue "$home" "$id"
   {
     echo "window=fmses:fm-$id"
     echo "endpoint_task_id=$id"
@@ -154,7 +155,13 @@ add_ship_task() {
     echo "tasktmp=/tmp/fm-$id"
     echo "model=default"
     echo "effort=default"
+    echo "spawned_at=2026-09-03T00:00:00Z"
   } > "$home/state/$id.meta"
+  cat > "$home/state/$id.launch-receipt" <<RECEIPT
+schema=fm-task-launch.v1
+task_id=$id
+spawned_at=2026-09-03T00:00:00Z
+RECEIPT
   printf '%s\n' "fm-$id" > "$dir/fake/windows"
   printf '%s' "$wt" > "$dir/fake/cwd"
   TASK_TMPS+=("/tmp/fm-$id")

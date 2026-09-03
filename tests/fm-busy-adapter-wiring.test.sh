@@ -52,6 +52,7 @@ make_spawn_case() {  # <name> <harness> <id>
   touch "$home/state/.last-watcher-beat"
   mkdir -p "$home/data/$id"
   printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  fm_test_backlog_queue "$home" "$id"
   printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin"
 }
 

@@ -384,6 +384,7 @@ make_project() {  # <dir>
 
 spawn_task() {  # <id> <home> <project>
   local id=$1 home=$2 project=$3
+  fm_test_backlog_ensure_queue "$home" "$id"
   FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'sleep 120'" --mode no-mistakes --yolo off --backend herdr
 }
@@ -496,6 +497,7 @@ printf 'Projection abort fixture A.\n' > "$HOME_DIR/data/abort-a/brief.md"
 printf 'Projection abort fixture B.\n' > "$HOME_DIR/data/abort-b/brief.md"
 printf 'Projection lock contention fixture.\n' > "$HOME_DIR/data/lock-contended/brief.md"
 printf 'Projection default-on fixture.\n' > "$HOME_DIR/data/default-on/brief.md"
+fm_test_backlog_queue "$HOME_DIR" anchor shape order-a order-b order-fail fm-hibit-resume-r1 wheelhouse-healing-r1 active-seeded abort-a abort-b lock-contended default-on
 make_project "$PROJECT_DIR"
 
 # Keep one ordinary primary task live so the durable firstmate workspace is

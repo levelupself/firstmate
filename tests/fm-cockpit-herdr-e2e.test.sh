@@ -78,6 +78,7 @@ for id in cockpit-one cockpit-two; do
   printf 'Run the supplied verification command and stop.\nDelivery contract: mode=no-mistakes\n' \
     > "$HOME_DIR/data/$id/brief.md"
 done
+fm_test_backlog_queue "$HOME_DIR" cockpit-one cockpit-two
 
 WORKSPACE_OUT=$(lab workspace create --label firstmate --cwd "$HOME_DIR" --no-focus) \
   || fail "could not create the cockpit workspace"
@@ -181,6 +182,7 @@ pass "real Herdr placement swaps the viewport occupant and keeps the displaced w
 mkdir -p "$HOME_DIR/data/cockpit-three"
 printf 'Run the supplied verification command and stop.\nDelivery contract: mode=no-mistakes\n' \
   > "$HOME_DIR/data/cockpit-three/brief.md"
+fm_test_backlog_add_queue "$HOME_DIR" cockpit-three
 spawn_real cockpit-three cockpit-three-ok >/dev/null \
   || fail "third executable-path cockpit spawn failed"
 THIRD_META="$HOME_DIR/state/cockpit-three.meta"
