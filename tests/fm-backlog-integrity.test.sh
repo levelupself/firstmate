@@ -149,20 +149,49 @@ test_invalid_landing_receipts_do_not_close_orphans() {
 }
 
 test_landing_receipt_must_match_durable_launch() {
-  local home id=valid-pr result
+  local home id=valid-pr result fakebin
   home=$(make_home valid-launch)
   (cd "$home" && tasks-axi add "$id" "$id" --start >/dev/null)
   printf '%s\n' 'schema=fm-task-launch.v1' "task_id=$id" \
     'spawned_at=2026-09-02T12:00:00Z' > "$home/state/$id.launch-receipt"
   mkdir -p "$home/data/pr-merges"
-  printf '%s\n' 'schema=fm-pr-merge.v2' "task_id=$id" 'pr=https://github.com/example/repo/pull/1' \
+  printf '%s\n' 'schema=fm-pr-merge.v3' "task_id=$id" 'pr=https://github.com/example/repo/pull/1' \
+    'repository=example/repo' 'default_branch=main' \
+    'merge_commit=1111111111111111111111111111111111111111' \
     'spawned_at=2026-09-02T12:00:00Z' 'phase=merged' 'authorization=live-meta' \
     'prepared_epoch=1' 'merged_at=2026-09-02T12:01:00Z' \
     > "$home/data/pr-merges/$id.receipt"
-  result=$(run_integrity "$home" reconcile)
+  fakebin="$home/fakebin"
+  mkdir -p "$fakebin"
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" ahead' > "$fakebin/gh-axi"
+  chmod +x "$fakebin/gh-axi"
+  result=$(PATH="$fakebin:$PATH" run_integrity "$home" reconcile)
   [ "$(cd "$home" && tasks-axi show "$id" | sed -n 's/^  state: //p')" = done ] \
     || fail "valid launch-bound merged receipt did not close orphan $id: $result"
   pass "valid merged receipt closes only its bound launch"
+}
+
+test_merge_commit_outside_default_reopens_orphan() {
+  local home id=unlanded-pr fakebin
+  home=$(make_home unlanded-pr)
+  (cd "$home" && tasks-axi add "$id" "$id" --start >/dev/null)
+  printf '%s\n' 'schema=fm-task-launch.v1' "task_id=$id" \
+    'spawned_at=2026-09-02T12:00:00Z' > "$home/state/$id.launch-receipt"
+  mkdir -p "$home/data/pr-merges"
+  printf '%s\n' 'schema=fm-pr-merge.v3' "task_id=$id" 'pr=https://github.com/example/repo/pull/1' \
+    'repository=example/repo' 'default_branch=main' \
+    'merge_commit=2222222222222222222222222222222222222222' \
+    'spawned_at=2026-09-02T12:00:00Z' 'phase=merged' 'authorization=live-meta' \
+    'prepared_epoch=1' 'merged_at=2026-09-02T12:01:00Z' \
+    > "$home/data/pr-merges/$id.receipt"
+  fakebin="$home/fakebin"
+  mkdir -p "$fakebin"
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" behind' > "$fakebin/gh-axi"
+  chmod +x "$fakebin/gh-axi"
+  PATH="$fakebin:$PATH" run_integrity "$home" reconcile >/dev/null
+  [ "$(cd "$home" && tasks-axi show "$id" | sed -n 's/^  state: //p')" = queued ] \
+    || fail "merge commit outside the default branch closed orphan work"
+  pass "unproven default-branch ancestry reopens orphan work"
 }
 
 test_failed_start_does_not_poison_retry_binding() {
@@ -204,5 +233,6 @@ test_partial_scout_report_does_not_close_orphan
 test_unreadable_blocker_is_not_cleared
 test_invalid_landing_receipts_do_not_close_orphans
 test_landing_receipt_must_match_durable_launch
+test_merge_commit_outside_default_reopens_orphan
 test_failed_start_does_not_poison_retry_binding
 echo '# all fm-backlog-integrity tests passed'

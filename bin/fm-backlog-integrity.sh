@@ -137,13 +137,16 @@ receipt_matches_launch() {
 }
 
 valid_pr_receipt() {
-  local receipt=$1 id=$2 key schema authorization prepared_epoch merged_at
+  local receipt=$1 id=$2 key schema authorization prepared_epoch merged_at repository default_branch merge_commit compare_status
   [ -f "$receipt" ] && [ ! -L "$receipt" ] || return 1
   for key in schema task_id pr spawned_at phase authorization prepared_epoch; do
     receipt_has_one "$receipt" "$key" || return 1
   done
   schema=$(receipt_value "$receipt" schema)
-  [ "$schema" = fm-pr-merge.v1 ] || [ "$schema" = fm-pr-merge.v2 ] || return 1
+  [ "$schema" = fm-pr-merge.v3 ] || return 1
+  for key in repository default_branch merge_commit; do
+    receipt_has_one "$receipt" "$key" || return 1
+  done
   [ "$(receipt_value "$receipt" task_id)" = "$id" ] || return 1
   printf '%s\n' "$(receipt_value "$receipt" pr)" \
     | grep -Eq '^https?://[^[:space:]]+/pull/[0-9]+$' || return 1
@@ -154,16 +157,18 @@ valid_pr_receipt() {
   [ "$authorization" = live-meta ] || [ "$authorization" = done-record ] || return 1
   prepared_epoch=$(receipt_value "$receipt" prepared_epoch)
   case "$prepared_epoch" in ''|*[!0-9]*) return 1 ;; esac
-  if [ "$schema" = fm-pr-merge.v2 ]; then
-    receipt_has_one "$receipt" merged_at || return 1
-    [ "$(grep -c '^merged_epoch=' "$receipt" 2>/dev/null || true)" -eq 0 ] || return 1
-    merged_at=$(receipt_value "$receipt" merged_at)
-    [ -z "$merged_at" ] || valid_timestamp "$merged_at" || return 1
-  else
-    receipt_has_one "$receipt" merged_epoch || return 1
-    [ "$(grep -c '^merged_at=' "$receipt" 2>/dev/null || true)" -eq 0 ] || return 1
-    case "$(receipt_value "$receipt" merged_epoch)" in ''|*[!0-9]*) return 1 ;; esac
-  fi
+  receipt_has_one "$receipt" merged_at || return 1
+  [ "$(grep -c '^merged_epoch=' "$receipt" 2>/dev/null || true)" -eq 0 ] || return 1
+  merged_at=$(receipt_value "$receipt" merged_at)
+  [ -z "$merged_at" ] || valid_timestamp "$merged_at" || return 1
+  repository=$(receipt_value "$receipt" repository)
+  printf '%s\n' "$repository" | grep -Eq '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$' || return 1
+  default_branch=$(receipt_value "$receipt" default_branch)
+  git check-ref-format --branch "$default_branch" >/dev/null 2>&1 || return 1
+  merge_commit=$(receipt_value "$receipt" merge_commit)
+  printf '%s\n' "$merge_commit" | grep -Eq '^[0-9a-f]{40}$' || return 1
+  compare_status=$(gh-axi api "/repos/$repository/compare/$merge_commit...$default_branch" --jq '.status' 2>/dev/null || true)
+  [ "$compare_status" = ahead ] || [ "$compare_status" = identical ]
 }
 
 valid_local_receipt() {

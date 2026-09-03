@@ -57,7 +57,12 @@ cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 if [ "${1:-}" = api ]; then
-  printf '%s\n' 'merged: true' 'merged_at: null'
+  case "${2:-}" in
+    */pulls/*) printf '%s\n' 'merged: true' 'merged_at: null' \
+      'merge_commit: "1111111111111111111111111111111111111111"' 'base_ref: "main"' ;;
+    */compare/*) printf '%s\n' ahead ;;
+    *) printf '%s\n' main ;;
+  esac
 fi
 exit 0
 SH
@@ -154,7 +159,7 @@ test_records_pr_and_head_before_merging() {
   rc=$?
   set -e
 
-  expect_code 0 "$rc" "records-before-merge: fm-pr-merge should succeed"
+  [ "$rc" -eq 0 ] || fail "records-before-merge: fm-pr-merge failed: $(cat "$case_dir/stderr")"
   assert_grep 'pr=https://github.com/example/repo/pull/9' "$case_dir/state/task-x1.meta" \
     "records-before-merge: pr= was not recorded"
   assert_grep 'pr_head=deadbeefcafefeed0000000000000000deadbeef' "$case_dir/state/task-x1.meta" \
@@ -164,6 +169,12 @@ test_records_pr_and_head_before_merging() {
     "records-before-merge: durable receipt did not record the merge outcome"
   assert_grep 'authorization=live-meta' "$receipt" \
     "records-before-merge: durable receipt lost its live-task authorization"
+  assert_grep 'repository=example/repo' "$receipt" \
+    "records-before-merge: durable receipt lost repository identity"
+  assert_grep 'default_branch=main' "$receipt" \
+    "records-before-merge: durable receipt lost default-branch identity"
+  assert_grep 'merge_commit=1111111111111111111111111111111111111111' "$receipt" \
+    "records-before-merge: durable receipt lost merge-commit identity"
   grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "records-before-merge: gh-axi pr merge was not invoked with number, --repo, and default --squash"
   fm_write_meta "$case_dir/state/task-x1.meta" \
@@ -354,7 +365,12 @@ if [ "${1:-} ${2:-}" = "pr merge" ]; then
   while [ ! -f "$FM_TEST_GH_AXI_RELEASE" ]; do sleep 0.05; done
 fi
 if [ "${1:-}" = api ]; then
-  printf '%s\n' 'merged: true' 'merged_at: null'
+  case "${2:-}" in
+    */pulls/*) printf '%s\n' 'merged: true' 'merged_at: null' \
+      'merge_commit: "1111111111111111111111111111111111111111"' 'base_ref: "main"' ;;
+    */compare/*) printf '%s\n' ahead ;;
+    *) printf '%s\n' main ;;
+  esac
 fi
 SH
   cat > "$case_dir/fakebin/gh" <<'SH'
