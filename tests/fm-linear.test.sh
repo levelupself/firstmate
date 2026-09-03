@@ -711,7 +711,8 @@ pass "only a definitive schema rejection enables the legacy attachment mutation"
 # GitHub is the only complete record of what shipped. The mapping is derived
 # from the branch name firstmate itself created (fm/<task-id>), never by
 # proximity in the backlog archive - that approach cross-assigned on 2026-08-03.
-# Anything the branch cannot prove is REPORTED, never guessed.
+# Numbered and legacy psychogenesis task branches are exact mappings. Anything
+# else the branch cannot prove is REPORTED, never guessed.
 
 new_import_home() {
   new_home "$1"
@@ -745,7 +746,7 @@ jq -cn '{data:{issues:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
    description:"`firstmate: 010-known`",state:{name:"Backlog",type:"backlog"},
    team:{id:"team-uuid",key:"PSY"},attachments:{nodes:[]}}]}}}' > "$FAKE_DIR/fmFind.json"
 
-out=$(run_import --repo o/r); rc=$?
+out=$(run_import --repo levelupself/psychogenesis); rc=$?
 expect_code 0 "$rc" "an import that mapped what it could exits 0"
 assert_contains "$out" "PSY-7" "the matched issue is named in the audit"
 assert_contains "$out" "38" "the audit records which pull request the issue came from"
@@ -753,22 +754,40 @@ assert_contains "$out" "fm/010-known" "the audit records how the task id was der
 grep -q '^fmState' "$FAKE_DIR/calls.log" || fail "the mapped pull request was not recorded as Done"
 sent=$(grep '^fmAttach' "$FAKE_DIR/calls.log" | cut -f2)
 assert_contains "$sent" "https://github.com/o/r/pull/38" "the mapped pull request was not attached"
-# The two unmappable branches must be reported and must not be guessed at.
+# The legacy branch is an exact GitHub-derived mapping and must be imported.
+assert_contains "$out" "psychogen-chatentry-v9" "the legacy task id is named in the audit"
+sent=$(grep '^fmCreate' "$FAKE_DIR/calls.log" | cut -f2 | jq -r '.d')
+assert_contains "$sent" 'firstmate: psychogen-chatentry-v9' "the legacy branch suffix is preserved as the task id"
+# Branches outside both supported conventions must be reported and not guessed.
 assert_contains "$out" "unmapped" "unmappable pull requests are reported"
-assert_contains "$out" "fm/psychogen-chatentry-v9" "the legacy branch is named rather than guessed"
 assert_contains "$out" "main-patch" "a non-firstmate branch is named rather than guessed"
 assert_contains "$out" "fm/123legacy-task" "a branch without a numeric-prefix separator is unmapped"
 assert_contains "$out" "fm/123-" "a branch with an empty slug is unmapped"
 assert_contains "$out" "fm/123" "a bare numeric branch is unmapped"
 n=$(grep -c '^fmState\|^fmAttach\|^fmCreate' "$FAKE_DIR/calls.log" || true)
-[ "$n" = 2 ] || fail "expected exactly 2 mutations for 1 mappable PR, got $n"
-pass "import maps only what the branch proves, and reports the rest instead of guessing"
+[ "$n" = 5 ] || fail "expected exactly 5 mutations for 2 mappable PRs, got $n"
+pass "import maps numbered and legacy task branches, and reports everything else instead of guessing"
+
+# The legacy convention proves a mapping only for its authorized repository.
+new_import_home importforeignlegacy
+jq -cn '[
+  {number:27,url:"https://github.com/other/project/pull/27",title:"fix: unrelated legacy thing",
+   headRefName:"fm/psychogen-chatentry-v9",mergedAt:"2026-07-23T00:00:00Z"}
+]' > "$FAKE_DIR/pr-list.json"
+jq -cn '{data:{issues:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[]}}}' > "$FAKE_DIR/fmFind.json"
+out=$(run_import --repo other/project); rc=$?
+expect_code 0 "$rc" "a foreign repository with a legacy-shaped branch exits 0"
+assert_contains "$out" "unmapped" "a foreign legacy-shaped branch is reported as unmapped"
+assert_contains "$out" "fm/psychogen-chatentry-v9" "the rejected foreign branch is named in the audit"
+n=$(grep -c '^fmState\|^fmAttach\|^fmCreate' "$FAKE_DIR/calls.log" || true)
+[ "$n" = 0 ] || fail "a foreign legacy-shaped branch issued $n mutations"
+pass "legacy psychogenesis task branches are restricted to their authorized repository"
 
 # A dry run must plan the same thing and change nothing.
 new_import_home importdry
 cp "$TMP_ROOT/import/fake/pr-list.json" "$FAKE_DIR/pr-list.json"
 cp "$TMP_ROOT/import/fake/fmFind.json" "$FAKE_DIR/fmFind.json"
-out=$(run_import --repo o/r --dry-run); rc=$?
+out=$(run_import --repo levelupself/psychogenesis --dry-run); rc=$?
 expect_code 0 "$rc" "a dry-run import exits 0"
 assert_contains "$out" "PSY-7" "the dry run still reports the mapping it would make"
 n=$(grep -c '^fmState\|^fmAttach\|^fmCreate' "$FAKE_DIR/calls.log" || true)
