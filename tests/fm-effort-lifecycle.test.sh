@@ -499,9 +499,14 @@ NODE
 pass 'reused task identity does not inherit prior launch process cost'
 
 LOCAL_PROJECT="$TMP_ROOT/local-project"
+LOCAL_REMOTE="$TMP_ROOT/local-project.git"
+git init -q --bare "$LOCAL_REMOTE"
 git init -q -b main "$LOCAL_PROJECT"
 git -C "$LOCAL_PROJECT" -c user.name=test -c user.email=test@example.invalid \
   commit -q --allow-empty -m baseline
+git -C "$LOCAL_PROJECT" remote add publication "$LOCAL_REMOTE"
+git -C "$LOCAL_PROJECT" push -q publication main
+git --git-dir="$LOCAL_REMOTE" symbolic-ref HEAD refs/heads/main
 git -C "$LOCAL_PROJECT" branch fm/local-task
 git -C "$LOCAL_PROJECT" -c user.name=test -c user.email=test@example.invalid \
   commit -q --allow-empty -m local-work
