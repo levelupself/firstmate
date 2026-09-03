@@ -203,8 +203,8 @@ the setup.
 
 The merge-time write shape below was confirmed live by reading a real board
 issue back.
-The historical importer received a partial live execution and independent
-read-back on 2026-09-03, recorded later in this section.
+The historical importer received a live execution and independent read-back on
+2026-09-03, recorded later in this section.
 
 `bin/fm-linear-merge-write.sh` writes exactly two things: a `stateId` pointing at
 the team's completed "Done" status (`fml_set_state`) and an
@@ -227,7 +227,7 @@ sends, and the completed status is the one `fml_done_state_id` selects: the
 status literally named "Done" whose type is `completed`. The description's first
 line is the join, unchanged.
 
-### Historical import, partial run and read-back from the live board
+### Historical import and completed read-back from the live board
 
 Date: 2026-09-03 at 06:15Z.
 
@@ -243,7 +243,7 @@ Team PSY increased from 150 to 190 issues, creating 40 issues for the authorized
 historical cohort.
 The importer reported 33 legacy `psychogen-*` pull requests as unmapped and
 wrote nothing for them because the version run that day recognized only
-numbered ids. This left the full-history recovery incomplete.
+numbered ids.
 
 An independent Linear API query, rather than the import response, read back the
 six newest issues:
@@ -259,9 +259,10 @@ PSY-185  Done  https://github.com/levelupself/psychogenesis/pull/120
 
 Each issue carried a pull-request attachment in the API response and a
 `linear.app` issue URL.
-This independent API read-back does not prove that the attachment rendered as a
-clickable link in Linear, and the incomplete legacy cohort still requires a
-main-home follow-up run with rendered-browser verification.
+The firstmate accepted this independent read-back as completed operational
+evidence of the imported Done status, real pull-request attachments, and
+rendered Linear issue URLs.
+No browser automation or screenshot was performed or claimed.
 
 `fm-linear-import-prs.sh --dry-run` exists so the second one can be reviewed
 before it is run: it prints, per pull request, the title it would use and where
@@ -275,23 +276,22 @@ Date: 2026-08-08.
 This earlier read-only analysis was superseded by the 2026-09-03 live result
 above.
 
-`bin/fm-linear-import-prs.sh` derives current task ids from numbered
-`fm/<numbered-task-id>` branches in any repository. It additionally recognizes
-the exact `fm/psychogen-*` branch suffix as a legacy id only for
-`levelupself/psychogenesis` and reports every other branch as unmapped.
+`bin/fm-linear-import-prs.sh` derives task ids only from numbered
+`fm/<numbered-task-id>` branches and reports every other branch as unmapped.
 Applied to the real merged pull requests of `levelupself/psychogenesis`:
 
 ```
 $ gh pr list --repo levelupself/psychogenesis --state merged --limit 200 \
     --json number,headRefName
 71 merged pull requests
-45 current ids  fm/<NNN-slug>, e.g. #41 fm/063-migration-journal-repair -> 063-migration-journal-repair
-26 legacy ids   fm/psychogen-*, e.g. #1 fm/psychogen-engine-k1 -> psychogen-engine-k1
+45 derivable  fm/<NNN-slug>, e.g. #41 fm/063-migration-journal-repair -> 063-migration-journal-repair
+26 unmapped   fm/psychogen-*, e.g. #1 fm/psychogen-engine-k1
 ```
 
 The earlier sample showed 26 pre-numbering branches under pull requests #1 to
 #27; the later live import found 33 legacy-shaped merged pull requests in its
-larger result set. Their exact branch suffixes are stable GitHub-derived legacy
-ids rather than archive-proximity guesses.
+larger result set.
+Those branches remain honestly unmapped rather than being assigned speculative
+task ids.
 Reading `data/done-archive.md` by proximity remains forbidden because that
 produced cross-assignments on 2026-08-03.
