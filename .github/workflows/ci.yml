@@ -159,9 +159,10 @@ jobs:
           if bin/fm-test-run.sh --list --lane "$FM_SERIAL_LANE" \
             | grep -Fxq 'tests/fm-calm-pi-extension.test.sh'
           then
-            npm install -g @earendil-works/pi-coding-agent
+            npm install -g @earendil-works/pi-coding-agent @earendil-works/pi-server
             pi --version
             test -f "$(npm root -g)/@earendil-works/pi-coding-agent/package.json"
+            test -f "$(npm root -g)/@earendil-works/pi-server/package.json"
           fi
       - name: Run portable serial shard ${{ matrix.shard }}
         env:

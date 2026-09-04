@@ -714,6 +714,15 @@ const [{ AssistantMessageComponent }, { CustomEntryComponent }, { ToolExecutionC
   import(pathToFileURL(`${packageRoot}/node_modules/@earendil-works/pi-tui/dist/index.js`).href),
   import(pathToFileURL(`${packageRoot}/dist/core/export-html/tool-renderer.js`).href),
 ]);
+const {
+  createBashToolDefinition,
+  createEditToolDefinition,
+  createFindToolDefinition,
+  createGrepToolDefinition,
+  createLsToolDefinition,
+  createReadToolDefinition,
+  createWriteToolDefinition,
+} = await import(pathToFileURL(`${packageRoot}/dist/index.js`).href);
 initTheme("dark");
 setCapabilities({ images: null, trueColor: true, hyperlinks: false });
 
@@ -877,19 +886,19 @@ if (operationalHistory.length !== 1 || operationalHistory[0] !== watcherMessage)
 
 writeFileSync("sample.txt", "alpha\n");
 const cases = [
-  ["read", { path: "sample.txt" }, { content: [{ type: "text", text: "alpha" }], details: {}, isError: false }],
-  ["bash", { command: "printf 'CALM_RENDER_OUTPUT\\n'" }, { content: [{ type: "text", text: "CALM_RENDER_OUTPUT" }], details: {}, isError: false }],
-  ["edit", { path: "sample.txt", edits: [{ oldText: "alpha", newText: "beta" }] }, { content: [{ type: "text", text: "Successfully replaced 1 block(s) in sample.txt." }], details: { diff: "-alpha\n+beta", patch: "", firstChangedLine: 1 }, isError: false }],
-  ["write", { path: "sample.txt", content: "beta\n" }, { content: [{ type: "text", text: "Successfully wrote 5 bytes to sample.txt" }], details: undefined, isError: false }],
-  ["grep", { pattern: "alpha", path: "." }, { content: [{ type: "text", text: "sample.txt:1:alpha" }], details: {}, isError: false }],
-  ["find", { pattern: "*.txt", path: "." }, { content: [{ type: "text", text: "sample.txt" }], details: {}, isError: false }],
-  ["ls", { path: "." }, { content: [{ type: "text", text: "sample.txt" }], details: {}, isError: false }],
+  ["read", createReadToolDefinition, { path: "sample.txt" }, { content: [{ type: "text", text: "alpha" }], details: {}, isError: false }],
+  ["bash", createBashToolDefinition, { command: "printf 'CALM_RENDER_OUTPUT\\n'" }, { content: [{ type: "text", text: "CALM_RENDER_OUTPUT" }], details: {}, isError: false }],
+  ["edit", createEditToolDefinition, { path: "sample.txt", edits: [{ oldText: "alpha", newText: "beta" }] }, { content: [{ type: "text", text: "Successfully replaced 1 block(s) in sample.txt." }], details: { diff: "-alpha\n+beta", patch: "", firstChangedLine: 1 }, isError: false }],
+  ["write", createWriteToolDefinition, { path: "sample.txt", content: "beta\n" }, { content: [{ type: "text", text: "Successfully wrote 5 bytes to sample.txt" }], details: undefined, isError: false }],
+  ["grep", createGrepToolDefinition, { pattern: "alpha", path: "." }, { content: [{ type: "text", text: "sample.txt:1:alpha" }], details: {}, isError: false }],
+  ["find", createFindToolDefinition, { pattern: "*.txt", path: "." }, { content: [{ type: "text", text: "sample.txt" }], details: {}, isError: false }],
+  ["ls", createLsToolDefinition, { path: "." }, { content: [{ type: "text", text: "sample.txt" }], details: {}, isError: false }],
 ];
 const renderUi = { requestRender() {} };
 const rows = [];
-for (const [name, args, result] of cases) {
+for (const [name, createDefinition, args, result] of cases) {
   const wrapped = tools.find((tool) => tool.name === name);
-  const baseline = new ToolExecutionComponent(name, `baseline-${name}`, args, { showImages: false }, undefined, renderUi, process.cwd());
+  const baseline = new ToolExecutionComponent(name, `baseline-${name}`, args, { showImages: false }, createDefinition(process.cwd()), renderUi, process.cwd());
   const actual = new ToolExecutionComponent(name, `wrapped-${name}`, args, { showImages: false }, wrapped, renderUi, process.cwd());
   for (const row of [baseline, actual]) {
     row.markExecutionStarted();
@@ -1213,7 +1222,10 @@ async function assertStockHtmlRendering(command, submitData) {
     ...cases.filter(([toolName]) => toolName === "grep" || toolName === "find"),
     ["fm_watch_arm_pi", watchArgs, watchResult],
   ];
-  for (const [name, args, result] of exportCases) {
+  for (const exportCase of exportCases) {
+    const [name, args, result] = exportCase.length === 4
+      ? [exportCase[0], exportCase[2], exportCase[3]]
+      : exportCase;
     const toolCallId = `${command}-${name}`;
     const callHtml = htmlRenderer.renderCall(toolCallId, name, args);
     const resultHtml = htmlRenderer.renderResult(
@@ -1341,7 +1353,6 @@ for (const reason of ["startup", "new", "resume", "fork", "reload"]) {
 await calmCommand.handler("", commandContext);
 
 const readWrapper = tools.find((tool) => tool.name === "read");
-const { createReadToolDefinition } = await import(pathToFileURL(`${packageRoot}/dist/index.js`).href);
 const originalRead = createReadToolDefinition(process.cwd());
 const executeContext = { cwd: process.cwd() };
 const [originalResult, wrappedResult] = await Promise.all([
