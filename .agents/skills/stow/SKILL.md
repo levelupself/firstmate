@@ -261,7 +261,7 @@ Act on each home by its reported `transport`:
 A newly discovered shared captain preference still routes to the primary's `data/captain-shared.md` under the existing primary-authoritative contract, whichever home found it.
 Offload proposals and the cold archive are per-home: file proposals only in the home whose pass produced them, and never cascade either to another home.
 
-Extend the completion receipt with one entry per secondmate alongside the primary's own, carrying that home's budget before and after, its per-file actions, its exceptions, and whether that home swept itself or was curated from here.
+Extend the completion receipt with one entry per secondmate alongside the primary's own, carrying whether inherited shared material was `pushed`, `unchanged`, `skipped`, or `error`, that home's budget before and after, its per-file actions, its exceptions, and whether that home swept itself or was curated from here.
 Keep those entries in the same plain captain-facing language the rest of the receipt uses.
 The session is reset-safe only when every home is within its own budget with no unresolved exception.
 

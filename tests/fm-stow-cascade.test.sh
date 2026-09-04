@@ -45,6 +45,9 @@ case "$command" in
   fm-remote-secondmate-control.sh)
     printf '%s\n' "${FM_FAKE_REMOTE_AGENT_STATE:-alive}"
     ;;
+  fm-remote-inherit.sh)
+    printf '%s\n' 'unchanged:synthetic inherited item'
+    ;;
   *) exit 91 ;;
 esac
 SH
@@ -83,7 +86,17 @@ new_primary() {
   local name=$1 home
   home="$TMP_ROOT/primaries/$name"
   mkdir -p "$home/config" "$home/data" "$home/state"
+  printf '%s\n' 10 > "$home/config/startup-memory-budget"
   printf '%s\n' "$home"
+}
+
+write_shared_preferences() { # <path> <preference-line>
+  cat > "$1" <<EOF
+# Shared captain preferences
+# This file is main-authoritative, read-only in secondmate homes, and must not be edited there.
+# Route discoveries to the main firstmate through marked status or a document pointer.
+$2
+EOF
 }
 
 # Registry lines use the parser-owned suffix form for local and remote routes.
@@ -214,6 +227,8 @@ test_transport_routes_by_placement_and_liveness() {
   } > "$primary/data/secondmates.md"
   fm_write_secondmate_meta "$primary/state/live-local.meta" "$live" 'firstmate:fm-live-local' alpha claude
   fm_write_secondmate_meta "$primary/state/remote-live.meta" "$remote" 'fm-remote:fm-remote-live' alpha claude
+  printf 'remote_host=remote-mac\nremote_root=%s\n' "$TMP_ROOT/remote-root" \
+    >> "$primary/state/remote-live.meta"
   printf 'role=secondmate\neffective_budget_tokens=7500\ntotal_estimated_tokens=100\nbudget_status=within-budget\n' \
     > "$TMP_ROOT/remote-budget.txt"
 
@@ -289,6 +304,81 @@ test_receipt_facts_are_complete_and_show_before_and_after() {
   pass "each stanza carries the facts a per-home receipt needs, before and after curation"
 }
 
+test_shared_material_converges_before_accounting_and_transport() {
+  local primary home out s shared_bytes
+  primary=$(new_primary converge-first)
+  printf '%s\n' 100 > "$primary/config/startup-memory-budget"
+  home=$(new_home converge-first-home 100)
+  write_shared_preferences "$primary/data/captain-shared.md" 'fresh-primary-preference'
+  write_shared_preferences "$home/data/captain-shared.md" 'stale-secondmate-preference'
+  chmod 0444 "$home/data/captain-shared.md"
+  local_record converge-first-home "$home" > "$primary/data/secondmates.md"
+  fm_write_secondmate_meta "$primary/state/converge-first-home.meta" "$home" \
+    'firstmate:fm-converge-first-home' alpha claude
+
+  set +e
+  out=$(run_cascade "$primary" FM_FAKE_TMUX_WINDOW='fm-converge-first-home')
+  set -e
+  s=$(stanza "$out" converge-first-home)
+  cmp -s "$primary/data/captain-shared.md" "$home/data/captain-shared.md" \
+    || fail "the cascade exposed a live home before shared preferences converged"
+  [ "$(value_in "$s" shared_material)" = pushed ] \
+    || fail "the converged home did not report pushed shared material"
+  [ "$(value_in "$s" transport)" = agent ] \
+    || fail "the converged live home was not made available for its sweep"
+  shared_bytes=$(wc -c < "$primary/data/captain-shared.md" | tr -d ' ')
+  assert_contains "$s" "file=data/captain-shared.md bytes=$shared_bytes " \
+    "accounting ran before convergence and observed stale bytes"
+  pass "shared material converges before a live home's accounting and sweep transport"
+}
+
+test_propagation_failure_isolated_and_receipt_statuses_are_distinct() {
+  local primary pushed unchanged broken out rc sp su sb
+  primary=$(new_primary isolated-propagation)
+  printf '%s\n' 100 > "$primary/config/startup-memory-budget"
+  pushed=$(new_home pushed-home 100)
+  unchanged=$(new_home unchanged-home 100)
+  broken=$(new_home broken-home 100)
+  write_shared_preferences "$primary/data/captain-shared.md" 'current-shared-preference'
+  write_shared_preferences "$pushed/data/captain-shared.md" 'old-shared-preference'
+  write_shared_preferences "$unchanged/data/captain-shared.md" 'current-shared-preference'
+  chmod 0444 "$pushed/data/captain-shared.md" "$unchanged/data/captain-shared.md"
+  ln -s "$TMP_ROOT/unsafe-shared-target" "$broken/data/captain-shared.md"
+  {
+    local_record broken-home "$broken"
+    local_record pushed-home "$pushed"
+    local_record unchanged-home "$unchanged"
+  } > "$primary/data/secondmates.md"
+  fm_write_secondmate_meta "$primary/state/broken-home.meta" "$broken" 'firstmate:fm-broken-home' alpha claude
+  fm_write_secondmate_meta "$primary/state/pushed-home.meta" "$pushed" 'firstmate:fm-pushed-home' alpha claude
+  fm_write_secondmate_meta "$primary/state/unchanged-home.meta" "$unchanged" 'firstmate:fm-unchanged-home' alpha claude
+
+  set +e
+  out=$(run_cascade "$primary" \
+    FM_FAKE_TMUX_WINDOW=$'fm-broken-home\nfm-pushed-home\nfm-unchanged-home' 2>/dev/null)
+  rc=$?
+  set -e
+  sp=$(stanza "$out" pushed-home)
+  su=$(stanza "$out" unchanged-home)
+  sb=$(stanza "$out" broken-home)
+  [ "$(value_in "$sp" shared_material)" = pushed ] \
+    || fail "changed shared material was not distinguished as pushed"
+  [ "$(value_in "$su" shared_material)" = unchanged ] \
+    || fail "already-converged shared material was not distinguished as unchanged"
+  [ "$(value_in "$sb" shared_material)" = error ] \
+    || fail "failed shared material was not distinguished as error"
+  [ "$(value_in "$sb" transport)" = unavailable ] \
+    || fail "a home with stale bytes remained eligible for a sweep"
+  [ "$(value_in "$sp" transport)" = agent ] \
+    || fail "one propagation failure prevented another home's sweep"
+  [ "$(value_in "$su" transport)" = agent ] \
+    || fail "one propagation failure prevented an unchanged home's sweep"
+  cmp -s "$primary/data/captain-shared.md" "$pushed/data/captain-shared.md" \
+    || fail "the healthy changed home did not converge after another home failed"
+  expect_code 3 "$rc" "a per-home propagation error should finish with a reported exception"
+  pass "propagation failures are isolated and receipts distinguish pushed, unchanged, and error"
+}
+
 test_a_slow_remote_is_bounded_and_the_rest_still_report() {
   local primary home remote out rc started elapsed s
   primary=$(new_primary bounded)
@@ -300,6 +390,8 @@ test_a_slow_remote_is_bounded_and_the_rest_still_report() {
     local_record bounded-local "$home"
   } > "$primary/data/secondmates.md"
   fm_write_secondmate_meta "$primary/state/bounded-remote.meta" "$remote" 'fm-remote:fm-bounded-remote'
+  printf 'remote_host=remote-mac\nremote_root=%s\n' "$TMP_ROOT/remote-root" \
+    >> "$primary/state/bounded-remote.meta"
   printf 'role=secondmate\n' > "$TMP_ROOT/remote-budget.txt"
 
   started=$(date +%s)
@@ -366,5 +458,7 @@ test_budget_is_enforced_per_home_and_never_summed
 test_every_registered_home_is_enumerated_exactly_once
 test_transport_routes_by_placement_and_liveness
 test_receipt_facts_are_complete_and_show_before_and_after
+test_shared_material_converges_before_accounting_and_transport
+test_propagation_failure_isolated_and_receipt_statuses_are_distinct
 test_a_slow_remote_is_bounded_and_the_rest_still_report
 test_no_cascade_without_secondmates_or_from_a_secondmate_home

@@ -16,6 +16,7 @@
 #   secondmate=<id>
 #   placement=local|remote            (host=<alias> on a remote route)
 #   home=<path>
+#   shared_material=pushed|unchanged|skipped|error
 #   budget_report=ok|error|timeout    (report lines follow on ok)
 #   transport=agent|direct|deferred|unavailable
 #   reason=<one line>                 (whenever a step did not complete)
@@ -89,6 +90,8 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-stow-cascade.XXXXXX") || exit 1
 cleanup() { rm -rf -- "$TMP"; }
 trap cleanup EXIT
 STEP_OUT="$TMP/step.out"
+PUSH_OUT="$TMP/config-push.out"
+PUSH_ERR="$TMP/config-push.err"
 
 # Run one bounded external step, capturing its stdout for the caller.
 # Returns the step's own status, or 124 when the bound was hit.
@@ -109,6 +112,60 @@ meta_for() { # <id>
 TRANSPORT=
 TRANSPORT_REASON=
 set_transport() { TRANSPORT=$1; TRANSPORT_REASON=${2:-}; }
+
+# Reduce fm-config-push.sh's existing per-item report for one home to the
+# receipt-level result. The push command remains the sole owner of propagation,
+# config-reread generations, and remote delivery.
+shared_material_status() { # <id>
+  local id=$1
+  awk -v header="secondmate $id " '
+    index($0, header) == 1 {
+      inside = 1
+      seen = 1
+      if ($0 ~ /: skipped -/) skipped = 1
+      next
+    }
+    inside && /^secondmate [^ ]+ / { exit }
+    inside {
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      if (line ~ /^(pushed|removed):/) pushed = 1
+      else if (line ~ /^[^:]+: pushed([[:space:]]|$)/) pushed = 1
+      else if (line ~ /^unchanged:/) unchanged = 1
+      else if (line ~ /^[^:]+: unchanged([[:space:]]|$)/) unchanged = 1
+      else if (line ~ /^skipped:/) skipped = 1
+      else if (line ~ /^[^:]+: skipped([[:space:]]|$)/) skipped = 1
+      else if (line ~ /^error:/) error = 1
+      else if (line ~ /^[^:]+: error([[:space:]]|$)/) error = 1
+    }
+    END {
+      if (!seen) print "skipped"
+      else if (error) print "error"
+      else if (skipped) print "skipped"
+      else if (pushed) print "pushed"
+      else if (unchanged) print "unchanged"
+      else print "error"
+    }
+  ' "$PUSH_OUT"
+}
+
+propagate_home() { # <id>
+  local id=$1 rc=0
+  : > "$PUSH_OUT"
+  : > "$PUSH_ERR"
+  fm_run_timed "$BOUND" env \
+    FM_HOME="$FM_HOME" \
+    FM_ROOT_OVERRIDE="$FM_ROOT" \
+    FM_STATE_OVERRIDE="$STATE" \
+    FM_DATA_OVERRIDE="$DATA" \
+    FM_CONFIG_OVERRIDE="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" \
+    FM_CONFIG_PUSH_SECOND_MATE="$id" \
+    "$SCRIPT_DIR/fm-config-push.sh" < /dev/null > "$PUSH_OUT" 2> "$PUSH_ERR" || rc=$?
+  cat "$PUSH_ERR" >&2
+  grep 'SECONDMATE_SYNC:' "$PUSH_OUT" >&2 2>/dev/null || true
+  [ "$rc" -ne 124 ] || return 124
+  return 0
+}
 
 # A local home is curated in place when no live agent owns it.
 resolve_local_transport() { # <id> <resolved-home>
@@ -189,18 +246,43 @@ while IFS= read -r line || [ -n "$line" ]; do
   host=$SECONDMATE_REGISTRY_HOST
   total=$((total + 1))
   rc=0
+  propagation_timeout=0
+  if propagate_home "$id"; then
+    shared_material=$(shared_material_status "$id")
+  else
+    [ "$?" -ne 124 ] || propagation_timeout=1
+    shared_material=error
+  fi
   printf '\n'
   emit "secondmate=$id"
   if [ "$remote" -eq 1 ]; then
     emit 'placement=remote'
     emit "host=$host"
     emit "home=$home"
+    emit "shared_material=$shared_material"
+    if meta_for "$id" >/dev/null \
+      && { [ "$shared_material" = error ] || [ "$shared_material" = skipped ]; }; then
+      if [ "$propagation_timeout" -eq 1 ]; then
+        emit 'budget_report=timeout'
+      else
+        emit 'budget_report=error'
+      fi
+      emit 'transport=unavailable'
+      emit "reason=shared material propagation $shared_material; this home was not asked to sweep"
+      exceptions=$((exceptions + 1))
+      continue
+    fi
     run_step "$SCRIPT_DIR/fm-on.sh" "$id" "$BUDGET_CMD" report || rc=$?
   else
     emit 'placement=local'
     if ! validate_secondmate_home "$id" "$home"; then
       emit "home=$home"
-      emit 'budget_report=error'
+      emit 'shared_material=error'
+      if [ "$propagation_timeout" -eq 1 ]; then
+        emit 'budget_report=timeout'
+      else
+        emit 'budget_report=error'
+      fi
       emit 'transport=unavailable'
       emit "reason=$VALIDATION_ERROR"
       exceptions=$((exceptions + 1))
@@ -208,6 +290,15 @@ while IFS= read -r line || [ -n "$line" ]; do
     fi
     resolved=$VALIDATED_HOME
     emit "home=$resolved"
+    emit "shared_material=$shared_material"
+    if meta_for "$id" >/dev/null \
+      && { [ "$shared_material" = error ] || [ "$shared_material" = skipped ]; }; then
+      emit 'budget_report=error'
+      emit 'transport=unavailable'
+      emit "reason=shared material propagation $shared_material; this home was not asked to sweep"
+      exceptions=$((exceptions + 1))
+      continue
+    fi
     # Every FM_*_OVERRIDE is restated so a caller's own override cannot leak
     # this home's memory files into the accounting of another home.
     run_step env \
