@@ -3,14 +3,19 @@
 # Usage: fm-stow-cascade.sh [--help]
 #
 # The internal /stow skill owns curation judgement; this command owns only the
-# mechanical inputs a cascade needs: which homes exist, what each home's own
-# startup-memory accounting says right now, and how the sweep can reach it.
+# mechanical inputs a cascade needs: which homes exist, whether each live
+# home's declared inherited local material converged, what each home's own
+# startup-memory accounting says afterward, and how the sweep can reach it.
 #
 # Enumeration comes from data/secondmates.md, the registry that already refuses
 # a duplicate id, a duplicate home, and an overlapping home, so each registered
 # secondmate is emitted exactly once and no home is accounted twice. A home's
 # budget is that home's alone: this command never sums a fleet total, because
 # config/startup-memory-budget is a per-home allowance.
+# Before accounting or exposing a live home for its sweep, this command uses
+# fm-config-push.sh's existing end-to-end path to converge that one home's
+# declared inherited local material. A propagation error or timeout makes only
+# that home unavailable and does not stop healthy homes.
 #
 # Each home is reported as one blank-line-separated key=value stanza:
 #   secondmate=<id>
