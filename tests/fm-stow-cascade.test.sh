@@ -59,6 +59,7 @@ cat > "$FAKEBIN/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
 case "$*" in
+  *send-keys*) [ "${FM_FAKE_TMUX_SEND_FAIL:-0}" -eq 0 ] || exit 1 ;;
   *list-windows*) printf '%s\n' "${FM_FAKE_TMUX_WINDOW:-}" ;;
   *list-panes*) printf '%s\n' "${FM_FAKE_TMUX_PANE:-}" ;;
   *display-message*'#{pane_current_command}'*) printf '%s\n' "${FM_FAKE_TMUX_COMMAND:-claude}" ;;
@@ -379,6 +380,36 @@ test_propagation_failure_isolated_and_receipt_statuses_are_distinct() {
   pass "propagation failures are isolated and receipts distinguish pushed, unchanged, and error"
 }
 
+test_reread_failure_reports_without_suppressing_sweep() {
+  local primary home out rc s
+  primary=$(new_primary reread-failure)
+  home=$(new_home reread-failure-home 100)
+  printf '%s\n' codex > "$primary/config/backend"
+  printf '%s\n' claude > "$home/config/backend"
+  local_record reread-failure-home "$home" > "$primary/data/secondmates.md"
+  fm_write_secondmate_meta "$primary/state/reread-failure-home.meta" "$home" \
+    'firstmate:fm-reread-failure-home' alpha claude
+
+  set +e
+  out=$(run_cascade "$primary" \
+    FM_FAKE_TMUX_WINDOW='fm-reread-failure-home' \
+    FM_FAKE_TMUX_SEND_FAIL=1 \
+    FM_SEND_SETTLE=0 2>/dev/null)
+  rc=$?
+  set -e
+  s=$(stanza "$out" reread-failure-home)
+  [ "$(value_in "$s" shared_material)" = pushed ] \
+    || fail "converged material was reported as failed after reread delivery failed"
+  [ "$(value_in "$s" config_reread)" = error ] \
+    || fail "the reread delivery failure was not reported distinctly"
+  [ "$(value_in "$s" transport)" = agent ] \
+    || fail "a reread delivery failure suppressed the converged home's sweep"
+  [ "$(cat "$home/config/backend")" = codex ] \
+    || fail "the home was exposed before its config bytes converged"
+  expect_code 3 "$rc" "a reported reread delivery failure should remain an exception"
+  pass "reread delivery failure remains visible without suppressing a converged sweep"
+}
+
 test_a_slow_remote_is_bounded_and_the_rest_still_report() {
   local primary home remote out rc started elapsed s
   primary=$(new_primary bounded)
@@ -460,5 +491,6 @@ test_transport_routes_by_placement_and_liveness
 test_receipt_facts_are_complete_and_show_before_and_after
 test_shared_material_converges_before_accounting_and_transport
 test_propagation_failure_isolated_and_receipt_statuses_are_distinct
+test_reread_failure_reports_without_suppressing_sweep
 test_a_slow_remote_is_bounded_and_the_rest_still_report
 test_no_cascade_without_secondmates_or_from_a_secondmate_home

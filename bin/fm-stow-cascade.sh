@@ -17,6 +17,7 @@
 #   placement=local|remote            (host=<alias> on a remote route)
 #   home=<path>
 #   shared_material=pushed|unchanged|skipped|error
+#   config_reread=ok|error
 #   budget_report=ok|error|timeout    (report lines follow on ok)
 #   transport=agent|direct|deferred|unavailable
 #   reason=<one line>                 (whenever a step did not complete)
@@ -163,6 +164,7 @@ propagate_home() { # <id>
     "$SCRIPT_DIR/fm-config-push.sh" < /dev/null > "$PUSH_OUT" 2> "$PUSH_ERR" || rc=$?
   cat "$PUSH_ERR" >&2
   grep 'SECONDMATE_SYNC:' "$PUSH_OUT" >&2 2>/dev/null || true
+  PUSH_RC=$rc
   [ "$rc" -ne 124 ] || return 124
   return 0
 }
@@ -246,9 +248,15 @@ while IFS= read -r line || [ -n "$line" ]; do
   host=$SECONDMATE_REGISTRY_HOST
   total=$((total + 1))
   rc=0
+  PUSH_RC=0
   propagation_timeout=0
+  reread_error=0
   if propagate_home "$id"; then
     shared_material=$(shared_material_status "$id")
+    if [ "$PUSH_RC" -ne 0 ] && [ "$shared_material" != error ] \
+      && [ "$shared_material" != skipped ]; then
+      reread_error=1
+    fi
   else
     [ "$?" -ne 124 ] || propagation_timeout=1
     shared_material=error
@@ -260,6 +268,11 @@ while IFS= read -r line || [ -n "$line" ]; do
     emit "host=$host"
     emit "home=$home"
     emit "shared_material=$shared_material"
+    if [ "$reread_error" -eq 1 ]; then
+      emit 'config_reread=error'
+    else
+      emit 'config_reread=ok'
+    fi
     if meta_for "$id" >/dev/null \
       && { [ "$shared_material" = error ] || [ "$shared_material" = skipped ]; }; then
       if [ "$propagation_timeout" -eq 1 ]; then
@@ -291,6 +304,11 @@ while IFS= read -r line || [ -n "$line" ]; do
     resolved=$VALIDATED_HOME
     emit "home=$resolved"
     emit "shared_material=$shared_material"
+    if [ "$reread_error" -eq 1 ]; then
+      emit 'config_reread=error'
+    else
+      emit 'config_reread=ok'
+    fi
     if meta_for "$id" >/dev/null \
       && { [ "$shared_material" = error ] || [ "$shared_material" = skipped ]; }; then
       emit 'budget_report=error'
@@ -333,6 +351,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   emit "transport=$TRANSPORT"
   [ -z "$TRANSPORT_REASON" ] || emit "reason=$TRANSPORT_REASON"
   case "$TRANSPORT" in agent|direct) ;; *) exceptions=$((exceptions + 1)) ;; esac
+  [ "$reread_error" -eq 0 ] || exceptions=$((exceptions + 1))
 done < "$TMP/records"
 
 printf '\n'
