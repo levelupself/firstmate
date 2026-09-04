@@ -391,6 +391,8 @@ wait_for_fleet_state fleet-no-fleet-process \
   || fail "status kept reporting a live region after its painter stopped"
 
 relaunch_painter "$FLEET_FIRST" "$FLEET_SECTION" "$ROOT" ambient
+wait_for_fleet_painter "$FLEET_FIRST" \
+  || fail "the ambient-only painter was not registered after relaunch"
 wait_for_fleet_state fleet-no-pane-identity \
   || fail "an ambient-only painter did not report fleet-no-pane-identity: $(cockpit_env "$ROOT/bin/fm-cockpit.sh" status 2>&1)"
 pass "an ambient-only relaunch stays running but is refused by exact identity validation"
