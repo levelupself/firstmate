@@ -6,6 +6,11 @@
 # and the guarded named-session lab helper.
 set -u
 
+# shellcheck source=tests/lib.sh
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+set +e
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 
@@ -384,6 +389,7 @@ make_project() {  # <dir>
 
 spawn_task() {  # <id> <home> <project>
   local id=$1 home=$2 project=$3
+  fm_test_backlog_ensure_queue "$home" "$id"
   FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'sleep 120'" --mode no-mistakes --yolo off --backend herdr
 }
@@ -496,6 +502,7 @@ printf 'Projection abort fixture A.\n' > "$HOME_DIR/data/abort-a/brief.md"
 printf 'Projection abort fixture B.\n' > "$HOME_DIR/data/abort-b/brief.md"
 printf 'Projection lock contention fixture.\n' > "$HOME_DIR/data/lock-contended/brief.md"
 printf 'Projection default-on fixture.\n' > "$HOME_DIR/data/default-on/brief.md"
+fm_test_backlog_queue "$HOME_DIR" anchor shape order-a order-b order-fail fm-hibit-resume-r1 wheelhouse-healing-r1 active-seeded abort-a abort-b lock-contended default-on
 make_project "$PROJECT_DIR"
 
 # Keep one ordinary primary task live so the durable firstmate workspace is
@@ -903,6 +910,8 @@ for ROUND in 1 2 3; do
   mkdir -p "$HOME_DIR/data/focus-$ROUND-a" "$HOME_DIR/data/focus-$ROUND-b"
   printf 'Projection focus wave %s fixture A.\n' "$ROUND" > "$HOME_DIR/data/focus-$ROUND-a/brief.md"
   printf 'Projection focus wave %s fixture B.\n' "$ROUND" > "$HOME_DIR/data/focus-$ROUND-b/brief.md"
+  fm_test_backlog_ensure_queue "$HOME_DIR" "focus-$ROUND-a"
+  fm_test_backlog_ensure_queue "$HOME_DIR" "focus-$ROUND-b"
   WAVE_LOG_START=$(log_line_count)
   WAVE_FOCUS_START=$(focus_audit_line_count)
   spawn_task "focus-$ROUND-a" "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/focus-$ROUND-a.out" 2> "$TMP_ROOT/focus-$ROUND-a.err" &
@@ -1178,6 +1187,8 @@ for RESTART_ID in fm-hibit-resume-r1 wheelhouse-healing-r1; do
   if lab agent get "$OLD_RESTART_PANE" >/dev/null 2>&1; then
     fail "$RESTART_ID restart fixture unexpectedly retained a registered agent"
   fi
+  (cd "$HOME_DIR" && tasks-axi reopen "$RESTART_ID" >/dev/null) \
+    || fail "$RESTART_ID restart fixture could not reopen its missing-worker row"
   RECLAIM_FOCUS=$(focus_snapshot)
   spawn_task "$RESTART_ID" "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/$RESTART_ID-reclaim.out" 2> "$TMP_ROOT/$RESTART_ID-reclaim.err" \
     || fail "$RESTART_ID same-identity reclaim failed: $(cat "$TMP_ROOT/$RESTART_ID-reclaim.err")"
@@ -1204,6 +1215,8 @@ for RESTART_ID in fm-hibit-resume-r1 wheelhouse-healing-r1; do
       || fail "could not reprovision the isolated session for idempotent reclaim"
     PRIOR_RESTART_WT=$NEW_RESTART_WT
     PRIOR_RESTART_PANE=$NEW_RESTART_PANE
+    (cd "$HOME_DIR" && tasks-axi reopen "$RESTART_ID" >/dev/null) \
+      || fail "$RESTART_ID repeated restart fixture could not reopen its missing-worker row"
     spawn_task "$RESTART_ID" "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/$RESTART_ID-idempotent.out" 2> "$TMP_ROOT/$RESTART_ID-idempotent.err" \
       || fail "$RESTART_ID repeated reclaim failed: $(cat "$TMP_ROOT/$RESTART_ID-idempotent.err")"
     NEW_RESTART_WT=$(remember_meta_worktree "$RESTART_META")
@@ -1245,6 +1258,8 @@ PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION" >/dev/
   || fail "could not stop the isolated session for cross-home restart"
 PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
   || fail "could not reprovision the isolated session for cross-home restart"
+(cd "$SECOND_HOME_A" && tasks-axi reopen "$CROSS_RESTART_ID" >/dev/null) \
+  || fail "cross-home restart fixture could not reopen its missing-worker row"
 spawn_task "$CROSS_RESTART_ID" "$SECOND_HOME_A" "$PROJECT_DIR" > "$TMP_ROOT/cross-restart-resume.out" 2> "$TMP_ROOT/cross-restart-resume.err" \
   || fail "cross-home same-identity reclaim failed: $(cat "$TMP_ROOT/cross-restart-resume.err")"
 CROSS_NEW_WT=$(remember_meta_worktree "$CROSS_RESTART_META")
@@ -1284,6 +1299,10 @@ PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION" >/dev/
 PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
   || fail "could not reprovision the isolated session for concurrent recovery"
 CONCURRENT_RECOVERY_FOCUS=$(focus_snapshot)
+(cd "$HOME_DIR" && tasks-axi reopen "$PRIMARY_WAVE_ID" >/dev/null) \
+  || fail "primary recovery-wave fixture could not reopen its missing-worker row"
+(cd "$SECOND_HOME_B" && tasks-axi reopen "$BRAVO_WAVE_ID" >/dev/null) \
+  || fail "secondmate recovery-wave fixture could not reopen its missing-worker row"
 spawn_task "$PRIMARY_WAVE_ID" "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/primary-wave-resume.out" 2> "$TMP_ROOT/primary-wave-resume.err" &
 PRIMARY_WAVE_PID=$!
 spawn_task "$BRAVO_WAVE_ID" "$SECOND_HOME_B" "$PROJECT_DIR" > "$TMP_ROOT/bravo-wave-resume.out" 2> "$TMP_ROOT/bravo-wave-resume.err" &

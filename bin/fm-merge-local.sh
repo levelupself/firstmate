@@ -33,6 +33,7 @@ META="$STATE/$ID.meta"
 PROJ=$(grep '^project=' "$META" | cut -d= -f2-)
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ "$MODE" = local-only ] || { echo "error: task $ID is mode=$MODE, not local-only; merge PR tasks with bin/fm-pr-merge.sh <id> <PR url> after approval" >&2; exit 1; }
+"$SCRIPT_DIR/fm-backlog-integrity.sh" check-row "$ID" --allow-absent || exit 1
 
 default_branch() {
   local ref branch
@@ -241,4 +242,8 @@ fm_task_meta_set_once "$META" local_landed_at "$EVENT_AT" || {
   exit 1
 }
 fm_task_effort_capture_best_effort "$FM_ROOT" "$ID"
+"$SCRIPT_DIR/fm-backlog-integrity.sh" landed "$ID" local-merge --note "local main" || {
+  echo "error: local landing succeeded but the backlog outcome could not be recorded" >&2
+  exit 1
+}
 echo "merged $BRANCH into local $DEFAULT ($before -> $after) in $PROJ"

@@ -24,10 +24,10 @@ Scout teardown calls the script's read-only `verify` subcommand after checking f
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
 The `resolve` and `decline` subcommands close active holds, while `repair` attests a hold already closed outside the script.
-All three require a non-empty captain decision file and record the same resolution block in the hold body with the decision digest, routed identities, and a `Resolution mode:` naming the path.
+All three require a non-empty captain decision file and record the same resolution block in the hold body with the decision digest, canonical decision-file path, routed identities, and a `Resolution mode:` naming the path.
 An exact retry is idempotent, while a changed decision or, for `resolve`, a changed routed-task set is rejected.
 
-The `resolve` subcommand is the routed path and additionally requires at least one existing dependent task whose structured `blocked-by` edge points to the hold.
+The `resolve` subcommand is the routed path and additionally requires at least one existing dependent task whose structured `blocked-by` edge points to the hold, except that an already completed routed task is accepted as durable evidence for a late answer.
 It clears each dependency edge through tasks-axi and marks the hold Done only after those writes succeed.
 An exact retry can finish a partial routing operation, and a failed intermediate step leaves the hold open.
 
@@ -38,6 +38,9 @@ Every candidate found in the listing prefilter is confirmed against its own stru
 The `repair` subcommand records the resolution block on a hold that was already closed outside the script, such as by a direct `tasks-axi done`, so an origin whose decision was genuinely answered stops failing `verify`.
 It refuses a hold that is still actively held, never reopens a closed hold, and never clears a dependency edge, so an unanswered decision keeps blocking teardown until the captain's word closes it.
 It also requires the identity to carry the captain-hold provenance that tasks-axi preserves through a close, so an ordinary captain-kind task that was never held cannot be repaired into a resolved decision.
+
+The `reconcile-open` subcommand revisits open captain holds that already contain a resolution record, verifies the recorded decision file and digest, accepts routed tasks that are still blocked by the hold or already Done, clears remaining edges, and closes the answered hold.
+Locked session start invokes this repair through `bin/fm-backlog-integrity.sh`, covering an answer recorded before an interrupted close as well as the late-answer case whose routed work has already completed.
 
 ## Structured read surfaces
 
@@ -95,6 +98,11 @@ ok - resolved findings and decision-like prose do not create false holds
 ok - terminal single-owner stale status decisions do not block empty inventory
 ok - main-home and secondmate-home captain holds remain correctly routed
 ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id
+ok - resolve accepts an answer after its routed work already completed
+ok - resolution retry accepts legacy records without decision-file fields
+ok - answered decision closes from its durable decision file
+ok - answered decisions remain open while routed work is unreadable
+ok - answered decisions close when routed work is authoritatively absent
 
 $ bash tests/fm-fleet-snapshot-view.test.sh
 ok - backlog normalization takes readiness, holds, and blockers from tasks-axi

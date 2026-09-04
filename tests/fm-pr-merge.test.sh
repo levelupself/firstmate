@@ -36,6 +36,7 @@ make_case() {
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
   mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
+  cp "$ROOT/.tasks.toml" "$case_dir/.tasks.toml"
   fm_write_meta "$case_dir/state/task-x1.meta" \
     "window=fm-task-x1" \
     "worktree=$case_dir/wt" \
@@ -56,8 +57,22 @@ add_gh_mocks() {
 cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-} ${2:-}" = "pr merge" ]; then
+  : > "$FM_TEST_GH_AXI_LOG.merged"
+fi
 if [ "${1:-}" = api ]; then
-  printf '%s\n' 'merged: true' 'merged_at: null'
+  case "${2:-}" in
+    */pulls/*)
+      if [ -f "$FM_TEST_GH_AXI_LOG.merged" ]; then
+        printf '%s\n' 'merged: true' 'merged_at: null' \
+          'merge_commit: "1111111111111111111111111111111111111111"' 'base_ref: "main"'
+      else
+        printf '%s\n' 'merged: false' 'merged_at: null'
+      fi
+      ;;
+    */compare/*) printf '%s\n' ahead ;;
+    *) printf '%s\n' main ;;
+  esac
 fi
 exit 0
 SH
@@ -85,6 +100,9 @@ printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
   "pr merge") echo "error: pr merge failed" >&2 ; exit 1 ;;
 esac
+if [ "${1:-}" = api ] && [[ "${2:-}" = */pulls/* ]]; then
+  printf '%s\n' 'merged: false' 'merged_at: null'
+fi
 exit 0
 SH
   cat > "$case_dir/fakebin/gh" <<'SH'
@@ -115,6 +133,7 @@ test_torn_down_delivered_task_merges_with_durable_provenance() {
   case_dir="$TMP_ROOT/torn-down-delivered"
   fakebin="$case_dir/fakebin"
   mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
+  cp "$ROOT/.tasks.toml" "$case_dir/.tasks.toml"
   add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   : > "$case_dir/gh-axi.log"
   cat > "$case_dir/data/backlog.md" <<'MD'
@@ -154,7 +173,9 @@ test_records_pr_and_head_before_merging() {
   rc=$?
   set -e
 
-  expect_code 0 "$rc" "records-before-merge: fm-pr-merge should succeed"
+  [ "$rc" -eq 0 ] || fail "records-before-merge: fm-pr-merge failed: $(cat "$case_dir/stderr")"
+  assert_grep 'PR-merge for task-x1 proceeded with no backlog present' "$case_dir/stdout" \
+    "records-before-merge: absent backlog was not explicitly reported"
   assert_grep 'pr=https://github.com/example/repo/pull/9' "$case_dir/state/task-x1.meta" \
     "records-before-merge: pr= was not recorded"
   assert_grep 'pr_head=deadbeefcafefeed0000000000000000deadbeef' "$case_dir/state/task-x1.meta" \
@@ -164,6 +185,12 @@ test_records_pr_and_head_before_merging() {
     "records-before-merge: durable receipt did not record the merge outcome"
   assert_grep 'authorization=live-meta' "$receipt" \
     "records-before-merge: durable receipt lost its live-task authorization"
+  assert_grep 'repository=example/repo' "$receipt" \
+    "records-before-merge: durable receipt lost repository identity"
+  assert_grep 'default_branch=main' "$receipt" \
+    "records-before-merge: durable receipt lost default-branch identity"
+  assert_grep 'merge_commit=1111111111111111111111111111111111111111' "$receipt" \
+    "records-before-merge: durable receipt lost merge-commit identity"
   grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "records-before-merge: gh-axi pr merge was not invoked with number, --repo, and default --squash"
   fm_write_meta "$case_dir/state/task-x1.meta" \
@@ -182,6 +209,23 @@ test_records_pr_and_head_before_merging() {
   assert_grep 'pr=https://github.com/example/repo/pull/10' "$receipt" \
     "records-before-merge: reused task retained the prior delivery identity"
   pass "fm-pr-merge records pr= and pr_head= before invoking gh-axi pr merge"
+}
+
+test_existing_backlog_without_row_refuses_before_merge() {
+  local case_dir rc=0
+  case_dir=$(make_case missing-backlog-row)
+  add_gh_mocks "$case_dir" deadbeefcafefeed0000000000000000deadbeef
+  : > "$case_dir/gh-axi.log"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$case_dir/data/backlog.md"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/15 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "missing-backlog-row: PR merge tolerated a missing task row"
+  assert_grep 'task task-x1 is absent from the backlog' "$case_dir/stderr" \
+    "missing-backlog-row: refusal did not identify the missing row"
+  assert_no_grep '^pr merge ' "$case_dir/gh-axi.log" \
+    "missing-backlog-row: forge merge ran before backlog preflight"
+  pass "PR merge refuses a missing row before forge mutation"
 }
 
 test_merge_failure_propagates_after_recording() {
@@ -239,6 +283,46 @@ SH
   pass "fm-pr-merge stamps no outcome until the forge confirms the merged state"
 }
 
+test_unreadable_merge_state_refuses_before_merge() {
+  local case_dir rc
+  case_dir=$(make_case merge-state-unreadable)
+  mkdir -p "$case_dir/wt"
+  : > "$case_dir/gh-axi.log"
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-}" = api ] && [[ "${2:-}" = */pulls/* ]]; then
+  echo 'transient forge read failure' >&2
+  exit 1
+fi
+if [ "${1:-} ${2:-}" = "pr merge" ]; then
+  echo 'already merged' >&2
+  exit 1
+fi
+exit 0
+SH
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/14 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "merge-state-unreadable: fm-pr-merge should fail closed"
+  assert_grep 'forge merge state is unavailable' "$case_dir/stderr" \
+    "merge-state-unreadable: refusal did not identify unavailable forge state"
+  assert_no_grep '^pr merge ' "$case_dir/gh-axi.log" \
+    "merge-state-unreadable: retry attempted a merge without authoritative state"
+  assert_grep 'phase=prepared' "$case_dir/data/pr-merges/task-x1.receipt" \
+    "merge-state-unreadable: retry did not preserve prepared provenance"
+  pass "fm-pr-merge fails closed when pre-merge forge state is unreadable"
+}
+
 test_extra_merge_args_forwarded() {
   local case_dir rc
   case_dir=$(make_case extra-args)
@@ -284,6 +368,7 @@ test_missing_meta_with_wrong_done_pr_refuses() {
   case_dir="$TMP_ROOT/wrong-done-pr"
   fakebin="$case_dir/fakebin"
   mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
+  cp "$ROOT/.tasks.toml" "$case_dir/.tasks.toml"
   add_gh_mocks "$case_dir" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   : > "$case_dir/gh-axi.log"
   cat > "$case_dir/data/backlog.md" <<'MD'
@@ -341,6 +426,41 @@ EOF
   pass "fm-pr-merge retries the exact prepared merge after Done history is pruned"
 }
 
+test_prepared_receipt_finalizes_already_merged_pr() {
+  local case_dir receipt
+  case_dir="$TMP_ROOT/prepared-already-merged"
+  receipt="$case_dir/data/pr-merges/delivered-x1.receipt"
+  mkdir -p "$case_dir/state" "$case_dir/data/pr-merges" "$case_dir/fakebin"
+  add_gh_mocks "$case_dir" cccccccccccccccccccccccccccccccccccccccc
+  : > "$case_dir/gh-axi.log"
+  : > "$case_dir/gh-axi.log.merged"
+  cat > "$receipt" <<'EOF'
+schema=fm-pr-merge.v3
+task_id=delivered-x1
+pr=https://github.com/example/repo/pull/21
+spawned_at=2026-08-29T10:00:00Z
+phase=prepared
+authorization=done-record
+prepared_epoch=1788000000
+merged_at=
+repository=example/repo
+default_branch=
+merge_commit=
+EOF
+
+  run_pr_merge "$case_dir" delivered-x1 https://github.com/example/repo/pull/21 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "prepared-already-merged: fm-pr-merge failed"
+
+  assert_no_grep '^pr merge ' "$case_dir/gh-axi.log" \
+    "prepared-already-merged: retry attempted to merge an already merged PR"
+  assert_grep 'phase=merged' "$receipt" \
+    "prepared-already-merged: durable receipt did not finalize"
+  assert_grep 'merge_commit=1111111111111111111111111111111111111111' "$receipt" \
+    "prepared-already-merged: durable receipt lost merge identity"
+  pass "fm-pr-merge finalizes an already merged prepared receipt without remerging"
+}
+
 test_conflicting_concurrent_requests_merge_only_one_pr() {
   local case_dir first_pid rc receipt
   case_dir=$(make_case concurrent-conflict)
@@ -352,9 +472,21 @@ printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 if [ "${1:-} ${2:-}" = "pr merge" ]; then
   : > "$FM_TEST_GH_AXI_ENTERED"
   while [ ! -f "$FM_TEST_GH_AXI_RELEASE" ]; do sleep 0.05; done
+  : > "$FM_TEST_GH_AXI_LOG.merged"
 fi
 if [ "${1:-}" = api ]; then
-  printf '%s\n' 'merged: true' 'merged_at: null'
+  case "${2:-}" in
+    */pulls/*)
+      if [ -f "$FM_TEST_GH_AXI_LOG.merged" ]; then
+        printf '%s\n' 'merged: true' 'merged_at: null' \
+          'merge_commit: "1111111111111111111111111111111111111111"' 'base_ref: "main"'
+      else
+        printf '%s\n' 'merged: false' 'merged_at: null'
+      fi
+      ;;
+    */compare/*) printf '%s\n' ahead ;;
+    *) printf '%s\n' main ;;
+  esac
 fi
 SH
   cat > "$case_dir/fakebin/gh" <<'SH'
@@ -525,13 +657,16 @@ test_parses_pr_url_for_gh_axi() {
 }
 
 test_records_pr_and_head_before_merging
+test_existing_backlog_without_row_refuses_before_merge
 test_merge_failure_propagates_after_recording
 test_unconfirmed_merge_remains_prepared
+test_unreadable_merge_state_refuses_before_merge
 test_extra_merge_args_forwarded
 test_torn_down_delivered_task_merges_with_durable_provenance
 test_missing_meta_refuses_before_merge
 test_missing_meta_with_wrong_done_pr_refuses
 test_prepared_receipt_allows_same_pr_retry
+test_prepared_receipt_finalizes_already_merged_pr
 test_conflicting_concurrent_requests_merge_only_one_pr
 test_malformed_url_refuses_before_merge
 test_rejects_unsafe_url_segments_before_recording

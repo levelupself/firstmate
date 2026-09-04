@@ -221,6 +221,7 @@ esac
 # --- a finished child worker inside the remote secondmate home --------------
 CHILD_WT="$REMOTE_HOME/projects/alpha"
 mkdir -p "$REMOTE_HOME/state"
+fm_test_backlog_queue "$REMOTE_HOME" work-child
 write_child_meta() {
   fm_write_meta "$REMOTE_HOME/state/work-child.meta" \
     "window=firstmate:fm-work-child" "endpoint_task_id=work-child" \

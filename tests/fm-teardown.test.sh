@@ -180,8 +180,17 @@ add_compatible_tasks_axi() {
   local case_dir=$1
   cat > "$case_dir/fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
+[ -z "${FM_FAKE_TASKS_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TASKS_LOG"
 if [ "${1:-}" = --version ]; then
   printf '%s\n' '0.2.4'
+  exit 0
+fi
+if [ "${1:-}" = show ]; then
+  if [ "${FM_FAKE_TASKS_SHOW_MISSING:-0}" = 1 ]; then
+    printf '%s\n' 'error: task not found' >&2
+    exit 1
+  fi
+  printf '%s\n' '  state: in_flight'
   exit 0
 fi
 if [ "${1:-}" = update ] && [ "${2:-}" = --help ]; then
@@ -581,23 +590,61 @@ test_local_only_fork_remote_allows() {
   pass "local-only worktree with HEAD on a fork remote is torn down (fix holds)"
 }
 
-test_teardown_prompts_tasks_axi_done_when_compatible() {
+test_teardown_preserves_open_pr_poll_when_compatible() {
   local case_dir out
   case_dir=$(make_case tasks-axi-reminder)
   write_meta "$case_dir" no-mistakes ship
   printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/data"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$case_dir/data/backlog.md"
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" \
+    PATH="$case_dir/fakebin:$PATH" "$PR_CHECK" task-x1 https://github.com/example/repo/pull/7 >/dev/null \
+    || fail "could not arm open PR poll fixture"
   add_compatible_tasks_axi "$case_dir"
 
-  out=$(run_teardown "$case_dir") || fail "teardown failed with compatible tasks-axi"
-  printf '%s\n' "$out" | grep -F 'tasks-axi done task-x1 --pr https://github.com/example/repo/pull/7' >/dev/null \
-    || fail "teardown did not prompt tasks-axi done: $out"
-  printf '%s\n' "$out" | grep -F 'tasks-axi ready' >/dev/null \
-    || fail "teardown did not prompt tasks-axi ready: $out"
-  printf '%s\n' "$out" | grep -F 'check date gates' >/dev/null \
-    || fail "teardown did not preserve date-gate check: $out"
-  printf '%s\n' "$out" | grep -F 'keep Done to the 10 most recent' >/dev/null \
-    && fail "teardown kept manual Done pruning in compatible tasks-axi prompt: $out"
-  pass "teardown prompts tasks-axi backlog refresh when compatible"
+  out=$(FM_FAKE_TASKS_LOG="$case_dir/tasks.log" run_teardown "$case_dir") || fail "teardown failed with compatible tasks-axi"
+  grep -E '^(done|reopen) task-x1' "$case_dir/tasks.log" >/dev/null \
+    && fail "teardown changed the open PR backlog outcome: $(cat "$case_dir/tasks.log")"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    && [ -f "$case_dir/state/task-x1.check.sh" ] \
+    && [ -f "$case_dir/state/task-x1.pr-poll" ] \
+    && [ -f "$case_dir/state/task-x1.pr-poll-registration" ] \
+    || fail "teardown orphaned the open PR from its durable poll pair"
+  printf '%s\n' "$out" | grep -F 'remains In flight under its armed merge poll' >/dev/null \
+    || fail "teardown did not report the preserved open PR lifecycle: $out"
+  pass "teardown preserves an open PR as poll-owned in-flight work"
+}
+
+test_teardown_without_backlog_reports_and_proceeds() {
+  local case_dir out
+  case_dir=$(make_case no-backlog-present)
+  write_meta "$case_dir" local-only ship
+  add_compatible_tasks_axi "$case_dir"
+
+  out=$(run_teardown "$case_dir") || fail "teardown refused a home with no backlog"
+  printf '%s\n' "$out" | grep -F 'cleanup for task-x1 proceeded with no backlog present' >/dev/null \
+    || fail "teardown did not explicitly report row-less cleanup: $out"
+  [ ! -f "$case_dir/state/task-x1.meta" ] \
+    || fail "teardown did not retire task state after reporting the absent backlog"
+  pass "teardown reports and proceeds when the home has no backlog"
+}
+
+test_teardown_refuses_when_backlog_row_is_missing() {
+  local case_dir rc=0
+  case_dir=$(make_case missing-backlog-row)
+  write_meta "$case_dir" local-only ship
+  mkdir -p "$case_dir/data"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$case_dir/data/backlog.md"
+  add_compatible_tasks_axi "$case_dir"
+
+  FM_FAKE_TASKS_SHOW_MISSING=1 run_teardown "$case_dir" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "teardown tolerated a missing row in an existing backlog"
+  assert_grep 'task task-x1 is absent from the backlog' "$case_dir/stderr" \
+    "teardown did not identify the missing authoritative row"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "teardown retired task state after the lifecycle write failed"
+  pass "teardown refuses a missing row in an existing backlog"
 }
 
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present() {
@@ -606,6 +653,9 @@ test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present() {
   write_meta "$case_dir" no-mistakes ship
   printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
   printf '%s\n' manual > "$case_dir/config/backlog-backend"
+  mkdir -p "$case_dir/data"
+  printf '## In flight\n- **task-x1** - Manual lifecycle fixture\n\n## Queued\n\n## Done\n' \
+    > "$case_dir/data/backlog.md"
   add_compatible_tasks_axi "$case_dir"
 
   out=$(run_teardown "$case_dir") || fail "teardown failed with manual backlog backend"
@@ -614,6 +664,39 @@ test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present() {
   printf '%s\n' "$out" | grep -F 'tasks-axi done' >/dev/null \
     && fail "teardown prompted tasks-axi despite manual backend opt-out: $out"
   pass "teardown honors config/backlog-backend=manual even when tasks-axi is compatible"
+}
+
+test_manual_teardown_refuses_missing_backlog_row() {
+  local case_dir rc=0
+  case_dir=$(make_case manual-missing-backlog-row)
+  write_meta "$case_dir" local-only ship
+  printf '%s\n' manual > "$case_dir/config/backlog-backend"
+  mkdir -p "$case_dir/data"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$case_dir/data/backlog.md"
+
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "manual cleanup tolerated a missing backlog row"
+  assert_grep 'task task-x1 is absent from the backlog' "$case_dir/stderr" \
+    "manual cleanup did not identify the missing row"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "manual cleanup retired task state after missing-row refusal"
+  pass "manual cleanup refuses an existing backlog without its task row"
+}
+
+test_manual_teardown_refuses_unverifiable_backlog() {
+  local case_dir rc=0
+  case_dir=$(make_case manual-unverifiable-backlog)
+  write_meta "$case_dir" local-only ship
+  printf '%s\n' manual > "$case_dir/config/backlog-backend"
+  mkdir -p "$case_dir/data/backlog.md"
+
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "manual cleanup treated unverifiable backlog data as absent"
+  assert_grep 'could not verify the backlog record for task-x1' "$case_dir/stderr" \
+    "manual cleanup did not report unverifiable backlog data"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "manual cleanup retired task state after verification refusal"
+  pass "manual cleanup refuses unverifiable backlog data"
 }
 
 test_local_only_truly_unpushed_refuses() {
@@ -671,8 +754,8 @@ test_no_mistakes_origin_remote_allows() {
 
   expect_code 0 "$rc" "nm-origin: teardown should succeed when HEAD is on origin"
   ! grep -q REFUSED "$case_dir/stderr" || fail "nm-origin: teardown printed a REFUSED line"
-  grep -F 'blockers are gone and date is due' "$case_dir/stdout" >/dev/null \
-    || fail "nm-origin: teardown manual prompt did not preserve date-gate check"
+  grep -F 'cleanup for task-x1 proceeded with no backlog present' "$case_dir/stdout" >/dev/null \
+    || fail "nm-origin: teardown did not report the absent backlog"
   pass "no-mistakes worktree with HEAD on origin is torn down (no regression)"
 }
 
@@ -2719,8 +2802,12 @@ EOF
 }
 
 test_local_only_fork_remote_allows
-test_teardown_prompts_tasks_axi_done_when_compatible
+test_teardown_preserves_open_pr_poll_when_compatible
+test_teardown_without_backlog_reports_and_proceeds
+test_teardown_refuses_when_backlog_row_is_missing
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
+test_manual_teardown_refuses_missing_backlog_row
+test_manual_teardown_refuses_unverifiable_backlog
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
 test_no_mistakes_origin_remote_allows

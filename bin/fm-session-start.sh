@@ -714,6 +714,10 @@ print_agents_refresh_if_required "$REBUILDING_SESSION_PID"
 if [ "$READ_ONLY" -eq 0 ]; then
   if [ "$REEMIT" -eq 0 ]; then
     rm -f "$COMPLETION_FILE" 2>/dev/null || true
+    BACKLOG_INTEGRITY_DIAGNOSTIC=$(FM_TASKS_AXI_COMPATIBLE="$TASKS_AXI_COMPATIBLE" \
+      "$SCRIPT_DIR/fm-backlog-integrity.sh" reconcile 2>&1) \
+      || BACKLOG_INTEGRITY_DIAGNOSTIC="BACKLOG_INTEGRITY: failed ($BACKLOG_INTEGRITY_DIAGNOSTIC)"
+    printf '%s\n' "$BACKLOG_INTEGRITY_DIAGNOSTIC"
   fi
   fm_trace_context_session_start "$CONFIG" "$STATE/.trace-context-effective"
   # Every network call this session start owes is launched HERE, detached and

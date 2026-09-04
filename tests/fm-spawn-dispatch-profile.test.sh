@@ -100,6 +100,7 @@ make_spawn_case() {
     mkdir -p "$home/data/$id"
     printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
   done
+  fm_test_backlog_queue "$home" "$@"
   printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin|$launchlog"
 }
 

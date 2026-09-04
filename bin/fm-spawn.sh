@@ -977,6 +977,9 @@ if [ "$RELAUNCH" -eq 0 ]; then
     fm_backend_orca_runtime_check || exit 1
   fi
 fi
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+  "$FM_ROOT/bin/fm-backlog-integrity.sh" check-start "$ID" || exit 1
+fi
 SPAWN_TASK_LOCK="$STATE/.spawn-$ID.lock"
 if ! fm_lock_try_acquire "$SPAWN_TASK_LOCK"; then
   echo "error: another spawn is already creating task $ID" >&2
@@ -2914,6 +2917,9 @@ spawn_record_traceparent() {
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.
+if [ "$KIND" != secondmate ]; then
+  "$FM_ROOT/bin/fm-backlog-integrity.sh" start "$ID" || exit 1
+fi
 spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped

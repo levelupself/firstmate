@@ -30,6 +30,8 @@ JQ_DIR=$(command -v jq 2>/dev/null) && JQ_DIR=$(dirname "$JQ_DIR") || JQ_DIR=
 NODE_DIR=$(command -v node 2>/dev/null) && NODE_DIR=$(dirname "$NODE_DIR") || NODE_DIR=
 [ -n "$NODE_DIR" ] && BASE_PATH="$NODE_DIR:$BASE_PATH"
 TMP_ROOT=$(fm_test_tmproot fm-linear-tests)
+TASKS_AXI=$(command -v tasks-axi 2>/dev/null) \
+  || { echo "skip: tasks-axi not found"; exit 0; }
 
 # A fakebin `curl` standing in for Linear's GraphQL endpoint. It extracts the
 # operation name from the posted query, writes $FAKE_DIR/<op>.json to the -o
@@ -119,9 +121,21 @@ printf '%s\n' "$*" >> "$FAKE_DIR/gh-axi.log"
 case "${1:-} ${2:-}" in
   "pr merge")
     [ -z "${FAKE_GH_AXI_MERGE_FAIL:-}" ] || { echo "gh-axi: pr merge refused" >&2; exit 1; }
+    : > "$FAKE_DIR/merged"
     ;;
   "api "*)
-    printf '%s\n' 'merged: true' 'merged_at: "2026-08-20T12:45:00Z"'
+    case "${2:-}" in
+      /repos/o/r/pulls/*)
+        if [ -e "$FAKE_DIR/merged" ]; then
+          printf '%s\n' 'merged: true' 'merged_at: "2026-08-20T12:45:00Z"' \
+            'merge_commit: "0123456789abcdef0123456789abcdef01234567"' 'base_ref: "main"'
+        else
+          printf '%s\n' 'merged: false' 'merged_at: null' 'merge_commit: null' 'base_ref: "main"'
+        fi
+        ;;
+      /repos/o/r/compare/*) printf '%s\n' ahead ;;
+      /repos/o/r) printf '%s\n' main ;;
+    esac
     ;;
 esac
 exit 0
@@ -580,6 +594,10 @@ pass "refresh degrades quietly when Linear is unconfigured or unreachable"
 # states include Done, and successful mutation fixtures.
 new_merge_home() {
   new_home "$1"
+  cp "$ROOT/.tasks.toml" "$HOME_DIR/.tasks.toml"
+  (cd "$HOME_DIR" && "$TASKS_AXI" add t1 t1 >/dev/null \
+    && "$TASKS_AXI" start t1 >/dev/null) \
+    || fail "could not create the merge fixture's in-flight backlog row"
   printf 'LINEAR_API_KEY=lin_api_test\n' > "$HOME_DIR/.env"
   printf 'pipeline body\n' > "$FAKE_DIR/pr-body"
   fm_write_meta "$HOME_DIR/state/t1.meta" "window=fm-t1" "worktree=$HOME_DIR" \

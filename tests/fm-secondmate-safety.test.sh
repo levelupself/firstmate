@@ -2587,6 +2587,7 @@ test_fresh_spawn_refuses_while_a_forced_teardown_owns_the_task_set() {
 $rec
 EOF
   err="$TMP_ROOT/taskset-spawn.err"
+  fm_test_backlog_queue "$subhome" newtask
   # Stand in for a forced teardown that already enumerated this home's task set.
   held=$(hold_task_set_lock "$subhome/state") \
     || fail "could not stage a held task-set lock"

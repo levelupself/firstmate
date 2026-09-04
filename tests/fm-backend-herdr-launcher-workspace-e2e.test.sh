@@ -24,6 +24,11 @@
 # flag and verifies the default fleet session is unchanged after teardown.
 set -u
 
+# shellcheck source=tests/lib.sh
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+set +e
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -191,6 +196,9 @@ for id in uniqA uniqB dupC dupD staleF smE presU presD; do
 done
 mkdir -p "$PRIMARY_HOME/data/$SM2_ID"
 printf 'trivial secondmate charter brief: nothing to do.\n' > "$PRIMARY_HOME/data/$SM2_ID/brief.md"
+fm_test_backlog_queue "$PRIMARY_HOME" uniqA uniqB dupC dupD staleF smE presU presD "$SM2_ID"
+fm_test_backlog_queue "$SM_HOME" uniqA uniqB dupC dupD staleF smE presU presD
+fm_test_backlog_queue "$PRES_HOME" uniqA uniqB dupC dupD staleF smE presU presD
 
 PROJ="$TMP_ROOT/scratch-project"; make_scratch_project "$PROJ"
 
@@ -414,7 +422,7 @@ pass "real herdr E2E: a --secondmate launch still stands up that secondmate's ow
 
 # --- 8. teardown closes only the worker's own pane --------------------------
 
-FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$PRIMARY_HOME/state" FM_DATA_OVERRIDE="$PRIMARY_HOME/data" \
+FM_HOME="$PRIMARY_HOME" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$PRIMARY_HOME/state" FM_DATA_OVERRIDE="$PRIMARY_HOME/data" \
   FM_CONFIG_OVERRIDE="$PRIMARY_HOME/config" \
   "$ROOT/bin/fm-teardown.sh" dupC >"$TMP_ROOT/teardown.out" 2>&1
 status=$?

@@ -921,28 +921,58 @@ work_is_landed() {
 }
 
 backlog_refresh_reminder() {
-  local pr done_cmd report_path
+  local pr report_path show task_state
+  local -a done_args
   [ "$KIND" = secondmate ] && return 0
+  "$SCRIPT_DIR/fm-backlog-integrity.sh" check-row "$ID" --allow-absent || return 1
+  if [ ! -e "$DATA/backlog.md" ] && [ ! -L "$DATA/backlog.md" ]; then
+    printf '%s\n' "Backlog: cleanup for $ID proceeded with no backlog present; there was no lifecycle row to update."
+    return 0
+  fi
   if fm_tasks_axi_backend_available "$CONFIG"; then
+    if [ "$FORCE" = --force ]; then
+      "$SCRIPT_DIR/fm-backlog-integrity.sh" failed "$ID" \
+        || { echo "error: could not preserve failed backlog outcome for $ID" >&2; return 1; }
+      printf '%s\n' "Backlog: $ID was not recorded as Done; unfinished work was returned to Queued."
+      return 0
+    fi
     case "$KIND" in
       scout)
         report_path="data/$ID/report.md"
-        done_cmd="tasks-axi done $ID --report $report_path"
+        done_args=("done" "$ID" --report "$report_path")
         ;;
       *)
         if [ "$MODE" = local-only ]; then
-          done_cmd="tasks-axi done $ID --note \"local main\""
+          done_args=("done" "$ID" --note "local main")
         else
           pr=$PR_URL
           if [ -n "$pr" ]; then
-            done_cmd="tasks-axi done $ID --pr $pr"
+            show=$(cd "$FM_HOME" && tasks-axi show "$ID" --full 2>/dev/null) \
+              || { echo "error: could not read backlog state for $ID" >&2; return 1; }
+            task_state=$(printf '%s\n' "$show" | sed -n 's/^  state: //p' | head -1)
+            if [ "$task_state" = "done" ]; then
+              done_args=("done" "$ID" --pr "$pr")
+            elif [ "$task_state" = in_flight ] \
+              && fm_pr_poll_artifacts_valid "$STATE" "$ID" "$SCRIPT_DIR/fm-pr-poll.sh"; then
+              PRESERVE_PR_POLL=1
+              printf '%s\n' "Backlog: $ID remains In flight under its armed merge poll; the open PR was not recorded as Done."
+              return 0
+            else
+              echo "error: open PR task $ID has no valid armed merge poll" >&2
+              return 1
+            fi
           else
-            done_cmd="tasks-axi done $ID --pr PR_URL"
+            "$SCRIPT_DIR/fm-backlog-integrity.sh" failed "$ID" \
+              || { echo "error: could not preserve unfinished backlog outcome for $ID" >&2; return 1; }
+            printf '%s\n' "Backlog: $ID was not recorded as Done because no PR was recorded; unfinished work was returned to Queued. Run tasks-axi ready, check date gates, and dispatch only work whose blockers are gone and date is due."
+            return 0
           fi
         fi
         ;;
     esac
-    printf '%s\n' "Backlog: $ID just finished. Run $done_cmd, then run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
+    "$SCRIPT_DIR/fm-backlog-integrity.sh" "${done_args[@]}" \
+      || { echo "error: could not record the completed backlog outcome for $ID" >&2; return 1; }
+    printf '%s\n' "Backlog: $ID recorded complete. Run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
   else
     printf '%s\n' "Backlog: $ID just finished. Update data/backlog.md - move $ID to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due."
   fi
@@ -2429,6 +2459,9 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   fi
 fi
 
+PRESERVE_PR_POLL=0
+backlog_refresh_reminder || exit 1
+
 # Every landed/discard-work refusal above has now passed (or --force skipped
 # them). Fix 1 and Fix 2 (see script header) run here, unconditionally on
 # --force, and before ANY destructive step below - a still-parked run or a
@@ -2641,10 +2674,10 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
 [ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
-remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
+[ "$PRESERVE_PR_POLL" = 1 ] || remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
-rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
+rm -f "$STATE/$ID.turn-ended" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
   "$STATE/$ID.muse-session-current" "$STATE/$ID.cursor-session" \
@@ -2653,6 +2686,9 @@ rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.control-relaunch" "$STATE/$ID.control-relaunch.meta-prior" \
   "$STATE/$ID.control-relaunch.brief-prior" "$STATE/$ID.control-relaunch.note" \
   "$STATE/usage-cache/$ID.json"
+if [ "$PRESERVE_PR_POLL" != 1 ]; then
+  rm -f "$STATE/$ID.meta" "$STATE/$ID.launch-receipt"
+fi
 if [ "$KIND" != secondmate ]; then
   "$FM_ROOT/bin/fm-effort-store.sh" rebuild \
     || echo "teardown: warning: could not finalize deterministic effort for $ID" >&2
@@ -2663,4 +2699,3 @@ if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only 
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi
 echo "teardown $ID complete (window $T, worktree $WT)"
-backlog_refresh_reminder

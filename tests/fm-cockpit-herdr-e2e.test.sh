@@ -78,6 +78,7 @@ for id in cockpit-one cockpit-two; do
   printf 'Run the supplied verification command and stop.\nDelivery contract: mode=no-mistakes\n' \
     > "$HOME_DIR/data/$id/brief.md"
 done
+fm_test_backlog_queue "$HOME_DIR" cockpit-one cockpit-two
 
 WORKSPACE_OUT=$(lab workspace create --label firstmate --cwd "$HOME_DIR" --no-focus) \
   || fail "could not create the cockpit workspace"
@@ -181,6 +182,7 @@ pass "real Herdr placement swaps the viewport occupant and keeps the displaced w
 mkdir -p "$HOME_DIR/data/cockpit-three"
 printf 'Run the supplied verification command and stop.\nDelivery contract: mode=no-mistakes\n' \
   > "$HOME_DIR/data/cockpit-three/brief.md"
+fm_test_backlog_add_queue "$HOME_DIR" cockpit-three
 spawn_real cockpit-three cockpit-three-ok >/dev/null \
   || fail "third executable-path cockpit spawn failed"
 THIRD_META="$HOME_DIR/state/cockpit-three.meta"
@@ -260,29 +262,23 @@ wait_for_pane_text() {  # <pane> <needle> <present|absent> -> 0 once it settles
 
 READY_PANE=$(fleet_pane_for_section ready) \
   || fail "the adopted frame records no pane painting the ready section"
-cat > "$HOME_DIR/data/backlog.md" <<'EOF'
-# Backlog
-
-## Queued
-- [ ] readyflip - Queued work a worker is about to take (repo: alpha) (kind: ship)
-  Implement the thing, with acceptance criteria.
-EOF
+fm_test_backlog_add_queue "$HOME_DIR" readyflip
 wait_for_pane_text "$READY_PANE" readyflip present \
   || fail "the ready pane never showed the queued work: $(lab pane read "$READY_PANE" --source visible 2>/dev/null)"
 mkdir -p "$HOME_DIR/data/readyflip"
 printf 'Run the supplied verification command and stop.\nDelivery contract: mode=no-mistakes\n' \
   > "$HOME_DIR/data/readyflip/brief.md"
-BACKLOG_BEFORE=$(sha256sum "$HOME_DIR/data/backlog.md" | awk '{print $1}')
 spawn_real readyflip readyflip-ok >/dev/null \
   || fail "could not dispatch the queued work for real"
 [ -f "$HOME_DIR/state/readyflip.meta" ] \
   || fail "the real dispatch published no worker record"
 wait_for_pane_text "$READY_PANE" readyflip absent \
   || fail "the ready pane kept offering work a worker already held: $(lab pane read "$READY_PANE" --source visible 2>/dev/null)"
-BACKLOG_AFTER=$(sha256sum "$HOME_DIR/data/backlog.md" | awk '{print $1}')
-[ "$BACKLOG_BEFORE" = "$BACKLOG_AFTER" ] \
-  || fail "the backlog document changed, so this proved nothing about dispatch-driven membership"
-pass "a real dispatch clears the ready pane on its own redraw, before the backlog is edited"
+READYFLIP_STATE=$(cd "$HOME_DIR" && tasks-axi show readyflip --full \
+  | sed -n 's/^  state: //p' | head -1)
+[ "$READYFLIP_STATE" = in_flight ] \
+  || fail "the real dispatch did not record readyflip in flight: [$READYFLIP_STATE]"
+pass "a real dispatch records its in-flight transition and clears the ready pane on its own redraw"
 
 COUNT_BEFORE=$(lab pane list --workspace "$WORKSPACE" | jq '.result.panes | length')
 RECORD_BEFORE=$(sha256sum "$HOME_DIR/state/.herdr-cockpit" | awk '{print $1}')

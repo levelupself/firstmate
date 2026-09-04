@@ -45,13 +45,38 @@ spawned_at=2026-09-03T00:00:00Z
 EOF
 
 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-  "$ROOT/bin/fm-merge-local.sh" local-publish >/dev/null
+  "$ROOT/bin/fm-merge-local.sh" local-publish > "$TMP_ROOT/local-publish.out"
+
+grep -F 'local-merge for local-publish proceeded with no backlog present' \
+  "$TMP_ROOT/local-publish.out" >/dev/null \
+  || fail "approved landing did not explicitly report the absent backlog"
 
 [ "$(git --git-dir="$mirror" rev-parse main)" = "$landed" ] \
   || fail "approved landing did not update the local bare mirror"
 [ "$(git --git-dir="$github" rev-parse main)" = "$landed" ] \
   || fail "approved landing did not update the GitHub remote"
 pass "approved landing updates every configured remote whose HEAD names the project default"
+
+git -C "$project" checkout -q -b fm/missing-backlog-row
+commit_file "$project" missing-row.txt missing missing
+missing_row_head=$(git -C "$project" rev-parse HEAD)
+git -C "$project" checkout -q main
+cat > "$home/state/missing-backlog-row.meta" <<EOF
+project=$project
+mode=local-only
+spawned_at=2026-09-03T00:00:30Z
+EOF
+printf '## In flight\n\n## Queued\n\n## Done\n' > "$home/data/backlog.md"
+if FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-merge-local.sh" missing-backlog-row > "$TMP_ROOT/missing-row.out" 2>&1; then
+  fail "local landing unexpectedly accepted a missing backlog row"
+fi
+grep -F 'task missing-backlog-row is absent from the backlog' "$TMP_ROOT/missing-row.out" >/dev/null \
+  || fail "local landing refusal did not identify the missing row"
+[ "$(git -C "$project" rev-parse main)" != "$missing_row_head" ] \
+  || fail "local landing changed main before refusing the missing row"
+rm "$home/data/backlog.md"
+pass "local landing refuses a missing row before repository mutation"
 
 git -C "$project" checkout -q -b fm/refused-publish
 commit_file "$project" refused.txt refused refused

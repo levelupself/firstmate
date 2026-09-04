@@ -74,6 +74,7 @@ reject_repo_overrides() {
 }
 
 reject_repo_overrides "$@" || exit 1
+"$SCRIPT_DIR/fm-backlog-integrity.sh" check-row "$ID" --allow-absent || exit 1
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
@@ -111,7 +112,7 @@ receipt_matches_request() {
   [ "$(grep -c '^prepared_epoch=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
   [ "$(grep -c '^spawned_at=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
   schema=$(receipt_value schema)
-  [ "$schema" = fm-pr-merge.v1 ] || [ "$schema" = fm-pr-merge.v2 ] || return 1
+  [ "$schema" = fm-pr-merge.v1 ] || [ "$schema" = fm-pr-merge.v2 ] || [ "$schema" = fm-pr-merge.v3 ] || return 1
   [ "$(receipt_value task_id)" = "$ID" ] || return 1
   [ "$(receipt_value pr)" = "$URL" ] || return 1
   printf '%s\n' "$(receipt_value spawned_at)" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' || return 1
@@ -123,7 +124,7 @@ receipt_matches_request() {
   phase=$(receipt_value phase)
   case "$phase" in
     prepared)
-      if [ "$schema" = fm-pr-merge.v2 ]; then
+      if [ "$schema" = fm-pr-merge.v2 ] || [ "$schema" = fm-pr-merge.v3 ]; then
         [ "$(grep -c '^merged_epoch=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 0 ] || return 1
         [ "$(grep -c '^merged_at=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] \
           && [ -z "$(receipt_value merged_at)" ]
@@ -133,7 +134,7 @@ receipt_matches_request() {
       fi
       ;;
     merged)
-      if [ "$schema" = fm-pr-merge.v2 ]; then
+      if [ "$schema" = fm-pr-merge.v2 ] || [ "$schema" = fm-pr-merge.v3 ]; then
         [ "$(grep -c '^merged_epoch=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 0 ] || return 1
         [ "$(grep -c '^merged_at=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
         merged_at=$(receipt_value merged_at)
@@ -148,6 +149,19 @@ receipt_matches_request() {
       ;;
     *) return 1 ;;
   esac
+  if [ "$schema" = fm-pr-merge.v3 ]; then
+    [ "$(grep -c '^repository=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
+    [ "$(grep -c '^default_branch=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
+    [ "$(grep -c '^merge_commit=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
+    [ "$(receipt_value repository)" = "$PR_OWNER/$PR_REPO" ] || return 1
+    if [ "$phase" = merged ]; then
+      git check-ref-format --branch "$(receipt_value default_branch)" >/dev/null 2>&1 || return 1
+      printf '%s\n' "$(receipt_value merge_commit)" | grep -Eq '^[0-9a-f]{40}$' || return 1
+    else
+      [ -z "$(receipt_value default_branch)" ] || return 1
+      [ -z "$(receipt_value merge_commit)" ] || return 1
+    fi
+  fi
 }
 
 done_history_matches_request() {
@@ -159,7 +173,7 @@ done_history_matches_request() {
 }
 
 write_provenance_receipt() {
-  local phase=$1 authorization=$2 prepared_epoch=$3 merged_at=${4:-} tmp
+  local phase=$1 authorization=$2 prepared_epoch=$3 merged_at=${4:-} merge_commit=${5:-} tmp
   if [ -e "$DATA" ] || [ -L "$DATA" ]; then
     [ -d "$DATA" ] && [ ! -L "$DATA" ] || {
       echo "error: merge provenance data directory is unavailable" >&2
@@ -190,9 +204,12 @@ write_provenance_receipt() {
   tmp=$(mktemp "$PROVENANCE_DIR/.$ID.receipt.XXXXXX") || return 1
   {
     printf '%s\n' \
-      'schema=fm-pr-merge.v2' \
+      'schema=fm-pr-merge.v3' \
       "task_id=$ID" \
       "pr=$URL" \
+      "repository=$PR_OWNER/$PR_REPO" \
+      "default_branch=$DEFAULT_BRANCH" \
+      "merge_commit=$merge_commit" \
       "spawned_at=$CURRENT_SPAWNED_AT" \
       "phase=$phase" \
       "authorization=$authorization" \
@@ -207,7 +224,7 @@ AUTHORIZATION=
 if [ -e "$PROVENANCE_RECEIPT" ] || [ -L "$PROVENANCE_RECEIPT" ]; then
   if ! receipt_matches_request \
     && [ -n "$CURRENT_SPAWNED_AT" ] \
-    && { [ "$(receipt_value schema)" = fm-pr-merge.v1 ] || [ "$(receipt_value schema)" = fm-pr-merge.v2 ]; } \
+    && { [ "$(receipt_value schema)" = fm-pr-merge.v1 ] || [ "$(receipt_value schema)" = fm-pr-merge.v2 ] || [ "$(receipt_value schema)" = fm-pr-merge.v3 ]; } \
     && [ "$(receipt_value task_id)" = "$ID" ] \
     && [ "$(receipt_value phase)" = merged ] \
     && printf '%s\n' "$(receipt_value spawned_at)" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
@@ -247,28 +264,59 @@ fi
 
 PREPARED_EPOCH=$(receipt_value prepared_epoch)
 case "$PREPARED_EPOCH" in ''|*[!0-9]*) PREPARED_EPOCH=$(date +%s) ;; esac
+DEFAULT_BRANCH=
 if [ "$(receipt_value phase)" != merged ]; then
   write_provenance_receipt prepared "$AUTHORIZATION" "$PREPARED_EPOCH"
 fi
+
+load_merge_evidence() {
+  local merge_confirmed base_ref compare_status
+  MERGE_QUERY=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER" \
+    --jq '{merged: .merged, merged_at: .merged_at, merge_commit: .merge_commit_sha, base_ref: .base.ref}' 2>/dev/null) \
+    || return 3
+  merge_confirmed=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merged: //p' | tail -1)
+  case "$merge_confirmed" in
+    true) ;;
+    false) return 1 ;;
+    *) return 3 ;;
+  esac
+  DEFAULT_BRANCH=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO" --jq '.default_branch' 2>/dev/null) \
+    || return 2
+  git check-ref-format --branch "$DEFAULT_BRANCH" >/dev/null 2>&1 || return 2
+  MERGE_COMMIT=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merge_commit: "\([0-9a-f]*\)"$/\1/p' | tail -1)
+  base_ref=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^base_ref: "\([^"]*\)"$/\1/p' | tail -1)
+  printf '%s\n' "$MERGE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || return 2
+  [ "$base_ref" = "$DEFAULT_BRANCH" ] || return 2
+  compare_status=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/compare/$MERGE_COMMIT...$DEFAULT_BRANCH" --jq '.status' 2>/dev/null) \
+    || return 2
+  case "$compare_status" in ahead|identical) ;; *) return 2 ;; esac
+  MERGED_AT=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merged_at: "\([^"]*\)"$/\1/p' | tail -1)
+  if ! printf '%s\n' "$MERGED_AT" | grep -Eq '^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
+    MERGED_AT=
+  fi
+}
 
 merge_args=()
 if ! caller_has_merge_method "$@"; then
   merge_args=(--squash)
 fi
 
-gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
-MERGE_QUERY=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER" \
-  --jq '{merged: .merged, merged_at: .merged_at}' 2>/dev/null || true)
-MERGE_CONFIRMED=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merged: //p' | tail -1)
-if [ "$MERGE_CONFIRMED" != true ]; then
-  echo "error: forge did not confirm that the PR merged; provenance remains prepared" >&2
-  exit 1
+if load_merge_evidence; then
+  :
+else
+  merge_evidence_rc=$?
+  case "$merge_evidence_rc" in
+    1) ;;
+    2) echo "error: merged PR default-branch evidence is unavailable; provenance remains prepared" >&2; exit 1 ;;
+    *) echo "error: forge merge state is unavailable; provenance remains prepared" >&2; exit 1 ;;
+  esac
+  gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
+  load_merge_evidence || {
+    echo "error: forge did not confirm the merged PR on its default branch; provenance remains prepared" >&2
+    exit 1
+  }
 fi
-MERGED_AT=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merged_at: "\([^"]*\)"$/\1/p' | tail -1)
-if ! printf '%s\n' "$MERGED_AT" | grep -Eq '^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
-  MERGED_AT=
-fi
-write_provenance_receipt merged "$AUTHORIZATION" "$PREPARED_EPOCH" "$MERGED_AT"
+write_provenance_receipt merged "$AUTHORIZATION" "$PREPARED_EPOCH" "$MERGED_AT" "$MERGE_COMMIT"
 if [ -f "$META" ]; then
   if [ -n "$MERGED_AT" ]; then
     fm_task_meta_set_once "$META" merged_at "$MERGED_AT" || {
@@ -283,6 +331,10 @@ if [ -f "$META" ]; then
 fi
 "$FM_ROOT/bin/fm-effort-store.sh" capture "$ID" --outcome pr-merged >/dev/null || {
   echo "error: merged PR succeeded but its effort record could not be captured" >&2
+  exit 1
+}
+"$SCRIPT_DIR/fm-backlog-integrity.sh" landed "$ID" PR-merge --pr "$URL" || {
+  echo "error: merged PR succeeded but the backlog outcome could not be recorded" >&2
   exit 1
 }
 

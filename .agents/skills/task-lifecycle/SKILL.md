@@ -134,7 +134,8 @@ For any custom `state/<id>.check.sh` written directly, keep it an ordinary singl
 Keep a PR-based ship task live until its open PR lands whenever practical.
 This is advisory because the sanctioned merge path also handles a safely delivered task that was torn down early.
 When teardown refuses a legacy Herdr record that lacks `endpoint_task_id=`, use the explicit evidence migration in `bin/fm-endpoint-bind-migrate.sh` rather than editing task metadata by hand; `docs/configuration.md` owns the supported boundary.
-After successful teardown, record completion, retain only the configured recent Done history, and re-evaluate queued work whose blockers and time gates have cleared.
+Successful teardown records the backlog outcome through `bin/fm-backlog-integrity.sh`; landed work becomes Done, while failed or discarded work returns to Queued rather than being falsely completed.
+Retain only the configured recent Done history, and re-evaluate queued work whose blockers and time gates have cleared.
 
 A secondmate is persistent and an empty queue is healthy.
 Retire one only on an explicit captain or main-firstmate decision, after loading `secondmate-provisioning`; its home must contain no work under way, and forced discard still requires explicit captain authority.

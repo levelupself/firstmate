@@ -67,15 +67,14 @@ done
 
 The observed pane changed directly between complete frames without a visible blank refresh.
 
-## Ready membership follows dispatch, not the backlog edit
+## Dispatch records In flight before worker release
 
-Verified on 2026-09-02 against Herdr 0.8.0 in a guarded lab session.
+Verified on 2026-09-03 against Herdr 0.8.0 in a guarded lab session.
 
-Dispatch publishes `state/<id>.meta` before the backlog row is moved to In flight afterwards, by hand.
-Between the two the panel was offering work that already had a worker on it, on a surface meant to be acted on without cross-checking, while the sibling in-flight section already showed the same id from the same snapshot.
-The rendered queue sections therefore withhold a queued row whose id appears in the snapshot's live task rows, so the reconciliation happens on the panel's own next redraw with no focus change and no manual refresh.
+Dispatch publishes `state/<id>.meta`, records the queued backlog row as In flight through `bin/fm-backlog-integrity.sh`, and only then releases the worker by sending its launch command.
+The renderer still withholds any queued row whose id appears in the snapshot's live task rows, preserving a safe projection if a legacy or interrupted transition temporarily exposes that combination.
 
-`tests/fm-cockpit-herdr-e2e.test.sh` proves it from a real transition rather than a fixture: it writes a dispatchable queued row, waits for the recorded ready pane to display it, dispatches it with `bin/fm-spawn.sh` into the guarded lab, and requires the pane to drop it while the backlog document's checksum is unchanged across the whole transition.
+`tests/fm-cockpit-herdr-e2e.test.sh` proves the lifecycle from a real transition rather than a fixture: it writes a dispatchable queued row, waits for the recorded ready pane to display it, dispatches it with `bin/fm-spawn.sh` into the guarded lab, and requires tasks-axi to report the row In flight after the pane drops it.
 `tests/fm-fleet-snapshot-view.test.sh` pins the same rule portably for READY and BLOCKED, together with the row's continued appearance under IN FLIGHT.
 
 ```sh
@@ -87,10 +86,10 @@ HERDR_LAB_HELPER=/absolute/path/to/bin/fm-herdr-lab.sh \
 ```text
 ok - ready membership follows the live task records, not the later backlog edit
 ok - the blocked queue drops rows a worker already holds
-ok - a real dispatch clears the ready pane on its own redraw, before the backlog is edited
+ok - a real dispatch records its in-flight transition and clears the ready pane on its own redraw
 ```
 
-This dispatch-driven redraw verification was recorded at full SHA `a51694832910fcdde11aba87886be65049273acf`.
+This dispatch-driven redraw verification was recorded at full SHA `fbeb6d6002924df20a2ef15ad3620409ca2f0100`.
 Its proof-file list is `bin/fm-fleet-view.sh`, `bin/fm-fleet-snapshot.sh`, `bin/fm-spawn.sh`, `tests/fm-fleet-snapshot-view.test.sh`, and `tests/fm-cockpit-herdr-e2e.test.sh`.
 
 ## Project groups and fair row limits

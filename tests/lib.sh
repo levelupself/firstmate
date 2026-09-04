@@ -187,6 +187,50 @@ SH
   chmod +x "$fakebin/$tool"
 }
 
+# Seed the queued backlog input required by dispatch-oriented fixtures.
+fm_test_backlog_queue() {
+  local home=$1
+  shift
+  fm_test_backlog_queue_at "$home/data" "$@"
+}
+
+fm_test_backlog_queue_at() {
+  local data=$1 id
+  shift
+  mkdir -p "$data"
+  {
+    printf '%s\n\n' '# Backlog' '## In flight'
+    printf '%s\n\n' '## Queued'
+    for id in "$@"; do
+      printf -- '- [ ] %s - Test fixture work (repo: fixture) (kind: ship)\n' "$id"
+    done
+    printf '\n%s\n' '## Done'
+  } > "$data/backlog.md"
+}
+
+fm_test_backlog_add_queue() {
+  local home=$1 id=$2 backlog="$1/data/backlog.md" tmp
+  tmp=$(mktemp "$home/data/.backlog.XXXXXX") || return 1
+  awk -v id="$id" '
+    /^## Done/ { printf "- [ ] %s - Test fixture work (repo: fixture) (kind: ship)\n\n", id }
+    { print }
+  ' "$backlog" > "$tmp" && mv "$tmp" "$backlog"
+}
+
+fm_test_backlog_ensure_queue() {
+  local home=$1 id=$2
+  if [ -f "$home/data/backlog.md" ] \
+    && "$ROOT/bin/fm-backlog-tsv.sh" "$home/data/backlog.md" \
+      | awk -F '\t' -v id="$id" '$2 == id { found = 1 } END { exit(found ? 0 : 1) }'; then
+    return 0
+  fi
+  if [ -f "$home/data/backlog.md" ]; then
+    fm_test_backlog_add_queue "$home" "$id"
+  else
+    fm_test_backlog_queue "$home" "$id"
+  fi
+}
+
 # --- deterministic git identity and fixtures --------------------------------
 
 # fm_git_identity [name] [email]: export a fixed author/committer identity so

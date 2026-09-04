@@ -55,8 +55,8 @@ Live rows are grouped by project and share limited height fairly across projects
 Unknown live runtime state stays in the in-flight projection, and each shortened live project group discloses its omitted row count.
 READY separates the queued set `tasks-axi ready` returns: rows the snapshot marks `dispatch_clear` render plainly, while rows whose own durable contract stops the backlog from confirming dispatch render with a `?` marker and the reason, and the heading counts the two apart.
 The snapshot owns the `dispatch_clear` judgement, while the renderer reconciles queued ids against the snapshot's live task inventory.
-The queue sections drop one row from that set: a queued row whose id already appears in the snapshot's live task rows is work a worker holds, because dispatch publishes `state/<id>.meta` immediately while the backlog row is moved to In flight afterwards by hand.
-Those task rows are the authoritative live inventory, so the panel renders such a row as in-flight work on its own next redraw instead of offering it again as work to hand out.
+The queue sections drop one row from that set: a queued row whose id already appears in the snapshot's live task rows is work a worker holds, covering legacy data and an interrupted lifecycle write without offering the work twice.
+Normal dispatch records the row In flight before releasing the worker, and the live task rows remain the authoritative inventory for the panel's defensive reconciliation.
 `bin/fm-bearings-snapshot.sh` provides the bounded bearings projection, so both views consume one structured contract instead of reparsing raw fleet files.
 The script header owns the exact JSON schema.
 
@@ -258,6 +258,11 @@ PR-based task merges go through `bin/fm-pr-merge.sh`, which records live-task `p
 The volatile `pr=` field helps live-task review and teardown resolve the PR, but it has no role after successful teardown removes task metadata; the Done record and merge receipt are the durable post-teardown provenance.
 A safely delivered task whose volatile metadata is already gone remains mergeable only when its exact task and canonical PR match the Done backlog or archive history, or when an earlier exact receipt proves a retry; deleting metadata alone therefore grants no merge authority.
 The helper requires a full `https://github.com/<owner>/<repo>/pull/<n>` URL, invokes `gh-axi pr merge <n> --repo <owner>/<repo>`, defaults to `--squash`, preserves explicit merge-method flags, and rejects malformed URLs or repo override flags before recording merge state; a well-formed GitLab merge request URL (see [docs/gitlab-merge-watch.md](gitlab-merge-watch.md)) is refused too, explicitly, rather than sent to the wrong forge.
+`bin/fm-backlog-integrity.sh` owns task-row lifecycle transitions without changing the tasks-axi schema: fresh spawn starts a queued row and refuses a Done row, successful PR or local landing closes it, completed scout teardown closes it with its report, an open PR with a valid armed merge poll stays In flight, and unfinished or explicitly discarded work returns to Queued rather than becoming Done.
+Lifecycle refusal is asymmetric: dispatch refuses an absent backlog because no work has started, while a completed merge or safe cleanup proceeds and explicitly reports an absent backlog because refusal would strand landed work; every path refuses when an existing backlog lacks the task row.
+Backlog data that cannot be positively verified as a regular non-symlink file is unverifiable and refuses lifecycle mutation rather than being treated as absent.
+Locked session start reconciles in-flight rows whose volatile worker record is absent, closing them only from an identity-bound merged-PR receipt, verified local-landing receipt, or completed scout report, and otherwise reopening them; the same pass removes resolved blocker edges and closes answered decision holds from their recorded decision files.
+`tests/fm-backlog-integrity.test.sh` is the focused regression owner for completed-row resurrection, orphan repair, blocker cleanup, failed-work preservation, and receipt identity checks.
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
 [`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and stale-lock recovery procedure.
 

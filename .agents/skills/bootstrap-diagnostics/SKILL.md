@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_OPTIONAL, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, NEEDS_HARNESS_AUTH, NEEDS_OPTIONAL_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, AGENTS_MD_BUDGET, SESSION_START_BUDGET, CREW_DISPATCH invalid, FLEET_SYNC, NETWORK_CHECKS, PR_CHECK_MIGRATION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_OPTIONAL, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, NEEDS_HARNESS_AUTH, NEEDS_OPTIONAL_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, AGENTS_MD_BUDGET, SESSION_START_BUDGET, CREW_DISPATCH invalid, BACKLOG_INTEGRITY, FLEET_SYNC, NETWORK_CHECKS, PR_CHECK_MIGRATION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, or FMX - or when a standalone bin/fm-bootstrap.sh, bin/fm-backlog-integrity.sh, or bin/fm-startup-network.sh run prints one of those lines.
   A silent bootstrap section, or a BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -47,7 +47,10 @@ When any diagnostic needs captain attention, report the plain consequence and re
 - `SESSION_START_BUDGET: invalid config/session-start-budget - <reason>` - the visible session briefing budget is not a safe one-line positive decimal file; do not infer the default or propagate it.
   Correct the local primary file, then rerun session start so the normal convergence path can deliver the validated value to secondmate homes.
 - `CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>` - the optional dispatch profile file exists but failed low-cost bootstrap validation; stop profile-based dispatch, report the actionable error, and require correction of the malformed schema, unverified harness name, or invalid harness/effort pair rather than falling back around it or selecting a bad profile.
-- `FLEET_SYNC: <repo>: skipped: <reason>` - a benign one-off skip (offline or no origin); bootstrap continued, investigate only if it blocks work.
+- `BACKLOG_INTEGRITY: clean` - lifecycle rows, dependency edges, and answered decision records already agree with durable evidence, so no action is needed.
+- `BACKLOG_INTEGRITY: <repairs>` - session start repaired each named interrupted transition from a preserved report, landing receipt, resolved dependency, or decision file; inspect the named evidence only when a repair is surprising.
+- `BACKLOG_INTEGRITY: failed (<reason>)` - startup could not reconcile the backlog safely, so report the exact reason and repair the named record before trusting fleet counts.
+- `FLEET_SYNC: <repo>: skipped: <reason>` - a benign one-off skip (offline, no origin, local-only); bootstrap continued, investigate only if it blocks work.
   A skip can also report the bounded fleet-refresh timeout (`FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT`, or a fleet-size-aware default with a 20 second floor); a timeout never blocks startup.
 - `FLEET_SYNC: <repo>: DRIFT: local-only default is <ahead> ahead, <behind> behind <remote>/<default>` - fleet sync left the local-only project untouched but found a configured publication remote that differs from its local default branch.
 - `FLEET_SYNC: <repo>: DRIFT UNKNOWN: <detail>` - fleet sync could not inspect or fetch a configured local-only remote, so publication drift is unknown and requires attention.

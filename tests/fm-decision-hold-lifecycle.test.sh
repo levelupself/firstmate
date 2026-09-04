@@ -774,6 +774,133 @@ test_unanswered_decision_still_blocks_completion_and_teardown() {
   pass "an unanswered decision still blocks completion and resists both unrouted close paths"
 }
 
+test_resolve_accepts_already_completed_routed_work() {
+  local home origin hold
+  home=$(make_home late-routed-answer)
+  origin=map-every-gamespy-gate-between-local-net-38
+  write_origin_meta "$home" "$origin"
+  hold=$(run_decisions "$home" hold "$origin" keep-or-revert-exe-patch \
+    --title "Keep or revert the two-byte presence-branch patch" \
+    --reason "captain answer pending" --repo ds2-multiplayer)
+  tasks_in "$home" add reverted-patch "Revert the patch" >/dev/null
+  tasks_in "$home" block reverted-patch --by "$hold" >/dev/null
+  tasks_in "$home" "done" reverted-patch >/dev/null
+  printf 'Revert the two-byte presence-branch patch.\n' > "$home/data/exe-patch-revert.md"
+  run_decisions "$home" resolve "$origin" keep-or-revert-exe-patch \
+    --decision-file "$home/data/exe-patch-revert.md" --routed-to reverted-patch >/dev/null \
+    || fail "resolve refused a late-recorded answer because routed work was already done"
+  run_decisions "$home" resolve "$origin" keep-or-revert-exe-patch \
+    --decision-file "$home/data/exe-patch-revert.md" --routed-to reverted-patch >/dev/null \
+    || fail "resolve retry rejected the durable decision-file identity"
+  [ "$(tasks_in "$home" show "$hold" | sed -n 's/^  state: //p')" = "done" ] \
+    || fail "late-recorded answer did not close its hold"
+  pass "resolve accepts an answer after its routed work already completed"
+}
+
+test_resolution_retry_accepts_legacy_identity_record() {
+  local home origin hold digest body
+  home=$(make_home legacy-resolution-retry)
+  origin=legacy-review
+  write_origin_meta "$home" "$origin"
+  hold=$(run_decisions "$home" hold "$origin" legacy-choice \
+    --title "Choose the legacy option" --reason "answer pending" --repo sample)
+  printf 'Keep the legacy option.\n' > "$home/data/legacy-choice.md"
+  digest=$(printf 'Keep the legacy option.' | sha256sum | awk '{print $1}')
+  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: (none)\nResolution mode: declined\n\nCaptain decision:\nKeep the legacy option.\n\nRouted work:\n(none)' "$digest")
+  tasks_in "$home" update "$hold" --body "$body" >/dev/null
+  tasks_in "$home" "done" "$hold" >/dev/null
+  run_decisions "$home" decline "$origin" legacy-choice \
+    --decision-file "$home/data/legacy-choice.md" >/dev/null \
+    || fail "decline retry rejected a legacy durable identity record"
+  pass "resolution retry accepts legacy records without decision-file fields"
+}
+
+test_answered_open_hold_closes_from_decision_file() {
+  local home origin hold digest body
+  home=$(make_home answered-open-hold)
+  origin=map-every-gamespy-gate-between-local-net-38
+  write_origin_meta "$home" "$origin"
+  hold=$(run_decisions "$home" hold "$origin" keep-or-revert-exe-patch \
+    --title "Keep or revert the two-byte presence-branch patch" \
+    --reason "captain answer pending" --repo ds2-multiplayer)
+  printf 'Revert the two-byte presence-branch patch.\n' > "$home/data/exe-patch-revert.md"
+  digest=$(printf 'Revert the two-byte presence-branch patch.' | sha256sum | awk '{print $1}')
+  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nDecision file: %s\nRouted identities: (none)\nResolution mode: declined\n\nCaptain decision:\nRevert the two-byte presence-branch patch.\n\nRouted work:\n(none)' "$digest" "$home/data/exe-patch-revert.md")
+  tasks_in "$home" update "$hold" --body "$body" >/dev/null
+  [ "$(tasks_in "$home" show "$hold" | sed -n 's/^  state: //p')" = queued ] \
+    || fail "answered-but-open decision failure was not reproduced"
+  run_decisions "$home" reconcile-open >/dev/null \
+    || fail "answered open hold could not reconcile from its decision file"
+  [ "$(tasks_in "$home" show "$hold" | sed -n 's/^  state: //p')" = "done" ] \
+    || fail "answered decision file left its hold open"
+  pass "answered decision closes from its durable decision file"
+}
+
+test_answered_open_hold_preserves_unreadable_route() {
+  local home origin hold digest body rc
+  home=$(make_home unreadable-answered-route)
+  origin=route-review
+  write_origin_meta "$home" "$origin"
+  hold=$(run_decisions "$home" hold "$origin" route-choice \
+    --title "Choose the route" --reason "answer pending" --repo sample)
+  tasks_in "$home" add routed-work "Apply the chosen route" >/dev/null
+  tasks_in "$home" block routed-work --by "$hold" >/dev/null
+  printf 'Use the chosen route.\n' > "$home/data/route-choice.md"
+  digest=$(printf 'Use the chosen route.' | sha256sum | awk '{print $1}')
+  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nDecision file: %s\nRouted identities: routed-work\nResolution mode: routed\n\nCaptain decision:\nUse the chosen route.\n\nRouted work:\nrouted-work' "$digest" "$home/data/route-choice.md")
+  tasks_in "$home" update "$hold" --body "$body" >/dev/null
+  : > "$home/state/fail-routed-show"
+  cat > "$home/fakebin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-} ${2:-}" = "show routed-work" ] && [ -f "$FM_STATE_OVERRIDE/fail-routed-show" ]; then
+  echo 'transient task read failure' >&2
+  exit 1
+fi
+exec "$REAL_TASKS_AXI" "$@"
+SH
+  chmod +x "$home/fakebin/tasks-axi"
+
+  set +e
+  run_decisions "$home" reconcile-open > "$home/reconcile.out" 2> "$home/reconcile.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "unreadable-answered-route: reconciliation ignored the task read failure"
+  [ "$(tasks_in "$home" show "$hold" | sed -n 's/^  state: //p')" = queued ] \
+    || fail "unreadable-answered-route: reconciliation closed the decision"
+  assert_grep 'route-review-decision-route-choice' <(tasks_in "$home" show routed-work) \
+    "unreadable-answered-route: reconciliation removed the live dependency"
+  rm -f "$home/state/fail-routed-show"
+  run_decisions "$home" reconcile-open >/dev/null \
+    || fail "unreadable-answered-route: reconciliation did not recover after the read succeeded"
+  [ "$(tasks_in "$home" show "$hold" | sed -n 's/^  state: //p')" = "done" ] \
+    || fail "unreadable-answered-route: recovered reconciliation did not close the decision"
+  pass "answered decisions remain open while routed work is unreadable"
+}
+
+test_answered_open_hold_accepts_confirmed_missing_route() {
+  local home origin hold digest body
+  home=$(make_home missing-answered-route)
+  origin=route-review
+  write_origin_meta "$home" "$origin"
+  hold=$(run_decisions "$home" hold "$origin" retired-route \
+    --title "Confirm the retired route" --reason "answer pending" --repo sample)
+  printf 'The routed work is already retired.\n' > "$home/data/retired-route.md"
+  digest=$(printf 'The routed work is already retired.' | sha256sum | awk '{print $1}')
+  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nDecision file: %s\nRouted identities: pruned-work\nResolution mode: routed\n\nCaptain decision:\nThe routed work is already retired.\n\nRouted work:\npruned-work' "$digest" "$home/data/retired-route.md")
+  tasks_in "$home" update "$hold" --body "$body" >/dev/null
+
+  run_decisions "$home" reconcile-open >/dev/null \
+    || fail "missing-answered-route: confirmed absent routed work blocked reconciliation"
+  [ "$(tasks_in "$home" show "$hold" | sed -n 's/^  state: //p')" = "done" ] \
+    || fail "missing-answered-route: reconciliation did not close the decision"
+  pass "answered decisions close when routed work is authoritatively absent"
+}
+
+test_resolve_accepts_already_completed_routed_work
+test_resolution_retry_accepts_legacy_identity_record
+test_answered_open_hold_closes_from_decision_file
+test_answered_open_hold_preserves_unreadable_route
+test_answered_open_hold_accepts_confirmed_missing_route
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
