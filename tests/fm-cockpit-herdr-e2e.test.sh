@@ -207,16 +207,29 @@ lab pane layout --pane "$HEAD" | jq -e '
   ' >/dev/null || fail "the viewport slot lost its single stable-width split"
 pass "real Herdr viewport holds exactly one agent at a stable width with three placed"
 
-PANEL_OUT=$(cockpit_env "$ROOT/bin/fm-cockpit.sh" panel) \
-  || fail "real Herdr cockpit panel did not render"
+wait_for_panel_worker() {  # <label> -> 0 once the public panel lists it
+  local label=$1 waited=0
+  while [ "$waited" -lt 40 ]; do
+    PANEL_OUT=$(cockpit_env "$ROOT/bin/fm-cockpit.sh" panel) \
+      || fail "real Herdr cockpit panel did not render"
+    case "$PANEL_OUT" in
+      *"$label"*) return 0 ;;
+    esac
+    sleep 0.25
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+PANEL_OUT=
+wait_for_panel_worker fm-cockpit-three \
+  || fail "real cockpit panel omitted a worker parked on its own tab: $PANEL_OUT"
 assert_contains "$PANEL_OUT" "NAVIGATOR Herdr sidebar (all spaces and agents)" \
   "real cockpit panel omitted the all-space navigator"
 assert_contains "$PANEL_OUT" "PINNED firstmate head=$HEAD [live]" \
   "real cockpit panel omitted the pinned controller"
 assert_contains "$PANEL_OUT" "fm-cockpit-two" \
   "real cockpit panel omitted the current viewport worker"
-assert_contains "$PANEL_OUT" "fm-cockpit-three" \
-  "real cockpit panel omitted a worker parked on its own tab"
 assert_contains "$PANEL_OUT" "BOUNDARY display=all-homes steer=current-home backend=herdr" \
   "real cockpit panel lost the display and steer boundary"
 assert_contains "$PANEL_OUT" "FLEET STATUS" \

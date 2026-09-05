@@ -119,6 +119,9 @@ make_fake_gh_axi() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE_DIR/gh-axi.log"
 case "${1:-} ${2:-}" in
+  "pr checks")
+    printf '%s\n' 'summary: "1 passed, 0 failed, 0 skipped, 0 pending, 1 total"'
+    ;;
   "pr merge")
     [ -z "${FAKE_GH_AXI_MERGE_FAIL:-}" ] || { echo "gh-axi: pr merge refused" >&2; exit 1; }
     : > "$FAKE_DIR/merged"
@@ -130,7 +133,8 @@ case "${1:-} ${2:-}" in
           printf '%s\n' 'merged: true' 'merged_at: "2026-08-20T12:45:00Z"' \
             'merge_commit: "0123456789abcdef0123456789abcdef01234567"' 'base_ref: "main"'
         else
-          printf '%s\n' 'merged: false' 'merged_at: null' 'merge_commit: null' 'base_ref: "main"'
+          printf '%s\n' 'merged: false' 'merged_at: null' 'merge_commit: null' \
+            'base_ref: "main"' 'mergeable_state: "clean"'
         fi
         ;;
       /repos/o/r/compare/*) printf '%s\n' 'status: ahead' ;;
