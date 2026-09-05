@@ -101,6 +101,9 @@ SH
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
+  "pr checks"*)
+    printf '%s\n' 'summary: "1 passed, 0 failed, 0 skipped, 0 pending, 1 total"'
+    ;;
   "pr merge"*) : > "$FM_HOME/state/.test-pr-merged" ;;
   "api "*/pulls/*)
     if [ -f "$FM_HOME/state/.test-pr-merged" ]; then
@@ -109,7 +112,7 @@ case "${1:-} ${2:-}" in
         'base_ref: "main"'
     else
       printf '%s\n' 'merged: false' 'merged_at: null' 'merge_commit: null' \
-        'base_ref: "main"'
+        'base_ref: "main"' 'mergeable_state: "clean"'
     fi
     ;;
   "api "*/compare/*) printf '%s\n' 'status: ahead' ;;
