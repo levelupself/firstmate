@@ -393,9 +393,9 @@ wait_for_fleet_state fleet-no-fleet-process \
 relaunch_painter "$FLEET_FIRST" "$FLEET_SECTION" "$ROOT" ambient
 wait_for_fleet_painter "$FLEET_FIRST" \
   || fail "the ambient-only painter was not registered after relaunch"
-wait_for_fleet_state fleet-no-pane-identity \
-  || fail "an ambient-only painter did not report fleet-no-pane-identity: $(cockpit_env "$ROOT/bin/fm-cockpit.sh" status 2>&1)"
-pass "an ambient-only relaunch stays running but is refused by exact identity validation"
+wait_for_fleet_state fleet-no-fleet-process \
+  || fail "an ambient-only painter was not rejected after server identity scrubbing: $(cockpit_env "$ROOT/bin/fm-cockpit.sh" status 2>&1)"
+pass "an ambient-only relaunch stays running but is refused without exact process ownership"
 
 stop_fleet_painter "$FLEET_FIRST"
 PRE_FIX_ROOT="$TMP_ROOT/pre-fix"
