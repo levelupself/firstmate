@@ -70,16 +70,27 @@ def main():
     record = read_record(sys.stdin.read())
     branch = r'[^\s\x00-\x1f\x7f]+'
     if sys.argv[1] == 'pr':
-        merged = field(record, 'merged')
-        if merged == 'false':
-            print(merged)
-            return
-        values = [
-            merged,
-            field(record, 'merge_commit', r'[0-9a-f]{40}'),
-            field(record, 'base_ref', branch),
-            field(record, 'merged_at', r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', optional=True),
+        unmerged = record.get('merged') is False
+        schema = [
+            ('merged', None, False),
+            ('merge_commit', r'[0-9a-f]{40}', unmerged),
+            ('base_ref', branch, unmerged),
+            ('merged_at', r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', True),
         ]
+        values = []
+        missing = None
+        for key, pattern, optional in schema:
+            try:
+                values.append(field(record, key, pattern, optional))
+            except EvidenceError as error:
+                if error.code != 2:
+                    raise
+                if missing is None:
+                    missing = error
+        if missing is not None:
+            raise missing
+        if unmerged:
+            values = values[:1]
     elif sys.argv[1] == 'repository':
         values = [field(record, 'default_branch', branch)]
     elif sys.argv[1] == 'comparison':

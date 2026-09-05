@@ -136,7 +136,7 @@ if [ "${1:-}" = api ]; then
       if [ -f "$FM_TEST_GH_AXI_LOG.merged" ] && [ "$elapsed" -ge "${FM_TEST_PR_VISIBLE_AT:-0}" ]; then
         quote='"'
         [ "${FM_TEST_SCALAR_STYLE:-quoted}" != unquoted ] || quote=
-        printf '%s\n' 'merged: true' 'merged_at: "2026-09-05T22:31:02Z"' \
+        printf '%s\n' 'merged: true' "merged_at: \"${FM_TEST_MERGED_AT:-2026-09-05T22:31:02Z}\"" \
           "merge_commit: ${quote}${FM_TEST_BAD_COMMIT:-${FM_TEST_MERGE_COMMIT:-1111111111111111111111111111111111111111}}${quote}" \
           "base_ref: ${quote}main${quote}"
       else
@@ -1342,6 +1342,23 @@ test_present_invalid_scalar_is_not_a_timeout() {
   pass 'fm-pr-merge reports present invalid fields immediately without timeout'
 }
 
+test_missing_commit_does_not_hide_invalid_timestamp() {
+  local case_dir rc
+  case_dir=$(make_case missing-commit-invalid-timestamp)
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  FM_TEST_SCALAR_STYLE=unquoted FM_TEST_BAD_COMMIT=null FM_TEST_MERGED_AT=invalid \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/22 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" && rc=0 || rc=$?
+  expect_code 1 "$rc" 'mixed evidence: must refuse'
+  assert_grep 'invalid forge evidence field merged_at' "$case_dir/stderr" 'mixed evidence: missing field diagnostic'
+  assert_no_grep 'confirmation timed out' "$case_dir/stderr" 'mixed evidence: misreported as timeout'
+  expect_code 0 "$(cat "$case_dir/gh-axi.log.clock")" 'mixed evidence: retried malformed evidence'
+  expect_code 1 "$(grep -c '^pr merge ' "$case_dir/gh-axi.log")" 'mixed evidence: did not exercise post-merge confirmation'
+  assert_grep 'phase=prepared' "$case_dir/data/pr-merges/task-x1.receipt" 'mixed evidence: stamped success'
+  assert_no_grep 'outcome=pr-merged' "$case_dir/state/task-x1.meta" 'mixed evidence: stamped outcome'
+  pass 'fm-pr-merge rejects malformed timestamps immediately despite null merge commits'
+}
+
 test_captured_forge_response_confirms_already_landed_merge() {
   local case_dir
   case_dir=$(make_case captured-forge)
@@ -1370,6 +1387,18 @@ test_evidence_reader_distinguishes_missing_and_invalid_fields() {
     > "$case_dir/stdout" 2> "$case_dir/stderr" && rc=0 || rc=$?
   expect_code 2 "$rc" 'missing field: expected retryable absence'
   assert_grep 'merge_commit is absent or null' "$case_dir/stderr" 'missing field: missing absence diagnostic'
+  for input in 'merged: true' 'merged: null' 'merged: false' ''; do
+    printf '%s\n' "$input" 'merge_commit: null' 'merged_at: "invalid"' \
+      | python3 "$ROOT/bin/fm-pr-evidence.py" pr \
+      > "$case_dir/stdout" 2> "$case_dir/stderr" && rc=0 || rc=$?
+    expect_code 4 "$rc" 'mixed evidence: expected permanent error'
+    assert_grep 'invalid forge evidence field merged_at' "$case_dir/stderr" 'mixed evidence: missing name'
+    [ ! -s "$case_dir/stdout" ] || fail 'mixed evidence: emitted partial evidence'
+  done
+  printf '%s\n' 'merged: true' 'merge_commit: null' 'base_ref: main' 'merged_at: null' \
+    | python3 "$ROOT/bin/fm-pr-evidence.py" pr \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" && rc=0 || rc=$?
+  expect_code 2 "$rc" 'null evidence: expected retryable absence'
   pass 'forge evidence distinguishes absent fields from malformed or duplicate present fields'
 }
 
@@ -1383,6 +1412,7 @@ test_captured_forge_response_confirms_already_landed_merge
 test_evidence_reader_distinguishes_missing_and_invalid_fields
 test_scalar_styles_confirm_without_retry
 test_present_invalid_scalar_is_not_a_timeout
+test_missing_commit_does_not_hide_invalid_timestamp
 test_sleep_expiry_prevents_confirmation_retry
 test_in_flight_confirmation_can_finish_late
 test_slow_reads_consume_confirmation_budget
