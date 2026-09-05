@@ -112,6 +112,10 @@ if [ "${1:-}" = api ]; then
   read -r elapsed < "$FM_TEST_GH_AXI_LOG.clock"
   case "${2:-}" in
     */pulls/*)
+      if [ -f "$FM_TEST_GH_AXI_LOG.merged" ]; then
+        elapsed=$((elapsed + ${FM_TEST_READ_SECONDS:-0}))
+        printf '%s\n' "$elapsed" > "$FM_TEST_GH_AXI_LOG.clock"
+      fi
       if [ -f "$FM_TEST_GH_AXI_LOG.merged" ] && [ "$elapsed" -ge "${FM_TEST_PR_VISIBLE_AT:-0}" ]; then
         printf '%s\n' 'merged: true' 'merged_at: null' \
           "merge_commit: \"${FM_TEST_MERGE_COMMIT:-1111111111111111111111111111111111111111}\"" \
@@ -573,6 +577,23 @@ test_merge_failure_propagates_after_recording() {
   pass "fm-pr-merge propagates a real merge failure without silently succeeding"
 }
 
+
+test_slow_reads_consume_confirmation_budget() {
+  local case_dir rc elapsed
+  case_dir=$(make_case slow-confirmation)
+  add_gh_mocks "$case_dir" 1111111111111111111111111111111111111111
+  FM_TEST_PR_VISIBLE_AT=100000 FM_TEST_READ_SECONDS=60 \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/100 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  expect_code 1 "$rc" "slow confirmation must fail without evidence"
+  read -r elapsed < "$case_dir/gh-axi.log.clock"
+  [ "$elapsed" -ge 120 ] && [ "$elapsed" -lt 180 ] || fail "slow confirmation: API time must consume the budget (got $elapsed seconds)"
+  assert_grep 'confirmation timed out' "$case_dir/stderr" "slow confirmation: missing timeout"
+  assert_grep '^phase=prepared$' "$case_dir/data/pr-merges/task-x1.receipt" "slow confirmation advanced receipt"
+  assert_no_grep '^outcome=pr-merged$' "$case_dir/state/task-x1.meta" "slow confirmation stamped success"
+  pass "API read time consumes the confirmation budget without another retry after expiry"
+}
 
 test_delayed_merge_visibility() {
   local status case_dir rc elapsed
@@ -1232,6 +1253,7 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+test_slow_reads_consume_confirmation_budget
 test_delayed_merge_visibility
 test_check_reporting_has_three_states_and_mergeability
 test_confirmed_merge_fast_forwards_local_mirror
