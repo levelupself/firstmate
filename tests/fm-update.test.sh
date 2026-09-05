@@ -331,7 +331,8 @@ test_observes_pending_upstream_without_merging_it() {
     "pending upstream template work is observable"
   assert_contains "$out" "upstream-template-latest: " "latest upstream event is surfaced"
   assert_contains "$out" "feat: add template capability" "latest upstream event names the change"
-  assert_contains "$out" "upstream-catchup: merge-required" "upstream work cannot enter through a fast-forward"
+  assert_not_contains "$out" "upstream-catchup: merge-required" \
+    "upstream movement does not require a wholesale merge"
   assert_contains "$out" "review-upstream: yes" "pending upstream work requests review"
   [ "$(git -C "$w/main" rev-parse HEAD)" = "$before" ] \
     || fail "upstream observation moved the firstmate HEAD"
@@ -369,7 +370,7 @@ test_reports_last_upstream_catchup_date() {
   out=$(run_update "$w")
 
   assert_contains "$out" "upstream-catchup-last: 2026-07-01" \
-    "calendar catch-up trigger has an observable date"
+    "prior upstream merge has an observable date"
   assert_contains "$out" "review-upstream: yes" "post-catch-up upstream work requests review"
   pass "T14 pending upstream work reports the prior catch-up date"
 }

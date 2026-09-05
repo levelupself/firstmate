@@ -32,7 +32,6 @@
 #   - upstream-template: current|pending|unavailable
 #   - upstream-template-latest: <commit> <subject>   (when pending)
 #   - upstream-catchup-last: <date>|unknown          (when pending)
-#   - upstream-catchup: merge-required              (when pending)
 #   - review-upstream: yes|no
 #   - reread-firstmate: yes|no    (did the running firstmate's instructions change)
 #   - nudge-secondmates: fm-<id>...|none   (updated live secondmates to nudge)
@@ -171,7 +170,6 @@ observe_upstream_template() {
   else
     echo "upstream-catchup-last: unknown; no upstream merge commit was found"
   fi
-  echo "upstream-catchup: merge-required"
   echo "review-upstream: yes"
 }
 
@@ -232,9 +230,8 @@ if [ -f "$SECONDMATES_MD" ]; then
 fi
 
 # --- upstream template observation ----------------------------------------
-# This is intentionally separate from the origin fast-forward path. A fork
-# catch-up requires a reviewed merge commit; observing upstream never moves a
-# checkout or creates that merge.
+# This is intentionally separate from the origin fast-forward path. Observing
+# upstream never moves a checkout or selects a change for the fork.
 
 observe_upstream_template
 
