@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Perform the approved local merge for a local-only ship task: verify publication
-# can fast-forward every configured remote whose HEAD names the project's default
-# branch, fast-forward the local default, then publish it to every participant.
+# can fast-forward every publication participant, fast-forward the local default,
+# then publish it to every participant. A configured remote is a candidate when
+# its advertised HEAD names the project's default branch. A dry-run push probes
+# actual write capability; only an explicit repository write-access denial from
+# a single push endpoint excludes a candidate. Remote names do not assign roles.
+# Connection, authentication, ambiguous HTTP errors, non-fast-forward rejections,
+# and combined failures from multiple push endpoints refuse before local movement.
+# Exclusions name the remote and denial; successful pushes name each participant.
 #
 # This is firstmate's merge gate-action (the captain's merge authority applied
 # locally instead of via a GitHub PR). It is the one sanctioned exception to hard
@@ -76,12 +82,10 @@ before=$(git -C "$PROJ" rev-parse --short "$DEFAULT")
 BEFORE_SHA=$(git -C "$PROJ" rev-parse "$DEFAULT")
 LANDED_SHA=$(git -C "$PROJ" rev-parse "$BRANCH")
 
-# A project may use more than one publication remote, and none need be named
-# origin. A remote participates only when its advertised HEAD explicitly names
-# this project's default branch. Preflight every participant before changing
-# the local default so a known non-fast-forward refusal leaves the landing local
-# and remote state untouched. The real pushes remain strict non-force updates;
-# a race or transport failure stops and reports the exact remote.
+# Preflight every candidate before changing any refs. A remote that accepted
+# the probe remains a participant even if its later real push fails.
+# Never reinterpret a publication failure as a read-only exclusion.
+CANDIDATE_REMOTES=""
 PUBLICATION_REMOTES=""
 REMOTE_INSPECTIONS=""
 while IFS= read -r remote; do
@@ -97,17 +101,46 @@ while IFS= read -r remote; do
 }configured remote $remote advertises ${remote_head:-no default branch}, not $DEFAULT"
     continue
   fi
-  PUBLICATION_REMOTES="${PUBLICATION_REMOTES}${PUBLICATION_REMOTES:+
+  CANDIDATE_REMOTES="${CANDIDATE_REMOTES}${CANDIDATE_REMOTES:+
 }$remote"
 done < <(git -C "$PROJ" remote)
 
-if [ -z "$PUBLICATION_REMOTES" ]; then
+if [ -z "$CANDIDATE_REMOTES" ]; then
   echo "REFUSED: no configured remote advertises $DEFAULT as its default branch; local landing was not changed" >&2
   if [ -n "$REMOTE_INSPECTIONS" ]; then
     printf '%s\n' "$REMOTE_INSPECTIONS" >&2
   else
     echo "configured remotes inspected: none" >&2
   fi
+  exit 1
+fi
+
+while IFS= read -r remote; do
+  [ -n "$remote" ] || continue
+  # Ignore local pre-push hooks for capability classification so their messages
+  # cannot impersonate a remote's access denial. Participants still run the
+  # normal dry-run preflight below, including their hooks, before any mutation.
+  if ! push_output=$(LC_ALL=C git -C "$PROJ" push --dry-run --no-verify --porcelain "$remote" \
+      "$LANDED_SHA:refs/heads/$DEFAULT" 2>&1); then
+    # Git aggregates errors across pushurls. One denial cannot establish that
+    # every endpoint is read-only; keep mixed/unknown failures as refusals.
+    push_urls=$(git -C "$PROJ" remote get-url --push --all "$remote")
+    denial=$(printf '%s\n' "$push_output" | LC_ALL=C sed -n -E \
+      '/^(remote: |ERROR: )(Permission to .+ denied to .+\.|Write access to repository not granted\.|You are not allowed to push code to this project\.)$/p')
+    if [ "$(printf '%s\n' "$push_urls" | wc -l | tr -d ' ')" = 1 ] && [ -n "$denial" ]; then
+      printf 'excluded remote %s: push access denied by remote: %s\n' "$remote" "$denial"
+      continue
+    fi
+    printf '%s\n' "$push_output" >&2
+    echo "REFUSED: $remote cannot fast-forward refs/heads/$DEFAULT to $LANDED_SHA; local landing was not changed" >&2
+    exit 1
+  fi
+  PUBLICATION_REMOTES="${PUBLICATION_REMOTES}${PUBLICATION_REMOTES:+
+}$remote"
+done <<< "$CANDIDATE_REMOTES"
+
+if [ -z "$PUBLICATION_REMOTES" ]; then
+  echo "REFUSED: no publication participants remain after push access checks; local landing was not changed" >&2
   exit 1
 fi
 
@@ -230,6 +263,7 @@ while IFS= read -r remote; do
     echo "error: local $DEFAULT landed, but publication to $remote failed; refusing to continue until that remote is updated without force" >&2
     exit 1
   fi
+  echo "published remote $remote: refs/heads/$DEFAULT at $LANDED_SHA"
 done <<< "$PUBLICATION_REMOTES"
 if [ "$(receipt_value phase)" != landed ]; then
   EVENT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
