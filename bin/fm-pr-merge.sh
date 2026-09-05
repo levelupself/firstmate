@@ -122,7 +122,8 @@ receipt_matches_request() {
   [ "$(grep -c '^prepared_epoch=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
   [ "$(grep -c '^spawned_at=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
   schema=$(receipt_value schema)
-  [ "$schema" = fm-pr-merge.v1 ] || [ "$schema" = fm-pr-merge.v2 ] || [ "$schema" = fm-pr-merge.v3 ] || return 1
+  [ "$schema" = fm-pr-merge.v1 ] || [ "$schema" = fm-pr-merge.v2 ] \
+    || [ "$schema" = fm-pr-merge.v3 ] || [ "$schema" = fm-pr-merge.v4 ] || return 1
   [ "$(receipt_value task_id)" = "$ID" ] || return 1
   [ "$(receipt_value pr)" = "$URL" ] || return 1
   printf '%s\n' "$(receipt_value spawned_at)" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' || return 1
@@ -134,7 +135,7 @@ receipt_matches_request() {
   phase=$(receipt_value phase)
   case "$phase" in
     prepared)
-      if [ "$schema" = fm-pr-merge.v2 ] || [ "$schema" = fm-pr-merge.v3 ]; then
+      if [ "$schema" = fm-pr-merge.v2 ] || [ "$schema" = fm-pr-merge.v3 ] || [ "$schema" = fm-pr-merge.v4 ]; then
         [ "$(grep -c '^merged_epoch=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 0 ] || return 1
         [ "$(grep -c '^merged_at=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] \
           && [ -z "$(receipt_value merged_at)" ]
@@ -144,7 +145,7 @@ receipt_matches_request() {
       fi
       ;;
     merged)
-      if [ "$schema" = fm-pr-merge.v2 ] || [ "$schema" = fm-pr-merge.v3 ]; then
+      if [ "$schema" = fm-pr-merge.v2 ] || [ "$schema" = fm-pr-merge.v3 ] || [ "$schema" = fm-pr-merge.v4 ]; then
         [ "$(grep -c '^merged_epoch=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 0 ] || return 1
         [ "$(grep -c '^merged_at=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
         merged_at=$(receipt_value merged_at)
@@ -159,7 +160,7 @@ receipt_matches_request() {
       ;;
     *) return 1 ;;
   esac
-  if [ "$schema" = fm-pr-merge.v3 ]; then
+  if [ "$schema" = fm-pr-merge.v3 ] || [ "$schema" = fm-pr-merge.v4 ]; then
     [ "$(grep -c '^repository=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
     [ "$(grep -c '^default_branch=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
     [ "$(grep -c '^merge_commit=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
@@ -171,6 +172,11 @@ receipt_matches_request() {
       [ -z "$(receipt_value default_branch)" ] || return 1
       [ -z "$(receipt_value merge_commit)" ] || return 1
     fi
+  fi
+  if [ "$schema" = fm-pr-merge.v4 ]; then
+    [ "$(grep -c '^project=' "$PROVENANCE_RECEIPT" 2>/dev/null || true)" -eq 1 ] || return 1
+    [ -n "$(receipt_value project)" ] || return 1
+    [ -z "$PROJECT" ] || [ "$(receipt_value project)" = "$PROJECT" ] || return 1
   fi
 }
 
@@ -214,10 +220,11 @@ write_provenance_receipt() {
   tmp=$(mktemp "$PROVENANCE_DIR/.$ID.receipt.XXXXXX") || return 1
   {
     printf '%s\n' \
-      'schema=fm-pr-merge.v3' \
+      'schema=fm-pr-merge.v4' \
       "task_id=$ID" \
       "pr=$URL" \
       "repository=$PR_OWNER/$PR_REPO" \
+      "project=$PROJECT" \
       "default_branch=$DEFAULT_BRANCH" \
       "merge_commit=$merge_commit" \
       "spawned_at=$CURRENT_SPAWNED_AT" \
@@ -234,7 +241,7 @@ AUTHORIZATION=
 if [ -e "$PROVENANCE_RECEIPT" ] || [ -L "$PROVENANCE_RECEIPT" ]; then
   if ! receipt_matches_request \
     && [ -n "$CURRENT_SPAWNED_AT" ] \
-    && { [ "$(receipt_value schema)" = fm-pr-merge.v1 ] || [ "$(receipt_value schema)" = fm-pr-merge.v2 ] || [ "$(receipt_value schema)" = fm-pr-merge.v3 ]; } \
+    && { [ "$(receipt_value schema)" = fm-pr-merge.v1 ] || [ "$(receipt_value schema)" = fm-pr-merge.v2 ] || [ "$(receipt_value schema)" = fm-pr-merge.v3 ] || [ "$(receipt_value schema)" = fm-pr-merge.v4 ]; } \
     && [ "$(receipt_value task_id)" = "$ID" ] \
     && [ "$(receipt_value phase)" = merged ] \
     && printf '%s\n' "$(receipt_value spawned_at)" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
@@ -256,6 +263,12 @@ if [ -e "$PROVENANCE_RECEIPT" ] || [ -L "$PROVENANCE_RECEIPT" ]; then
   }
   CURRENT_SPAWNED_AT=$(receipt_value spawned_at)
   AUTHORIZATION=$(receipt_value authorization)
+  if [ "$(receipt_value schema)" = fm-pr-merge.v4 ]; then
+    PROJECT=$(receipt_value project)
+  elif [ "$(receipt_value phase)" = prepared ] && [ -z "$PROJECT" ]; then
+    echo "error: prepared merge provenance has no project checkout identity" >&2
+    exit 1
+  fi
 elif [ -f "$META" ] && [ ! -L "$META" ]; then
   printf '%s\n' "$CURRENT_SPAWNED_AT" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' || {
     echo "error: task launch identity is unavailable" >&2
@@ -271,6 +284,10 @@ else
   echo "error: task metadata is unavailable and no launch-bound merge receipt exists" >&2
   exit 1
 fi
+[ -n "$PROJECT" ] || {
+  echo "error: project checkout identity is unavailable" >&2
+  exit 1
+}
 
 PREPARED_EPOCH=$(receipt_value prepared_epoch)
 case "$PREPARED_EPOCH" in ''|*[!0-9]*) PREPARED_EPOCH=$(date +%s) ;; esac
@@ -344,8 +361,8 @@ sync_local_mirror() {
   local -a forge_remotes=()
 
   if [ -z "$PROJECT" ]; then
-    echo "mirror: not updated; existing merge provenance has no project checkout"
-    return 0
+    echo "error: forge merge succeeded, but merge provenance has no project checkout identity" >&2
+    return 1
   fi
   if ! git -C "$PROJECT" rev-parse --git-dir >/dev/null 2>&1; then
     echo "error: forge merge succeeded, but the project checkout is unavailable; local mirror state is unknown" >&2
@@ -386,7 +403,7 @@ sync_local_mirror() {
     return 1
   fi
 
-  if ! mirror_fetch=$(git -C "$PROJECT" fetch --no-tags origin \
+  if ! mirror_fetch=$(git -C "$PROJECT" fetch --no-tags "$origin_url" \
       "refs/heads/$DEFAULT_BRANCH" 2>&1); then
     echo "error: forge merge succeeded, but local mirror origin refs/heads/$DEFAULT_BRANCH could not be read: $mirror_fetch" >&2
     return 1
@@ -397,12 +414,12 @@ sync_local_mirror() {
     return 0
   fi
   if git -C "$PROJECT" merge-base --is-ancestor "$mirror_before" "$MERGE_COMMIT"; then
-    if push_output=$(git -C "$PROJECT" push --porcelain origin \
+    if push_output=$(git -C "$PROJECT" push --porcelain "$origin_url" \
         "$MERGE_COMMIT:refs/heads/$DEFAULT_BRANCH" 2>&1); then
       echo "mirror: origin refs/heads/$DEFAULT_BRANCH fast-forwarded $mirror_before -> $MERGE_COMMIT"
       return 0
     fi
-    if git -C "$PROJECT" fetch --no-tags origin "refs/heads/$DEFAULT_BRANCH" >/dev/null 2>&1; then
+    if git -C "$PROJECT" fetch --no-tags "$origin_url" "refs/heads/$DEFAULT_BRANCH" >/dev/null 2>&1; then
       mirror_after=$(git -C "$PROJECT" rev-parse FETCH_HEAD)
       if git -C "$PROJECT" merge-base --is-ancestor "$MERGE_COMMIT" "$mirror_after"; then
         echo "mirror: origin refs/heads/$DEFAULT_BRANCH already contains $MERGE_COMMIT at $mirror_after"

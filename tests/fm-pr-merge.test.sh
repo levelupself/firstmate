@@ -25,6 +25,8 @@
 #   (n) the merge path refuses both failing and absent checks before forge mutation
 #   (o) a confirmed forge merge fast-forwards the project's local origin mirror
 #   (p) a diverged local origin mirror is refused without forcing or stamping success
+#   (q) a prepared receipt retry recovers the project checkout after task teardown
+#   (r) an origin pushurl cannot redirect the verified local mirror update
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -245,6 +247,59 @@ test_diverged_local_mirror_refuses_without_force() {
   assert_no_grep '^outcome=pr-merged$' "$case_dir/state/task-x1.meta" \
     "mirror-diverged: refusal stamped the task outcome"
   pass "fm-pr-merge refuses a diverged local mirror without forcing"
+}
+
+test_prepared_retry_recovers_project_and_advances_mirror() {
+  local case_dir merged rc
+  case_dir=$(make_case mirror-prepared-retry)
+  setup_mirror_topology "$case_dir"
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  FM_TEST_CHECK_STATE=failing run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/103 > "$case_dir/first.stdout" 2> "$case_dir/first.stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "mirror-prepared-retry: preparation should stop on failing checks"
+  assert_grep "project=$case_dir/project" "$case_dir/data/pr-merges/task-x1.receipt" \
+    "mirror-prepared-retry: prepared receipt did not persist the project checkout"
+  rm "$case_dir/state/task-x1.meta"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/103 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "mirror-prepared-retry: retry failed: $(cat "$case_dir/stderr")"
+
+  merged=$(cat "$case_dir/merge-commit")
+  [ "$(git --git-dir="$case_dir/mirror.git" rev-parse main)" = "$merged" ] \
+    || fail "mirror-prepared-retry: retry did not advance the persisted project's mirror"
+  assert_grep 'phase=merged' "$case_dir/data/pr-merges/task-x1.receipt" \
+    "mirror-prepared-retry: retry did not finalize the receipt"
+  pass "fm-pr-merge recovers the project from prepared provenance after task teardown"
+}
+
+test_origin_pushurl_cannot_redirect_mirror_update() {
+  local case_dir merged redirected_before
+  case_dir=$(make_case mirror-pushurl)
+  setup_mirror_topology "$case_dir"
+  git init -q --bare "$case_dir/redirected.git"
+  git -C "$case_dir/project" push -q "$case_dir/redirected.git" \
+    "$(cat "$case_dir/mirror-base"):refs/heads/main"
+  redirected_before=$(git --git-dir="$case_dir/redirected.git" rev-parse main)
+  git -C "$case_dir/project" config remote.origin.pushurl "$case_dir/redirected.git"
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  : > "$case_dir/gh-axi.log"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/104 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "mirror-pushurl: fm-pr-merge failed: $(cat "$case_dir/stderr")"
+
+  merged=$(cat "$case_dir/merge-commit")
+  [ "$(git --git-dir="$case_dir/mirror.git" rev-parse main)" = "$merged" ] \
+    || fail "mirror-pushurl: verified local origin mirror was not advanced"
+  [ "$(git --git-dir="$case_dir/redirected.git" rev-parse main)" = "$redirected_before" ] \
+    || fail "mirror-pushurl: configured pushurl redirected the mirror update"
+  pass "fm-pr-merge pushes directly to the verified local origin URL"
 }
 
 run_pr_checks() {
@@ -796,21 +851,26 @@ MD
 }
 
 test_prepared_receipt_allows_same_pr_retry() {
-  local case_dir fakebin receipt
-  case_dir="$TMP_ROOT/prepared-retry"
-  fakebin="$case_dir/fakebin"
+  local case_dir receipt
+  case_dir=$(make_case prepared-retry)
   receipt="$case_dir/data/pr-merges/delivered-x1.receipt"
-  mkdir -p "$case_dir/state" "$case_dir/data/pr-merges" "$fakebin"
+  mkdir -p "$case_dir/data/pr-merges"
+  rm "$case_dir/state/task-x1.meta"
   add_gh_mocks "$case_dir" cccccccccccccccccccccccccccccccccccccccc
   : > "$case_dir/gh-axi.log"
-  cat > "$receipt" <<'EOF'
-schema=fm-pr-merge.v1
+  cat > "$receipt" <<EOF
+schema=fm-pr-merge.v4
 task_id=delivered-x1
 pr=https://github.com/example/repo/pull/21
+repository=example/repo
+project=$case_dir/project
+default_branch=
+merge_commit=
 spawned_at=2026-08-29T10:00:00Z
 phase=prepared
 authorization=done-record
 prepared_epoch=1788000000
+merged_at=
 EOF
 
   run_pr_merge "$case_dir" delivered-x1 https://github.com/example/repo/pull/21 \
@@ -830,16 +890,18 @@ EOF
 
 test_prepared_receipt_finalizes_already_merged_pr() {
   local case_dir receipt
-  case_dir="$TMP_ROOT/prepared-already-merged"
+  case_dir=$(make_case prepared-already-merged)
   receipt="$case_dir/data/pr-merges/delivered-x1.receipt"
-  mkdir -p "$case_dir/state" "$case_dir/data/pr-merges" "$case_dir/fakebin"
+  mkdir -p "$case_dir/data/pr-merges"
+  rm "$case_dir/state/task-x1.meta"
   add_gh_mocks "$case_dir" cccccccccccccccccccccccccccccccccccccccc
   : > "$case_dir/gh-axi.log"
   : > "$case_dir/gh-axi.log.merged"
-  cat > "$receipt" <<'EOF'
-schema=fm-pr-merge.v3
+  cat > "$receipt" <<EOF
+schema=fm-pr-merge.v4
 task_id=delivered-x1
 pr=https://github.com/example/repo/pull/21
+project=$case_dir/project
 spawned_at=2026-08-29T10:00:00Z
 phase=prepared
 authorization=done-record
@@ -1069,6 +1131,8 @@ test_parses_pr_url_for_gh_axi() {
 test_check_reporting_has_three_states_and_mergeability
 test_confirmed_merge_fast_forwards_local_mirror
 test_diverged_local_mirror_refuses_without_force
+test_prepared_retry_recovers_project_and_advances_mirror
+test_origin_pushurl_cannot_redirect_mirror_update
 test_merge_refuses_failing_and_absent_checks
 test_records_pr_and_head_before_merging
 test_existing_backlog_without_row_refuses_before_merge

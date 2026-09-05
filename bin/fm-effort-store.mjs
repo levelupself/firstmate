@@ -1273,16 +1273,19 @@ function readMergeReceipt(dataDir, taskId, spawnedAt) {
   const file = path.join(dataDir, 'pr-merges', `${taskId}.receipt`)
   const commonFields = ['schema', 'task_id', 'pr', 'spawned_at', 'phase', 'authorization', 'prepared_epoch']
   const first = readMetaWithRequiredFields(file, commonFields)
-  const timestampField = ['fm-pr-merge.v2', 'fm-pr-merge.v3'].includes(first?.schema) ? 'merged_at' : 'merged_epoch'
-  const extraFields = first?.schema === 'fm-pr-merge.v3' ? ['repository', 'default_branch', 'merge_commit'] : []
+  const timestampField = ['fm-pr-merge.v2', 'fm-pr-merge.v3', 'fm-pr-merge.v4'].includes(first?.schema) ? 'merged_at' : 'merged_epoch'
+  const extraFields = first?.schema === 'fm-pr-merge.v4'
+    ? ['repository', 'project', 'default_branch', 'merge_commit']
+    : first?.schema === 'fm-pr-merge.v3' ? ['repository', 'default_branch', 'merge_commit'] : []
   const receipt = first && readMetaWithRequiredFields(file, [...commonFields, timestampField, ...extraFields])
-  if (!receipt || !['fm-pr-merge.v1', 'fm-pr-merge.v2', 'fm-pr-merge.v3'].includes(receipt.schema) || receipt.task_id !== taskId
-      || (['fm-pr-merge.v2', 'fm-pr-merge.v3'].includes(receipt.schema) && receipt.merged_epoch !== undefined)
+  if (!receipt || !['fm-pr-merge.v1', 'fm-pr-merge.v2', 'fm-pr-merge.v3', 'fm-pr-merge.v4'].includes(receipt.schema) || receipt.task_id !== taskId
+      || (['fm-pr-merge.v2', 'fm-pr-merge.v3', 'fm-pr-merge.v4'].includes(receipt.schema) && receipt.merged_epoch !== undefined)
       || (receipt.schema === 'fm-pr-merge.v1' && receipt.merged_at !== undefined)
-      || (receipt.schema === 'fm-pr-merge.v3'
+      || (['fm-pr-merge.v3', 'fm-pr-merge.v4'].includes(receipt.schema)
         && (!/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(receipt.repository || '')
           || !/^(?!\.)(?!.*\.\.)(?!.*\/$)[A-Za-z0-9._\/-]+$/.test(receipt.default_branch || '')
           || !/^[0-9a-f]{40}$/.test(receipt.merge_commit || '')))
+      || (receipt.schema === 'fm-pr-merge.v4' && !receipt.project)
       || !/^https:\/\/github\.com\/(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]{0,37}[A-Za-z0-9])\/[A-Za-z0-9._-]{1,100}\/pull\/[1-9]\d*$/.test(receipt.pr || '')
       || receipt.spawned_at !== spawnedAt || receipt.phase !== 'merged'
       || !['live-meta', 'done-record'].includes(receipt.authorization)) return null
@@ -1297,10 +1300,10 @@ function readMergeReceipt(dataDir, taskId, spawnedAt) {
   }
   const preparedAt = epochTimestamp(receipt.prepared_epoch, spawnedAt)
   if (!preparedAt) return null
-  const mergedAt = ['fm-pr-merge.v2', 'fm-pr-merge.v3'].includes(receipt.schema)
+  const mergedAt = ['fm-pr-merge.v2', 'fm-pr-merge.v3', 'fm-pr-merge.v4'].includes(receipt.schema)
     ? (receipt.merged_at === '' ? null : validatedLifecycleTimestamp(receipt.merged_at, spawnedAt))
     : epochTimestamp(receipt.merged_epoch, preparedAt)
-  if (['fm-pr-merge.v2', 'fm-pr-merge.v3'].includes(receipt.schema) && receipt.merged_at !== '' && !mergedAt) return null
+  if (['fm-pr-merge.v2', 'fm-pr-merge.v3', 'fm-pr-merge.v4'].includes(receipt.schema) && receipt.merged_at !== '' && !mergedAt) return null
   if (receipt.schema === 'fm-pr-merge.v1' && !mergedAt) return null
   return {
     pr_url: receipt.pr || null,
