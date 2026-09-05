@@ -114,7 +114,17 @@ fi
 if [ "${1:-} ${2:-}" = "pr merge" ]; then
   : > "$FM_TEST_GH_AXI_LOG.merged"
 fi
+if [ "${1:-}" = api ] && [ -n "${FM_TEST_FORGE_FIXTURES:-}" ]; then
+  case "${2:-}" in
+    */pulls/*) cat "$FM_TEST_FORGE_FIXTURES/pr.toon" ;;
+    */compare/*) cat "$FM_TEST_FORGE_FIXTURES/comparison.toon" ;;
+    *) cat "$FM_TEST_FORGE_FIXTURES/repository.toon" ;;
+  esac
+  exit 0
+fi
 if [ "${1:-}" = api ]; then
+  quote=
+  [ "${FM_TEST_ALL_SCALARS_QUOTED:-0}" != 1 ] || quote='"'
   read -r elapsed < "$FM_TEST_GH_AXI_LOG.clock"
   case "${2:-}" in
     */pulls/*)
@@ -135,13 +145,13 @@ if [ "${1:-}" = api ]; then
       ;;
     */compare/*)
       if [ "$elapsed" -ge "${FM_TEST_BRANCH_VISIBLE_AT:-0}" ]; then
-        printf 'status: %s\n' "${FM_TEST_CONFIRMED_STATUS:-ahead}"
+        printf 'status: %s%s%s\n' "$quote" "${FM_TEST_CONFIRMED_STATUS:-ahead}" "$quote"
       else
         printf '%s\n' 'status: behind'
       fi
       ;;
 
-    *) printf '%s\n' 'default_branch: main' ;;
+    *) printf 'default_branch: %smain%s\n' "$quote" "$quote" ;;
   esac
 fi
 exit 0
@@ -1306,7 +1316,7 @@ test_scalar_styles_confirm_without_retry() {
   for style in unquoted quoted; do
     case_dir=$(make_case "scalar-$style")
     add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-    FM_TEST_SCALAR_STYLE="$style" run_pr_merge "$case_dir" task-x1 \
+    FM_TEST_SCALAR_STYLE="$style" FM_TEST_ALL_SCALARS_QUOTED=1 run_pr_merge "$case_dir" task-x1 \
       https://github.com/example/repo/pull/22 > "$case_dir/stdout" 2> "$case_dir/stderr" \
       || fail "$style scalar: landed merge did not confirm: $(cat "$case_dir/stderr")"
     assert_grep 'phase=merged' "$case_dir/data/pr-merges/task-x1.receipt" "$style: missing provenance"
@@ -1324,7 +1334,7 @@ test_present_invalid_scalar_is_not_a_timeout() {
   FM_TEST_BAD_COMMIT=not-a-commit run_pr_merge "$case_dir" task-x1 \
     https://github.com/example/repo/pull/22 > "$case_dir/stdout" 2> "$case_dir/stderr" && rc=0 || rc=$?
   expect_code 1 "$rc" "invalid scalar: must refuse"
-  assert_grep 'invalid.*merge_commit' "$case_dir/stderr" "invalid scalar: missing field diagnostic"
+  assert_grep 'invalid forge evidence field merge_commit' "$case_dir/stderr" "invalid scalar: missing field diagnostic"
   assert_no_grep 'confirmation timed out' "$case_dir/stderr" "invalid scalar: misreported as timeout"
   expect_code 0 "$(cat "$case_dir/gh-axi.log.clock")" "invalid scalar: retried malformed evidence"
   assert_grep 'phase=prepared' "$case_dir/data/pr-merges/task-x1.receipt" "invalid scalar: stamped success"
@@ -1332,6 +1342,45 @@ test_present_invalid_scalar_is_not_a_timeout() {
   pass 'fm-pr-merge reports present invalid fields immediately without timeout'
 }
 
+test_captured_forge_response_confirms_already_landed_merge() {
+  local case_dir
+  case_dir=$(make_case captured-forge)
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  FM_TEST_FORGE_FIXTURES="$ROOT/tests/fixtures/pr-merge-forge" run_pr_merge "$case_dir" task-x1 \
+    https://github.com/levelupself/mtg/pull/22 > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "captured forge: failed to confirm already landed merge: $(cat "$case_dir/stderr")"
+  assert_grep 'phase=merged' "$case_dir/data/pr-merges/task-x1.receipt" 'captured forge: missing provenance'
+  assert_grep 'merge_commit=873e8f2d860eec847df0fd5215d261c4cbb48aba' \
+    "$case_dir/data/pr-merges/task-x1.receipt" 'captured forge: wrong commit'
+  assert_no_grep 'pr merge ' "$case_dir/gh-axi.log" 'captured forge: issued another merge'
+  expect_code 0 "$(cat "$case_dir/gh-axi.log.clock")" 'captured forge: unnecessary retry'
+  pass 'fm-pr-merge confirms a captured real landed merge without mutation or retries'
+}
+
+test_evidence_reader_distinguishes_missing_and_invalid_fields() {
+  local case_dir rc input
+  case_dir=$(make_case evidence-fields)
+  for input in 'merge_commit: "unterminated' 'merge_commit: [abc]' $'merge_commit: abc\nmerge_commit: def'; do
+    printf '%s\n' "$input" | python3 "$ROOT/bin/fm-pr-evidence.py" pr \
+      > "$case_dir/stdout" 2> "$case_dir/stderr" && rc=0 || rc=$?
+    expect_code 4 "$rc" 'present malformed field: expected permanent error'
+    assert_grep 'invalid forge evidence field merge_commit' "$case_dir/stderr" 'present malformed field: missing name'
+  done
+  printf '%s\n' 'merged: true' | python3 "$ROOT/bin/fm-pr-evidence.py" pr \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" && rc=0 || rc=$?
+  expect_code 2 "$rc" 'missing field: expected retryable absence'
+  assert_grep 'merge_commit is absent or null' "$case_dir/stderr" 'missing field: missing absence diagnostic'
+  pass 'forge evidence distinguishes absent fields from malformed or duplicate present fields'
+}
+
+# Optional named cases retain the same executable test interface for focused regressions.
+if [ "$#" -gt 0 ]; then
+  for test_case in "$@"; do "$test_case"; done
+  exit 0
+fi
+
+test_captured_forge_response_confirms_already_landed_merge
+test_evidence_reader_distinguishes_missing_and_invalid_fields
 test_scalar_styles_confirm_without_retry
 test_present_invalid_scalar_is_not_a_timeout
 test_sleep_expiry_prevents_confirmation_retry
