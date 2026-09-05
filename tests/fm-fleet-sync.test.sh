@@ -711,6 +711,8 @@ test_non_signature_fetch_failure_is_not_retried() {
   pass "a non-packed-refs.lock fetch failure keeps today's behavior (no retry)"
 }
 
+assert_eq() { [ "$1" = "$2" ] || fail "$3 (expected $2, got $1)"; }
+
 # Use real Git to prove common-config inheritance and replay across linked worktrees.
 test_shared_rerere() {
   local home clone first second base rc out config_before
