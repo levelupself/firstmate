@@ -711,6 +711,70 @@ test_non_signature_fetch_failure_is_not_retried() {
   pass "a non-packed-refs.lock fetch failure keeps today's behavior (no retry)"
 }
 
+# Use real Git to prove common-config inheritance and replay across linked worktrees.
+test_shared_rerere() {
+  local home clone first second base rc out config_before
+  home=$(new_home)
+  clone=$(build_pair "$home" rerere)
+  git -C "$clone" config --local rerere.enabled false
+  git -C "$clone" config --local rerere.autoUpdate true
+  git -C "$clone" config --local example.preserve untouched
+  run_sync "$home" >/dev/null
+  assert_eq "$(git -C "$clone" config --local --bool rerere.enabled)" true "existing clone enables rerere"
+  assert_eq "$(git -C "$clone" config --local --bool rerere.autoUpdate)" false "replay requires explicit staging"
+  config_before=$(cat "$clone/.git/config")
+  run_sync "$home" >/dev/null
+  assert_eq "$(cat "$clone/.git/config")" "$config_before" "repeat sync leaves config byte-identical"
+  assert_eq "$(git -C "$clone" config example.preserve)" untouched "unrelated configuration preserved"
+
+  first="$home/first"; second="$home/second"
+  base=$(head_sha "$clone")
+  git -C "$clone" worktree add -q -b worker-one "$first" "$base"
+  git -C "$clone" worktree add -q -b worker-two "$second" "$base"
+  commit_file "$first" file.txt worker worker-one
+  commit_file "$second" file.txt worker worker-two
+  commit_file "$clone" file.txt trunk trunk
+  rc=0
+  git -C "$first" rebase main >"$home/first.log" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "first rebase must conflict"
+  commit_file "$first" file.txt resolved resolution
+  GIT_EDITOR=true git -C "$first" rebase --continue >"$home/continue.log" 2>&1 || fail "first resolution must complete"
+  rc=0
+  git -C "$second" rebase main >"$home/second.log" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "second rebase must wait for staging confirmation"
+  out=$(cat "$home/second.log")
+  assert_contains "$out" "using previous resolution" "second worker must replay the cached resolution"
+  assert_eq "$(cat "$second/file.txt")" resolved "second worker receives resolution without hand editing"
+  [ -n "$(git -C "$second" ls-files -u)" ] || fail "replayed resolution must remain unmerged in index"
+  git -C "$second" add file.txt
+  GIT_EDITOR=true git -C "$second" rebase --continue >/dev/null 2>&1 || fail "confirmed replay must complete"
+  pass "shared rerere replays across workers and leaves acceptance to explicit staging"
+}
+
+test_rerere_initialization() {
+  local home clone before
+  home=$(new_home)
+  clone=$(build_pair "$home" initial-rerere)
+  "$ROOT/bin/fm-project-git-setup.sh" "$clone" || fail "project setup must succeed"
+  assert_eq "$(git -C "$clone" config --local --bool rerere.enabled)" true "new project enables rerere"
+  before=$(cat "$clone/.git/config")
+  "$ROOT/bin/fm-project-git-setup.sh" "$clone" || fail "repeated setup must succeed"
+  assert_eq "$(cat "$clone/.git/config")" "$before" "repeated setup changes nothing"
+  mkdir "$clone/nested"
+  if "$ROOT/bin/fm-project-git-setup.sh" "$clone/nested" >/dev/null 2>&1; then
+    fail "setup must reject enclosing repository discovery"
+  fi
+  assert_eq "$(cat "$clone/.git/config")" "$before" "rejected setup leaves enclosing config intact"
+  git -C "$clone" remote remove origin
+  git -C "$clone" config --local --unset rerere.enabled
+  run_sync "$home" >/dev/null
+  assert_eq "$(git -C "$clone" config --local --bool rerere.enabled)" true "existing no-origin projects are migrated"
+  pass "project setup is idempotent and migration reaches no-origin projects"
+}
+
+test_shared_rerere
+test_rerere_initialization
+
 test_detached_clean_ancestor_recovers
 test_detached_unique_commit_is_stuck_untouched
 test_detached_clean_ancestor_with_diverged_local_default_is_stuck_untouched
