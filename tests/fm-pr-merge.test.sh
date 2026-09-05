@@ -44,6 +44,11 @@ make_case() {
     "kind=ship" \
     "mode=no-mistakes" \
     "spawned_at=2026-08-29T10:00:00Z"
+  cat > "$fakebin/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/sleep"
   # No worktree/project on disk; fm-pr-check.sh tolerates a worktree it cannot
   # stat and simply skips the pr_head lookup via `gh` in that case, so give it
   # one that resolves for cases that want pr_head recorded.
@@ -70,8 +75,8 @@ if [ "${1:-}" = api ]; then
         printf '%s\n' 'merged: false' 'merged_at: null'
       fi
       ;;
-    */compare/*) printf '%s\n' ahead ;;
-    *) printf '%s\n' main ;;
+    */compare/*) printf '%s\n' 'status: ahead' ;;
+    *) printf '%s\n' 'default_branch: main' ;;
   esac
 fi
 exit 0
@@ -283,6 +288,182 @@ SH
   pass "fm-pr-merge stamps no outcome until the forge confirms the merged state"
 }
 
+test_gh_axi_scalar_envelopes_do_not_hide_landed_merge() {
+  local case_dir rc receipt
+  case_dir=$(make_case gh-axi-scalar-envelope)
+  receipt="$case_dir/data/pr-merges/task-x1.receipt"
+  mkdir -p "$case_dir/wt"
+  : > "$case_dir/gh-axi.log"
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-} ${2:-}" = "pr merge" ]; then
+  : > "$FM_TEST_GH_AXI_LOG.merged"
+fi
+if [ "${1:-}" = api ]; then
+  case "${2:-}" in
+    */pulls/*)
+      if [ -f "$FM_TEST_GH_AXI_LOG.merged" ]; then
+        printf '%s\n' 'merged: true' \
+          'merged_at: "2026-09-05T00:24:01Z"' \
+          'merge_commit: "4eade19b88a2763c3316e354774169c433ba7b3b"' \
+          'base_ref: "main"'
+      else
+        printf '%s\n' 'merged: false' 'merged_at: null'
+      fi
+      ;;
+    */compare/*)
+      case "${4:-}" in
+        '{status: .status}') printf '%s\n' 'status: identical' ;;
+        *) printf '%s\n' 'api_response:' '  body: identical' '  truncated: false' ;;
+      esac
+      ;;
+    *)
+      case "${4:-}" in
+        '{default_branch: .default_branch}') printf '%s\n' 'default_branch: main' ;;
+        *) printf '%s\n' 'api_response:' '  body: main' '  truncated: false' ;;
+      esac
+      ;;
+  esac
+fi
+exit 0
+SH
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/96 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "gh-axi-scalar-envelope: landed merge should be confirmed"
+  assert_grep 'phase=merged' "$receipt" \
+    "gh-axi-scalar-envelope: durable receipt remained prepared"
+  assert_grep 'default_branch=main' "$receipt" \
+    "gh-axi-scalar-envelope: durable receipt lost default-branch identity"
+  assert_grep 'merge_commit=4eade19b88a2763c3316e354774169c433ba7b3b' "$receipt" \
+    "gh-axi-scalar-envelope: durable receipt lost merge-commit identity"
+  assert_grep 'merged_at=2026-09-05T00:24:01Z' "$receipt" \
+    "gh-axi-scalar-envelope: durable receipt lost the forge merge time"
+  pass "fm-pr-merge confirms landed merges through gh-axi object output"
+}
+
+test_post_merge_confirmation_retries_transient_comparison() {
+  local case_dir compare_calls rc receipt
+  case_dir=$(make_case merge-confirmation-retry)
+  receipt="$case_dir/data/pr-merges/task-x1.receipt"
+  mkdir -p "$case_dir/wt"
+  : > "$case_dir/gh-axi.log"
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-} ${2:-}" = "pr merge" ]; then
+  : > "$FM_TEST_GH_AXI_LOG.merged"
+fi
+if [ "${1:-}" = api ]; then
+  case "${2:-}" in
+    */pulls/*)
+      if [ -f "$FM_TEST_GH_AXI_LOG.merged" ]; then
+        printf '%s\n' 'merged: true' 'merged_at: null' \
+          'merge_commit: "2222222222222222222222222222222222222222"' 'base_ref: "main"'
+      else
+        printf '%s\n' 'merged: false' 'merged_at: null'
+      fi
+      ;;
+    */compare/*)
+      count_file="$FM_TEST_GH_AXI_LOG.compare-count"
+      count=0
+      [ ! -f "$count_file" ] || read -r count < "$count_file"
+      count=$((count + 1))
+      printf '%s\n' "$count" > "$count_file"
+      if [ "$count" -eq 1 ]; then
+        printf '%s\n' 'status: behind'
+      else
+        printf '%s\n' 'status: ahead'
+      fi
+      ;;
+    *) printf '%s\n' 'default_branch: main' ;;
+  esac
+fi
+exit 0
+SH
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/97 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "merge-confirmation-retry: transient comparison should be retried"
+  read -r compare_calls < "$case_dir/gh-axi.log.compare-count"
+  expect_code 2 "$compare_calls" "merge-confirmation-retry: comparison attempt count"
+  assert_grep 'phase=merged' "$receipt" \
+    "merge-confirmation-retry: confirmed merge did not advance its receipt"
+  pass "fm-pr-merge retries transient post-merge comparison evidence"
+}
+
+test_post_merge_confirmation_exhaustion_remains_prepared() {
+  local case_dir compare_calls rc receipt
+  case_dir=$(make_case merge-confirmation-exhausted)
+  receipt="$case_dir/data/pr-merges/task-x1.receipt"
+  mkdir -p "$case_dir/wt"
+  : > "$case_dir/gh-axi.log"
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-} ${2:-}" = "pr merge" ]; then
+  : > "$FM_TEST_GH_AXI_LOG.merged"
+fi
+if [ "${1:-}" = api ]; then
+  case "${2:-}" in
+    */pulls/*)
+      if [ -f "$FM_TEST_GH_AXI_LOG.merged" ]; then
+        printf '%s\n' 'merged: true' 'merged_at: null' \
+          'merge_commit: "3333333333333333333333333333333333333333"' 'base_ref: "main"'
+      else
+        printf '%s\n' 'merged: false' 'merged_at: null'
+      fi
+      ;;
+    */compare/*)
+      printf '%s\n' x >> "$FM_TEST_GH_AXI_LOG.compare-count"
+      printf '%s\n' 'status: behind'
+      ;;
+    *) printf '%s\n' 'default_branch: main' ;;
+  esac
+fi
+exit 0
+SH
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/98 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "merge-confirmation-exhausted: unconfirmed comparison should refuse"
+  compare_calls=$(wc -l < "$case_dir/gh-axi.log.compare-count")
+  expect_code 3 "$compare_calls" "merge-confirmation-exhausted: comparison attempt count"
+  assert_grep 'phase=prepared' "$receipt" \
+    "merge-confirmation-exhausted: refusal did not preserve the prepared receipt"
+  assert_no_grep '^outcome=pr-merged$' "$case_dir/state/task-x1.meta" \
+    "merge-confirmation-exhausted: refusal stamped a merged outcome"
+  pass "fm-pr-merge refuses after bounded post-merge evidence retries"
+}
+
 test_unreadable_merge_state_refuses_before_merge() {
   local case_dir rc
   case_dir=$(make_case merge-state-unreadable)
@@ -484,8 +665,8 @@ if [ "${1:-}" = api ]; then
         printf '%s\n' 'merged: false' 'merged_at: null'
       fi
       ;;
-    */compare/*) printf '%s\n' ahead ;;
-    *) printf '%s\n' main ;;
+    */compare/*) printf '%s\n' 'status: ahead' ;;
+    *) printf '%s\n' 'default_branch: main' ;;
   esac
 fi
 SH
@@ -660,6 +841,9 @@ test_records_pr_and_head_before_merging
 test_existing_backlog_without_row_refuses_before_merge
 test_merge_failure_propagates_after_recording
 test_unconfirmed_merge_remains_prepared
+test_gh_axi_scalar_envelopes_do_not_hide_landed_merge
+test_post_merge_confirmation_retries_transient_comparison
+test_post_merge_confirmation_exhaustion_remains_prepared
 test_unreadable_merge_state_refuses_before_merge
 test_extra_merge_args_forwarded
 test_torn_down_delivered_task_merges_with_durable_provenance

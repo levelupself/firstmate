@@ -191,8 +191,18 @@ test_landing_receipt_must_match_durable_launch() {
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 case "${2:-}" in
-  */compare/*) printf '%s\n' ahead ;;
-  */repos/*) printf '%s\n' main ;;
+  */compare/*)
+    case "${4:-}" in
+      '{status: .status}') printf '%s\n' 'status: ahead' ;;
+      *) printf '%s\n' 'api_response:' '  body: ahead' '  truncated: false' ;;
+    esac
+    ;;
+  */repos/*)
+    case "${4:-}" in
+      '{default_branch: .default_branch}') printf '%s\n' 'default_branch: main' ;;
+      *) printf '%s\n' 'api_response:' '  body: main' '  truncated: false' ;;
+    esac
+    ;;
   *) exit 1 ;;
 esac
 SH
@@ -221,8 +231,8 @@ test_merge_commit_outside_default_reopens_orphan() {
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 case "${2:-}" in
-  */compare/*) printf '%s\n' behind ;;
-  */repos/*) printf '%s\n' main ;;
+  */compare/*) printf '%s\n' 'status: behind' ;;
+  */repos/*) printf '%s\n' 'default_branch: main' ;;
   *) exit 1 ;;
 esac
 SH
@@ -259,8 +269,8 @@ test_pr_receipt_identity_must_match_forge_authority() {
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 case "${2:-}" in
-  */compare/*) printf '%s\n' ahead ;;
-  */repos/example/repo) printf '%s\n' main ;;
+  */compare/*) printf '%s\n' 'status: ahead' ;;
+  */repos/example/repo) printf '%s\n' 'default_branch: main' ;;
   *) exit 1 ;;
 esac
 SH

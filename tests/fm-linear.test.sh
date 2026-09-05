@@ -133,8 +133,8 @@ case "${1:-} ${2:-}" in
           printf '%s\n' 'merged: false' 'merged_at: null' 'merge_commit: null' 'base_ref: "main"'
         fi
         ;;
-      /repos/o/r/compare/*) printf '%s\n' ahead ;;
-      /repos/o/r) printf '%s\n' main ;;
+      /repos/o/r/compare/*) printf '%s\n' 'status: ahead' ;;
+      /repos/o/r) printf '%s\n' 'default_branch: main' ;;
     esac
     ;;
 esac

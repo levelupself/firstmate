@@ -5,9 +5,12 @@
 # A task whose volatile metadata is already gone is accepted only when the
 # backlog's Done history records the same canonical PR, or an earlier exact
 # merge receipt proves a retry of the same request.
-# Every accepted request writes data/pr-merges/<task-id>.receipt before the
-# forge mutation and advances that receipt with the forge merge time after
-# success. An unavailable forge time stays empty rather than becoming "now".
+# Every accepted request writes a prepared data/pr-merges/<task-id>.receipt
+# before the forge mutation. A successful merge advances it to merged only
+# after the forge reports the merge commit on its current default branch;
+# post-mutation confirmation retries three times. The merged receipt records
+# that branch and commit plus the forge merge time when available. An
+# unavailable forge time stays empty rather than becoming "now".
 # The full canonical GitHub PR URL is parsed by bin/fm-pr-lib.sh and the derived
 # owner/repository and PR number are passed to gh-axi as separate arguments.
 #
@@ -270,7 +273,7 @@ if [ "$(receipt_value phase)" != merged ]; then
 fi
 
 load_merge_evidence() {
-  local merge_confirmed base_ref compare_status
+  local merge_confirmed base_ref compare_query compare_status default_query
   MERGE_QUERY=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER" \
     --jq '{merged: .merged, merged_at: .merged_at, merge_commit: .merge_commit_sha, base_ref: .base.ref}' 2>/dev/null) \
     || return 3
@@ -280,20 +283,35 @@ load_merge_evidence() {
     false) return 1 ;;
     *) return 3 ;;
   esac
-  DEFAULT_BRANCH=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO" --jq '.default_branch' 2>/dev/null) \
+  default_query=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO" \
+    --jq '{default_branch: .default_branch}' 2>/dev/null) \
     || return 2
+  DEFAULT_BRANCH=$(printf '%s\n' "$default_query" | sed -n 's/^default_branch: \([^[:space:]].*\)$/\1/p' | tail -1)
   git check-ref-format --branch "$DEFAULT_BRANCH" >/dev/null 2>&1 || return 2
   MERGE_COMMIT=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merge_commit: "\([0-9a-f]*\)"$/\1/p' | tail -1)
   base_ref=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^base_ref: "\([^"]*\)"$/\1/p' | tail -1)
   printf '%s\n' "$MERGE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || return 2
   [ "$base_ref" = "$DEFAULT_BRANCH" ] || return 2
-  compare_status=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/compare/$MERGE_COMMIT...$DEFAULT_BRANCH" --jq '.status' 2>/dev/null) \
+  compare_query=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/compare/$MERGE_COMMIT...$DEFAULT_BRANCH" \
+    --jq '{status: .status}' 2>/dev/null) \
     || return 2
+  compare_status=$(printf '%s\n' "$compare_query" | sed -n 's/^status: \([^[:space:]].*\)$/\1/p' | tail -1)
   case "$compare_status" in ahead|identical) ;; *) return 2 ;; esac
   MERGED_AT=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merged_at: "\([^"]*\)"$/\1/p' | tail -1)
   if ! printf '%s\n' "$MERGED_AT" | grep -Eq '^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
     MERGED_AT=
   fi
+}
+
+load_post_merge_evidence() {
+  local attempt
+  for attempt in 1 2 3; do
+    if load_merge_evidence; then
+      return 0
+    fi
+    [ "$attempt" -eq 3 ] || sleep 1
+  done
+  return 1
 }
 
 merge_args=()
@@ -311,7 +329,7 @@ else
     *) echo "error: forge merge state is unavailable; provenance remains prepared" >&2; exit 1 ;;
   esac
   gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
-  load_merge_evidence || {
+  load_post_merge_evidence || {
     echo "error: forge did not confirm the merged PR on its default branch; provenance remains prepared" >&2
     exit 1
   }

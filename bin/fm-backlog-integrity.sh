@@ -172,7 +172,7 @@ receipt_matches_launch() {
 }
 
 valid_pr_receipt() {
-  local receipt=$1 id=$2 key schema authorization prepared_epoch merged_at pr repository receipt_repository forge_default receipt_default merge_commit compare_status
+  local receipt=$1 id=$2 key schema authorization prepared_epoch merged_at pr repository receipt_repository forge_default receipt_default merge_commit compare_query compare_status default_query
   [ -f "$receipt" ] && [ ! -L "$receipt" ] || return 1
   for key in schema task_id pr spawned_at phase authorization prepared_epoch; do
     receipt_has_one "$receipt" "$key" || return 1
@@ -200,13 +200,17 @@ valid_pr_receipt() {
   [ -z "$merged_at" ] || valid_timestamp "$merged_at" || return 1
   receipt_repository=$(receipt_value "$receipt" repository)
   [ "$receipt_repository" = "$repository" ] || return 1
-  forge_default=$(gh-axi api "/repos/$repository" --jq '.default_branch' 2>/dev/null) || return 1
+  default_query=$(gh-axi api "/repos/$repository" \
+    --jq '{default_branch: .default_branch}' 2>/dev/null) || return 1
+  forge_default=$(printf '%s\n' "$default_query" | sed -n 's/^default_branch: \([^[:space:]].*\)$/\1/p' | tail -1)
   git check-ref-format --branch "$forge_default" >/dev/null 2>&1 || return 1
   receipt_default=$(receipt_value "$receipt" default_branch)
   [ "$receipt_default" = "$forge_default" ] || return 1
   merge_commit=$(receipt_value "$receipt" merge_commit)
   printf '%s\n' "$merge_commit" | grep -Eq '^[0-9a-f]{40}$' || return 1
-  compare_status=$(gh-axi api "/repos/$repository/compare/$merge_commit...$forge_default" --jq '.status' 2>/dev/null) || return 1
+  compare_query=$(gh-axi api "/repos/$repository/compare/$merge_commit...$forge_default" \
+    --jq '{status: .status}' 2>/dev/null) || return 1
+  compare_status=$(printf '%s\n' "$compare_query" | sed -n 's/^status: \([^[:space:]].*\)$/\1/p' | tail -1)
   [ "$compare_status" = ahead ] || [ "$compare_status" = identical ]
 }
 
