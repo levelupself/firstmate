@@ -6,6 +6,8 @@ The files and environment variables you set to operate firstmate.
 
 Project registration runs `bin/fm-project-git-setup.sh` for every delivery posture, including automatic project registration during home seeding.
 Fleet refresh runs the same idempotent setup for existing project clones before remote inspection, including local-only projects, clones without an origin, and clones with uncommitted work.
+Registration configures new clones before work starts; refresh migrates clones registered before this setup existed, with matching settings left untouched on reruns.
+The configuration is independent of the runtime backend and harness because setup precedes project Git operations and uses the common repository configuration inherited by linked worktrees.
 A setup failure stops registration or refresh for that project; fleet refresh continues independent clones, returns an aggregate failure status, and exposes each setup error through bootstrap.
 Only the repository-local `rerere.enabled=true` and `rerere.autoUpdate=false` settings are managed; global Git preferences, tracked files, and landing guards are unchanged.
 Linked worktrees inherit the common repository configuration and share its `rr-cache`, so a conflict resolved and recorded by one worker is replayed into the working files of another worker encountering the same conflict.
@@ -402,7 +404,7 @@ In a read-only session that did not get the fleet lock, the same line is advisor
 Session locking uses formatted process inspection on Linux, WSL, and other procps/POSIX systems, and Cygwin's fixed `ps -l`/`ps -f` fields on Git Bash/Cygwin.
 If Cygwin cannot expose the native Windows harness in the shell's parent chain, session start stays read-only and reports that process identity is unavailable without asserting a live-session conflict.
 The locked session-start deferred network stage runs bootstrap's best-effort project clone refresh through `fm-fleet-sync.sh`.
-It emits `FLEET_SYNC:` for skipped refreshes that may matter, local-only remote drift, recovered self-heals, and `STUCK:` alarms.
+It emits `FLEET_SYNC:` for skipped refreshes that may matter, local-only remote drift, recovered self-heals, `STUCK:` alarms, and setup errors from [Project Git configuration](#project-git-configuration).
 Each candidate under `projects/` must resolve to the root of its own Git worktree; a plain directory nested inside another repository is skipped rather than letting Git discovery operate on that enclosing repository, while a symlink to a clone root remains supported.
 Local-only projects are not advanced automatically; each configured remote whose advertised default matches the local default is fetched and compared, and drift or an inspection failure is reported.
 Normal completed runs keep no-origin skips silent.
