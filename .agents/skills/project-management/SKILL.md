@@ -56,6 +56,7 @@ Default it off for every project and every posture, and enable it only on the ca
 
 Confirm the source URL, local project name, delivery posture, and autonomy posture, stating the resolved default for each rather than asking the captain to invent one.
 Clone into `projects/<name>` and add the registry entry only after the destination is known to be unused.
+Run the shared Git setup under Initialize for every delivery posture before completing registration.
 A `no-mistakes` or `no-mistakes-prod-only` project must have an `origin` remote and must complete the initialization procedure below, because a conditional policy's product-facing work runs the pipeline while its internal-only work still takes the direct PR.
 A `direct-PR` project needs an `origin` remote but skips no-mistakes initialization.
 A `local-only` project may initially have no remote and skips no-mistakes initialization; approved landing's publication requirements are owned by [`bin/fm-merge-local.sh`](../../../bin/fm-merge-local.sh)'s header.
@@ -65,12 +66,21 @@ A `local-only` project may initially have no remote and skips no-mistakes initia
 Creating a GitHub repository is outward-facing.
 Before making that remote change, propose the repository name, owner or organization, visibility, and delivery posture, defaulting visibility to private and the posture to `no-mistakes-prod-only`, then obtain the captain's explicit consent for those exact values; a stated default never replaces that consent.
 Use `gh-axi` for the approved GitHub operation and consult its current help rather than relying on remembered flags.
-After remote creation succeeds, clone it locally, add the registry entry, and initialize it according to its delivery posture.
+After remote creation succeeds, clone it locally, add the registry entry, and run Initialize.
 
 For a purely `local-only` project, create a local Git repository under its unused `projects/<name>` path, add the registry entry, and make no GitHub call.
+Run Initialize for this project too.
 The captain's request to create that local project authorizes this local initialization, but it does not authorize an unmentioned remote repository.
 
 ## Initialize
+
+For every new or newly registered project, including `direct-PR` and `local-only`, run the idempotent repository configuration helper before completing registration:
+
+```sh
+bin/fm-project-git-setup.sh projects/<name>
+```
+
+The shared conflict-resolution policy and existing-project migration are documented in [Project Git configuration](../../../docs/configuration.md#project-git-configuration).
 
 Run no-mistakes initialization only for `no-mistakes` and `no-mistakes-prod-only` projects:
 

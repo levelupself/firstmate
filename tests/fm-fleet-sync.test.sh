@@ -34,6 +34,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 fm_git_identity fmtest fmtest@example.invalid
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 
 TMP_ROOT=$(fm_test_tmproot fm-fleet-sync-tests)
 HOME_N=0
@@ -771,7 +772,20 @@ test_rerere_initialization() {
   git -C "$clone" config --local --unset rerere.enabled
   run_sync "$home" >/dev/null
   assert_eq "$(git -C "$clone" config --local --bool rerere.enabled)" true "existing no-origin projects are migrated"
-  pass "project setup is idempotent and migration reaches no-origin projects"
+  mkdir -p "$home/data"
+  printf '%s\n' '- initial-rerere [local-only] - fixture' > "$home/data/projects.md"
+  git -C "$clone" config --local --unset rerere.enabled
+  run_sync "$home" >/dev/null
+  assert_eq "$(git -C "$clone" config --local --bool rerere.enabled)" true "local-only projects are migrated"
+  git -C "$clone" config --local rerere.enabled false
+  before=$(cat "$clone/.git/config")
+  : > "$clone/.git/config.lock"
+  if run_sync "$home" >"$home/config-failure.log"; then
+    fail "configuration lock must stop sync with an error"
+  fi
+  assert_eq "$(cat "$clone/.git/config")" "$before" "config lock prevents writes"
+  [ -f "$clone/.git/config.lock" ] || fail "setup must preserve existing config lock"
+  pass "project setup is idempotent, migrates all modes, and respects config locks"
 }
 
 test_shared_rerere

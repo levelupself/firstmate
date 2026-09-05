@@ -26,6 +26,8 @@
 # killed mid-write - e.g. a timed-out bootstrap sync or a teardown process kill),
 # it is retried with a bounded wait and removed only when provably stale; see
 # fetch_with_packed_refs_lock_guard and the FM_FLEET_SYNC_PACKED_REFS_LOCK_* knobs.
+# Each valid clone receives shared rerere configuration before remote or mode
+# checks; bin/fm-project-git-setup.sh owns the two managed rerere keys.
 # Usage: fm-fleet-sync.sh [<project-dir-or-name>]
 # The single-project form accepts either a path (absolute, or relative to the
 # caller's cwd) or a bare "<name>"/"projects/<name>" form, resolved against
@@ -326,6 +328,10 @@ sync_project() {
     echo "$label: skipped: not a clone root (git would act on $proj_top)"
     return 0
   fi
+  if ! "$SCRIPT_DIR/fm-project-git-setup.sh" "$PROJ"; then
+    echo "$label: ERROR: shared conflict-resolution setup failed; sync stopped"
+    return 1
+  fi
   mode_line=$("$FM_ROOT/bin/fm-project-mode.sh" "$label" 2>/dev/null || echo "no-mistakes off")
   mode=${mode_line%% *}
   if [ "$mode" = "local-only" ]; then
@@ -479,7 +485,7 @@ sync_project() {
 
 if [ $# -eq 1 ]; then
   sync_project "$(resolve_project_arg "$1")"
-  exit 0
+  exit $?
 fi
 
 [ -d "$PROJECTS" ] || exit 0

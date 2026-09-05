@@ -2,6 +2,16 @@
 
 The files and environment variables you set to operate firstmate.
 
+## Project Git configuration
+
+Project registration runs `bin/fm-project-git-setup.sh` for every delivery posture.
+Fleet refresh runs the same idempotent setup for existing project clones before remote inspection, including local-only projects, clones without an origin, and clones with uncommitted work.
+Only the repository-local `rerere.enabled=true` and `rerere.autoUpdate=false` settings are managed; global Git preferences, tracked files, and landing guards are unchanged.
+Linked worktrees inherit the common repository configuration and share its `rr-cache`, so a conflict resolved and recorded by one worker is replayed into the working files of another worker encountering the same conflict.
+Automatic staging is deliberately disabled: a cached resolution can be wrong or unsuitable in a new context, so the index remains unmerged until the worker inspects the replay, runs appropriate validation, and explicitly stages it before continuing the rebase or merge.
+Workers correcting a bad recorded resolution can use `git rerere forget <path>` for the current conflict and record the corrected resolution.
+The helper's header and `--help` own invocation and mutation mechanics; `tests/fm-fleet-sync.test.sh` proves cross-worktree replay with real Git.
+
 ## Orchestrator behavior (AGENTS.md)
 
 The shared orchestrator behavior lives in [`AGENTS.md`](../AGENTS.md) - edit it like any prompt when the fleet is empty, or dispatch shared-repo edits to a crewmate while tasks are in flight.
