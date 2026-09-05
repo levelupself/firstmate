@@ -37,15 +37,14 @@ fm_git_identity fmtest fmtest@example.invalid
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 
 TMP_ROOT=$(fm_test_tmproot fm-fleet-sync-tests)
-HOME_N=0
 
 # --- fixtures ---------------------------------------------------------------
 
 # new_home: fresh isolated FM_HOME with an empty projects/ dir. Each test gets its
 # own so the whole-fleet form never sees another test's clones.
 new_home() {
-  HOME_N=$((HOME_N + 1))
-  local h="$TMP_ROOT/home-$HOME_N"
+  local h
+  h=$(mktemp -d "$TMP_ROOT/home.XXXXXX") || return 1
   mkdir -p "$h/projects"
   printf '%s\n' "$h"
 }
@@ -509,8 +508,10 @@ test_whole_fleet_form() {
 }
 
 test_bootstrap_relays_recovered_and_stuck() {
-  local home stuck rec out
+  local home stuck rec out locked
   home=$(new_home)
+  locked=$(build_pair "$home" a-locked)
+  : > "$locked/.git/config.lock"
   # A clone we will leave STUCK (dirty), and one that self-heals (detached-clean-ancestor).
   stuck=$(build_pair "$home" stuck-clone)
   advance_origin "$home" stuck-clone C1
@@ -523,6 +524,8 @@ test_bootstrap_relays_recovered_and_stuck() {
   # We only assert the fleet-sync relay lines; other detect lines are irrelevant.
   out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
 
+  assert_contains "$out" "FLEET_SYNC: a-locked: ERROR:" "bootstrap relays setup failure"
+  assert_present "$locked/.git/config.lock" "bootstrap preserves config lock"
   assert_contains "$out" "FLEET_SYNC: stuck-clone: STUCK:" "bootstrap relays the STUCK outcome"
   assert_contains "$out" "FLEET_SYNC: rec-clone: recovered:" "bootstrap relays the recovered outcome"
   pass "bootstrap relays recovered: and STUCK: fleet-sync outcomes"
@@ -788,6 +791,87 @@ test_rerere_initialization() {
   pass "project setup is idempotent, migrates all modes, and respects config locks"
 }
 
+test_home_fixtures_are_isolated() {
+  local first second
+  first=$(new_home)
+  mkdir "$first/projects/leftover"
+  second=$(new_home)
+  [ "$first" != "$second" ] || fail "home fixtures reused a path"
+  assert_absent "$second/projects/leftover" "home fixture leaked project state"
+  pass "home fixtures remain isolated across command substitutions"
+}
+
+test_setup_failures_continue_fleet() {
+  local home locked other healthy out rc before other_before head_before
+  home=$(new_home)
+  locked=$(build_pair "$home" a-locked)
+  other=$(build_pair "$home" b-locked)
+  healthy=$(build_pair "$home" z-healthy)
+  advance_origin "$home" a-locked C1
+  advance_origin "$home" z-healthy C1
+  before=$(cat "$locked/.git/config")
+  other_before=$(cat "$other/.git/config")
+  head_before=$(head_sha "$locked")
+  : > "$locked/.git/config.lock"
+  : > "$other/.git/config.lock"
+  rc=0
+  out=$(run_sync "$home" 2>/dev/null) || rc=$?
+  expect_code 1 "$rc" "fleet aggregates setup failures"
+  assert_contains "$out" "a-locked: ERROR:" "first setup failure remains visible"
+  assert_contains "$out" "b-locked: ERROR:" "second setup failure remains visible"
+  assert_contains "$out" "z-healthy: synced" "later independent clone refreshes"
+  assert_eq "$(git -C "$healthy" config --local --bool rerere.enabled)" true "later clone is migrated"
+  assert_eq "$(head_sha "$healthy")" "$(git -C "$healthy" rev-parse origin/main)" "later clone advances"
+  assert_eq "$(head_sha "$locked")" "$head_before" "failed setup stops that clone's refresh"
+  assert_eq "$(cat "$locked/.git/config")" "$before" "first locked config remains intact"
+  assert_eq "$(cat "$other/.git/config")" "$other_before" "second locked config remains intact"
+  assert_present "$locked/.git/config.lock" "first config lock remains intact"
+  assert_present "$other/.git/config.lock" "second config lock remains intact"
+  pass "setup failures are aggregated while independent clones migrate and refresh"
+}
+
+test_seed_configures_projects_before_registration() {
+  local home child code clone before registry out
+  home=$(new_home)
+  child=$(new_home)
+  code="$home/code"
+  mkdir -p "$code"
+  ln -s "$ROOT/bin" "$code/bin"
+  clone=$(build_pair "$home" seed-project)
+  before=$(cat "$clone/.git/config")
+  mkdir -p "$home/data" "$child/bin"
+  cp "$ROOT/AGENTS.md" "$child/AGENTS.md"
+  printf '%s\n' '- seed-project [direct-PR] - fixture' > "$home/data/projects.md"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$code" FM_SECONDMATE_CHARTER='seed fixture' \
+    FM_SECONDMATE_SCOPE='seed fixture' \
+    "$ROOT/bin/fm-home-seed.sh" seed-child "$child" seed-project >/dev/null \
+    || fail "automatic project registration failed"
+  assert_eq "$(git -C "$child/projects/seed-project" config --local --bool rerere.enabled)" true "seed enables rerere before startup"
+  assert_eq "$(git -C "$child/projects/seed-project" config --local --bool rerere.autoUpdate)" false "seed leaves replay unstaged"
+  assert_eq "$(cat "$clone/.git/config")" "$before" "seed preserves source clone configuration"
+  registry=$(cat "$child/data/projects.md")
+  before=$(cat "$child/projects/seed-project/.git/config")
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$code" \
+    "$ROOT/bin/fm-home-seed.sh" seed-child "$child" seed-project >/dev/null \
+    || fail "repeated project registration failed"
+  assert_eq "$(cat "$child/projects/seed-project/.git/config")" "$before" "repeated seed setup is idempotent"
+  git -C "$child/projects/seed-project" config --local rerere.enabled false
+  before=$(cat "$child/projects/seed-project/.git/config")
+  : > "$child/projects/seed-project/.git/config.lock"
+  if out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$code" \
+      "$ROOT/bin/fm-home-seed.sh" seed-child "$child" seed-project 2>&1); then
+    fail "registration accepted failed Git setup"
+  fi
+  assert_contains "$out" 'could not lock config file' "registration surfaces Git setup failure"
+  assert_eq "$(cat "$child/data/projects.md")" "$registry" "failed registration preserves registry"
+  assert_eq "$(cat "$child/projects/seed-project/.git/config")" "$before" "failed registration preserves config"
+  assert_present "$child/projects/seed-project/.git/config.lock" "registration preserves config lock"
+  pass "automatic registration configures shared reuse and propagates setup failure"
+}
+
+test_home_fixtures_are_isolated
+test_setup_failures_continue_fleet
+test_seed_configures_projects_before_registration
 test_shared_rerere
 test_rerere_initialization
 

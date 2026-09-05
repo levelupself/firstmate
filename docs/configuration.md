@@ -4,8 +4,9 @@ The files and environment variables you set to operate firstmate.
 
 ## Project Git configuration
 
-Project registration runs `bin/fm-project-git-setup.sh` for every delivery posture.
+Project registration runs `bin/fm-project-git-setup.sh` for every delivery posture, including automatic project registration during home seeding.
 Fleet refresh runs the same idempotent setup for existing project clones before remote inspection, including local-only projects, clones without an origin, and clones with uncommitted work.
+A setup failure stops registration or refresh for that project; fleet refresh continues independent clones, returns an aggregate failure status, and exposes each setup error through bootstrap.
 Only the repository-local `rerere.enabled=true` and `rerere.autoUpdate=false` settings are managed; global Git preferences, tracked files, and landing guards are unchanged.
 Linked worktrees inherit the common repository configuration and share its `rr-cache`, so a conflict resolved and recorded by one worker is replayed into the working files of another worker encountering the same conflict.
 Automatic staging is deliberately disabled: a cached resolution can be wrong or unsuitable in a new context, so the index remains unmerged until the worker inspects the replay, runs appropriate validation, and explicitly stages it before continuing the rebase or merge.

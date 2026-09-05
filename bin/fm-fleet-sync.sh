@@ -489,6 +489,7 @@ if [ $# -eq 1 ]; then
 fi
 
 [ -d "$PROJECTS" ] || exit 0
+status=0
 for proj in "$PROJECTS"/*; do
   [ -e "$proj" ] || continue
   [ -d "$proj" ] || continue
@@ -496,6 +497,7 @@ for proj in "$PROJECTS"/*; do
   # the time instead of only its total. Recording is a no-op unless the deferred
   # network stage asked for it.
   __fm_timing_stamp=$(fm_timing_now_ms)
-  sync_project "$proj"
+  sync_project "$proj" || status=1
   fm_timing_record clone sync "$__fm_timing_stamp" "$(basename "$proj")"
 done
+exit "$status"
