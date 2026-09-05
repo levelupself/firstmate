@@ -392,6 +392,7 @@ Session locking uses formatted process inspection on Linux, WSL, and other procp
 If Cygwin cannot expose the native Windows harness in the shell's parent chain, session start stays read-only and reports that process identity is unavailable without asserting a live-session conflict.
 The locked session-start deferred network stage runs bootstrap's best-effort project clone refresh through `fm-fleet-sync.sh`.
 It emits `FLEET_SYNC:` for skipped refreshes that may matter, local-only remote drift, recovered self-heals, and `STUCK:` alarms.
+Each candidate under `projects/` must resolve to the root of its own Git worktree; a plain directory nested inside another repository is skipped rather than letting Git discovery operate on that enclosing repository, while a symlink to a clone root remains supported.
 Local-only projects are not advanced automatically; each configured remote whose advertised default matches the local default is fetched and compared, and drift or an inspection failure is reported.
 Normal completed runs keep no-origin skips silent.
 If bootstrap kills a timed-out refresh, it replays any completed `fm-fleet-sync.sh` output before the aggregate timeout skip so no finished result is lost.
