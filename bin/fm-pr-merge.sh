@@ -8,7 +8,11 @@
 # Every accepted request writes a prepared data/pr-merges/<task-id>.receipt
 # before the forge mutation. A successful merge advances it to merged only
 # after the forge reports the merge commit on its current default branch;
-# post-mutation confirmation retries three times. When the project's origin is
+# post-mutation confirmation has a 120-second retry budget, including API read
+# time, with exponential sleeps from 1 second capped at 10 seconds and clipped
+# to the remaining budget. An in-flight evidence read may finish after the
+# deadline. Timeout preserves prepared provenance and requires verification
+# before retrying the merge. When the project's origin is
 # a local filesystem mirror, the confirmed commit is fetched from the matching
 # GitHub remote and written to that mirror by fast-forward only before the merge
 # outcome is stamped. The merged receipt records that branch and commit plus
@@ -328,14 +332,19 @@ load_merge_evidence() {
 }
 
 load_post_merge_evidence() {
-  local attempt
-  for attempt in 1 2 3; do
+  local deadline remaining delay=1
+  deadline=$(($(date +%s) + 120))
+  while :; do
     if load_merge_evidence; then
       return 0
     fi
-    [ "$attempt" -eq 3 ] || sleep 1
+    remaining=$((deadline - $(date +%s)))
+    [ "$remaining" -gt 0 ] || return 1
+    [ "$delay" -le "$remaining" ] || delay=$remaining
+    sleep "$delay"
+    delay=$((delay * 2))
+    [ "$delay" -le 10 ] || delay=10
   done
-  return 1
 }
 
 github_remote_matches_pr() {
@@ -491,7 +500,7 @@ else
   esac
   gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
   load_post_merge_evidence || {
-    echo "error: forge did not confirm the merged PR on its default branch; provenance remains prepared" >&2
+    echo "error: confirmation timed out: merge was issued but could not be confirmed on the default branch; provenance remains prepared; verify $URL and its default-branch commit before retrying the merge" >&2
     exit 1
   }
 fi
