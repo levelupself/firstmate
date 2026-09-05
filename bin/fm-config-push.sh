@@ -14,6 +14,8 @@
 # through their SSH route. Unchanged config and data/captain-shared.md-only
 # updates send no reread unless a previous send failure is pending for that home.
 # Warnings-only skips exit 0; real propagation or reread-send errors exit non-zero.
+# FM_CONFIG_PUSH_SECOND_MATE limits the existing operation to one discovered id
+# for bounded internal callers; it does not change that home's push contract.
 set -u
 
 usage() {
@@ -42,6 +44,7 @@ Environment overrides follow the rest of firstmate:
   FM_STATE_OVERRIDE state dir
   FM_DATA_OVERRIDE  data dir
   FM_CONFIG_OVERRIDE config dir
+  FM_CONFIG_PUSH_SECOND_MATE internal optional id filter for one bounded push
 EOF
 }
 
@@ -104,6 +107,10 @@ cleanup() {
 trap cleanup EXIT
 
 live_secondmate_meta_records "$STATE" "$SECONDMATES_MD" > "$records"
+if [ -n "${FM_CONFIG_PUSH_SECOND_MATE:-}" ]; then
+  awk -F '|' -v id="$FM_CONFIG_PUSH_SECOND_MATE" '$1 == id' "$records" > "$records.selected"
+  mv "$records.selected" "$records"
+fi
 if [ ! -s "$records" ]; then
   echo "config-push: no live secondmate homes found"
   exit 0

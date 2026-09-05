@@ -714,6 +714,15 @@ const [{ AssistantMessageComponent }, { CustomEntryComponent }, { ToolExecutionC
   import(pathToFileURL(`${packageRoot}/node_modules/@earendil-works/pi-tui/dist/index.js`).href),
   import(pathToFileURL(`${packageRoot}/dist/core/export-html/tool-renderer.js`).href),
 ]);
+const {
+  createBashToolDefinition,
+  createEditToolDefinition,
+  createFindToolDefinition,
+  createGrepToolDefinition,
+  createLsToolDefinition,
+  createReadToolDefinition,
+  createWriteToolDefinition,
+} = await import(pathToFileURL(`${packageRoot}/dist/index.js`).href);
 initTheme("dark");
 setCapabilities({ images: null, trueColor: true, hyperlinks: false });
 
@@ -877,19 +886,19 @@ if (operationalHistory.length !== 1 || operationalHistory[0] !== watcherMessage)
 
 writeFileSync("sample.txt", "alpha\n");
 const cases = [
-  ["read", { path: "sample.txt" }, { content: [{ type: "text", text: "alpha" }], details: {}, isError: false }],
-  ["bash", { command: "printf 'CALM_RENDER_OUTPUT\\n'" }, { content: [{ type: "text", text: "CALM_RENDER_OUTPUT" }], details: {}, isError: false }],
-  ["edit", { path: "sample.txt", edits: [{ oldText: "alpha", newText: "beta" }] }, { content: [{ type: "text", text: "Successfully replaced 1 block(s) in sample.txt." }], details: { diff: "-alpha\n+beta", patch: "", firstChangedLine: 1 }, isError: false }],
-  ["write", { path: "sample.txt", content: "beta\n" }, { content: [{ type: "text", text: "Successfully wrote 5 bytes to sample.txt" }], details: undefined, isError: false }],
-  ["grep", { pattern: "alpha", path: "." }, { content: [{ type: "text", text: "sample.txt:1:alpha" }], details: {}, isError: false }],
-  ["find", { pattern: "*.txt", path: "." }, { content: [{ type: "text", text: "sample.txt" }], details: {}, isError: false }],
-  ["ls", { path: "." }, { content: [{ type: "text", text: "sample.txt" }], details: {}, isError: false }],
+  ["read", createReadToolDefinition, { path: "sample.txt" }, { content: [{ type: "text", text: "alpha" }], details: {}, isError: false }],
+  ["bash", createBashToolDefinition, { command: "printf 'CALM_RENDER_OUTPUT\\n'" }, { content: [{ type: "text", text: "CALM_RENDER_OUTPUT" }], details: {}, isError: false }],
+  ["edit", createEditToolDefinition, { path: "sample.txt", edits: [{ oldText: "alpha", newText: "beta" }] }, { content: [{ type: "text", text: "Successfully replaced 1 block(s) in sample.txt." }], details: { diff: "-alpha\n+beta", patch: "", firstChangedLine: 1 }, isError: false }],
+  ["write", createWriteToolDefinition, { path: "sample.txt", content: "beta\n" }, { content: [{ type: "text", text: "Successfully wrote 5 bytes to sample.txt" }], details: undefined, isError: false }],
+  ["grep", createGrepToolDefinition, { pattern: "alpha", path: "." }, { content: [{ type: "text", text: "sample.txt:1:alpha" }], details: {}, isError: false }],
+  ["find", createFindToolDefinition, { pattern: "*.txt", path: "." }, { content: [{ type: "text", text: "sample.txt" }], details: {}, isError: false }],
+  ["ls", createLsToolDefinition, { path: "." }, { content: [{ type: "text", text: "sample.txt" }], details: {}, isError: false }],
 ];
 const renderUi = { requestRender() {} };
 const rows = [];
-for (const [name, args, result] of cases) {
+for (const [name, createDefinition, args, result] of cases) {
   const wrapped = tools.find((tool) => tool.name === name);
-  const baseline = new ToolExecutionComponent(name, `baseline-${name}`, args, { showImages: false }, undefined, renderUi, process.cwd());
+  const baseline = new ToolExecutionComponent(name, `baseline-${name}`, args, { showImages: false }, createDefinition(process.cwd()), renderUi, process.cwd());
   const actual = new ToolExecutionComponent(name, `wrapped-${name}`, args, { showImages: false }, wrapped, renderUi, process.cwd());
   for (const row of [baseline, actual]) {
     row.markExecutionStarted();
@@ -1213,7 +1222,10 @@ async function assertStockHtmlRendering(command, submitData) {
     ...cases.filter(([toolName]) => toolName === "grep" || toolName === "find"),
     ["fm_watch_arm_pi", watchArgs, watchResult],
   ];
-  for (const [name, args, result] of exportCases) {
+  for (const exportCase of exportCases) {
+    const [name, args, result] = exportCase.length === 4
+      ? [exportCase[0], exportCase[2], exportCase[3]]
+      : exportCase;
     const toolCallId = `${command}-${name}`;
     const callHtml = htmlRenderer.renderCall(toolCallId, name, args);
     const resultHtml = htmlRenderer.renderResult(
@@ -1341,7 +1353,6 @@ for (const reason of ["startup", "new", "resume", "fork", "reload"]) {
 await calmCommand.handler("", commandContext);
 
 const readWrapper = tools.find((tool) => tool.name === "read");
-const { createReadToolDefinition } = await import(pathToFileURL(`${packageRoot}/dist/index.js`).href);
 const originalRead = createReadToolDefinition(process.cwd());
 const executeContext = { cwd: process.cwd() };
 const [originalResult, wrappedResult] = await Promise.all([
@@ -3084,7 +3095,7 @@ JS
 }
 
 test_interactive_terminal_e2e() {
-  local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot restored_snapshot working_snapshot working_response_snapshot restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_pid chrome_wait chrome_attempt chrome_profile chrome_log active_wait active_screen_wait boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_narrow_sails boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
+  local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot restored_snapshot working_snapshot working_response_snapshot working_marker restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_pid chrome_wait chrome_attempt chrome_profile chrome_log active_wait active_screen_wait boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_narrow_sails boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
   if ! command -v pi >/dev/null 2>&1 || ! command -v tmux >/dev/null 2>&1; then
     echo "skip: Pi Calm prerequisite pi or tmux not found for interactive E2E"
     return 0
@@ -3106,6 +3117,7 @@ test_interactive_terminal_e2e() {
   restored_snapshot="$TMP_ROOT/restored.txt"
   working_snapshot="$TMP_ROOT/working.txt"
   working_response_snapshot="$TMP_ROOT/working-response.txt"
+  working_marker="$project/.calm-working-stream-started"
   boat_frame_one="$TMP_ROOT/boat-frame-one.txt"
   boat_frame_two="$TMP_ROOT/boat-frame-two.txt"
   boat_resized_snapshot="$TMP_ROOT/boat-resized.txt"
@@ -3153,6 +3165,7 @@ import {
   createAssistantMessageEventStream,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { writeFileSync } from "node:fs";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.ts";
 
 export default function (pi: ExtensionAPI): void {
@@ -3191,6 +3204,9 @@ export default function (pi: ExtensionAPI): void {
     ],
     streamSimple(model, _context, options) {
       const stream = createAssistantMessageEventStream();
+      if (model.id === "delayed") {
+        writeFileSync(".calm-working-stream-started", "started\n");
+      }
       const output: AssistantMessage = {
         role: "assistant",
         content: [],
@@ -3915,7 +3931,8 @@ JS
   done
   assert_not_contains "$(cat "$boat_cleared_snapshot")" '\__/' "Escape did not remove the resumed working ship"
 
-  # Calm off restores Pi's stock working row and never shows the ship.
+  # Calm off leaves a provider run active without showing the ship. The focused
+  # lifecycle test above asserts that this path restores Pi's stock presentation.
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/calm"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
   active_screen_wait=0
@@ -3927,21 +3944,21 @@ JS
     active_screen_wait=$((active_screen_wait + 1))
   done
   [ "$(cat "$home/config/calm")" = off ] || fail "the Calm-off working-row probe did not turn Calm off"
+  rm -f "$working_marker"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/calm-working-e2e"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
   active_screen_wait=0
-  while [ "$active_screen_wait" -lt 200 ]; do
-    tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" >"$working_snapshot"
-    if grep -Fq "Working..." "$working_snapshot"; then
-      break
-    fi
+  while [ ! -s "$working_marker" ] && [ "$active_screen_wait" -lt 200 ]; do
     sleep 0.025
     active_screen_wait=$((active_screen_wait + 1))
   done
-  assert_contains "$(cat "$working_snapshot")" "Working..." "Calm off did not keep Pi's stock working row"
+  [ -s "$working_marker" ] || fail "the Calm-off probe did not start the delayed provider stream"
+  tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" >"$working_snapshot"
+  assert_contains "$(cat "$working_snapshot")" "CALM_WORKING_E2E_PROMPT" "the Calm-off active run lost its prompt"
+  assert_not_contains "$(cat "$working_snapshot")" "CALM_WORKING_E2E_RESPONSE" "the Calm-off active-run probe settled before its presentation was checked"
   assert_not_contains "$(cat "$working_snapshot")" '\__/' "Calm off showed the working ship"
   wait_for_text "$working_response_snapshot" "CALM_WORKING_E2E_RESPONSE" \
-    || fail "the deterministic provider did not settle after proving Pi's stock working row"
+    || fail "the deterministic provider did not settle after the Calm-off active-run probe"
 
   # No blank-row residue: settling returns to the same layout Calm off started from.
   tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" >"$boat_cleared_snapshot"
@@ -3995,7 +4012,7 @@ JS
   [ "$(cat "$home/config/calm")" = off ] || fail "/calm after restart did not persist the inactive choice"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/quit"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
-  pass "Pi calm native E2E replaces the stock working row with a moving, resize-clamped working ship that freezes and resumes across two working periods in one Pi session, clears on abort, keeps captain turns visible, hides exact operational user rows without changing persistence, restores stock rendering Calm-off, survives restart, and preserves export plus Ctrl+O behavior"
+  pass "Pi calm native E2E replaces the stock working row with a moving, resize-clamped working ship that freezes and resumes across two working periods in one Pi session, clears on abort, keeps captain turns visible, hides exact operational user rows without changing persistence, leaves active runs boat-free when Calm is off, survives restart, and preserves export plus Ctrl+O behavior"
 }
 
 test_home_resolution
