@@ -300,6 +300,17 @@ load_merge_evidence() {
   fi
 }
 
+load_post_merge_evidence() {
+  local attempt
+  for attempt in 1 2 3; do
+    if load_merge_evidence; then
+      return 0
+    fi
+    [ "$attempt" -eq 3 ] || sleep 1
+  done
+  return 1
+}
+
 merge_args=()
 if ! caller_has_merge_method "$@"; then
   merge_args=(--squash)
@@ -315,7 +326,7 @@ else
     *) echo "error: forge merge state is unavailable; provenance remains prepared" >&2; exit 1 ;;
   esac
   gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
-  load_merge_evidence || {
+  load_post_merge_evidence || {
     echo "error: forge did not confirm the merged PR on its default branch; provenance remains prepared" >&2
     exit 1
   }
