@@ -270,7 +270,7 @@ if [ "$(receipt_value phase)" != merged ]; then
 fi
 
 load_merge_evidence() {
-  local merge_confirmed base_ref compare_status
+  local merge_confirmed base_ref compare_query compare_status default_query
   MERGE_QUERY=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER" \
     --jq '{merged: .merged, merged_at: .merged_at, merge_commit: .merge_commit_sha, base_ref: .base.ref}' 2>/dev/null) \
     || return 3
@@ -280,15 +280,19 @@ load_merge_evidence() {
     false) return 1 ;;
     *) return 3 ;;
   esac
-  DEFAULT_BRANCH=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO" --jq '.default_branch' 2>/dev/null) \
+  default_query=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO" \
+    --jq '{default_branch: .default_branch}' 2>/dev/null) \
     || return 2
+  DEFAULT_BRANCH=$(printf '%s\n' "$default_query" | sed -n 's/^default_branch: \([^[:space:]].*\)$/\1/p' | tail -1)
   git check-ref-format --branch "$DEFAULT_BRANCH" >/dev/null 2>&1 || return 2
   MERGE_COMMIT=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merge_commit: "\([0-9a-f]*\)"$/\1/p' | tail -1)
   base_ref=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^base_ref: "\([^"]*\)"$/\1/p' | tail -1)
   printf '%s\n' "$MERGE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || return 2
   [ "$base_ref" = "$DEFAULT_BRANCH" ] || return 2
-  compare_status=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/compare/$MERGE_COMMIT...$DEFAULT_BRANCH" --jq '.status' 2>/dev/null) \
+  compare_query=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/compare/$MERGE_COMMIT...$DEFAULT_BRANCH" \
+    --jq '{status: .status}' 2>/dev/null) \
     || return 2
+  compare_status=$(printf '%s\n' "$compare_query" | sed -n 's/^status: \([^[:space:]].*\)$/\1/p' | tail -1)
   case "$compare_status" in ahead|identical) ;; *) return 2 ;; esac
   MERGED_AT=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merged_at: "\([^"]*\)"$/\1/p' | tail -1)
   if ! printf '%s\n' "$MERGED_AT" | grep -Eq '^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then

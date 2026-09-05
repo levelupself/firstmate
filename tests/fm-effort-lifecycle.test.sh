@@ -48,8 +48,8 @@ if [ "${1:-}" = api ]; then
         'merge_commit: "9999999999999999999999999999999999999999"' \
         'base_ref: "main"'
       ;;
-    */compare/*) printf '%s\n' ahead ;;
-    *) printf '%s\n' main ;;
+    */compare/*) printf '%s\n' 'status: ahead' ;;
+    *) printf '%s\n' 'default_branch: main' ;;
   esac
 fi
 exit 0

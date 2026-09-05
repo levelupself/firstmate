@@ -112,8 +112,8 @@ case "${1:-} ${2:-}" in
         'base_ref: "main"'
     fi
     ;;
-  "api "*/compare/*) printf '%s\n' ahead ;;
-  "api "*/repos/*) printf '%s\n' main ;;
+  "api "*/compare/*) printf '%s\n' 'status: ahead' ;;
+  "api "*/repos/*) printf '%s\n' 'default_branch: main' ;;
 esac
 exit "${FM_TEST_GH_AXI_RC:-0}"
 SH

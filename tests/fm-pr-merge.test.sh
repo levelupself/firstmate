@@ -70,8 +70,8 @@ if [ "${1:-}" = api ]; then
         printf '%s\n' 'merged: false' 'merged_at: null'
       fi
       ;;
-    */compare/*) printf '%s\n' ahead ;;
-    *) printf '%s\n' main ;;
+    */compare/*) printf '%s\n' 'status: ahead' ;;
+    *) printf '%s\n' 'default_branch: main' ;;
   esac
 fi
 exit 0
@@ -283,6 +283,70 @@ SH
   pass "fm-pr-merge stamps no outcome until the forge confirms the merged state"
 }
 
+test_gh_axi_scalar_envelopes_do_not_hide_landed_merge() {
+  local case_dir rc receipt
+  case_dir=$(make_case gh-axi-scalar-envelope)
+  receipt="$case_dir/data/pr-merges/task-x1.receipt"
+  mkdir -p "$case_dir/wt"
+  : > "$case_dir/gh-axi.log"
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-} ${2:-}" = "pr merge" ]; then
+  : > "$FM_TEST_GH_AXI_LOG.merged"
+fi
+if [ "${1:-}" = api ]; then
+  case "${2:-}" in
+    */pulls/*)
+      if [ -f "$FM_TEST_GH_AXI_LOG.merged" ]; then
+        printf '%s\n' 'merged: true' \
+          'merged_at: "2026-09-05T00:24:01Z"' \
+          'merge_commit: "4eade19b88a2763c3316e354774169c433ba7b3b"' \
+          'base_ref: "main"'
+      else
+        printf '%s\n' 'merged: false' 'merged_at: null'
+      fi
+      ;;
+    */compare/*)
+      case "${4:-}" in
+        '{status: .status}') printf '%s\n' 'status: identical' ;;
+        *) printf '%s\n' 'api_response:' '  body: identical' '  truncated: false' ;;
+      esac
+      ;;
+    *)
+      case "${4:-}" in
+        '{default_branch: .default_branch}') printf '%s\n' 'default_branch: main' ;;
+        *) printf '%s\n' 'api_response:' '  body: main' '  truncated: false' ;;
+      esac
+      ;;
+  esac
+fi
+exit 0
+SH
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/96 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "gh-axi-scalar-envelope: landed merge should be confirmed"
+  assert_grep 'phase=merged' "$receipt" \
+    "gh-axi-scalar-envelope: durable receipt remained prepared"
+  assert_grep 'default_branch=main' "$receipt" \
+    "gh-axi-scalar-envelope: durable receipt lost default-branch identity"
+  assert_grep 'merge_commit=4eade19b88a2763c3316e354774169c433ba7b3b' "$receipt" \
+    "gh-axi-scalar-envelope: durable receipt lost merge-commit identity"
+  assert_grep 'merged_at=2026-09-05T00:24:01Z' "$receipt" \
+    "gh-axi-scalar-envelope: durable receipt lost the forge merge time"
+  pass "fm-pr-merge confirms landed merges through gh-axi object output"
+}
+
 test_unreadable_merge_state_refuses_before_merge() {
   local case_dir rc
   case_dir=$(make_case merge-state-unreadable)
@@ -484,8 +548,8 @@ if [ "${1:-}" = api ]; then
         printf '%s\n' 'merged: false' 'merged_at: null'
       fi
       ;;
-    */compare/*) printf '%s\n' ahead ;;
-    *) printf '%s\n' main ;;
+    */compare/*) printf '%s\n' 'status: ahead' ;;
+    *) printf '%s\n' 'default_branch: main' ;;
   esac
 fi
 SH
@@ -660,6 +724,7 @@ test_records_pr_and_head_before_merging
 test_existing_backlog_without_row_refuses_before_merge
 test_merge_failure_propagates_after_recording
 test_unconfirmed_merge_remains_prepared
+test_gh_axi_scalar_envelopes_do_not_hide_landed_merge
 test_unreadable_merge_state_refuses_before_merge
 test_extra_merge_args_forwarded
 test_torn_down_delivered_task_merges_with_durable_provenance
