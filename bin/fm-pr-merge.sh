@@ -335,6 +335,7 @@ load_post_merge_evidence() {
   local deadline remaining delay=1
   deadline=$(($(date +%s) + 120))
   while :; do
+    [ "$(date +%s)" -lt "$deadline" ] || return 1
     if load_merge_evidence; then
       return 0
     fi

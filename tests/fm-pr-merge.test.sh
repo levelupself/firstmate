@@ -75,7 +75,8 @@ SH
   cat > "$fakebin/sleep" <<'SH'
 #!/usr/bin/env bash
 read -r elapsed < "$FM_TEST_GH_AXI_LOG.clock"
-awk -v elapsed="$elapsed" -v delay="$1" 'BEGIN {print elapsed + delay}' > "$FM_TEST_GH_AXI_LOG.clock"
+awk -v elapsed="$elapsed" -v delay="$1" -v extra="${FM_TEST_SLEEP_EXTRA_SECONDS:-0}" \
+  'BEGIN {print elapsed + delay + extra}' > "$FM_TEST_GH_AXI_LOG.clock"
 printf '%s\n' "$1" >> "$FM_TEST_GH_AXI_LOG.sleeps"
 SH
   chmod +x "$fakebin/date" "$fakebin/sleep"
@@ -113,6 +114,7 @@ if [ "${1:-}" = api ]; then
   case "${2:-}" in
     */pulls/*)
       if [ -f "$FM_TEST_GH_AXI_LOG.merged" ]; then
+        printf '%s\n' "$elapsed" >> "$FM_TEST_GH_AXI_LOG.read-starts"
         elapsed=$((elapsed + ${FM_TEST_READ_SECONDS:-0}))
         printf '%s\n' "$elapsed" > "$FM_TEST_GH_AXI_LOG.clock"
       fi
@@ -577,6 +579,45 @@ test_merge_failure_propagates_after_recording() {
   pass "fm-pr-merge propagates a real merge failure without silently succeeding"
 }
 
+
+test_sleep_expiry_prevents_confirmation_retry() {
+  local extra case_dir rc elapsed
+  for extra in 0 7; do
+    case_dir=$(make_case "sleep-expiry-$extra")
+    add_gh_mocks "$case_dir" 1111111111111111111111111111111111111111
+    FM_TEST_PR_VISIBLE_AT=120 FM_TEST_SLEEP_EXTRA_SECONDS="$extra" \
+      run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/100 \
+      > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    expect_code 1 "$rc" "sleep-expiry-$extra: evidence becoming visible after expiry must not start a retry"
+    read -r elapsed < "$case_dir/gh-axi.log.clock"
+    [ "$elapsed" -ge 120 ] && [ "$elapsed" -le "$((120 + extra))" ] \
+      || fail "sleep-expiry-$extra: fixture did not reach the deadline during sleep"
+    awk '$1 >= 120 {exit 1} END {if (NR == 0) exit 1}' "$case_dir/gh-axi.log.read-starts" \
+      || fail "sleep-expiry-$extra: evidence read started at or after expiry"
+    assert_grep 'confirmation timed out' "$case_dir/stderr" "sleep-expiry-$extra: missing timeout"
+    assert_grep 'phase=prepared' "$case_dir/data/pr-merges/task-x1.receipt" "sleep expiry advanced receipt"
+    assert_no_grep 'outcome=pr-merged' "$case_dir/state/task-x1.meta" "sleep expiry stamped success"
+    pass "confirmation retries stop when sleep reaches or exceeds the deadline ($extra seconds oversleep)"
+  done
+}
+
+test_in_flight_confirmation_can_finish_late() {
+  local case_dir rc elapsed
+  case_dir=$(make_case in-flight-confirmation)
+  add_gh_mocks "$case_dir" 1111111111111111111111111111111111111111
+  FM_TEST_PR_VISIBLE_AT=121 FM_TEST_READ_SECONDS=60 \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/100 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  expect_code 0 "$rc" "in-flight confirmation may succeed after the deadline"
+  read -r elapsed < "$case_dir/gh-axi.log.clock"
+  expect_code 121 "$elapsed" "in-flight confirmation: completion time"
+  expect_code 61 "$(tail -1 "$case_dir/gh-axi.log.read-starts")" "in-flight confirmation: last read began within budget"
+  assert_grep 'phase=merged' "$case_dir/data/pr-merges/task-x1.receipt" "in-flight confirmation did not finalize receipt"
+  assert_grep 'outcome=pr-merged' "$case_dir/state/task-x1.meta" "in-flight confirmation did not stamp success"
+  pass "in-flight evidence can confirm a merge after the retry deadline"
+}
 
 test_slow_reads_consume_confirmation_budget() {
   local case_dir rc elapsed
@@ -1253,6 +1294,8 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+test_sleep_expiry_prevents_confirmation_retry
+test_in_flight_confirmation_can_finish_late
 test_slow_reads_consume_confirmation_budget
 test_delayed_merge_visibility
 test_check_reporting_has_three_states_and_mergeability
