@@ -13,8 +13,9 @@
 # to the remaining budget. An in-flight evidence read may finish after the
 # deadline. bin/fm-pr-evidence.py owns scalar decoding and schema validation;
 # malformed present evidence stops immediately with a field diagnostic.
-# Timeout preserves prepared provenance and requires verification
-# before retrying the merge. When the project's origin is
+# Failed confirmation preserves prepared provenance; after a forge mutation,
+# verify the PR and its default-branch commit before retrying the merge,
+# whether confirmation timed out or evidence was malformed. When the project's origin is
 # a local filesystem mirror, the confirmed commit is fetched from the matching
 # GitHub remote and written to that mirror by fast-forward only before the merge
 # outcome is stamped. The merged receipt records that branch and commit plus

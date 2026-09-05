@@ -606,8 +606,7 @@ test_sleep_expiry_prevents_confirmation_retry() {
     add_gh_mocks "$case_dir" 1111111111111111111111111111111111111111
     FM_TEST_PR_VISIBLE_AT=120 FM_TEST_SLEEP_EXTRA_SECONDS="$extra" \
       run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/100 \
-      > "$case_dir/stdout" 2> "$case_dir/stderr"
-    rc=$?
+      > "$case_dir/stdout" 2> "$case_dir/stderr" && rc=0 || rc=$?
     expect_code 1 "$rc" "sleep-expiry-$extra: evidence becoming visible after expiry must not start a retry"
     read -r elapsed < "$case_dir/gh-axi.log.clock"
     [ "$elapsed" -ge 120 ] && [ "$elapsed" -le "$((120 + extra))" ] \
@@ -644,8 +643,7 @@ test_slow_reads_consume_confirmation_budget() {
   add_gh_mocks "$case_dir" 1111111111111111111111111111111111111111
   FM_TEST_PR_VISIBLE_AT=100000 FM_TEST_READ_SECONDS=60 \
     run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/100 \
-    > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
+    > "$case_dir/stdout" 2> "$case_dir/stderr" && rc=0 || rc=$?
   expect_code 1 "$rc" "slow confirmation must fail without evidence"
   read -r elapsed < "$case_dir/gh-axi.log.clock"
   [ "$elapsed" -ge 120 ] && [ "$elapsed" -lt 180 ] || fail "slow confirmation: API time must consume the budget (got $elapsed seconds)"
