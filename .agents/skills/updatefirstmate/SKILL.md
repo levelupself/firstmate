@@ -3,7 +3,7 @@ name: updatefirstmate
 description: >-
   Self-update a running firstmate and its secondmates to the latest from origin while observing an optional upstream template remote.
   Use when the captain invokes /updatefirstmate (e.g. "/updatefirstmate", "update firstmate", "pull the latest firstmate").
-  Fast-forwards this firstmate repo's default branch and every local or remote secondmate through its guarded update path (never forced, never disruptive), reports upstream template commits that still need a separate merge catch-up, then re-reads AGENTS.md and nudges each updated secondmate to do the same, so the whole tree runs the latest bin/ and instructions.
+  Fast-forwards this firstmate repo's default branch and every local or remote secondmate through its guarded update path (never forced, never disruptive), reports upstream template commits for deliberate selection, then re-reads AGENTS.md and nudges each updated secondmate to do the same, so the whole tree runs the latest bin/ and instructions.
 user-invocable: true
 metadata:
   internal: true
@@ -23,7 +23,8 @@ A tracked-files fast-forward leaves the gitignored operational dirs (data/, stat
 This touches only the firstmate repo and its own worktrees, never anything under `projects/`.
 
 The upstream template check is observation, not an update source.
-A fork catch-up is always a separate reviewed merge commit because fork-only commits make a fast-forward from upstream impossible.
+Route any wanted upstream change through deliberate review and selection; upstream movement never makes a wholesale merge due.
+If a selected change is brought in by merging upstream history, it must be a separate reviewed merge commit because fork-only commits make a fast-forward from upstream impossible.
 Never reset or rebase the fork, force-push, discard fork commits, or use a blanket prefer-theirs conflict pass.
 
 ## What it does
@@ -57,9 +58,9 @@ Never reset or rebase the fork, force-push, discard fork commits, or use a blank
    When `review-upstream: yes`, inspect every pending upstream commit subject and the affected paths before reporting the update outcome.
    `changed-since-last-fetch: yes` proves that the local upstream remote-tracking ref moved since its previous fetch; `pending` counts commits not contained in the fork; the changed-file count describes the upstream side since the merge base and is not a conflict count.
    `upstream-catchup-last:` gives the date of the latest first-parent merge whose non-first parent belongs to current upstream history, or says `unknown` when no such merge can be established.
-   Treat a catch-up as due roughly monthly, earlier when the review exposes a fix or capability the fleet needs, when a prior resolution session materially exceeded 28 conflicted files, or immediately before preparing work to offer upstream.
-   The updater does not perform or schedule the catch-up.
-   Commission that work separately through the normal delivery path as one merge commit on a branch from the fork's default branch.
+   Upstream movement is an inventory for deliberate selection, not a cadence signal and not evidence that a wholesale merge is due.
+   Identify a specific fix or capability the fleet needs, review its dependencies and interaction with fork-only behavior, and commission only that selected change through the normal delivery path.
+   If the chosen delivery method is a merge from upstream history, perform it as one separately reviewed merge commit on a branch from the fork's default branch.
    Upstream-bound offers remain opportunistic; do not schedule outbound pull requests.
 
    The observation has explicit limits.
@@ -67,8 +68,8 @@ Never reset or rebase the fork, force-push, discard fork commits, or use a blank
    Report those limits rather than implying continuous monitoring or semantic coverage.
 
 5. **Report to the captain in plain outcomes.**
-   Summarize what landed under `AGENTS.md` section 9 without firstmate's internal vocabulary: which parts of the fleet are now on the latest fork release, which were left as-is and why, and whether newer template work awaits a separate catch-up.
-   For example: "Captain, firstmate and both second mates are now on the latest fork release; upstream has three newer commits awaiting review."
+   Summarize what landed under `AGENTS.md` section 9 without firstmate's internal vocabulary: which parts of the fleet are now on the latest fork release, which were left as-is and why, and whether newer template work is available for deliberate review and selection.
+   For example: "Captain, firstmate and both second mates are now on the latest fork release; upstream has three newer commits available for review and selection."
    Surface any skipped target whose reason needs the captain's attention - for instance a home with its own un-landed changes (diverged) or local edits (dirty), which were left untouched on purpose.
 
 ## Safety
@@ -78,7 +79,8 @@ Never reset or rebase the fork, force-push, discard fork commits, or use a blank
   Nothing with unlanded work is ever discarded - this is prime directive #3.
 - **Upstream is observation only.**
   Pending template commits are reported for review but never merged, rebased, reset onto, or propagated to homes by this command.
-  A catch-up remains a separate merge-commit change through the normal delivery path.
+  Upstream movement never schedules a wholesale merge; each wanted change is deliberately selected and uses the normal delivery path.
+  A selected merge from upstream history remains a separate reviewed merge-commit change.
 - **Only the firstmate repo and its worktrees** are touched, never `projects/`.
   It is the same sanctioned self-write as the fleet sync.
 - **Secondmates are never disrupted.**
