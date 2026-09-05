@@ -8,6 +8,7 @@
 # Connection, authentication, ambiguous HTTP errors, non-fast-forward rejections,
 # and combined failures from multiple push endpoints refuse before local movement.
 # Exclusions name the remote and denial; successful pushes name each participant.
+# Landing refuses without local movement if no publication participants remain.
 #
 # This is firstmate's merge gate-action (the captain's merge authority applied
 # locally instead of via a GitHub PR). It is the one sanctioned exception to hard
