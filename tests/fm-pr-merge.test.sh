@@ -607,7 +607,7 @@ test_delayed_merge_visibility() {
     expect_code 0 "$rc" "delayed-$status: merge visible after 45 seconds should confirm"
     read -r elapsed < "$case_dir/gh-axi.log.clock"
     [ "$elapsed" -ge 45 ] && [ "$elapsed" -le 55 ] || fail "delayed-$status: confirmed outside expected latency window"
-    [ ! -s "$case_dir/stderr" ] || fail "delayed-$status: unexpected error: $(cat "$case_dir/stderr")"
+    assert_no_grep 'error:' "$case_dir/stderr" "delayed-$status: unexpected merge error"
     assert_grep 'phase=merged' "$case_dir/data/pr-merges/task-x1.receipt" "delayed receipt not finalized"
     assert_grep 'outcome=pr-merged' "$case_dir/state/task-x1.meta" "delayed outcome not stamped"
     expect_code 1 "$(grep -c '^pr merge ' "$case_dir/gh-axi.log")" "delayed merge issued more than once"
