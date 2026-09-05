@@ -64,6 +64,7 @@ make_case() {
   # Keep other date formats real for launch identities and receipt timestamps.
   printf '%s\n' 0 > "$case_dir/gh-axi.log.clock"
   command -v date > "$case_dir/real-date"
+  command -v sleep > "$case_dir/real-sleep"
   cat > "$fakebin/date" <<'SH'
 #!/usr/bin/env bash
 if [ "$*" = +%s ]; then
@@ -74,6 +75,10 @@ fi
 SH
   cat > "$fakebin/sleep" <<'SH'
 #!/usr/bin/env bash
+# Lock polling must neither race on nor add fractions to the confirmation clock.
+case "$1" in
+  *.*) exec "$(cat "${FM_TEST_GH_AXI_LOG%/*}/real-sleep")" "$@" ;;
+esac
 read -r elapsed < "$FM_TEST_GH_AXI_LOG.clock"
 awk -v elapsed="$elapsed" -v delay="$1" -v extra="${FM_TEST_SLEEP_EXTRA_SECONDS:-0}" \
   'BEGIN {print elapsed + delay + extra}' > "$FM_TEST_GH_AXI_LOG.clock"
