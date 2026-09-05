@@ -20,6 +20,9 @@
 #   (k) an exact prepared receipt remains retryable after Done history is pruned
 #   (l) conflicting concurrent requests serialize before authorization and only
 #       one task-to-PR provenance record can reach the forge
+#   (m) CI check reporting distinguishes passing, failing, and ABSENT while
+#       preserving the PR mergeable_state, including a conflicted absent case
+#   (n) the merge path refuses both failing and absent checks before forge mutation
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -27,6 +30,7 @@ set -u
 fm_git_identity fmtest fmtest@example.invalid
 
 PR_MERGE="$ROOT/bin/fm-pr-merge.sh"
+PR_CHECKS="$ROOT/bin/fm-pr-checks.sh"
 TMP_ROOT=$(fm_test_tmproot fm-pr-merge-tests)
 
 # Build a fresh sandbox for one test case: a state dir with a task meta and a
@@ -62,6 +66,19 @@ add_gh_mocks() {
 cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-} ${2:-}" = "pr checks" ]; then
+  case "${FM_TEST_CHECK_STATE:-passing}" in
+    passing) printf '%s\n' 'summary: "2 passed, 0 failed, 2 total"' 'checks[2]{name,conclusion}:' '  unit,pass' '  lint,pass' ;;
+    failing) printf '%s\n' 'summary: "1 passed, 1 failed, 2 total"' 'checks[2]{name,conclusion}:' '  unit,pass' '  lint,fail' ;;
+    absent) printf '%s\n' 'checks: "0 passed, 0 failed - this PR has no CI checks configured"' ;;
+    pending) printf '%s\n' 'summary: "1 passed, 0 failed, 1 pending, 2 total"' 'checks[2]{name,conclusion}:' '  unit,pass' '  lint,pending' ;;
+  esac
+  exit 0
+fi
+if [ "${1:-}" = api ] && [[ " $* " = *"mergeable_state"* ]]; then
+  printf 'mergeable_state: %s\n' "${FM_TEST_MERGEABLE_STATE:-clean}"
+  exit 0
+fi
 if [ "${1:-} ${2:-}" = "pr merge" ]; then
   : > "$FM_TEST_GH_AXI_LOG.merged"
 fi
@@ -102,6 +119,14 @@ add_gh_mocks_merge_fails() {
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-} ${2:-}" = "pr checks" ]; then
+  printf '%s\n' 'summary: "2 passed, 0 failed, 2 total"' 'checks[2]{name,conclusion}:' '  unit,pass' '  lint,pass'
+  exit 0
+fi
+if [ "${1:-}" = api ] && [[ " $* " = *"mergeable_state"* ]]; then
+  printf '%s\n' 'mergeable_state: clean'
+  exit 0
+fi
 case "${1:-} ${2:-}" in
   "pr merge") echo "error: pr merge failed" >&2 ; exit 1 ;;
 esac
@@ -131,6 +156,81 @@ run_pr_merge() {
     return 1
   fi
   return "$rc"
+}
+
+run_pr_checks() {
+  local case_dir=$1
+  shift
+  FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
+  FM_TEST_CHECK_STATE="${FM_TEST_CHECK_STATE:-passing}" \
+  FM_TEST_MERGEABLE_STATE="${FM_TEST_MERGEABLE_STATE:-clean}" \
+  PATH="$case_dir/fakebin:$PATH" \
+    "$PR_CHECKS" "$@"
+}
+
+test_check_reporting_has_three_states_and_mergeability() {
+  local case_dir out rc state expected mergeable
+  case_dir=$(make_case check-reporting)
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  : > "$case_dir/gh-axi.log"
+
+  for state in passing failing pending absent; do
+    case "$state" in
+      passing) expected=passing ;;
+      failing|pending) expected=failing ;;
+      absent) expected=ABSENT ;;
+    esac
+    set +e
+    out=$(FM_TEST_CHECK_STATE="$state" run_pr_checks "$case_dir" \
+      https://github.com/example/repo/pull/41 2> "$case_dir/$state.stderr")
+    rc=$?
+    set -e
+    expect_code 0 "$rc" "check-reporting-$state: reporter exit status"
+    printf '%s\n' "$out" | grep -qxF "check_state: $expected" \
+      || fail "check-reporting-$state: reporter did not emit check_state: $expected"
+    printf '%s\n' "$out" | grep -qxF 'mergeable_state: clean' \
+      || fail "check-reporting-$state: reporter did not surface mergeable_state"
+  done
+
+  mergeable=dirty
+  set +e
+  out=$(FM_TEST_CHECK_STATE=absent FM_TEST_MERGEABLE_STATE="$mergeable" \
+    run_pr_checks "$case_dir" https://github.com/example/repo/pull/42 \
+      2> "$case_dir/conflicted.stderr")
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "check-reporting-conflicted-absent: reporter exit status"
+  printf '%s\n' "$out" | grep -qxF 'check_state: ABSENT' \
+    || fail "check-reporting-conflicted-absent: no-run PR was not ABSENT"
+  printf '%s\n' "$out" | grep -qxF 'mergeable_state: dirty' \
+    || fail "check-reporting-conflicted-absent: conflict was not surfaced"
+  pass "CI reporting distinguishes passing, failing, and ABSENT, including conflicted absence"
+}
+
+test_merge_refuses_failing_and_absent_checks() {
+  local case_dir rc state
+  for state in failing absent; do
+    case_dir=$(make_case "checks-$state")
+    mkdir -p "$case_dir/wt"
+    add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    : > "$case_dir/gh-axi.log"
+    set +e
+    FM_TEST_CHECK_STATE="$state" FM_TEST_MERGEABLE_STATE=dirty \
+      run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/43 \
+        > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+    expect_code 1 "$rc" "checks-$state: merge should refuse"
+    assert_grep "check_state: $([ "$state" = absent ] && printf ABSENT || printf failing)" \
+      "$case_dir/stderr" "checks-$state: refusal did not name the check state"
+    assert_grep 'mergeable_state: dirty' "$case_dir/stderr" \
+      "checks-$state: refusal did not preserve the conflict reason"
+    assert_no_grep 'pr merge ' "$case_dir/gh-axi.log" \
+      "checks-$state: forge merge ran despite blocked checks"
+    grep -qxF 'phase=prepared' "$case_dir/data/pr-merges/task-x1.receipt" \
+      || fail "checks-$state: refusal did not preserve prepared merge provenance"
+  done
+  pass "fm-pr-merge refuses failing and absent CI checks before forge mutation"
 }
 
 test_torn_down_delivered_task_merges_with_durable_provenance() {
@@ -262,6 +362,14 @@ test_unconfirmed_merge_remains_prepared() {
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-} ${2:-}" = "pr checks" ]; then
+  printf '%s\n' 'summary: "2 passed, 0 failed, 2 total"' 'checks[2]{name,conclusion}:' '  unit,pass' '  lint,pass'
+  exit 0
+fi
+if [ "${1:-}" = api ] && [[ " $* " = *"mergeable_state"* ]]; then
+  printf '%s\n' 'mergeable_state: clean'
+  exit 0
+fi
 if [ "${1:-}" = api ]; then
   printf '%s\n' 'merged: false' 'merged_at: null'
 fi
@@ -297,6 +405,14 @@ test_gh_axi_scalar_envelopes_do_not_hide_landed_merge() {
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-} ${2:-}" = "pr checks" ]; then
+  printf '%s\n' 'summary: "2 passed, 0 failed, 2 total"' 'checks[2]{name,conclusion}:' '  unit,pass' '  lint,pass'
+  exit 0
+fi
+if [ "${1:-}" = api ] && [[ " $* " = *"mergeable_state"* ]]; then
+  printf '%s\n' 'mergeable_state: clean'
+  exit 0
+fi
 if [ "${1:-} ${2:-}" = "pr merge" ]; then
   : > "$FM_TEST_GH_AXI_LOG.merged"
 fi
@@ -361,6 +477,14 @@ test_post_merge_confirmation_retries_transient_comparison() {
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-} ${2:-}" = "pr checks" ]; then
+  printf '%s\n' 'summary: "2 passed, 0 failed, 2 total"' 'checks[2]{name,conclusion}:' '  unit,pass' '  lint,pass'
+  exit 0
+fi
+if [ "${1:-}" = api ] && [[ " $* " = *"mergeable_state"* ]]; then
+  printf '%s\n' 'mergeable_state: clean'
+  exit 0
+fi
 if [ "${1:-} ${2:-}" = "pr merge" ]; then
   : > "$FM_TEST_GH_AXI_LOG.merged"
 fi
@@ -420,6 +544,14 @@ test_post_merge_confirmation_exhaustion_remains_prepared() {
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-} ${2:-}" = "pr checks" ]; then
+  printf '%s\n' 'summary: "2 passed, 0 failed, 2 total"' 'checks[2]{name,conclusion}:' '  unit,pass' '  lint,pass'
+  exit 0
+fi
+if [ "${1:-}" = api ] && [[ " $* " = *"mergeable_state"* ]]; then
+  printf '%s\n' 'mergeable_state: clean'
+  exit 0
+fi
 if [ "${1:-} ${2:-}" = "pr merge" ]; then
   : > "$FM_TEST_GH_AXI_LOG.merged"
 fi
@@ -650,6 +782,14 @@ test_conflicting_concurrent_requests_merge_only_one_pr() {
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-} ${2:-}" = "pr checks" ]; then
+  printf '%s\n' 'summary: "2 passed, 0 failed, 2 total"' 'checks[2]{name,conclusion}:' '  unit,pass' '  lint,pass'
+  exit 0
+fi
+if [ "${1:-}" = api ] && [[ " $* " = *"mergeable_state"* ]]; then
+  printf '%s\n' 'mergeable_state: clean'
+  exit 0
+fi
 if [ "${1:-} ${2:-}" = "pr merge" ]; then
   : > "$FM_TEST_GH_AXI_ENTERED"
   while [ ! -f "$FM_TEST_GH_AXI_RELEASE" ]; do sleep 0.05; done
@@ -837,6 +977,8 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+test_check_reporting_has_three_states_and_mergeability
+test_merge_refuses_failing_and_absent_checks
 test_records_pr_and_head_before_merging
 test_existing_backlog_without_row_refuses_before_merge
 test_merge_failure_propagates_after_recording

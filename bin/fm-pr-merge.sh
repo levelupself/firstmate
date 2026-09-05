@@ -13,6 +13,9 @@
 # unavailable forge time stays empty rather than becoming "now".
 # The full canonical GitHub PR URL is parsed by bin/fm-pr-lib.sh and the derived
 # owner/repository and PR number are passed to gh-axi as separate arguments.
+# Before an unmerged PR reaches the forge mutation, bin/fm-pr-checks.sh must
+# report passing; failing and ABSENT checks both preserve prepared provenance
+# and refuse the merge.
 #
 # Merge method defaults to --squash when the caller passes none of --squash,
 # --merge, --rebase, or --method after the optional -- separator. Extra args
@@ -324,7 +327,25 @@ if load_merge_evidence; then
 else
   merge_evidence_rc=$?
   case "$merge_evidence_rc" in
-    1) ;;
+    1)
+      if ! CHECK_REPORT=$("$SCRIPT_DIR/fm-pr-checks.sh" "$URL"); then
+        echo "error: PR CI check status is unavailable; provenance remains prepared" >&2
+        exit 1
+      fi
+      CHECK_STATE=$(printf '%s\n' "$CHECK_REPORT" | sed -n 's/^check_state: \([^[:space:]][^[:space:]]*\)$/\1/p')
+      case "$CHECK_STATE" in
+        passing) ;;
+        failing|ABSENT)
+          printf '%s\n' "$CHECK_REPORT" >&2
+          echo "error: PR CI checks are $CHECK_STATE; provenance remains prepared" >&2
+          exit 1
+          ;;
+        *)
+          echo "error: PR CI check status is invalid; provenance remains prepared" >&2
+          exit 1
+          ;;
+      esac
+      ;;
     2) echo "error: merged PR default-branch evidence is unavailable; provenance remains prepared" >&2; exit 1 ;;
     *) echo "error: forge merge state is unavailable; provenance remains prepared" >&2; exit 1 ;;
   esac
