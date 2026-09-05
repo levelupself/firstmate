@@ -567,6 +567,9 @@ test_valid_recording_and_merge_derivation() {
   local dir expected sidecar count rc opened_at
   dir=$(make_case valid-recording)
   write_task_meta "$dir"
+  # Exercise the direct-forge origin path with a real project checkout.
+  fm_git_init_commit "$dir/project"
+  git -C "$dir/project" remote add origin https://github.com/my-org/repo_name.with-dots.git
   expected=0123456789abcdef0123456789abcdef01234567
   FM_TEST_GH_HEAD=$expected run_check_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 \
     > "$dir/stdout" 2> "$dir/stderr" || fail "valid direct check failed"
@@ -602,7 +605,8 @@ test_valid_recording_and_merge_derivation() {
 
   : > "$dir/gh-axi.log"
   run_merge_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 -- --merge \
-    >/dev/null 2>/dev/null || fail "valid merge wrapper failed"
+    > "$dir/merge.out" 2> "$dir/merge.err" \
+    || fail "valid merge wrapper failed: $(cat "$dir/merge.err")"
   grep -qxF 'pr merge 37 --repo my-org/repo_name.with-dots --merge' "$dir/gh-axi.log" \
     || fail "merge wrapper did not preserve repository derivation and method"
   grep -qxF 'merged_at=2026-08-20T12:45:00Z' "$dir/home/state/task-a.meta" \
@@ -635,6 +639,8 @@ test_valid_recording_and_merge_derivation() {
 
   dir=$(make_case lifecycle-compatible-id)
   write_task_meta "$dir" Task_A.1
+  fm_git_init_commit "$dir/project"
+  git -C "$dir/project" remote add origin https://github.com/o/r.git
   run_merge_entry "$dir" Task_A.1 https://github.com/o/r/pull/3 \
     > "$dir/stdout" 2> "$dir/stderr" \
     || fail "safe lifecycle-compatible task ID could not use the PR merge flow"
@@ -655,6 +661,8 @@ SH
 
   for id in _noncanonical aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; do
     dir=$(make_case "legacy-teardown-${id:0:12}")
+    fm_git_init_commit "$dir/project"
+    git -C "$dir/project" remote add origin https://github.com/o/r.git
     fm_write_meta "$dir/home/state/$id.meta" \
       "window=firstmate:fm-$id" \
       "endpoint_task_id=$id" \

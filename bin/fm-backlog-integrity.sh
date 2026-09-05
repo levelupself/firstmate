@@ -172,16 +172,21 @@ receipt_matches_launch() {
 }
 
 valid_pr_receipt() {
-  local receipt=$1 id=$2 key schema authorization prepared_epoch merged_at pr repository receipt_repository forge_default receipt_default merge_commit compare_query compare_status default_query
+  local receipt=$1 id=$2 key schema authorization prepared_epoch merged_at pr project repository receipt_repository forge_default receipt_default merge_commit compare_query compare_status default_query
   [ -f "$receipt" ] && [ ! -L "$receipt" ] || return 1
   for key in schema task_id pr spawned_at phase authorization prepared_epoch; do
     receipt_has_one "$receipt" "$key" || return 1
   done
   schema=$(receipt_value "$receipt" schema)
-  [ "$schema" = fm-pr-merge.v3 ] || return 1
+  [ "$schema" = fm-pr-merge.v3 ] || [ "$schema" = fm-pr-merge.v4 ] || return 1
   for key in repository default_branch merge_commit; do
     receipt_has_one "$receipt" "$key" || return 1
   done
+  if [ "$schema" = fm-pr-merge.v4 ]; then
+    receipt_has_one "$receipt" project || return 1
+    project=$(receipt_value "$receipt" project)
+    [ -n "$project" ] || return 1
+  fi
   [ "$(receipt_value "$receipt" task_id)" = "$id" ] || return 1
   pr=$(receipt_value "$receipt" pr)
   fm_pr_url_parse "$pr" || return 1

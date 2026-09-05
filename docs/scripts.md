@@ -118,7 +118,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pr-check-migrate.sh` | Quarantine older task polls without execution and rebuild only canonical polls       |
 | `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |
 | `fm-pr-checks.sh`        | Report GitHub PR merge readiness and mergeability for the guarded merge path         |
-| `fm-pr-merge.sh`         | Record durable PR provenance, then merge a task's canonical full GitHub URL          |
+| `fm-pr-merge.sh`         | Merge a canonical GitHub PR, record provenance, and fast-forward its local mirror    |
 | `fm-linear-pr-link.sh`   | Append the matching Linear issue reference to a PR body; never fails a PR check      |
 | `fm-linear-refresh.sh`   | Refresh the Linear mirror of the backlog in place; reports retired ids, never deletes |
 | `fm-linear-lib.sh`       | Sourced Linear client: config, GraphQL, the `firstmate: <id>` join, body-edit helpers |

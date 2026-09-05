@@ -56,6 +56,9 @@ exit 0
 SH
 chmod +x "$FAKEBIN/gh" "$FAKEBIN/gh-axi"
 
+git init -q -b main "$TMP_ROOT/project"
+git -C "$TMP_ROOT/project" remote add origin https://github.com/example/repo.git
+
 NM_DB="$TMP_ROOT/no-mistakes.sqlite"
 node --no-warnings - "$NM_DB" "$TMP_ROOT/project" <<'NODE'
 const {DatabaseSync} = require('node:sqlite')
@@ -241,8 +244,10 @@ NODE
 [ "$MERGED_ROW" = '2026-08-29T10:20:00Z|merged|3|2|1|1' ] \
   || fail "PR merge did not capture forge and pipeline facts: $MERGED_ROW"
 pass 'sanctioned PR merge stamps forge time, merged outcome, and structured pipeline cost'
-grep -qx 'schema=fm-pr-merge.v3' "$HOME_DIR/data/pr-merges/pr-task.receipt" \
+grep -qx 'schema=fm-pr-merge.v4' "$HOME_DIR/data/pr-merges/pr-task.receipt" \
   || fail 'PR merge did not write the forge-timestamp receipt schema'
+grep -qx "project=$TMP_ROOT/project" "$HOME_DIR/data/pr-merges/pr-task.receipt" \
+  || fail 'PR merge receipt did not preserve the project checkout identity'
 grep -qx 'merged_at=2026-08-29T10:20:00Z' "$HOME_DIR/data/pr-merges/pr-task.receipt" \
   || fail 'PR merge receipt did not preserve the forge timestamp'
 
@@ -373,9 +378,13 @@ FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
   "$PR_CHECK" torn-task https://github.com/example/repo/pull/10 >/dev/null \
   || fail 'torn task PR check failed'
 fm_write_meta "$HOME_DIR/data/pr-merges/torn-task.receipt" \
-  'schema=fm-pr-merge.v2' \
+  'schema=fm-pr-merge.v4' \
   'task_id=torn-task' \
   'pr=https://github.com/example/repo/pull/10' \
+  'repository=example/repo' \
+  "project=$TMP_ROOT/project" \
+  'default_branch=' \
+  'merge_commit=' \
   'spawned_at=2026-08-29T10:00:00Z' \
   'phase=prepared' \
   'authorization=live-meta' \

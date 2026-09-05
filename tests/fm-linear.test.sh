@@ -604,7 +604,11 @@ new_merge_home() {
     || fail "could not create the merge fixture's in-flight backlog row"
   printf 'LINEAR_API_KEY=lin_api_test\n' > "$HOME_DIR/.env"
   printf 'pipeline body\n' > "$FAKE_DIR/pr-body"
+  # Exercise the direct-forge origin path with a real project checkout.
+  fm_git_init_commit "$HOME_DIR/project"
+  git -C "$HOME_DIR/project" remote add origin https://github.com/o/r.git
   fm_write_meta "$HOME_DIR/state/t1.meta" "window=fm-t1" "worktree=$HOME_DIR" \
+    "project=$HOME_DIR/project" \
     "spawned_at=2026-08-20T12:00:00Z"
   jq -cn --arg st "${2:-backlog}" --argjson att "${3:-[]}" \
     '{data:{issues:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
