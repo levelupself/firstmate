@@ -124,9 +124,11 @@ if [ "${1:-}" = api ]; then
         printf '%s\n' "$elapsed" > "$FM_TEST_GH_AXI_LOG.clock"
       fi
       if [ -f "$FM_TEST_GH_AXI_LOG.merged" ] && [ "$elapsed" -ge "${FM_TEST_PR_VISIBLE_AT:-0}" ]; then
-        printf '%s\n' 'merged: true' 'merged_at: null' \
-          "merge_commit: \"${FM_TEST_MERGE_COMMIT:-1111111111111111111111111111111111111111}\"" \
-          'base_ref: "main"'
+        quote='"'
+        [ "${FM_TEST_SCALAR_STYLE:-quoted}" != unquoted ] || quote=
+        printf '%s\n' 'merged: true' 'merged_at: "2026-09-05T22:31:02Z"' \
+          "merge_commit: ${quote}${FM_TEST_BAD_COMMIT:-${FM_TEST_MERGE_COMMIT:-1111111111111111111111111111111111111111}}${quote}" \
+          "base_ref: ${quote}main${quote}"
       else
         printf '%s\n' 'merged: false' 'merged_at: null'
       fi
@@ -1299,6 +1301,39 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+test_scalar_styles_confirm_without_retry() {
+  local style case_dir
+  for style in unquoted quoted; do
+    case_dir=$(make_case "scalar-$style")
+    add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    FM_TEST_SCALAR_STYLE="$style" run_pr_merge "$case_dir" task-x1 \
+      https://github.com/example/repo/pull/22 > "$case_dir/stdout" 2> "$case_dir/stderr" \
+      || fail "$style scalar: landed merge did not confirm: $(cat "$case_dir/stderr")"
+    assert_grep 'phase=merged' "$case_dir/data/pr-merges/task-x1.receipt" "$style: missing provenance"
+    assert_grep 'merged_at=2026-09-05T22:31:02Z' "$case_dir/data/pr-merges/task-x1.receipt" "$style: missing timestamp"
+    assert_grep 'outcome=pr-merged' "$case_dir/state/task-x1.meta" "$style: missing outcome"
+    expect_code 0 "$(cat "$case_dir/gh-axi.log.clock")" "$style: unnecessary retry"
+    pass "fm-pr-merge confirms $style scalars immediately with provenance"
+  done
+}
+
+test_present_invalid_scalar_is_not_a_timeout() {
+  local case_dir rc
+  case_dir=$(make_case invalid-scalar)
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  FM_TEST_BAD_COMMIT=not-a-commit run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/22 > "$case_dir/stdout" 2> "$case_dir/stderr" && rc=0 || rc=$?
+  expect_code 1 "$rc" "invalid scalar: must refuse"
+  assert_grep 'invalid.*merge_commit' "$case_dir/stderr" "invalid scalar: missing field diagnostic"
+  assert_no_grep 'confirmation timed out' "$case_dir/stderr" "invalid scalar: misreported as timeout"
+  expect_code 0 "$(cat "$case_dir/gh-axi.log.clock")" "invalid scalar: retried malformed evidence"
+  assert_grep 'phase=prepared' "$case_dir/data/pr-merges/task-x1.receipt" "invalid scalar: stamped success"
+  assert_no_grep 'outcome=pr-merged' "$case_dir/state/task-x1.meta" "invalid scalar: stamped outcome"
+  pass 'fm-pr-merge reports present invalid fields immediately without timeout'
+}
+
+test_scalar_styles_confirm_without_retry
+test_present_invalid_scalar_is_not_a_timeout
 test_sleep_expiry_prevents_confirmation_retry
 test_in_flight_confirmation_can_finish_late
 test_slow_reads_consume_confirmation_budget
