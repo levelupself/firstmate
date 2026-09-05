@@ -12,6 +12,7 @@ Successful output is one value per line in the order consumed by the caller.
 """
 import json
 import re
+import subprocess
 import sys
 
 
@@ -63,6 +64,16 @@ def field(record, key, pattern=None, optional=False):
         return 'true' if value else 'false'
     if not isinstance(value, str) or not re.fullmatch(pattern, value):
         raise EvidenceError(f'invalid forge evidence field {key}: unexpected value')
+    if key in ('base_ref', 'default_branch'):
+        try:
+            result = subprocess.run(
+                ['git', 'check-ref-format', '--branch', value],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            raise EvidenceError(f'forge evidence field {key}: branch validation unavailable') from exc
+        if result.returncode != 0:
+            raise EvidenceError(f'invalid forge evidence field {key}: invalid branch')
     return value
 
 

@@ -314,18 +314,10 @@ load_merge_evidence() {
   MERGE_COMMIT=${fields[1]}
   base_ref=${fields[2]}
   MERGED_AT=${fields[3]:-}
-  git check-ref-format --branch "$base_ref" >/dev/null 2>&1 || {
-    echo "error: invalid forge evidence field base_ref: invalid branch" >&2
-    return 4
-  }
   default_query=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO" \
     --jq '{default_branch: .default_branch}' 2>/dev/null) \
     || return 2
   DEFAULT_BRANCH=$(printf '%s\n' "$default_query" | python3 "$SCRIPT_DIR/fm-pr-evidence.py" repository) || return $?
-  git check-ref-format --branch "$DEFAULT_BRANCH" >/dev/null 2>&1 || {
-    echo "error: invalid forge evidence field default_branch: invalid branch" >&2
-    return 4
-  }
   [ "$base_ref" = "$DEFAULT_BRANCH" ] || return 2
   compare_query=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/compare/$MERGE_COMMIT...$DEFAULT_BRANCH" \
     --jq '{status: .status}' 2>/dev/null) \
