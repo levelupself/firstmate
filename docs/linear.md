@@ -108,9 +108,7 @@ After valid arguments are supplied, every operational outcome prints one `linear
 
 ## Recording the merge: `bin/fm-linear-merge-write.sh`
 
-`bin/fm-pr-merge.sh` calls it last and non-fatally, immediately after a merge
-succeeds: the issue moves to the team's Done status and the pull request is
-attached.
+`bin/fm-pr-merge.sh` calls it last and non-fatally, after the forge merge is confirmed, any configured local origin mirror is safely propagated, and the local merge outcome is recorded: the issue moves to the team's Done status and the pull request is attached.
 
 The merge is the one moment where the task id, the pull request, and a live
 backlog entry all exist together, so it is the only place the shipped outcome can
@@ -121,8 +119,7 @@ next refresh loses the link for anything pruned in between.
 - **Never on the merge's path.** Same degradation contract as the PR linker:
   unconfigured, unreachable, unauthenticated, slow, no mirrored issue, no
   completed status, or a rejected mutation all print one line and exit 0.
-- **Never before a merge.** It runs after `gh-axi pr merge` returns successfully,
-  so a merge that failed writes nothing.
+- **Never before a recorded merge outcome.** It runs only after forge confirmation, required local mirror propagation, and local outcome recording succeed, so an earlier refusal writes nothing.
 - **Idempotent.** An issue already in a completed status is not transitioned
   again, and a pull request already attached is not attached again.
 
