@@ -8,9 +8,12 @@
 # Every accepted request writes a prepared data/pr-merges/<task-id>.receipt
 # before the forge mutation. A successful merge advances it to merged only
 # after the forge reports the merge commit on its current default branch;
-# post-mutation confirmation retries three times. The merged receipt records
-# that branch and commit plus the forge merge time when available. An
-# unavailable forge time stays empty rather than becoming "now".
+# post-mutation confirmation retries three times. When the project's origin is
+# a local filesystem mirror, the confirmed commit is fetched from the matching
+# GitHub remote and pushed to that mirror by fast-forward only before the merge
+# outcome is stamped. The merged receipt records that branch and commit plus
+# the forge merge time when available. An unavailable forge time stays empty
+# rather than becoming "now".
 # The full canonical GitHub PR URL is parsed by bin/fm-pr-lib.sh and the derived
 # owner/repository and PR number are passed to gh-axi as separate arguments.
 # Before an unmerged PR reaches the forge mutation, bin/fm-pr-checks.sh must
@@ -89,6 +92,7 @@ PROVENANCE_RECEIPT="$PROVENANCE_DIR/$ID.receipt"
 MERGE_LOCK="$STATE/.pr-merge-$ID.lock"
 MERGE_LOCK_HELD=0
 CURRENT_SPAWNED_AT=$(sed -n 's/^spawned_at=//p' "$META" 2>/dev/null | tail -1)
+PROJECT=$(sed -n 's/^project=//p' "$META" 2>/dev/null | tail -1)
 
 merge_lock_cleanup() {
   if [ "$MERGE_LOCK_HELD" = 1 ]; then
@@ -317,6 +321,105 @@ load_post_merge_evidence() {
   return 1
 }
 
+github_remote_matches_pr() {
+  local remote=$1 remote_url slug
+  while IFS= read -r remote_url; do
+    case "$remote_url" in
+      https://github.com/*) slug=${remote_url#https://github.com/} ;;
+      git@github.com:*) slug=${remote_url#git@github.com:} ;;
+      ssh://git@github.com/*) slug=${remote_url#ssh://git@github.com/} ;;
+      *) continue ;;
+    esac
+    slug=${slug%.git}
+    if [ "${slug,,}" = "${PR_OWNER,,}/${PR_REPO,,}" ]; then
+      return 0
+    fi
+  done < <(git -C "$PROJECT" config --get-all "remote.$remote.url" 2>/dev/null || true)
+  return 1
+}
+
+sync_local_mirror() {
+  local forge_fetch forge_remote forge_tip mirror_after mirror_before mirror_fetch
+  local origin_url push_output remote
+  local -a forge_remotes=()
+
+  if [ -z "$PROJECT" ]; then
+    echo "mirror: not updated; existing merge provenance has no project checkout"
+    return 0
+  fi
+  if ! git -C "$PROJECT" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "error: forge merge succeeded, but the project checkout is unavailable; local mirror state is unknown" >&2
+    return 1
+  fi
+  origin_url=$(git -C "$PROJECT" config --get remote.origin.url 2>/dev/null) || {
+    echo "error: forge merge succeeded, but project origin is unavailable; local mirror state is unknown" >&2
+    return 1
+  }
+  case "$origin_url" in
+    /*|./*|../*|~/*|file://*) ;;
+    *)
+      echo "mirror: not configured; project origin is not a local filesystem mirror"
+      return 0
+      ;;
+  esac
+
+  while IFS= read -r remote; do
+    [ -n "$remote" ] && [ "$remote" != origin ] || continue
+    if github_remote_matches_pr "$remote"; then
+      forge_remotes+=("$remote")
+    fi
+  done < <(git -C "$PROJECT" remote)
+  if [ "${#forge_remotes[@]}" -ne 1 ]; then
+    echo "error: forge merge succeeded, but the project has ${#forge_remotes[@]} GitHub remotes matching $PR_OWNER/$PR_REPO; local mirror origin was not updated" >&2
+    return 1
+  fi
+  forge_remote=${forge_remotes[0]}
+
+  if ! forge_fetch=$(git -C "$PROJECT" fetch --no-tags "$forge_remote" \
+      "refs/heads/$DEFAULT_BRANCH" 2>&1); then
+    echo "error: forge merge succeeded, but $forge_remote/$DEFAULT_BRANCH could not be fetched; local mirror origin was not updated: $forge_fetch" >&2
+    return 1
+  fi
+  forge_tip=$(git -C "$PROJECT" rev-parse FETCH_HEAD)
+  if ! git -C "$PROJECT" merge-base --is-ancestor "$MERGE_COMMIT" "$forge_tip"; then
+    echo "error: forge merge succeeded, but $forge_remote/$DEFAULT_BRANCH does not contain confirmed commit $MERGE_COMMIT; local mirror origin was not updated" >&2
+    return 1
+  fi
+
+  if ! mirror_fetch=$(git -C "$PROJECT" fetch --no-tags origin \
+      "refs/heads/$DEFAULT_BRANCH" 2>&1); then
+    echo "error: forge merge succeeded, but local mirror origin refs/heads/$DEFAULT_BRANCH could not be read: $mirror_fetch" >&2
+    return 1
+  fi
+  mirror_before=$(git -C "$PROJECT" rev-parse FETCH_HEAD)
+  if [ "$mirror_before" = "$MERGE_COMMIT" ]; then
+    echo "mirror: origin refs/heads/$DEFAULT_BRANCH already at $MERGE_COMMIT"
+    return 0
+  fi
+  if git -C "$PROJECT" merge-base --is-ancestor "$mirror_before" "$MERGE_COMMIT"; then
+    if push_output=$(git -C "$PROJECT" push --porcelain origin \
+        "$MERGE_COMMIT:refs/heads/$DEFAULT_BRANCH" 2>&1); then
+      echo "mirror: origin refs/heads/$DEFAULT_BRANCH fast-forwarded $mirror_before -> $MERGE_COMMIT"
+      return 0
+    fi
+    if git -C "$PROJECT" fetch --no-tags origin "refs/heads/$DEFAULT_BRANCH" >/dev/null 2>&1; then
+      mirror_after=$(git -C "$PROJECT" rev-parse FETCH_HEAD)
+      if git -C "$PROJECT" merge-base --is-ancestor "$MERGE_COMMIT" "$mirror_after"; then
+        echo "mirror: origin refs/heads/$DEFAULT_BRANCH already contains $MERGE_COMMIT at $mirror_after"
+        return 0
+      fi
+    fi
+    echo "REFUSED: local mirror origin cannot fast-forward refs/heads/$DEFAULT_BRANCH to $MERGE_COMMIT; forge merge succeeded and the mirror was not forced: $push_output" >&2
+    return 1
+  fi
+  if git -C "$PROJECT" merge-base --is-ancestor "$MERGE_COMMIT" "$mirror_before"; then
+    echo "mirror: origin refs/heads/$DEFAULT_BRANCH already contains $MERGE_COMMIT at $mirror_before"
+    return 0
+  fi
+  echo "REFUSED: local mirror origin cannot fast-forward refs/heads/$DEFAULT_BRANCH from $mirror_before to $MERGE_COMMIT because the histories diverged; forge merge succeeded and the mirror was not forced" >&2
+  return 1
+}
+
 merge_args=()
 if ! caller_has_merge_method "$@"; then
   merge_args=(--squash)
@@ -355,6 +458,7 @@ else
     exit 1
   }
 fi
+sync_local_mirror || exit 1
 write_provenance_receipt merged "$AUTHORIZATION" "$PREPARED_EPOCH" "$MERGED_AT" "$MERGE_COMMIT"
 if [ -f "$META" ]; then
   if [ -n "$MERGED_AT" ]; then

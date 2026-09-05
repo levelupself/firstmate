@@ -23,6 +23,8 @@
 #   (m) CI check reporting distinguishes passing, failing, and ABSENT while
 #       preserving the PR mergeable_state, including a conflicted absent case
 #   (n) the merge path refuses both failing and absent checks before forge mutation
+#   (o) a confirmed forge merge fast-forwards the project's local origin mirror
+#   (p) a diverged local origin mirror is refused without forcing or stamping success
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -48,6 +50,11 @@ make_case() {
     "kind=ship" \
     "mode=no-mistakes" \
     "spawned_at=2026-08-29T10:00:00Z"
+  git init -q -b main "$case_dir/project"
+  printf '%s\n' baseline > "$case_dir/project/baseline.txt"
+  git -C "$case_dir/project" add baseline.txt
+  git -C "$case_dir/project" commit -q -m baseline
+  git -C "$case_dir/project" remote add origin https://github.com/example/repo.git
   cat > "$fakebin/sleep" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -87,7 +94,8 @@ if [ "${1:-}" = api ]; then
     */pulls/*)
       if [ -f "$FM_TEST_GH_AXI_LOG.merged" ]; then
         printf '%s\n' 'merged: true' 'merged_at: null' \
-          'merge_commit: "1111111111111111111111111111111111111111"' 'base_ref: "main"'
+          "merge_commit: \"${FM_TEST_MERGE_COMMIT:-1111111111111111111111111111111111111111}\"" \
+          'base_ref: "main"'
       else
         printf '%s\n' 'merged: false' 'merged_at: null'
       fi
@@ -148,6 +156,7 @@ run_pr_merge() {
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_DATA_OVERRIDE="$case_dir/data" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
+  FM_TEST_MERGE_COMMIT="$(sed -n '1p' "$case_dir/merge-commit" 2>/dev/null || true)" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
   rc=$?
@@ -156,6 +165,86 @@ run_pr_merge() {
     return 1
   fi
   return "$rc"
+}
+
+setup_mirror_topology() {
+  local case_dir=$1 diverged=${2:-0} project mirror forge base merged competitor
+  project="$case_dir/project"
+  mirror="$case_dir/mirror.git"
+  forge="$case_dir/forge.git"
+  git init -q --bare "$mirror"
+  git init -q --bare "$forge"
+  git -C "$project" remote set-url origin "$mirror"
+  git -C "$project" remote add github https://github.com/example/repo.git
+  git -C "$project" config "url.file://$forge.insteadOf" https://github.com/example/repo.git
+  git -C "$project" push -q origin main
+  git -C "$project" push -q github main
+  git --git-dir="$mirror" symbolic-ref HEAD refs/heads/main
+  git --git-dir="$forge" symbolic-ref HEAD refs/heads/main
+  base=$(git -C "$project" rev-parse main)
+  printf '%s\n' merged > "$project/merged.txt"
+  git -C "$project" add merged.txt
+  git -C "$project" commit -q -m merged
+  merged=$(git -C "$project" rev-parse HEAD)
+  git -C "$project" push -q github main
+  printf '%s\n' "$base" > "$case_dir/mirror-base"
+  printf '%s\n' "$merged" > "$case_dir/merge-commit"
+  if [ "$diverged" -eq 1 ]; then
+    competitor="$case_dir/competitor"
+    git clone -q "$mirror" "$competitor"
+    printf '%s\n' divergent > "$competitor/divergent.txt"
+    git -C "$competitor" add divergent.txt
+    git -C "$competitor" commit -q -m divergent
+    git -C "$competitor" push -q origin main
+  fi
+}
+
+test_confirmed_merge_fast_forwards_local_mirror() {
+  local case_dir base merged
+  case_dir=$(make_case mirror-fast-forward)
+  setup_mirror_topology "$case_dir"
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  : > "$case_dir/gh-axi.log"
+  base=$(cat "$case_dir/mirror-base")
+  merged=$(cat "$case_dir/merge-commit")
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/101 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "mirror-fast-forward: fm-pr-merge failed: $(cat "$case_dir/stderr")"
+
+  [ "$(git --git-dir="$case_dir/mirror.git" rev-parse main)" = "$merged" ] \
+    || fail "mirror-fast-forward: confirmed merge did not advance the local mirror"
+  assert_grep "mirror: origin refs/heads/main fast-forwarded $base -> $merged" \
+    "$case_dir/stdout" \
+    "mirror-fast-forward: merge outcome did not report the mirror update"
+  pass "fm-pr-merge fast-forwards the local mirror after a confirmed forge merge"
+}
+
+test_diverged_local_mirror_refuses_without_force() {
+  local case_dir mirror_before rc
+  case_dir=$(make_case mirror-diverged)
+  setup_mirror_topology "$case_dir" 1
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  : > "$case_dir/gh-axi.log"
+  mirror_before=$(git --git-dir="$case_dir/mirror.git" rev-parse main)
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/102 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "mirror-diverged: fm-pr-merge should refuse a diverged mirror"
+  assert_grep 'REFUSED: local mirror origin cannot fast-forward refs/heads/main' \
+    "$case_dir/stderr" \
+    "mirror-diverged: refusal did not identify the mirror and branch"
+  [ "$(git --git-dir="$case_dir/mirror.git" rev-parse main)" = "$mirror_before" ] \
+    || fail "mirror-diverged: refusal rewrote the local mirror"
+  assert_grep 'phase=prepared' "$case_dir/data/pr-merges/task-x1.receipt" \
+    "mirror-diverged: refusal stamped the merge complete"
+  assert_no_grep '^outcome=pr-merged$' "$case_dir/state/task-x1.meta" \
+    "mirror-diverged: refusal stamped the task outcome"
+  pass "fm-pr-merge refuses a diverged local mirror without forcing"
 }
 
 run_pr_checks() {
@@ -978,6 +1067,8 @@ test_parses_pr_url_for_gh_axi() {
 }
 
 test_check_reporting_has_three_states_and_mergeability
+test_confirmed_merge_fast_forwards_local_mirror
+test_diverged_local_mirror_refuses_without_force
 test_merge_refuses_failing_and_absent_checks
 test_records_pr_and_head_before_merging
 test_existing_backlog_without_row_refuses_before_merge
