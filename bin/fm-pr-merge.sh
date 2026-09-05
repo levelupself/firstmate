@@ -11,7 +11,9 @@
 # post-mutation confirmation has a 120-second retry budget, including API read
 # time, with exponential sleeps from 1 second capped at 10 seconds and clipped
 # to the remaining budget. An in-flight evidence read may finish after the
-# deadline. Timeout preserves prepared provenance and requires verification
+# deadline. bin/fm-pr-evidence.py owns scalar decoding and schema validation;
+# malformed present evidence stops immediately with a field diagnostic.
+# Timeout preserves prepared provenance and requires verification
 # before retrying the merge. When the project's origin is
 # a local filesystem mirror, the confirmed commit is fetched from the matching
 # GitHub remote and written to that mirror by fast-forward only before the merge
@@ -301,43 +303,50 @@ if [ "$(receipt_value phase)" != merged ]; then
 fi
 
 load_merge_evidence() {
-  local merge_confirmed base_ref compare_query compare_status default_query
+  local parsed base_ref compare_query compare_status default_query rc
+  local -a fields
   MERGE_QUERY=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER" \
     --jq '{merged: .merged, merged_at: .merged_at, merge_commit: .merge_commit_sha, base_ref: .base.ref}' 2>/dev/null) \
     || return 3
-  merge_confirmed=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merged: //p' | tail -1)
-  case "$merge_confirmed" in
-    true) ;;
-    false) return 1 ;;
-    *) return 3 ;;
-  esac
+  parsed=$(printf '%s\n' "$MERGE_QUERY" | python3 "$SCRIPT_DIR/fm-pr-evidence.py" pr) || return $?
+  mapfile -t fields <<< "$parsed"
+  [ "${fields[0]}" = true ] || return 1
+  MERGE_COMMIT=${fields[1]}
+  base_ref=${fields[2]}
+  MERGED_AT=${fields[3]:-}
+  git check-ref-format --branch "$base_ref" >/dev/null 2>&1 || {
+    echo "error: invalid forge evidence field base_ref: invalid branch" >&2
+    return 4
+  }
   default_query=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO" \
     --jq '{default_branch: .default_branch}' 2>/dev/null) \
     || return 2
-  DEFAULT_BRANCH=$(printf '%s\n' "$default_query" | sed -n 's/^default_branch: \([^[:space:]].*\)$/\1/p' | tail -1)
-  git check-ref-format --branch "$DEFAULT_BRANCH" >/dev/null 2>&1 || return 2
-  MERGE_COMMIT=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merge_commit: "\([0-9a-f]*\)"$/\1/p' | tail -1)
-  base_ref=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^base_ref: "\([^"]*\)"$/\1/p' | tail -1)
-  printf '%s\n' "$MERGE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || return 2
+  DEFAULT_BRANCH=$(printf '%s\n' "$default_query" | python3 "$SCRIPT_DIR/fm-pr-evidence.py" repository) || return $?
+  git check-ref-format --branch "$DEFAULT_BRANCH" >/dev/null 2>&1 || {
+    echo "error: invalid forge evidence field default_branch: invalid branch" >&2
+    return 4
+  }
   [ "$base_ref" = "$DEFAULT_BRANCH" ] || return 2
   compare_query=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/compare/$MERGE_COMMIT...$DEFAULT_BRANCH" \
     --jq '{status: .status}' 2>/dev/null) \
     || return 2
-  compare_status=$(printf '%s\n' "$compare_query" | sed -n 's/^status: \([^[:space:]].*\)$/\1/p' | tail -1)
+  compare_status=$(printf '%s\n' "$compare_query" | python3 "$SCRIPT_DIR/fm-pr-evidence.py" comparison) || {
+    rc=$?
+    return "$rc"
+  }
   case "$compare_status" in ahead|identical) ;; *) return 2 ;; esac
-  MERGED_AT=$(printf '%s\n' "$MERGE_QUERY" | sed -n 's/^merged_at: "\([^"]*\)"$/\1/p' | tail -1)
-  if ! printf '%s\n' "$MERGED_AT" | grep -Eq '^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
-    MERGED_AT=
-  fi
 }
 
 load_post_merge_evidence() {
-  local deadline remaining delay=1
+  local deadline remaining rc delay=1
   deadline=$(($(date +%s) + 120))
   while :; do
     [ "$(date +%s)" -lt "$deadline" ] || return 1
     if load_merge_evidence; then
       return 0
+    else
+      rc=$?
+      [ "$rc" -ne 4 ] || return 4
     fi
     remaining=$((deadline - $(date +%s)))
     [ "$remaining" -gt 0 ] || return 1
@@ -496,11 +505,17 @@ else
           ;;
       esac
       ;;
+    4) echo "error: invalid forge evidence; provenance remains prepared" >&2; exit 1 ;;
     2) echo "error: merged PR default-branch evidence is unavailable; provenance remains prepared" >&2; exit 1 ;;
     *) echo "error: forge merge state is unavailable; provenance remains prepared" >&2; exit 1 ;;
   esac
   gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
   load_post_merge_evidence || {
+    merge_evidence_rc=$?
+    if [ "$merge_evidence_rc" -eq 4 ]; then
+      echo "error: merge was issued but forge evidence is invalid; provenance remains prepared; verify $URL before retrying the merge" >&2
+      exit 1
+    fi
     echo "error: confirmation timed out: merge was issued but could not be confirmed on the default branch; provenance remains prepared; verify $URL and its default-branch commit before retrying the merge" >&2
     exit 1
   }
