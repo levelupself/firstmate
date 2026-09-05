@@ -28,6 +28,8 @@
 #   (q) a prepared receipt retry recovers the project checkout after task teardown
 #   (r) an origin pushurl cannot redirect the verified local mirror update
 #   (s) a concurrent mirror ref move makes the atomic update refuse
+#   (t) delayed PR and branch visibility confirm within a backed-off time budget
+#   (u) never-landing and slow evidence reads exhaust that budget without success
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -58,11 +60,25 @@ make_case() {
   git -C "$case_dir/project" add baseline.txt
   git -C "$case_dir/project" commit -q -m baseline
   git -C "$case_dir/project" remote add origin https://github.com/example/repo.git
+  # Virtual elapsed time advances through sleeps and simulated API latency.
+  # Keep other date formats real for launch identities and receipt timestamps.
+  printf '%s\n' 0 > "$case_dir/gh-axi.log.clock"
+  command -v date > "$case_dir/real-date"
+  cat > "$fakebin/date" <<'SH'
+#!/usr/bin/env bash
+if [ "$*" = +%s ]; then
+  awk '{printf "%.0f\n", 1800000000 + int($1)}' "$FM_TEST_GH_AXI_LOG.clock"
+else
+  exec "$(cat "${FM_TEST_GH_AXI_LOG%/*}/real-date")" "$@"
+fi
+SH
   cat > "$fakebin/sleep" <<'SH'
 #!/usr/bin/env bash
-exit 0
+read -r elapsed < "$FM_TEST_GH_AXI_LOG.clock"
+awk -v elapsed="$elapsed" -v delay="$1" 'BEGIN {print elapsed + delay}' > "$FM_TEST_GH_AXI_LOG.clock"
+printf '%s\n' "$1" >> "$FM_TEST_GH_AXI_LOG.sleeps"
 SH
-  chmod +x "$fakebin/sleep"
+  chmod +x "$fakebin/date" "$fakebin/sleep"
   # No worktree/project on disk; fm-pr-check.sh tolerates a worktree it cannot
   # stat and simply skips the pr_head lookup via `gh` in that case, so give it
   # one that resolves for cases that want pr_head recorded.
@@ -93,9 +109,10 @@ if [ "${1:-} ${2:-}" = "pr merge" ]; then
   : > "$FM_TEST_GH_AXI_LOG.merged"
 fi
 if [ "${1:-}" = api ]; then
+  read -r elapsed < "$FM_TEST_GH_AXI_LOG.clock"
   case "${2:-}" in
     */pulls/*)
-      if [ -f "$FM_TEST_GH_AXI_LOG.merged" ]; then
+      if [ -f "$FM_TEST_GH_AXI_LOG.merged" ] && [ "$elapsed" -ge "${FM_TEST_PR_VISIBLE_AT:-0}" ]; then
         printf '%s\n' 'merged: true' 'merged_at: null' \
           "merge_commit: \"${FM_TEST_MERGE_COMMIT:-1111111111111111111111111111111111111111}\"" \
           'base_ref: "main"'
@@ -103,7 +120,14 @@ if [ "${1:-}" = api ]; then
         printf '%s\n' 'merged: false' 'merged_at: null'
       fi
       ;;
-    */compare/*) printf '%s\n' 'status: ahead' ;;
+    */compare/*)
+      if [ "$elapsed" -ge "${FM_TEST_BRANCH_VISIBLE_AT:-0}" ]; then
+        printf 'status: %s\n' "${FM_TEST_CONFIRMED_STATUS:-ahead}"
+      else
+        printf '%s\n' 'status: behind'
+      fi
+      ;;
+
     *) printf '%s\n' 'default_branch: main' ;;
   esac
 fi
@@ -549,6 +573,29 @@ test_merge_failure_propagates_after_recording() {
   pass "fm-pr-merge propagates a real merge failure without silently succeeding"
 }
 
+
+test_delayed_merge_visibility() {
+  local status case_dir rc elapsed
+  for status in identical ahead; do
+    case_dir=$(make_case "delayed-$status")
+    add_gh_mocks "$case_dir" 1111111111111111111111111111111111111111
+    FM_TEST_PR_VISIBLE_AT=15 FM_TEST_BRANCH_VISIBLE_AT=45 FM_TEST_CONFIRMED_STATUS="$status" \
+      run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/100 \
+      > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    expect_code 0 "$rc" "delayed-$status: merge visible after 45 seconds should confirm"
+    read -r elapsed < "$case_dir/gh-axi.log.clock"
+    [ "$elapsed" -ge 45 ] && [ "$elapsed" -le 55 ] || fail "delayed-$status: confirmed outside expected latency window"
+    [ ! -s "$case_dir/stderr" ] || fail "delayed-$status: unexpected error: $(cat "$case_dir/stderr")"
+    assert_grep '^phase=merged$' "$case_dir/data/pr-merges/task-x1.receipt" "delayed receipt not finalized"
+    assert_grep '^outcome=pr-merged$' "$case_dir/state/task-x1.meta" "delayed outcome not stamped"
+    expect_code 1 "$(grep -c '^pr merge ' "$case_dir/gh-axi.log")" "delayed merge issued more than once"
+    awk 'NR > 1 && $1 > prev {grew=1} {prev=$1; if ($1 > 10) exit 1} END {if (!grew) exit 1}' \
+      "$case_dir/gh-axi.log.sleeps" || fail "delayed-$status: retries must back off with a ten-second cap"
+    pass "delayed $status merge confirms only after PR and default-branch evidence become visible"
+  done
+}
+
 test_unconfirmed_merge_remains_prepared() {
   local case_dir rc
   case_dir=$(make_case merge-unconfirmed)
@@ -582,12 +629,16 @@ SH
   set -e
 
   expect_code 1 "$rc" "merge-unconfirmed: fm-pr-merge should require forge confirmation"
-  assert_grep 'forge did not confirm' "$case_dir/stderr" \
+  assert_grep 'merge was issued but could not be confirmed' "$case_dir/stderr" \
     "merge-unconfirmed: refusal did not explain the missing confirmation"
   assert_grep 'phase=prepared' "$case_dir/data/pr-merges/task-x1.receipt" \
     "merge-unconfirmed: unconfirmed provenance did not remain prepared"
   assert_no_grep '^outcome=pr-merged$' "$case_dir/state/task-x1.meta" \
     "merge-unconfirmed: unconfirmed merge stamped an outcome"
+  expect_code 120 "$(cat "$case_dir/gh-axi.log.clock")" "never-landing merge: time budget"
+  assert_grep 'confirmation timed out' "$case_dir/stderr" "never-landing merge: missing timeout"
+  assert_grep 'verify .* before retrying' "$case_dir/stderr" "never-landing merge: missing verification guidance"
+  expect_code 1 "$(grep -c '^pr merge ' "$case_dir/gh-axi.log")" "never-landing merge issued more than once"
   pass "fm-pr-merge stamps no outcome until the forge confirms the merged state"
 }
 
@@ -731,7 +782,7 @@ SH
 }
 
 test_post_merge_confirmation_exhaustion_remains_prepared() {
-  local case_dir compare_calls rc receipt
+  local case_dir elapsed rc receipt
   case_dir=$(make_case merge-confirmation-exhausted)
   receipt="$case_dir/data/pr-merges/task-x1.receipt"
   mkdir -p "$case_dir/wt"
@@ -782,8 +833,10 @@ SH
   set -e
 
   expect_code 1 "$rc" "merge-confirmation-exhausted: unconfirmed comparison should refuse"
-  compare_calls=$(wc -l < "$case_dir/gh-axi.log.compare-count")
-  expect_code 3 "$compare_calls" "merge-confirmation-exhausted: comparison attempt count"
+  read -r elapsed < "$case_dir/gh-axi.log.clock"
+  expect_code 120 "$elapsed" "merge-confirmation-exhausted: total confirmation budget"
+  assert_grep 'confirmation timed out' "$case_dir/stderr" "missing distinct timeout"
+  assert_grep 'verify .* before retrying' "$case_dir/stderr" "missing verification guidance"
   assert_grep 'phase=prepared' "$receipt" \
     "merge-confirmation-exhausted: refusal did not preserve the prepared receipt"
   assert_no_grep '^outcome=pr-merged$' "$case_dir/state/task-x1.meta" \
@@ -1179,6 +1232,7 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+test_delayed_merge_visibility
 test_check_reporting_has_three_states_and_mergeability
 test_confirmed_merge_fast_forwards_local_mirror
 test_diverged_local_mirror_refuses_without_force
