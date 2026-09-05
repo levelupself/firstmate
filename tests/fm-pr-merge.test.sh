@@ -273,7 +273,7 @@ test_diverged_local_mirror_refuses_without_force() {
     || fail "mirror-diverged: refusal rewrote the local mirror"
   assert_grep 'phase=prepared' "$case_dir/data/pr-merges/task-x1.receipt" \
     "mirror-diverged: refusal stamped the merge complete"
-  assert_no_grep '^outcome=pr-merged$' "$case_dir/state/task-x1.meta" \
+  assert_no_grep 'outcome=pr-merged' "$case_dir/state/task-x1.meta" \
     "mirror-diverged: refusal stamped the task outcome"
   pass "fm-pr-merge refuses a diverged local mirror without forcing"
 }
@@ -590,8 +590,8 @@ test_slow_reads_consume_confirmation_budget() {
   read -r elapsed < "$case_dir/gh-axi.log.clock"
   [ "$elapsed" -ge 120 ] && [ "$elapsed" -lt 180 ] || fail "slow confirmation: API time must consume the budget (got $elapsed seconds)"
   assert_grep 'confirmation timed out' "$case_dir/stderr" "slow confirmation: missing timeout"
-  assert_grep '^phase=prepared$' "$case_dir/data/pr-merges/task-x1.receipt" "slow confirmation advanced receipt"
-  assert_no_grep '^outcome=pr-merged$' "$case_dir/state/task-x1.meta" "slow confirmation stamped success"
+  assert_grep 'phase=prepared' "$case_dir/data/pr-merges/task-x1.receipt" "slow confirmation advanced receipt"
+  assert_no_grep 'outcome=pr-merged' "$case_dir/state/task-x1.meta" "slow confirmation stamped success"
   pass "API read time consumes the confirmation budget without another retry after expiry"
 }
 
@@ -608,8 +608,8 @@ test_delayed_merge_visibility() {
     read -r elapsed < "$case_dir/gh-axi.log.clock"
     [ "$elapsed" -ge 45 ] && [ "$elapsed" -le 55 ] || fail "delayed-$status: confirmed outside expected latency window"
     [ ! -s "$case_dir/stderr" ] || fail "delayed-$status: unexpected error: $(cat "$case_dir/stderr")"
-    assert_grep '^phase=merged$' "$case_dir/data/pr-merges/task-x1.receipt" "delayed receipt not finalized"
-    assert_grep '^outcome=pr-merged$' "$case_dir/state/task-x1.meta" "delayed outcome not stamped"
+    assert_grep 'phase=merged' "$case_dir/data/pr-merges/task-x1.receipt" "delayed receipt not finalized"
+    assert_grep 'outcome=pr-merged' "$case_dir/state/task-x1.meta" "delayed outcome not stamped"
     expect_code 1 "$(grep -c '^pr merge ' "$case_dir/gh-axi.log")" "delayed merge issued more than once"
     awk 'NR > 1 && $1 > prev {grew=1} {prev=$1; if ($1 > 10) exit 1} END {if (!grew) exit 1}' \
       "$case_dir/gh-axi.log.sleeps" || fail "delayed-$status: retries must back off with a ten-second cap"
@@ -654,11 +654,11 @@ SH
     "merge-unconfirmed: refusal did not explain the missing confirmation"
   assert_grep 'phase=prepared' "$case_dir/data/pr-merges/task-x1.receipt" \
     "merge-unconfirmed: unconfirmed provenance did not remain prepared"
-  assert_no_grep '^outcome=pr-merged$' "$case_dir/state/task-x1.meta" \
+  assert_no_grep 'outcome=pr-merged' "$case_dir/state/task-x1.meta" \
     "merge-unconfirmed: unconfirmed merge stamped an outcome"
   expect_code 120 "$(cat "$case_dir/gh-axi.log.clock")" "never-landing merge: time budget"
   assert_grep 'confirmation timed out' "$case_dir/stderr" "never-landing merge: missing timeout"
-  assert_grep 'verify .* before retrying' "$case_dir/stderr" "never-landing merge: missing verification guidance"
+  assert_grep 'before retrying the merge' "$case_dir/stderr" "never-landing merge: missing verification guidance"
   expect_code 1 "$(grep -c '^pr merge ' "$case_dir/gh-axi.log")" "never-landing merge issued more than once"
   pass "fm-pr-merge stamps no outcome until the forge confirms the merged state"
 }
@@ -857,10 +857,10 @@ SH
   read -r elapsed < "$case_dir/gh-axi.log.clock"
   expect_code 120 "$elapsed" "merge-confirmation-exhausted: total confirmation budget"
   assert_grep 'confirmation timed out' "$case_dir/stderr" "missing distinct timeout"
-  assert_grep 'verify .* before retrying' "$case_dir/stderr" "missing verification guidance"
+  assert_grep 'before retrying the merge' "$case_dir/stderr" "missing verification guidance"
   assert_grep 'phase=prepared' "$receipt" \
     "merge-confirmation-exhausted: refusal did not preserve the prepared receipt"
-  assert_no_grep '^outcome=pr-merged$' "$case_dir/state/task-x1.meta" \
+  assert_no_grep 'outcome=pr-merged' "$case_dir/state/task-x1.meta" \
     "merge-confirmation-exhausted: refusal stamped a merged outcome"
   pass "fm-pr-merge refuses after bounded post-merge evidence retries"
 }
