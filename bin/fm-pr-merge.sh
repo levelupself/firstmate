@@ -5,9 +5,12 @@
 # A task whose volatile metadata is already gone is accepted only when the
 # backlog's Done history records the same canonical PR, or an earlier exact
 # merge receipt proves a retry of the same request.
-# Every accepted request writes data/pr-merges/<task-id>.receipt before the
-# forge mutation and advances that receipt with the forge merge time after
-# success. An unavailable forge time stays empty rather than becoming "now".
+# Every accepted request writes a prepared data/pr-merges/<task-id>.receipt
+# before the forge mutation. A successful merge advances it to merged only
+# after the forge reports the merge commit on its current default branch;
+# post-mutation confirmation retries three times. The merged receipt records
+# that branch and commit plus the forge merge time when available. An
+# unavailable forge time stays empty rather than becoming "now".
 # The full canonical GitHub PR URL is parsed by bin/fm-pr-lib.sh and the derived
 # owner/repository and PR number are passed to gh-axi as separate arguments.
 #
