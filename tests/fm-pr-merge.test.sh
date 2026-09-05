@@ -27,6 +27,7 @@
 #   (p) a diverged local origin mirror is refused without forcing or stamping success
 #   (q) a prepared receipt retry recovers the project checkout after task teardown
 #   (r) an origin pushurl cannot redirect the verified local mirror update
+#   (s) a concurrent mirror ref move makes the atomic update refuse
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -287,6 +288,8 @@ test_origin_pushurl_cannot_redirect_mirror_update() {
     "$(cat "$case_dir/mirror-base"):refs/heads/main"
   redirected_before=$(git --git-dir="$case_dir/redirected.git" rev-parse main)
   git -C "$case_dir/project" config remote.origin.pushurl "$case_dir/redirected.git"
+  git -C "$case_dir/project" config \
+    "url.$case_dir/redirected.git.pushInsteadOf" "$case_dir/mirror.git"
   add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   : > "$case_dir/gh-axi.log"
 
@@ -299,7 +302,55 @@ test_origin_pushurl_cannot_redirect_mirror_update() {
     || fail "mirror-pushurl: verified local origin mirror was not advanced"
   [ "$(git --git-dir="$case_dir/redirected.git" rev-parse main)" = "$redirected_before" ] \
     || fail "mirror-pushurl: configured pushurl redirected the mirror update"
-  pass "fm-pr-merge pushes directly to the verified local origin URL"
+  pass "fm-pr-merge updates the verified mirror despite Git URL redirection configuration"
+}
+
+test_concurrent_mirror_move_refuses_atomically() {
+  local base case_dir competitor competing rc
+  case_dir=$(make_case mirror-concurrent-move)
+  setup_mirror_topology "$case_dir"
+  base=$(cat "$case_dir/mirror-base")
+  competitor="$case_dir/competitor-move"
+  git clone -q "$case_dir/mirror.git" "$competitor"
+  printf '%s\n' competing > "$competitor/competing.txt"
+  git -C "$competitor" add competing.txt
+  git -C "$competitor" commit -q -m competing
+  git -C "$competitor" push -q origin main
+  competing=$(git --git-dir="$case_dir/mirror.git" rev-parse main)
+  git --git-dir="$case_dir/mirror.git" update-ref refs/heads/main "$base" "$competing"
+  cat > "$case_dir/fakebin/git" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--git-dir=$FM_TEST_MIRROR" ] && [ "${2:-}" = update-ref ] \
+  && [ ! -e "$FM_TEST_REF_MOVED" ]; then
+  : > "$FM_TEST_REF_MOVED"
+  "$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_MIRROR" update-ref refs/heads/main \
+    "$FM_TEST_COMPETING_COMMIT" "$FM_TEST_MIRROR_BASE"
+fi
+exec "$FM_TEST_REAL_GIT" "$@"
+SH
+  chmod +x "$case_dir/fakebin/git"
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  FM_TEST_REAL_GIT=/usr/bin/git \
+  FM_TEST_MIRROR="$case_dir/mirror.git" \
+  FM_TEST_REF_MOVED="$case_dir/ref-moved" \
+  FM_TEST_COMPETING_COMMIT="$competing" \
+  FM_TEST_MIRROR_BASE="$base" \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/105 \
+      > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "mirror-concurrent-move: stale atomic update should refuse"
+  [ "$(git --git-dir="$case_dir/mirror.git" rev-parse main)" = "$competing" ] \
+    || fail "mirror-concurrent-move: stale update overwrote the concurrent commit"
+  assert_grep 'REFUSED: local mirror origin moved' "$case_dir/stderr" \
+    "mirror-concurrent-move: refusal did not report the concurrent move"
+  assert_grep 'phase=prepared' "$case_dir/data/pr-merges/task-x1.receipt" \
+    "mirror-concurrent-move: atomic refusal stamped the merge complete"
+  pass "fm-pr-merge atomically refuses a concurrent local mirror move"
 }
 
 run_pr_checks() {
@@ -1133,6 +1184,7 @@ test_confirmed_merge_fast_forwards_local_mirror
 test_diverged_local_mirror_refuses_without_force
 test_prepared_retry_recovers_project_and_advances_mirror
 test_origin_pushurl_cannot_redirect_mirror_update
+test_concurrent_mirror_move_refuses_atomically
 test_merge_refuses_failing_and_absent_checks
 test_records_pr_and_head_before_merging
 test_existing_backlog_without_row_refuses_before_merge
