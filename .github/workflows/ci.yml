@@ -287,6 +287,14 @@ jobs:
         # Comfortably above the ~7 min healthy wall and far below the 75 min
         # job backstop. A hang must fail this step so cleanup still runs.
         timeout-minutes: 20
+        env:
+          # Lane-local override of the production 6000-poll (600s) default. A
+          # wedged holder must refuse inside this step, because a step-level
+          # timeout kill skips the suite's EXIT trap and destroys the preserved
+          # failure diagnostics. 1200 polls (120s) clears this suite's own holds
+          # by a wide margin (docs/verification/runtime-backends.md). Do not
+          # copy this value into the production default.
+          FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS: '1200'
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"

@@ -4,6 +4,11 @@
 # owning-parent ordering across primary and secondmate homes.
 # The test drives the real spawn and teardown scripts, a real Treehouse pool,
 # and the guarded named-session lab helper.
+# Any failure preserves every fixture's stdout, stderr, logs, and home state
+# outside the temporary root that cleanup removes, and prints the surviving
+# location, so an intermittent failure stays explainable from its own output.
+# FM_HERDR_PRESENTATION_DIAGNOSTICS_DIR chooses that location instead of a
+# fresh directory under TMPDIR.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -14,7 +19,33 @@ set +e
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 
-fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
+# Failure diagnostics survive cleanup. Every concurrent fixture writes its
+# stdout and stderr under $TMP_ROOT, which cleanup_all removes; without this
+# copy an intermittent failure is unexplainable from its own output. Every
+# fixture home's state is copied under that home's own name, not just the
+# primary home's, so a secondmate failure is explainable from its own output.
+DIAGNOSTICS_KEPT=
+preserve_diagnostics() {
+  [ -z "$DIAGNOSTICS_KEPT" ] || return 0
+  [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ] || return 0
+  DIAGNOSTICS_KEPT=${FM_HERDR_PRESENTATION_DIAGNOSTICS_DIR:-}
+  if [ -n "$DIAGNOSTICS_KEPT" ]; then
+    mkdir -p "$DIAGNOSTICS_KEPT" || { DIAGNOSTICS_KEPT=; return 0; }
+  else
+    DIAGNOSTICS_KEPT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-presentation-diagnostics.XXXXXX") \
+      || { DIAGNOSTICS_KEPT=; return 0; }
+  fi
+  find "$TMP_ROOT" -maxdepth 1 -type f \
+    \( -name '*.out' -o -name '*.err' -o -name '*.log' \) \
+    -exec cp -p {} "$DIAGNOSTICS_KEPT/" \; 2>/dev/null || true
+  for diag_state in "$TMP_ROOT"/*/state; do
+    [ -d "$diag_state" ] || continue
+    diag_home=$(basename "$(dirname "$diag_state")")
+    cp -R "$diag_state" "$DIAGNOSTICS_KEPT/$diag_home-state" 2>/dev/null || true
+  done
+  printf 'diagnostics preserved in %s\n' "$DIAGNOSTICS_KEPT" >&2
+}
+fail() { printf 'not ok - %s\n' "$1" >&2; preserve_diagnostics; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
 command -v herdr >/dev/null 2>&1 || { echo "skip: herdr not found"; exit 0; }
@@ -293,7 +324,7 @@ EOF
   fi
   rm -rf "$TMP_ROOT"
 }
-trap cleanup_all EXIT
+trap 'FINAL_STATUS=$?; [ "$FINAL_STATUS" -eq 0 ] || preserve_diagnostics; cleanup_all' EXIT
 
 PATH="$HERDR_ORIGINAL_PATH" \
   "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
@@ -899,7 +930,7 @@ wait "$ORDER_A_TEARDOWN_PID" || fail "projected ordering fixture A teardown fail
 wait "$ORDER_B_TEARDOWN_PID" || fail "projected ordering fixture B teardown failed: $(cat "$TMP_ROOT/order-b-teardown.out" "$TMP_ROOT/order-b-teardown.err")"
 assert_focus_is "$CAPTAIN_FOCUS" "concurrent projected teardowns"
 teardown_task order-fail "$HOME_DIR" > "$TMP_ROOT/order-fail-teardown.out" 2> "$TMP_ROOT/order-fail-teardown.err" \
-  || fail "projected ordering failure fixture teardown failed"
+  || fail "projected ordering failure fixture teardown failed: $(cat "$TMP_ROOT/order-fail-teardown.err")"
 assert_focus_is "$CAPTAIN_FOCUS" "failed-order projection teardown"
 pass "real Herdr lab: concurrent projected cleanup is serialized and leaves active workspace/tab unchanged"
 

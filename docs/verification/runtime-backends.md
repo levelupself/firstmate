@@ -553,6 +553,27 @@ tests/fm-backend-herdr.test.sh
 
 Observed guarantees: a contended presentation lock refused the teardown before the isolated copy was returned, with the task branch, every durable record, and the endpoint intact and no pane close attempted; the retry after the contention cleared returned the copy, closed the pane under the lock, and removed the records; an unknown structured-presence result after an attempted projected close retained the journal and every record with a nonzero exit; and every presence-gate mode accepted only a structured not-found as gone.
 
+The concurrent-cleanup serialization guarantee was sized from a measured hold distribution on 2026-09-06 on Herdr 0.8.0.
+The shared session presentation lock is held across a whole destructive teardown, so a queued caller's budget must exceed a real teardown's critical section rather than a single mutation.
+Sampling `/tmp/firstmate-herdr-presentation/order-*.lock` every 50 ms and attributing each completed hold to its holder observed 131 holds on an unloaded host (mean 5.46 s, maximum 24.34 s, 53% longer than 5 s) and, with 24 CPU spinners on 16 cores, 90 holds (mean 18.22 s, 90% longer than 5 s) whose longest occupancies were `bin/fm-teardown.sh` at 142.04 s and 238.41 s while fixture teardowns stayed near 12.68 s.
+The shipped budget is `FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS`, default 6000 polls of 0.1 s (600 s), roughly 2.5 times the longest measured occupancy; only a live holder can consume it because `fm_lock_try_acquire` reclaims an abandoned hold immediately.
+
+The budget's effect was isolated on 2026-09-06 by varying only that knob on one commit under one sustained load, running `tests/fm-backend-herdr-presentation-e2e.test.sh` in alternating arms:
+
+```sh
+FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS=50 tests/fm-backend-herdr-presentation-e2e.test.sh
+tests/fm-backend-herdr-presentation-e2e.test.sh
+```
+
+Observed output: both runs at the former five-second bound refused, reporting `projected ordering fixture B teardown failed` with `error: herdr session presentation lock is contended for order-b` and `projected ordering fixture A teardown failed` with the same refusal for `order-a`, while both runs at the shipped budget completed all 23 assertions.
+Four runs on an unloaded host also completed all 23 assertions but recorded no queue longer than five seconds, so they establish no regression rather than the repair; `tests/fm-teardown.test.sh` pins the repair itself with a healthy holder that outlives the former bound.
+
+Two budgets are in use, and they differ because they protect different failures.
+The production default stays at 6000 polls (600 s) because a real task teardown was measured occupying the lock for 142.04 s, and a refusal there costs an operator a hand rerun.
+The required real-Herdr CI lane instead exports 1200 polls (120 s) on its family-run step, because that step is capped at 20 minutes and a step-level timeout kill skips the suite's `EXIT` trap and destroys the preserved failure diagnostics that make an intermittent failure explainable.
+120 s is safe for that lane specifically: its fixture teardowns hold the lock about 12.68 s, and the longest hold sampled on the suite's own session under load was 32.3 s.
+A wedged holder costs one budget rather than one per teardown, because each concurrent teardown is guarded by a `fail` that aborts the run on the first refusal, so the lane stays near its roughly 7 minute healthy wall.
+
 The same fixtures verified three further boundaries on 2026-07-29: missing or malformed endpoint identity and an unparseable pane presence refused record removal with everything retained; the SIGKILL escalation re-read the exact pane's process information and refused to signal when a different shell pid owned the pane, falling back to the plain close with the original process untouched; and a reposition whose removal then failed on every path restored the exact original workspace order through a second verified move and reported the close as failed.
 
 The teardown fixture was re-run on 2026-07-31 after extending the same fail-closed boundary through forced secondmate cleanup, including recursive cleanup of a nested secondmate whose Herdr grandchild close remains unconfirmed.

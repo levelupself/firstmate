@@ -800,6 +800,122 @@ fm_backend_herdr_presentation_session_lock_path() {  # <session>
   printf '%s/order-%s.lock' "$dir" "$key"
 }
 
+# The presentation lock is held across whole operations, never single calls:
+# a teardown keeps it from before the isolated copy is returned until after the
+# exact pane is closed and the durable records are removed. A queue budget must
+# therefore be sized against a real teardown's critical section, not against a
+# single mutation: sampling this namespace on a CPU-oversubscribed host
+# measured one real task teardown occupying the lock for 142s, and a 238s
+# continuous occupancy in a second sample, while lighter fixture teardowns sat
+# near 12s (docs/verification/runtime-backends.md).
+# Only a LIVE holder can consume the budget - fm_lock_try_acquire reclaims an
+# abandoned hold on the spot - so the ceiling bounds a wedged process and never
+# a crashed one, and spending it is a loud refusal that changed nothing.
+# Callers that can degrade safely instead of queueing (a spawn that falls back
+# to the flat layout in bin/fm-spawn.sh, the best-effort close in
+# fm_backend_herdr_kill) deliberately keep their own much smaller bound and do
+# not use this budget.
+# FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS is the budget in 0.1s polls
+# (default 6000, so 600s: roughly 2.5x the longest occupancy yet measured).
+# That budget belongs to a caller holding no other session presentation lock.
+# A caller that already holds one waits only
+# FM_BACKEND_HERDR_PRESENTATION_LOCK_HELD_QUEUE_POLLS (default 50, so 5s) for
+# every further lock: a forced secondmate teardown takes the parent session's
+# lock and then queues on each child endpoint's own session lock, and each
+# child's session comes from its parsed endpoint rather than the environment,
+# so two concurrent teardowns spanning several sessions share no acquisition
+# order. Queueing at the long budget while already holding a lock would stretch
+# that hold-and-wait cycle from seconds to minutes for no benefit, so the short
+# bound - exactly the behavior that predates this queue - stays in force there.
+# A queue that outlives a quick mutation announces itself after
+# FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_POLLS and keeps announcing every
+# FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_INTERVAL_POLLS afterwards, so a
+# long wait is never a silent stall.
+# All four knobs exist for test control, so each is validated as a positive
+# integer count of polls before it is used, once per process.
+
+# fm_backend_herdr_presentation_lock_poll_knob: resolve one poll-count knob.
+# A misconfigured knob is a configuration mistake and never lock contention, so
+# an unusable value falls back to its documented default with one named warning
+# instead of refusing: a zero or non-numeric budget would end the queue before
+# a single acquisition attempt and report a free lock as contended, and a zero
+# notice interval would divide by zero on every poll of the budget.
+fm_backend_herdr_presentation_lock_poll_knob() {  # <name> <value> <default>
+  local name=$1 value=$2 fallback=$3
+  case "$value" in
+    ''|*[!0-9]*) ;;
+    *)
+      if [ "$value" -gt 0 ]; then
+        printf '%s' "$value"
+        return 0
+      fi
+      ;;
+  esac
+  echo "warning: $name must be a positive integer of 0.1s polls, got '$value'; using the default $fallback" >&2
+  printf '%s' "$fallback"
+}
+FM_BACKEND_HERDR_PRESENTATION_LOCK_KNOBS_RESOLVED=${FM_BACKEND_HERDR_PRESENTATION_LOCK_KNOBS_RESOLVED:-}
+FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_BUDGET=${FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_BUDGET:-}
+FM_BACKEND_HERDR_PRESENTATION_LOCK_HELD_BUDGET=${FM_BACKEND_HERDR_PRESENTATION_LOCK_HELD_BUDGET:-}
+FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_AT=${FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_AT:-}
+FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_EVERY=${FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_EVERY:-}
+
+# fm_backend_herdr_presentation_lock_resolve_knobs: validate every poll-count
+# knob once per process and publish the usable values.
+# One misconfigured knob is one warning, not one warning per queued lock: a
+# forced secondmate teardown queues once per Herdr endpoint, and repeating the
+# same configuration warning per endpoint would bury the teardown's own output.
+# FM_BACKEND_HERDR_PRESENTATION_LOCK_HELD_BUDGET is the bound a caller that
+# already holds another session's presentation lock must pass to the queue.
+fm_backend_herdr_presentation_lock_resolve_knobs() {
+  [ -z "$FM_BACKEND_HERDR_PRESENTATION_LOCK_KNOBS_RESOLVED" ] || return 0
+  FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_BUDGET=$(fm_backend_herdr_presentation_lock_poll_knob \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS \
+    "${FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS:-6000}" 6000)
+  FM_BACKEND_HERDR_PRESENTATION_LOCK_HELD_BUDGET=$(fm_backend_herdr_presentation_lock_poll_knob \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_HELD_QUEUE_POLLS \
+    "${FM_BACKEND_HERDR_PRESENTATION_LOCK_HELD_QUEUE_POLLS:-50}" 50)
+  FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_AT=$(fm_backend_herdr_presentation_lock_poll_knob \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_POLLS \
+    "${FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_POLLS:-50}" 50)
+  FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_EVERY=$(fm_backend_herdr_presentation_lock_poll_knob \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_INTERVAL_POLLS \
+    "${FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_INTERVAL_POLLS:-600}" 600)
+  FM_BACKEND_HERDR_PRESENTATION_LOCK_KNOBS_RESOLVED=1
+}
+
+# fm_backend_herdr_presentation_lock_queue: the single owner of how long a
+# caller that cannot degrade waits for the shared session presentation lock.
+# The optional third argument is that caller's budget in 0.1s polls and
+# defaults to the full adapter-owned budget; a caller already holding another
+# session's lock passes FM_BACKEND_HERDR_PRESENTATION_LOCK_HELD_BUDGET instead
+# so it never waits minutes on top of a hold of its own.
+# Returns non-zero only after the whole budget is spent against a live holder.
+# fm_lock_try_acquire must already be available to the caller.
+fm_backend_herdr_presentation_lock_queue() {  # <lock-path> <operation> [budget-polls]
+  local lock_path=$1 operation=$2 budget=${3:-} attempt=0 max notice interval
+  fm_backend_herdr_presentation_lock_resolve_knobs
+  max=$FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_BUDGET
+  notice=$FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_AT
+  interval=$FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_EVERY
+  if [ -n "$budget" ]; then
+    max=$(fm_backend_herdr_presentation_lock_poll_knob \
+      'the herdr presentation lock queue budget argument' "$budget" "$max")
+  fi
+  while [ "$attempt" -lt "$max" ]; do
+    if fm_lock_try_acquire "$lock_path"; then
+      return 0
+    fi
+    if [ "$attempt" -ge "$notice" ] \
+      && [ "$(( (attempt - notice) % interval ))" -eq 0 ]; then
+      echo "waiting for the herdr session presentation lock held by pid ${FM_LOCK_HELD_PID:-unknown} before $operation" >&2
+    fi
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 # fm_backend_herdr_projection_focus_snapshot: print the exact active
 # workspace and tab ids as one tab-separated record.
 # Presentation mutations use this read-only snapshot as their sole focus
@@ -4339,6 +4455,8 @@ fm_backend_herdr_kill() {  # <target>
     # shellcheck source=bin/fm-wake-lib.sh
     . "$FM_BACKEND_HERDR_ROOT/bin/fm-wake-lib.sh"
   fi
+  # A deferred close is safe and loud, so this stays a short bound rather than
+  # the queue budget that fm_backend_herdr_presentation_lock_queue owns.
   if lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session"); then
     while [ "$attempt" -lt 50 ]; do
       if fm_lock_try_acquire "$lock_path"; then

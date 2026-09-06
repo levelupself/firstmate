@@ -1904,8 +1904,11 @@ SH
   while [ ! -e "$ready" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited + 1)); done
   [ -e "$ready" ] || fail "herdr-orphan-refusal: the contending lock holder never started"
 
+  # This holder never lets go, so the queue budget is cut to a few polls: the
+  # case proves the wait is bounded, not how long the shipped budget is.
   rc=0
   FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS=5 \
     run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   if [ "$rc" -eq 0 ]; then
     : > "$release"; wait "$holder_pid" 2>/dev/null || true
@@ -1942,6 +1945,143 @@ SH
   grep -q "teardown task-x1 complete" "$case_dir/stdout2" \
     || fail "herdr-orphan-refusal: the successful retry did not report completion"
   pass "herdr flat teardown refuses before returning the isolated copy under lock contention and the retry completes cleanly"
+}
+
+# A teardown holds the shared session presentation lock across its whole
+# destructive sequence - the isolated copy return, the exact pane close, and
+# durable record removal - so a healthy holder legitimately occupies the lock
+# for tens of seconds. A second teardown of the same session must queue behind
+# that holder instead of refusing, or ordinary concurrent cleanup of two
+# workers that finish together intermittently demands a manual rerun.
+test_herdr_flat_teardown_waits_out_a_healthy_lock_holder() {
+  local case_dir log closed lock ready holder_pid rc thlog hold=15
+  case_dir=$(make_case herdr-lock-handoff)
+  write_meta "$case_dir" local-only ship
+  configure_flat_herdr_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; : > "$log"
+  closed="$case_dir/closed"
+  : > "$case_dir/state/task-x1.status"
+  : > "$case_dir/state/task-x1.turn-ended"
+  thlog="$case_dir/treehouse.log"; : > "$thlog"
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$thlog"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+
+  lock=$(FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" PATH="$case_dir/fakebin:$PATH" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_session_lock_path default' "$ROOT") \
+    || fail "herdr-lock-handoff: could not resolve the fixture presentation lock path"
+  ready="$case_dir/lock-ready"
+  # A holder that occupies the lock for longer than a quick mutation and then
+  # finishes normally, exactly like a concurrent teardown's destructive phase.
+  ROOT="$ROOT" LOCK="$lock" READY="$ready" HOLD="$hold" bash -c '
+    . "$ROOT/bin/fm-wake-lib.sh"
+    fm_lock_try_acquire "$LOCK" || exit 1
+    : > "$READY"
+    sleep "$HOLD"
+    fm_lock_release "$LOCK"
+  ' &
+  holder_pid=$!
+  local waited=0
+  while [ ! -e "$ready" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited + 1)); done
+  [ -e "$ready" ] || fail "herdr-lock-handoff: the contending lock holder never started"
+
+  rc=0
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  wait "$holder_pid" 2>/dev/null || true
+  if [ "$rc" -ne 0 ]; then
+    fail "herdr-lock-handoff: teardown refused instead of waiting out a healthy ${hold}s lock holder: $(cat "$case_dir/stderr")"
+  fi
+  [ -e "$closed" ] || fail "herdr-lock-handoff: the queued teardown never closed the pane under the lock"
+  [ -s "$thlog" ] || fail "herdr-lock-handoff: the queued teardown never returned the isolated copy"
+  [ ! -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-lock-handoff: the queued teardown left the endpoint metadata behind"
+  grep -q "teardown task-x1 complete" "$case_dir/stdout" \
+    || fail "herdr-lock-handoff: the queued teardown did not report completion"
+  pass "herdr teardown queues behind a healthy presentation lock holder instead of refusing"
+}
+
+# The queue's poll-count knobs exist for test control, so a misconfigured one
+# is a configuration mistake and never lock contention. This case drives the
+# real queue against a live holder: a zero budget must not refuse against a
+# lock that is merely busy, and a zero notice interval must reach neither the
+# notice modulus nor the operator's terminal as arithmetic noise.
+test_herdr_flat_teardown_survives_misconfigured_queue_knobs() {
+  local case_dir log closed lock ready holder_pid rc thlog
+  case_dir=$(make_case herdr-lock-knobs)
+  write_meta "$case_dir" local-only ship
+  configure_flat_herdr_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; : > "$log"
+  closed="$case_dir/closed"
+  : > "$case_dir/state/task-x1.status"
+  : > "$case_dir/state/task-x1.turn-ended"
+  thlog="$case_dir/treehouse.log"; : > "$thlog"
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$thlog"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+
+  lock=$(FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" PATH="$case_dir/fakebin:$PATH" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_session_lock_path default' "$ROOT") \
+    || fail "herdr-lock-knobs: could not resolve the fixture presentation lock path"
+  ready="$case_dir/lock-ready"
+  : > "$case_dir/stderr"
+  # Hold the lock until the queue announces itself, so the notice guard is
+  # genuinely evaluated, then release so the teardown completes.
+  ROOT="$ROOT" LOCK="$lock" READY="$ready" SEEN="$case_dir/stderr" bash -c '
+    . "$ROOT/bin/fm-wake-lib.sh"
+    fm_lock_try_acquire "$LOCK" || exit 1
+    : > "$READY"
+    waited=0
+    while [ "$waited" -lt 300 ]; do
+      if grep -q "waiting for the herdr session presentation lock" "$SEEN" 2>/dev/null; then
+        break
+      fi
+      sleep 0.1
+      waited=$((waited + 1))
+    done
+    fm_lock_release "$LOCK"
+  ' &
+  holder_pid=$!
+  local waited=0
+  while [ ! -e "$ready" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited + 1)); done
+  [ -e "$ready" ] || fail "herdr-lock-knobs: the contending lock holder never started"
+
+  rc=0
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS=0 \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_POLLS=1 \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_INTERVAL_POLLS=0 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  wait "$holder_pid" 2>/dev/null || true
+  [ "$rc" -eq 0 ] \
+    || fail "herdr-lock-knobs: teardown failed behind a healthy holder with misconfigured queue knobs: $(cat "$case_dir/stderr")"
+  if grep -q "presentation lock is contended" "$case_dir/stderr"; then
+    fail "herdr-lock-knobs: a misconfigured budget was reported as lock contention"
+  fi
+  if grep -qi "division by 0" "$case_dir/stderr"; then
+    fail "herdr-lock-knobs: the notice interval reached the modulus and divided by zero"
+  fi
+  assert_grep "waiting for the herdr session presentation lock" "$case_dir/stderr" \
+    "herdr-lock-knobs: the queue never announced the wait it actually spent"
+  assert_grep "FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS must be a positive integer" "$case_dir/stderr" \
+    "herdr-lock-knobs: the misconfigured budget was not named visibly"
+  assert_grep "FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_INTERVAL_POLLS must be a positive integer" "$case_dir/stderr" \
+    "herdr-lock-knobs: the misconfigured notice interval was not named visibly"
+  if grep -q "FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_POLLS must be a positive integer" "$case_dir/stderr"; then
+    fail "herdr-lock-knobs: a usable notice threshold was rejected as misconfigured"
+  fi
+  [ -e "$closed" ] || fail "herdr-lock-knobs: the teardown never closed the pane under the lock"
+  [ ! -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-lock-knobs: the teardown left the endpoint metadata behind"
+  grep -q "teardown task-x1 complete" "$case_dir/stdout" \
+    || fail "herdr-lock-knobs: the teardown did not report completion"
+  pass "herdr teardown falls back to the default queue budget when a poll knob is misconfigured"
 }
 
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence() {
@@ -2060,6 +2200,8 @@ case "\${1:-} \${2:-}" in
   "session list")
     if [ "\${FM_FAKE_HERDR_SESSION_LIST_GARBAGE:-0}" = 1 ]; then
       printf '%s\n' 'not-json'
+    elif [ "\${FM_FAKE_HERDR_SECOND_SESSION:-0}" = 1 ]; then
+      printf '%s\n' '{"sessions":[{"name":"childsession","running":true,"socket_path":"$case_dir/child.sock"},{"name":"othersession","running":true,"socket_path":"$case_dir/other.sock"}]}'
     else
       printf '%s\n' '{"sessions":[{"name":"childsession","running":true,"socket_path":"$case_dir/child.sock"}]}'
     fi
@@ -2074,7 +2216,7 @@ case "\${1:-} \${2:-}" in
         exit 1
       fi
     else
-      printf '%s\n' '{"result":{"pane":{"pane_id":"wC:p1","tab_id":"wC:t1","workspace_id":"wC"}}}'
+      printf '{"result":{"pane":{"pane_id":"%s","tab_id":"wC:t1","workspace_id":"wC"}}}\n' "\$3"
     fi
     ;;
   "pane close") : > "\${FM_FAKE_HERDR_CLOSED:?}" ;;
@@ -2111,6 +2253,86 @@ SH
   assert_grep "nothing was changed" "$case_dir/stderr" \
     "herdr-child-preflight: refusal did not explain its non-mutating boundary"
   pass "forced secondmate teardown preflights every Herdr child before cleanup mutation"
+}
+
+# A forced secondmate cleanup spans one Herdr session per child endpoint, and
+# concurrent multi-session cleanups have no common acquisition order, so a
+# cleanup that already holds one session's presentation lock must bound every
+# further lock by the short held budget rather than the full queue budget.
+test_forced_secondmate_teardown_bounds_locks_taken_while_holding_one() {
+  local case_dir home log closed thlog other_lock ready release holder_pid rc started elapsed
+  case_dir=$(make_case herdr-child-held-bound)
+  write_meta "$case_dir" local-only secondmate
+  configure_secondmate_with_herdr_child "$case_dir"
+  home="$case_dir/secondmate-home"
+  fm_write_meta "$home/state/child-other.meta" \
+    "window=othersession:wD:pD" \
+    "endpoint_task_id=child-other" \
+    "worktree=$case_dir/wt" \
+    "project=$case_dir/project" \
+    "kind=ship" \
+    "mode=local-only" \
+    "backend=herdr" \
+    "herdr_session=othersession" \
+    "herdr_workspace_id=wD" \
+    "herdr_tab_id=wD:t1" \
+    "herdr_pane_id=wD:pD"
+  : > "$home/state/child-other.status"
+  : > "$home/state/child-other.turn-ended"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; thlog="$case_dir/treehouse.log"
+  : > "$log"; : > "$thlog"
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$thlog"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+
+  other_lock=$(FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_SECOND_SESSION=1 \
+    PATH="$case_dir/fakebin:$PATH" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_session_lock_path othersession' "$ROOT") \
+    || fail "herdr-child-held-bound: could not resolve the second session's presentation lock path"
+  ready="$case_dir/lock-ready"; release="$case_dir/lock-release"
+  ROOT="$ROOT" LOCK="$other_lock" READY="$ready" RELEASE="$release" bash -c '
+    . "$ROOT/bin/fm-wake-lib.sh"
+    fm_lock_try_acquire "$LOCK" || exit 1
+    : > "$READY"
+    while [ ! -e "$RELEASE" ]; do sleep 0.1; done
+    fm_lock_release "$LOCK"
+  ' &
+  holder_pid=$!
+  local waited=0
+  while [ ! -e "$ready" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited + 1)); done
+  [ -e "$ready" ] || fail "herdr-child-held-bound: the contending lock holder never started"
+
+  # The first child's lock is free and is taken; the second child's lock is
+  # held, so it must spend the short held budget and not the 60s queue budget.
+  rc=0
+  started=$(date +%s)
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_SECOND_SESSION=1 \
+    FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS=600 \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_HELD_QUEUE_POLLS=5 \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_INTERVAL_POLLS=0 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  elapsed=$(( $(date +%s) - started ))
+  : > "$release"
+  wait "$holder_pid" 2>/dev/null || true
+  [ "$rc" -ne 0 ] \
+    || fail "herdr-child-held-bound: forced teardown continued through a contended child session lock"
+  [ "$elapsed" -lt 25 ] \
+    || fail "herdr-child-held-bound: a lock taken while already holding one waited ${elapsed}s, not the short held bound"
+  assert_grep "presentation lock is contended for child-other" "$case_dir/stderr" \
+    "herdr-child-held-bound: the bounded refusal did not name the contended child"
+  [ -e "$home/state/child-herdr.meta" ] \
+    || fail "herdr-child-held-bound: the bounded refusal erased the first child's record"
+  [ -e "$home/state/child-other.meta" ] \
+    || fail "herdr-child-held-bound: the bounded refusal erased the contended child's record"
+  [ ! -e "$closed" ] || fail "herdr-child-held-bound: the bounded refusal still closed a child pane"
+  [ ! -s "$thlog" ] || fail "herdr-child-held-bound: the bounded refusal returned work before refusing"
+  [ "$(grep -c 'FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_INTERVAL_POLLS must be a positive integer' "$case_dir/stderr")" = 1 ] \
+    || fail "herdr-child-held-bound: one misconfigured knob warned once per queued endpoint"
+  pass "forced secondmate teardown bounds every session lock taken while already holding one"
 }
 
 configure_secondmate_with_tmux_children() {  # <case-dir>
@@ -3059,9 +3281,12 @@ test_herdr_teardown_clears_escalation_marker
 test_teardown_removes_usage_cache_entry
 test_teardown_captures_effort_before_removing_meta
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes
+test_herdr_flat_teardown_waits_out_a_healthy_lock_holder
+test_herdr_flat_teardown_survives_misconfigured_queue_knobs
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence
 test_herdr_flat_teardown_preflight_refuses_before_changes
 test_forced_secondmate_herdr_child_preflight_refuses_before_changes
+test_forced_secondmate_teardown_bounds_locks_taken_while_holding_one
 test_forced_secondmate_teardown_holds_descendant_lifecycle_locks
 test_forced_secondmate_herdr_child_retains_records_when_close_unconfirmed
 test_forced_teardown_retains_nested_secondmate_home_when_grandchild_close_unconfirmed
