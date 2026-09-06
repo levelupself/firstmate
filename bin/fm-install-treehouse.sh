@@ -14,7 +14,8 @@ set -eu
 
 FM_TREEHOUSE_CI_VERSION=2.1.0
 FM_TREEHOUSE_CI_TAG="v${FM_TREEHOUSE_CI_VERSION}"
-# Bounded download ceiling (bytes). Downloads are capped at 15 MB.
+# Bounded download ceiling (bytes). Clears the official pinned release archives
+# with headroom while still bounding an unexpectedly large or hostile response.
 FM_TREEHOUSE_CI_MAX_BYTES=15000000
 FM_TREEHOUSE_CI_REPO=kunchenguid/treehouse
 

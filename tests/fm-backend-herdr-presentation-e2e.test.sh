@@ -895,8 +895,8 @@ teardown_task order-a "$HOME_DIR" > "$TMP_ROOT/order-a-teardown.out" 2> "$TMP_RO
 ORDER_A_TEARDOWN_PID=$!
 teardown_task order-b "$HOME_DIR" > "$TMP_ROOT/order-b-teardown.out" 2> "$TMP_ROOT/order-b-teardown.err" &
 ORDER_B_TEARDOWN_PID=$!
-wait "$ORDER_A_TEARDOWN_PID" || fail "projected ordering fixture A teardown failed"
-wait "$ORDER_B_TEARDOWN_PID" || fail "projected ordering fixture B teardown failed"
+wait "$ORDER_A_TEARDOWN_PID" || fail "projected ordering fixture A teardown failed: $(cat "$TMP_ROOT/order-a-teardown.out" "$TMP_ROOT/order-a-teardown.err")"
+wait "$ORDER_B_TEARDOWN_PID" || fail "projected ordering fixture B teardown failed: $(cat "$TMP_ROOT/order-b-teardown.out" "$TMP_ROOT/order-b-teardown.err")"
 assert_focus_is "$CAPTAIN_FOCUS" "concurrent projected teardowns"
 teardown_task order-fail "$HOME_DIR" > "$TMP_ROOT/order-fail-teardown.out" 2> "$TMP_ROOT/order-fail-teardown.err" \
   || fail "projected ordering failure fixture teardown failed"

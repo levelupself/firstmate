@@ -19,7 +19,8 @@ set -eu
 FM_HERDR_CI_VERSION=0.8.0
 FM_HERDR_CI_TAG="v${FM_HERDR_CI_VERSION}"
 FM_HERDR_CI_MIN_PROTOCOL=19
-# Bounded download ceiling (bytes). Downloads are capped at 25 MB.
+# Bounded download ceiling (bytes). Clears the official pinned release assets
+# with headroom while still bounding an unexpectedly large or hostile response.
 FM_HERDR_CI_MAX_BYTES=25000000
 FM_HERDR_CI_REPO=ogulcancelik/herdr
 
