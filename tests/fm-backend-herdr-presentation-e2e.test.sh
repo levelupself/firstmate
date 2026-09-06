@@ -4,6 +4,11 @@
 # owning-parent ordering across primary and secondmate homes.
 # The test drives the real spawn and teardown scripts, a real Treehouse pool,
 # and the guarded named-session lab helper.
+# Any failure preserves every fixture's stdout, stderr, logs, and home state
+# outside the temporary root that cleanup removes, and prints the surviving
+# location, so an intermittent failure stays explainable from its own output.
+# FM_HERDR_PRESENTATION_DIAGNOSTICS_DIR chooses that location instead of a
+# fresh directory under TMPDIR.
 set -u
 
 # shellcheck source=tests/lib.sh

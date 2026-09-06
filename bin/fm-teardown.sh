@@ -2558,10 +2558,11 @@ fi
 # A Herdr close may reposition shared workspace order, so the whole
 # destructive sequence below (worktree return, pane close, record removal)
 # runs under the named-session presentation lock, acquired BEFORE anything is
-# returned or erased: a contended lock refuses here while the isolated copy,
-# every durable record, and the endpoint are all still intact for a plain
-# rerun. An unresolvable lock path (for example an unreachable server) also
-# refuses before any destructive step.
+# returned or erased: a refusal here leaves the isolated copy, every durable
+# record, and the endpoint all still intact for a plain rerun.
+# teardown_herdr_preflight_target owns how long that acquisition queues behind
+# a live holder before it refuses. An unresolvable lock path (for example an
+# unreachable server) also refuses before any destructive step.
 TEARDOWN_HERDR_SESSION=
 TEARDOWN_HERDR_PANE=
 if [ "$BACKEND" = herdr ]; then
