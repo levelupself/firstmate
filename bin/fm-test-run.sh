@@ -1471,6 +1471,11 @@ if [ "$JOBS" -gt 1 ]; then
   done
 fi
 
+# Reinforce the delivery contract where a full-suite runner will encounter it.
+if [ "$MODE" = all ]; then
+  log "Local --all failures are advisory; CI is the delivery gate. Check the CI timing artifact for the failing script before treating a local-only failure as a regression (CONTRIBUTING.md#development)."
+fi
+
 RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run.XXXXXX")
 RECORDS="$RUN_TMP/records.tsv"
 FAMILIES_TSV="$RUN_TMP/families.tsv"

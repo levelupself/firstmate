@@ -939,8 +939,8 @@ for ROUND in 1 2 3; do
   WAVE_A_TEARDOWN_PID=$!
   teardown_task "focus-$ROUND-b" "$HOME_DIR" > "$TMP_ROOT/focus-$ROUND-b-teardown.out" 2> "$TMP_ROOT/focus-$ROUND-b-teardown.err" &
   WAVE_B_TEARDOWN_PID=$!
-  wait "$WAVE_A_TEARDOWN_PID" || fail "focus wave $ROUND teardown A failed"
-  wait "$WAVE_B_TEARDOWN_PID" || fail "focus wave $ROUND teardown B failed"
+  wait "$WAVE_A_TEARDOWN_PID" || fail "focus wave $ROUND teardown A failed: $(cat "$TMP_ROOT/focus-$ROUND-a-teardown.err")"
+  wait "$WAVE_B_TEARDOWN_PID" || fail "focus wave $ROUND teardown B failed: $(cat "$TMP_ROOT/focus-$ROUND-b-teardown.err")"
   assert_focus_is "$CAPTAIN_FOCUS" "focus wave $ROUND concurrent teardowns"
   WAVE_REMAINING=$(lab workspace list | jq -r '.result.workspaces[].label')
   [ "$WAVE_REMAINING" = $'firstmate\n2ndmate-alpha\n2ndmate-bravo' ] \

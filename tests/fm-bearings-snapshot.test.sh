@@ -1474,8 +1474,9 @@ test_captains_call_anti_leak() {
   local home fakebin json canonical
   home=$(make_home anti-leak); write_fixture "$home"
   fakebin=$(make_fakebin "$home")
-  json=$(run "$home" "$fakebin" --json)
-  canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-fleet-snapshot.sh" --json)
+  # This fixture pins structured projection; the timeout fallback has its own test.
+  json=$(FM_SNAPSHOT_SECONDMATE_TIMEOUT=60 run "$home" "$fakebin" --json)
+  canonical=$(FM_SNAPSHOT_SECONDMATE_TIMEOUT=60 PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   jq -n -e --argjson bearings "$json" --argjson canonical "$canonical" '
     ([$bearings.decisions_open[].id] == ["mate/mate-decision-race"])
       and ($canonical.secondmate_current.records[] | select(.id == "mate")
