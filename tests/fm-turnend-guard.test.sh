@@ -1654,6 +1654,7 @@ test_hook_claude_mode_spends_a_sessionless_rewake_epoch_once() {
   age_epoch_file "$dir" 822
   out3=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status3=$?
   expect_code 2 "$status3" "a legacy epoch already honored by age must not be honored again once its window expired"
+  assert_contains "$out3" "TURN WOULD END BLIND" "the expired legacy-epoch block must carry the blind-turn banner"
   pass "fm-turnend-guard --claude: a sessionless rewake epoch also yields exactly one recovery turn"
 }
 
