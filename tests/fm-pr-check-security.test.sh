@@ -838,6 +838,7 @@ test_landing_evidence_and_registration() {
   [ "$rc" -ne 0 ] || fail "registration accepted a non-default base"
   grep -q 'wrong-base' "$dir/err" || fail "registration omitted wrong-base diagnostic"
   [ "$(state_snapshot "$dir/home/state")" = "$before" ] || fail "wrong-base registration changed existing records"
+  write_poll_meta "$dir/home/state" task-a https://github.com/o/r/pull/1
   seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
   set +e
   FM_TEST_GH_STATE=MERGED FM_TEST_BASE_REF=feature run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
