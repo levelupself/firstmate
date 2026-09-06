@@ -2004,6 +2004,56 @@ SH
   pass "herdr teardown queues behind a healthy presentation lock holder instead of refusing"
 }
 
+# The queue's poll-count knobs exist for test control, so a misconfigured one
+# is a configuration mistake and never lock contention. A zero or non-numeric
+# budget must not end the queue before its first acquisition attempt and report
+# a free lock as contended, and a zero notice interval must not reach the
+# notice modulus at all.
+test_herdr_flat_teardown_survives_misconfigured_queue_knobs() {
+  local case_dir log closed rc thlog
+  case_dir=$(make_case herdr-lock-knobs)
+  write_meta "$case_dir" local-only ship
+  configure_flat_herdr_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; : > "$log"
+  closed="$case_dir/closed"
+  : > "$case_dir/state/task-x1.status"
+  : > "$case_dir/state/task-x1.turn-ended"
+  thlog="$case_dir/treehouse.log"; : > "$thlog"
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$thlog"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+
+  rc=0
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS=0 \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_POLLS=soon \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_INTERVAL_POLLS=0 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -eq 0 ] \
+    || fail "herdr-lock-knobs: teardown failed against a free lock with misconfigured queue knobs: $(cat "$case_dir/stderr")"
+  if grep -q "presentation lock is contended" "$case_dir/stderr"; then
+    fail "herdr-lock-knobs: a misconfigured knob was reported as lock contention"
+  fi
+  if grep -qi "division by 0" "$case_dir/stderr"; then
+    fail "herdr-lock-knobs: the notice interval reached the modulus and divided by zero"
+  fi
+  assert_grep "FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS must be a positive integer" "$case_dir/stderr" \
+    "herdr-lock-knobs: the misconfigured budget was not named visibly"
+  assert_grep "FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_POLLS must be a positive integer" "$case_dir/stderr" \
+    "herdr-lock-knobs: the misconfigured notice threshold was not named visibly"
+  assert_grep "FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_INTERVAL_POLLS must be a positive integer" "$case_dir/stderr" \
+    "herdr-lock-knobs: the misconfigured notice interval was not named visibly"
+  [ -e "$closed" ] || fail "herdr-lock-knobs: the teardown never closed the pane under the lock"
+  [ ! -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-lock-knobs: the teardown left the endpoint metadata behind"
+  grep -q "teardown task-x1 complete" "$case_dir/stdout" \
+    || fail "herdr-lock-knobs: the teardown did not report completion"
+  pass "herdr teardown falls back to the default queue budget when a poll knob is misconfigured"
+}
+
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence() {
   local case_dir log closed rc
   case_dir=$(make_case herdr-garbage-presence)
@@ -3120,6 +3170,7 @@ test_teardown_removes_usage_cache_entry
 test_teardown_captures_effort_before_removing_meta
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes
 test_herdr_flat_teardown_waits_out_a_healthy_lock_holder
+test_herdr_flat_teardown_survives_misconfigured_queue_knobs
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence
 test_herdr_flat_teardown_preflight_refuses_before_changes
 test_forced_secondmate_herdr_child_preflight_refuses_before_changes

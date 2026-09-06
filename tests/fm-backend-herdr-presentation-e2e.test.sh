@@ -16,7 +16,9 @@ HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 
 # Failure diagnostics survive cleanup. Every concurrent fixture writes its
 # stdout and stderr under $TMP_ROOT, which cleanup_all removes; without this
-# copy an intermittent failure is unexplainable from its own output.
+# copy an intermittent failure is unexplainable from its own output. Every
+# fixture home's state is copied under that home's own name, not just the
+# primary home's, so a secondmate failure is explainable from its own output.
 DIAGNOSTICS_KEPT=
 preserve_diagnostics() {
   [ -z "$DIAGNOSTICS_KEPT" ] || return 0
@@ -31,9 +33,11 @@ preserve_diagnostics() {
   find "$TMP_ROOT" -maxdepth 1 -type f \
     \( -name '*.out' -o -name '*.err' -o -name '*.log' \) \
     -exec cp -p {} "$DIAGNOSTICS_KEPT/" \; 2>/dev/null || true
-  if [ -d "${HOME_DIR:-}/state" ]; then
-    cp -R "$HOME_DIR/state" "$DIAGNOSTICS_KEPT/home-state" 2>/dev/null || true
-  fi
+  for diag_state in "$TMP_ROOT"/*/state; do
+    [ -d "$diag_state" ] || continue
+    diag_home=$(basename "$(dirname "$diag_state")")
+    cp -R "$diag_state" "$DIAGNOSTICS_KEPT/$diag_home-state" 2>/dev/null || true
+  done
   printf 'diagnostics preserved in %s\n' "$DIAGNOSTICS_KEPT" >&2
 }
 fail() { printf 'not ok - %s\n' "$1" >&2; preserve_diagnostics; cleanup_all; exit 1; }

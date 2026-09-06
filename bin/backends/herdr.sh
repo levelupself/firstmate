@@ -821,15 +821,44 @@ fm_backend_herdr_presentation_session_lock_path() {  # <session>
 # FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_POLLS and keeps announcing every
 # FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_INTERVAL_POLLS afterwards, so a
 # long wait is never a silent stall.
+# All three knobs exist for test control, so each is validated as a positive
+# integer count of polls before it is used.
+
+# fm_backend_herdr_presentation_lock_poll_knob: resolve one poll-count knob.
+# A misconfigured knob is a configuration mistake and never lock contention, so
+# an unusable value falls back to its documented default with one named warning
+# instead of refusing: a zero or non-numeric budget would end the queue before
+# a single acquisition attempt and report a free lock as contended, and a zero
+# notice interval would divide by zero on every poll of the budget.
+fm_backend_herdr_presentation_lock_poll_knob() {  # <name> <value> <default>
+  local name=$1 value=$2 fallback=$3
+  case "$value" in
+    ''|*[!0-9]*) ;;
+    *)
+      if [ "$value" -gt 0 ]; then
+        printf '%s' "$value"
+        return 0
+      fi
+      ;;
+  esac
+  echo "warning: $name must be a positive integer of 0.1s polls, got '$value'; using the default $fallback" >&2
+  printf '%s' "$fallback"
+}
 # fm_backend_herdr_presentation_lock_queue: the single owner of how long a
 # caller that cannot degrade waits for the shared session presentation lock.
 # Returns non-zero only after the whole budget is spent against a live holder.
 # fm_lock_try_acquire must already be available to the caller.
 fm_backend_herdr_presentation_lock_queue() {  # <lock-path> <operation>
   local lock_path=$1 operation=$2 attempt=0 max notice interval
-  max=${FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS:-6000}
-  notice=${FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_POLLS:-50}
-  interval=${FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_INTERVAL_POLLS:-600}
+  max=$(fm_backend_herdr_presentation_lock_poll_knob \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS \
+    "${FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS:-6000}" 6000)
+  notice=$(fm_backend_herdr_presentation_lock_poll_knob \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_POLLS \
+    "${FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_POLLS:-50}" 50)
+  interval=$(fm_backend_herdr_presentation_lock_poll_knob \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_INTERVAL_POLLS \
+    "${FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_INTERVAL_POLLS:-600}" 600)
   while [ "$attempt" -lt "$max" ]; do
     if fm_lock_try_acquire "$lock_path"; then
       return 0
