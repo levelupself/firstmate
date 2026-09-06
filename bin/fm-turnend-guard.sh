@@ -284,11 +284,14 @@ budget_account_current_epoch() {
 # one event epoch yields exactly one recovery turn. An auto-arm that stops
 # recovering therefore blocks on the very next stop instead of allowing
 # indefinitely, and a handoff this session cannot record as spent - unknown
-# session, unparseable epoch, already spent, unwritable record - is not honored
-# at all.
+# session, unparseable epoch, already spent, a record that is not a plain file
+# this guard can read back, unwritable record - is not honored at all.
 rewake_handoff_spend() {
   local current_epoch spent_session spent_epoch tmp
   [ -n "$SESSION_ID" ] && [ "$SESSION_ID" != unknown ] || return 1
+  if [ -e "$REWAKE_SPENT" ] || [ -L "$REWAKE_SPENT" ]; then
+    [ -f "$REWAKE_SPENT" ] && [ ! -L "$REWAKE_SPENT" ] || return 1
+  fi
   current_epoch=$(sed -n 's/^epoch=\([0-9][0-9]*\) .*/\1/p' "$EPOCH_FILE" 2>/dev/null || true)
   case "$current_epoch" in ''|*[!0-9]*) return 1 ;; esac
   spent_session=$(sed -n '1s/^session=//p' "$REWAKE_SPENT" 2>/dev/null || true)
