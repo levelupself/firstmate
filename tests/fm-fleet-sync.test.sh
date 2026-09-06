@@ -34,17 +34,17 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 fm_git_identity fmtest fmtest@example.invalid
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 
 TMP_ROOT=$(fm_test_tmproot fm-fleet-sync-tests)
-HOME_N=0
 
 # --- fixtures ---------------------------------------------------------------
 
 # new_home: fresh isolated FM_HOME with an empty projects/ dir. Each test gets its
 # own so the whole-fleet form never sees another test's clones.
 new_home() {
-  HOME_N=$((HOME_N + 1))
-  local h="$TMP_ROOT/home-$HOME_N"
+  local h
+  h=$(mktemp -d "$TMP_ROOT/home.XXXXXX") || return 1
   mkdir -p "$h/projects"
   printf '%s\n' "$h"
 }
@@ -508,8 +508,10 @@ test_whole_fleet_form() {
 }
 
 test_bootstrap_relays_recovered_and_stuck() {
-  local home stuck rec out
+  local home stuck rec out locked
   home=$(new_home)
+  locked=$(build_pair "$home" a-locked)
+  : > "$locked/.git/config.lock"
   # A clone we will leave STUCK (dirty), and one that self-heals (detached-clean-ancestor).
   stuck=$(build_pair "$home" stuck-clone)
   advance_origin "$home" stuck-clone C1
@@ -522,6 +524,8 @@ test_bootstrap_relays_recovered_and_stuck() {
   # We only assert the fleet-sync relay lines; other detect lines are irrelevant.
   out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
 
+  assert_contains "$out" "FLEET_SYNC: a-locked: ERROR:" "bootstrap relays setup failure"
+  assert_present "$locked/.git/config.lock" "bootstrap preserves config lock"
   assert_contains "$out" "FLEET_SYNC: stuck-clone: STUCK:" "bootstrap relays the STUCK outcome"
   assert_contains "$out" "FLEET_SYNC: rec-clone: recovered:" "bootstrap relays the recovered outcome"
   pass "bootstrap relays recovered: and STUCK: fleet-sync outcomes"
@@ -710,6 +714,166 @@ test_non_signature_fetch_failure_is_not_retried() {
   assert_no_grep "packed-refs lock" "$err" "non-signature: a non-lock failure entered the lock guard"
   pass "a non-packed-refs.lock fetch failure keeps today's behavior (no retry)"
 }
+
+assert_eq() { [ "$1" = "$2" ] || fail "$3 (expected $2, got $1)"; }
+
+# Use real Git to prove common-config inheritance and replay across linked worktrees.
+test_shared_rerere() {
+  local home clone first second base rc out config_before
+  home=$(new_home)
+  clone=$(build_pair "$home" rerere)
+  git -C "$clone" config --local rerere.enabled false
+  git -C "$clone" config --local rerere.autoUpdate true
+  git -C "$clone" config --local example.preserve untouched
+  run_sync "$home" >/dev/null
+  assert_eq "$(git -C "$clone" config --local --bool rerere.enabled)" true "existing clone enables rerere"
+  assert_eq "$(git -C "$clone" config --local --bool rerere.autoUpdate)" false "replay requires explicit staging"
+  config_before=$(cat "$clone/.git/config")
+  run_sync "$home" >/dev/null
+  assert_eq "$(cat "$clone/.git/config")" "$config_before" "repeat sync leaves config byte-identical"
+  assert_eq "$(git -C "$clone" config example.preserve)" untouched "unrelated configuration preserved"
+
+  first="$home/first"; second="$home/second"
+  base=$(head_sha "$clone")
+  git -C "$clone" worktree add -q -b worker-one "$first" "$base"
+  git -C "$clone" worktree add -q -b worker-two "$second" "$base"
+  commit_file "$first" file.txt worker worker-one
+  commit_file "$second" file.txt worker worker-two
+  commit_file "$clone" file.txt trunk trunk
+  rc=0
+  git -C "$first" rebase main >"$home/first.log" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "first rebase must conflict"
+  commit_file "$first" file.txt resolved resolution
+  GIT_EDITOR=true git -C "$first" rebase --continue >"$home/continue.log" 2>&1 || fail "first resolution must complete"
+  rc=0
+  git -C "$second" rebase main >"$home/second.log" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "second rebase must wait for staging confirmation"
+  out=$(cat "$home/second.log")
+  assert_contains "$out" "using previous resolution" "second worker must replay the cached resolution"
+  assert_eq "$(cat "$second/file.txt")" resolved "second worker receives resolution without hand editing"
+  [ -n "$(git -C "$second" ls-files -u)" ] || fail "replayed resolution must remain unmerged in index"
+  git -C "$second" add file.txt
+  GIT_EDITOR=true git -C "$second" rebase --continue >/dev/null 2>&1 || fail "confirmed replay must complete"
+  pass "shared rerere replays across workers and leaves acceptance to explicit staging"
+}
+
+test_rerere_initialization() {
+  local home clone before
+  home=$(new_home)
+  clone=$(build_pair "$home" initial-rerere)
+  "$ROOT/bin/fm-project-git-setup.sh" "$clone" || fail "project setup must succeed"
+  assert_eq "$(git -C "$clone" config --local --bool rerere.enabled)" true "new project enables rerere"
+  before=$(cat "$clone/.git/config")
+  "$ROOT/bin/fm-project-git-setup.sh" "$clone" || fail "repeated setup must succeed"
+  assert_eq "$(cat "$clone/.git/config")" "$before" "repeated setup changes nothing"
+  mkdir "$clone/nested"
+  if "$ROOT/bin/fm-project-git-setup.sh" "$clone/nested" >/dev/null 2>&1; then
+    fail "setup must reject enclosing repository discovery"
+  fi
+  assert_eq "$(cat "$clone/.git/config")" "$before" "rejected setup leaves enclosing config intact"
+  git -C "$clone" remote remove origin
+  git -C "$clone" config --local --unset rerere.enabled
+  run_sync "$home" >/dev/null
+  assert_eq "$(git -C "$clone" config --local --bool rerere.enabled)" true "existing no-origin projects are migrated"
+  mkdir -p "$home/data"
+  printf '%s\n' '- initial-rerere [local-only] - fixture' > "$home/data/projects.md"
+  git -C "$clone" config --local --unset rerere.enabled
+  run_sync "$home" >/dev/null
+  assert_eq "$(git -C "$clone" config --local --bool rerere.enabled)" true "local-only projects are migrated"
+  git -C "$clone" config --local rerere.enabled false
+  before=$(cat "$clone/.git/config")
+  : > "$clone/.git/config.lock"
+  if run_sync "$home" >"$home/config-failure.log"; then
+    fail "configuration lock must stop sync with an error"
+  fi
+  assert_eq "$(cat "$clone/.git/config")" "$before" "config lock prevents writes"
+  [ -f "$clone/.git/config.lock" ] || fail "setup must preserve existing config lock"
+  pass "project setup is idempotent, migrates all modes, and respects config locks"
+}
+
+test_home_fixtures_are_isolated() {
+  local first second
+  first=$(new_home)
+  mkdir "$first/projects/leftover"
+  second=$(new_home)
+  [ "$first" != "$second" ] || fail "home fixtures reused a path"
+  assert_absent "$second/projects/leftover" "home fixture leaked project state"
+  pass "home fixtures remain isolated across command substitutions"
+}
+
+test_setup_failures_continue_fleet() {
+  local home locked other healthy out rc before other_before head_before
+  home=$(new_home)
+  locked=$(build_pair "$home" a-locked)
+  other=$(build_pair "$home" b-locked)
+  healthy=$(build_pair "$home" z-healthy)
+  advance_origin "$home" a-locked C1
+  advance_origin "$home" z-healthy C1
+  before=$(cat "$locked/.git/config")
+  other_before=$(cat "$other/.git/config")
+  head_before=$(head_sha "$locked")
+  : > "$locked/.git/config.lock"
+  : > "$other/.git/config.lock"
+  rc=0
+  out=$(run_sync "$home" 2>/dev/null) || rc=$?
+  expect_code 1 "$rc" "fleet aggregates setup failures"
+  assert_contains "$out" "a-locked: ERROR:" "first setup failure remains visible"
+  assert_contains "$out" "b-locked: ERROR:" "second setup failure remains visible"
+  assert_contains "$out" "z-healthy: synced" "later independent clone refreshes"
+  assert_eq "$(git -C "$healthy" config --local --bool rerere.enabled)" true "later clone is migrated"
+  assert_eq "$(head_sha "$healthy")" "$(git -C "$healthy" rev-parse origin/main)" "later clone advances"
+  assert_eq "$(head_sha "$locked")" "$head_before" "failed setup stops that clone's refresh"
+  assert_eq "$(cat "$locked/.git/config")" "$before" "first locked config remains intact"
+  assert_eq "$(cat "$other/.git/config")" "$other_before" "second locked config remains intact"
+  assert_present "$locked/.git/config.lock" "first config lock remains intact"
+  assert_present "$other/.git/config.lock" "second config lock remains intact"
+  pass "setup failures are aggregated while independent clones migrate and refresh"
+}
+
+test_seed_configures_projects_before_registration() {
+  local home child code clone before registry out
+  home=$(new_home)
+  child=$(new_home)
+  code="$home/code"
+  mkdir -p "$code"
+  ln -s "$ROOT/bin" "$code/bin"
+  clone=$(build_pair "$home" seed-project)
+  before=$(cat "$clone/.git/config")
+  mkdir -p "$home/data" "$child/bin"
+  cp "$ROOT/AGENTS.md" "$child/AGENTS.md"
+  printf '%s\n' '- seed-project [direct-PR] - fixture' > "$home/data/projects.md"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$code" FM_SECONDMATE_CHARTER='seed fixture' \
+    FM_SECONDMATE_SCOPE='seed fixture' \
+    "$ROOT/bin/fm-home-seed.sh" seed-child "$child" seed-project >/dev/null \
+    || fail "automatic project registration failed"
+  assert_eq "$(git -C "$child/projects/seed-project" config --local --bool rerere.enabled)" true "seed enables rerere before startup"
+  assert_eq "$(git -C "$child/projects/seed-project" config --local --bool rerere.autoUpdate)" false "seed leaves replay unstaged"
+  assert_eq "$(cat "$clone/.git/config")" "$before" "seed preserves source clone configuration"
+  registry=$(cat "$child/data/projects.md")
+  before=$(cat "$child/projects/seed-project/.git/config")
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$code" \
+    "$ROOT/bin/fm-home-seed.sh" seed-child "$child" seed-project >/dev/null \
+    || fail "repeated project registration failed"
+  assert_eq "$(cat "$child/projects/seed-project/.git/config")" "$before" "repeated seed setup is idempotent"
+  git -C "$child/projects/seed-project" config --local rerere.enabled false
+  before=$(cat "$child/projects/seed-project/.git/config")
+  : > "$child/projects/seed-project/.git/config.lock"
+  if out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$code" \
+      "$ROOT/bin/fm-home-seed.sh" seed-child "$child" seed-project 2>&1); then
+    fail "registration accepted failed Git setup"
+  fi
+  assert_contains "$out" 'could not lock config file' "registration surfaces Git setup failure"
+  assert_eq "$(cat "$child/data/projects.md")" "$registry" "failed registration preserves registry"
+  assert_eq "$(cat "$child/projects/seed-project/.git/config")" "$before" "failed registration preserves config"
+  assert_present "$child/projects/seed-project/.git/config.lock" "registration preserves config lock"
+  pass "automatic registration configures shared reuse and propagates setup failure"
+}
+
+test_home_fixtures_are_isolated
+test_setup_failures_continue_fleet
+test_seed_configures_projects_before_registration
+test_shared_rerere
+test_rerere_initialization
 
 test_detached_clean_ancestor_recovers
 test_detached_unique_commit_is_stuck_untouched

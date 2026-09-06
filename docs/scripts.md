@@ -68,6 +68,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `backends/cmux.sh`       | Experimental cmux session-provider adapter                                           |
 | `fm-config-push.sh`      | Push declared inherited local material to live local or remote secondmates and send the placement-specific config reread when changed |
 | `fm-project-mode.sh`     | Resolve a project's registered delivery posture from `data/projects.md` for fleet sync and home seeding |
+| `fm-project-git-setup.sh` | Apply shared project Git configuration during registration and refresh |
 | `fm-merge-local.sh`      | Perform approved `local-only` landing with verified publication participants and visible read-only exclusions; the script header owns the contract |
 | `fm-review-diff.sh`      | Review a crewmate branch or resolved PR head against the authoritative base          |
 | `fm-review.sh`           | Open a ready task's GitHub pull-request diff in local-only Hunk with optional curated notes |

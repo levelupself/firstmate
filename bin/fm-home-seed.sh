@@ -932,6 +932,7 @@ seed_home() {
     project_dst=$(validate_project_destination "$home" "$project") || return 1
     [ -e "$project_dst" ] || printf '%s\n' "$project_dst" >> "$SEED_CREATED_PROJECTS_FILE"
     clone_project "$project" "$home"
+    "$FM_ROOT/bin/fm-project-git-setup.sh" "$project_dst"
   done
   sync_project_registry "$home" "$@"
   for project in "$@"; do
