@@ -709,6 +709,90 @@ test_pruned_backlog_record_with_landed_work_is_torn_down() {
   pass "a finished task whose record retention pruned is cleaned up without hand recovery"
 }
 
+test_pruned_backlog_record_with_stale_receipt_refuses_pushed_work() {
+  local case_dir pr_head merge_commit evidence rc=0
+  command -v tasks-axi >/dev/null 2>&1 || {
+    echo "skip: tasks-axi not found (pruned-record stale receipt)"
+    return 0
+  }
+  case_dir=$(make_case pruned-record-stale-receipt)
+  write_meta "$case_dir" no-mistakes ship
+  add_retention_backlog "$case_dir"
+  wt_commit_file "$case_dir" landed.txt "landed work"
+  pr_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  append_pr_meta_for_current_head "$case_dir"
+  land_on_origin_main "$case_dir" landed.txt "landed work"
+  merge_commit=$(git -C "$case_dir/origin.git" rev-parse main)
+  add_gh_pr_merged_for_head "$case_dir" "$pr_head"
+  printf '%s\n' 'schema=fm-task-launch.v1' 'task_id=task-x1' \
+    'spawned_at=2026-09-02T12:00:00Z' > "$case_dir/state/task-x1.launch-receipt"
+  mkdir -p "$case_dir/data/pr-merges"
+  printf '%s\n' 'schema=fm-pr-merge.v3' 'task_id=task-x1' \
+    'pr=https://github.com/example/repo/pull/7' 'repository=example/repo' \
+    'default_branch=main' "merge_commit=$merge_commit" \
+    'spawned_at=2026-09-02T12:00:00Z' 'phase=merged' 'authorization=live-meta' \
+    'prepared_epoch=1' 'merged_at=2026-09-02T12:01:00Z' \
+    > "$case_dir/data/pr-merges/task-x1.receipt"
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+case "${2:-}" in
+  */compare/*) printf '%s\n' 'status: ahead' ;;
+  */repos/*) printf '%s\n' 'default_branch: main' ;;
+  *) exit 1 ;;
+esac
+SH
+  prune_completed_task_x1 "$case_dir"
+  wt_commit_file "$case_dir" pending.txt "additional unmerged work"
+  git -C "$case_dir/wt" push -q origin HEAD:refs/heads/fm/task-x1
+  git -C "$case_dir/project" fetch -q origin fm/task-x1
+  evidence=$(FM_HOME="$case_dir" PATH="$case_dir/fakebin:$PATH" \
+    "$ROOT/bin/fm-backlog-integrity.sh" landed-evidence task-x1) \
+    || fail "stale receipt fixture did not retain valid launch-bound evidence"
+  [ "$evidence" = merged-pr ] || fail "stale receipt fixture lacks merged-PR evidence"
+
+  run_teardown_in_home "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "stale merge receipt authorized cleanup of subsequently pushed work"
+  assert_grep 'no durable evidence proves its work landed' "$case_dir/stderr" \
+    "cleanup did not refuse current unlanded work at the absent-row boundary"
+  [ -d "$case_dir/wt" ] && [ -f "$case_dir/state/task-x1.meta" ] \
+    && [ -f "$case_dir/state/task-x1.launch-receipt" ] \
+    || fail "cleanup lost the worktree or task state despite current unlanded work"
+  [ "$(cat "$case_dir/wt/pending.txt")" = "additional unmerged work" ] \
+    || fail "cleanup changed the preserved unlanded work"
+  pass "stale launch-bound receipt cannot authorize pushed work after retention"
+}
+
+test_pruned_backlog_record_with_replayed_patch_refuses_pushed_parent() {
+  local case_dir parent_head pr_head rc=0
+  command -v tasks-axi >/dev/null 2>&1 || {
+    echo "skip: tasks-axi not found (pruned-record replayed patch)"
+    return 0
+  }
+  case_dir=$(make_case pruned-record-replayed-patch)
+  write_meta "$case_dir" no-mistakes ship
+  add_retention_backlog "$case_dir"
+  wt_commit_file "$case_dir" local-parent.txt parent "local parent"
+  parent_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/wt" push -q origin "$parent_head:refs/heads/fm/task-x1"
+  git -C "$case_dir/project" fetch -q origin fm/task-x1
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  append_pr_meta_url "$case_dir"
+  pr_head=$(land_equivalent_patch_on_origin_branch "$case_dir" pr-head feature.txt hello "add feature")
+  land_on_origin_main "$case_dir" feature.txt hello
+  add_gh_pr_merged_for_head "$case_dir" "$pr_head"
+  prune_completed_task_x1 "$case_dir"
+
+  run_teardown_in_home "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "replayed patch concealed pushed unmerged parent after retention"
+  assert_grep 'no durable evidence proves its work landed' "$case_dir/stderr" \
+    "replayed patch did not reach the stricter absent-row proof"
+  [ -d "$case_dir/wt" ] && [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "cleanup lost the worktree or task state with a pushed unmerged parent"
+  [ "$(cat "$case_dir/wt/local-parent.txt")" = parent ] \
+    || fail "cleanup changed the preserved parent work"
+  pass "pruned record requires proof covering the pushed parent of a replayed patch"
+}
+
 test_pruned_backlog_record_with_pushed_open_pr_preserves_poll() {
   local case_dir rc=0
   command -v tasks-axi >/dev/null 2>&1 || {
@@ -2936,6 +3020,8 @@ test_teardown_refuses_when_backlog_row_is_missing
 test_pruned_backlog_record_with_landed_work_is_torn_down
 test_pruned_backlog_record_with_unlanded_work_still_refuses
 test_pruned_backlog_record_with_pushed_open_pr_preserves_poll
+test_pruned_backlog_record_with_stale_receipt_refuses_pushed_work
+test_pruned_backlog_record_with_replayed_patch_refuses_pushed_parent
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_manual_teardown_refuses_missing_backlog_row
 test_manual_teardown_refuses_unverifiable_backlog

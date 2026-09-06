@@ -25,11 +25,13 @@
 # The backlog row is bookkeeping, never part of that proof: completed-history
 # retention is entitled to prune a finished task's Done entry, so requiring the
 # row would strand the worktree, endpoint, and state of work that already landed.
-# When the row is gone, remote reachability alone is insufficient: the backlog
-# step requires a merged PR containing local work, content in the current default
-# branch, or bin/fm-backlog-integrity.sh's durable landed evidence
-# (an identity-bound merged-PR or local-landing receipt, or a scout report), and
-# refuses when neither exists. Absence of a record is never permission.
+# When the row is gone, an existing ship worktree requires its current HEAD to
+# be an ancestor of the merged PR head, or its content in the current default
+# branch; remote reachability and unpushed-only patch equivalence do not qualify.
+# Only when no ship worktree remains may bin/fm-backlog-integrity.sh's durable
+# identity-bound landing receipt or completed scout report authorize cleanup.
+# A recorded PR with valid armed merge poll artifacts defers cleanup ahead of
+# either proof. Without qualifying proof, cleanup refuses; absence is never permission.
 # Tracked paths marked skip-worktree or assume-unchanged are treated as dirty
 # because those index flags hide changes
 # from the ordinary `git status --porcelain` safety check.
@@ -928,6 +930,28 @@ work_is_landed() {
   content_in_default
 }
 
+current_head_in_merged_pr() {
+  local branch=$1 target view state head current
+  if [ -n "$PR_URL" ]; then
+    target=$PR_URL
+  else
+    target=$(pr_number_from_branch "$branch") || return 1
+  fi
+  [ -n "$target" ] || return 1
+  view=$(cd "$WT" && gh pr view "$target" --json state,headRefOid -q '.state + "\t" + .headRefOid' 2>/dev/null) || return 1
+  state=${view%%$'\t'*}
+  head=${view#*$'\t'}
+  [ "$state" != "$view" ] || return 1
+  case "$state" in
+    MERGED|merged) ;;
+    *) return 1 ;;
+  esac
+  [ -n "$head" ] || return 1
+  ensure_commit_object "$target" "$head" || return 1
+  current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
+  git -C "$WT" merge-base --is-ancestor "$current" "$head" 2>/dev/null
+}
+
 backlog_refresh_reminder() {
   local pr report_path show task_state row_status evidence
   local -a done_args
@@ -938,11 +962,6 @@ backlog_refresh_reminder() {
     return 0
   fi
   if [ "$row_status" = absent ]; then
-    # Completed-history retention is entitled to prune this task's Done row, so
-    # cleanup must never depend on the row still being there. It falls back to
-    # evidence the backlog cannot delete: this run's own completed landed-work
-    # proof, or a durable identity-bound landing receipt or scout report. With
-    # neither, absence of a record is not permission - cleanup still refuses.
     if [ "$FORCE" = --force ]; then
       printf '%s\n' "Backlog: $ID has no backlog record to update; cleanup proceeded under explicit discard authority."
       return 0
@@ -953,11 +972,13 @@ backlog_refresh_reminder() {
       return 1
     fi
     evidence=
-    if [ "$WORKTREE_LANDED_VERIFIED" = 1 ] || {
-      [ "$KIND" = ship ] && [ -d "$WT" ] \
-        && work_is_landed "$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-    }; then
-      evidence=verified-landed-worktree
+    if [ "$KIND" = ship ] && { [ -e "$WT" ] || [ -L "$WT" ]; }; then
+      if [ -d "$WT" ] && {
+        current_head_in_merged_pr "$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null)" \
+          || content_in_default
+      }; then
+        evidence=verified-landed-worktree
+      fi
     else
       evidence=$("$SCRIPT_DIR/fm-backlog-integrity.sh" landed-evidence "$ID" 2>/dev/null) || evidence=
     fi
