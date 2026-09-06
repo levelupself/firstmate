@@ -2221,6 +2221,7 @@ teardown_herdr_require_prerequisites() {  # <task-id>
     fm_backend_herdr_endpoint_confirmed_gone \
     fm_backend_herdr_explicit_close_pane_confirmed \
     fm_backend_herdr_presentation_session_lock_path \
+    fm_backend_herdr_presentation_lock_resolve_knobs \
     fm_backend_herdr_presentation_lock_queue; do
     if ! declare -F "$prerequisite" >/dev/null 2>&1; then
       echo "error: herdr teardown prerequisites are unavailable for $task_id; nothing was changed - restore the adapter and rerun teardown" >&2
@@ -2239,7 +2240,7 @@ teardown_herdr_require_prerequisites() {  # <task-id>
 }
 
 teardown_herdr_preflight_target() {  # <target> <task-id>
-  local target=$1 task_id=$2 session pane presence lock_path verified_lock_path lock_session held_path
+  local target=$1 task_id=$2 session pane presence lock_path verified_lock_path lock_session held_path queue_polls
   teardown_herdr_require_prerequisites "$task_id" || return 1
   if ! fm_backend_herdr_parse_target "$target"; then
     echo "error: herdr endpoint $target for $task_id could not be parsed exactly; nothing was changed - repair the endpoint metadata and rerun teardown" >&2
@@ -2276,7 +2277,21 @@ FMEOF
   # hand, so this queues behind a healthy holder for the adapter-owned budget
   # rather than giving up while a concurrent teardown is still legitimately
   # inside its own destructive sequence.
-  if fm_backend_herdr_presentation_lock_queue "$lock_path" "teardown of $task_id"; then
+  # That full budget applies only while this teardown holds no session
+  # presentation lock yet. Once one is held, every further lock uses the
+  # adapter's short held bound: a forced secondmate teardown takes the parent
+  # session's lock and then queues on each child endpoint's own session lock,
+  # and each child's session comes from its parsed endpoint rather than the
+  # environment, so two concurrent forced teardowns spanning several sessions
+  # have no common acquisition order. Waiting the full budget while holding
+  # another session's lock would stretch that cycle from seconds to minutes for
+  # no benefit, while the short bound is exactly the prior behavior.
+  fm_backend_herdr_presentation_lock_resolve_knobs
+  queue_polls=
+  if [ -n "$TEARDOWN_HERDR_LOCK_RECORDS" ]; then
+    queue_polls=$FM_BACKEND_HERDR_PRESENTATION_LOCK_HELD_BUDGET
+  fi
+  if fm_backend_herdr_presentation_lock_queue "$lock_path" "teardown of $task_id" "$queue_polls"; then
     if ! verified_lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") \
       || [ "$verified_lock_path" != "$lock_path" ]; then
       fm_lock_release "$lock_path" || true
