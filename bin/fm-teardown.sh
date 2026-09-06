@@ -22,16 +22,16 @@
 # A gh lookup error falls back to the content check; if that is also inconclusive,
 # teardown refuses rather than risk discarding unlanded work.
 # Uncommitted changes are never landed.
-# The backlog row is bookkeeping, never part of that proof: completed-history
-# retention is entitled to prune a finished task's Done entry, so requiring the
-# row would strand the worktree, endpoint, and state of work that already landed.
-# When the row is gone, an existing ship worktree requires its current HEAD to
-# be an ancestor of the merged PR head, or its content in the current default
+# When an existing backlog lacks the task row, non-force cleanup additionally
+# requires an existing ship worktree's current HEAD to
+# be an ancestor of the merged PR head, or its content in the up-to-date default
 # branch; remote reachability and unpushed-only patch equivalence do not qualify.
 # Only when no ship worktree remains may bin/fm-backlog-integrity.sh's durable
 # identity-bound landing receipt or completed scout report authorize cleanup.
+# That evidence never overrides a failed current-worktree safety check.
 # A recorded PR with valid armed merge poll artifacts defers cleanup ahead of
 # either proof. Without qualifying proof, cleanup refuses; absence is never permission.
+# docs/architecture.md owns the rationale for independence from retained rows.
 # Tracked paths marked skip-worktree or assume-unchanged are treated as dirty
 # because those index flags hide changes
 # from the ordinary `git status --porcelain` safety check.
@@ -1253,7 +1253,7 @@ teardown_treehouse_return() {
   return 1
 }
 
-# Set to 1 only by a ship worktree that completed every landed-work proof below.
+# This legacy flag is not evidence for the absent-row boundary; see header.
 WORKTREE_LANDED_VERIFIED=0
 validate_worktree_teardown_safety() {
   local hidden_raw hidden entry tag path flag

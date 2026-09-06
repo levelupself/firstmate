@@ -16,12 +16,12 @@
 # missing backlog does not re-implement either test.
 #
 # landed-evidence prints the durable evidence kind (`merged-pr`,
-# `local-landing`, or `scout-report`) proving <id>'s work landed, and fails when
-# no such evidence exists. That evidence is identity-bound to the task's launch
-# receipt and re-verified against the forge or the local default branch, so it
-# stays valid after completed-history retention prunes the task's Done row.
-# Retention is entitled to delete a completed record; nothing that protects
-# unlanded work may depend on that record still being present.
+# `local-landing`, or `scout-report`) for <id>'s recorded delivery, and fails when
+# no such evidence exists. Landing receipts are identity-bound to the task's
+# launch receipt and re-verified against the forge or the local default branch;
+# scout evidence requires a nonempty report and a latest terminal status of done.
+# This query survives completed-history retention but does not inspect current
+# worktree content. bin/fm-teardown.sh's header owns when it may authorize cleanup.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -273,7 +273,7 @@ valid_local_receipt() {
   valid_timestamp "$(receipt_value "$receipt" event_at)"
 }
 
-# Durable proof that <id>'s work landed, independent of any backlog row. Takes
+# Durable delivery evidence (see header), independent of any backlog row. Takes
 # the task kind rather than a row so it answers for a task whose record is gone.
 landed_work_evidence() {
   local id=$1 kind=$2 report receipt project default_branch landed_sha terminal
