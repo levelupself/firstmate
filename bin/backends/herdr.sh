@@ -802,33 +802,40 @@ fm_backend_herdr_presentation_session_lock_path() {  # <session>
 
 # The presentation lock is held across whole operations, never single calls:
 # a teardown keeps it from before the isolated copy is returned until after the
-# exact pane is closed and the durable records are removed. Healthy holds
-# therefore run to tens of seconds on a loaded host, so a caller that must not
-# give up needs a queue budget measured in minutes rather than seconds.
-# Only a LIVE holder can consume that budget - fm_lock_try_acquire reclaims an
+# exact pane is closed and the durable records are removed. A queue budget must
+# therefore be sized against a real teardown's critical section, not against a
+# single mutation: sampling this namespace on a CPU-oversubscribed host
+# measured one real task teardown occupying the lock for 142s, and a 238s
+# continuous occupancy in a second sample, while lighter fixture teardowns sat
+# near 12s (docs/verification/runtime-backends.md).
+# Only a LIVE holder can consume the budget - fm_lock_try_acquire reclaims an
 # abandoned hold on the spot - so the ceiling bounds a wedged process and never
-# a crashed one.
+# a crashed one, and spending it is a loud refusal that changed nothing.
 # Callers that can degrade safely instead of queueing (a spawn that falls back
 # to the flat layout in bin/fm-spawn.sh, the best-effort close in
 # fm_backend_herdr_kill) deliberately keep their own much smaller bound and do
 # not use this budget.
-# The budget is FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS 0.1s polls
-# (default 1200, so 120s) and a wait that outlives a quick mutation announces
-# itself after FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_POLLS so a long queue
-# is never a silent stall.
+# FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS is the budget in 0.1s polls
+# (default 6000, so 600s: roughly 2.5x the longest occupancy yet measured).
+# A queue that outlives a quick mutation announces itself after
+# FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_POLLS and keeps announcing every
+# FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_INTERVAL_POLLS afterwards, so a
+# long wait is never a silent stall.
 # fm_backend_herdr_presentation_lock_queue: the single owner of how long a
 # caller that cannot degrade waits for the shared session presentation lock.
 # Returns non-zero only after the whole budget is spent against a live holder.
 # fm_lock_try_acquire must already be available to the caller.
 fm_backend_herdr_presentation_lock_queue() {  # <lock-path> <operation>
-  local lock_path=$1 operation=$2 attempt=0 max notice
-  max=${FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS:-1200}
+  local lock_path=$1 operation=$2 attempt=0 max notice interval
+  max=${FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS:-6000}
   notice=${FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_POLLS:-50}
+  interval=${FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_INTERVAL_POLLS:-600}
   while [ "$attempt" -lt "$max" ]; do
     if fm_lock_try_acquire "$lock_path"; then
       return 0
     fi
-    if [ "$attempt" = "$notice" ]; then
+    if [ "$attempt" -ge "$notice" ] \
+      && [ "$(( (attempt - notice) % interval ))" -eq 0 ]; then
       echo "waiting for the herdr session presentation lock held by pid ${FM_LOCK_HELD_PID:-unknown} before $operation" >&2
     fi
     sleep 0.1
