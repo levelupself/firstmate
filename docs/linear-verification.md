@@ -49,25 +49,9 @@ exits 0 without calling `gh pr edit` at all.
 
 ## 4. Linear unavailable never blocks the lifecycle
 
-Real `curl`, real `fm-pr-check.sh`, an unroutable endpoint:
-
-```
-$ time FM_HOME=... LINEAR_API_KEY=lin_api_bogus LINEAR_API_URL=https://10.255.255.1/graphql \
-    FM_LINEAR_PR_TIMEOUT=3 ./bin/fm-pr-check.sh vt https://github.com/levelupself/firstmate/pull/999
-armed: state/vt.check.sh polls https://github.com/levelupself/firstmate/pull/999
-linear: lookup unavailable (Linear did not answer within 3s or rejected the request); nothing linked, PR unaffected
-
-real    0m3.560s
-exit=0
-
-$ cat state/vt.meta
-window=fm-vt
-worktree=...
-pr=https://github.com/levelupself/firstmate/pull/999
-```
-
-The PR was still recorded, the merge poll was still armed, the wait was bounded
-by the configured timeout, and the exit code was 0.
+The earlier end-to-end registration observation predates the destination guard and is not evidence for the current registration path.
+[`bin/fm-pr-check.sh`](../bin/fm-pr-check.sh)'s header owns registration prerequisites; a refresh must satisfy those prerequisites before exercising the non-fatal Linear hook.
+Run `bash tests/fm-linear.test.sh` for the hook's fixture verification and [`fm-pr-check-security.test.sh`](../tests/fm-pr-check-security.test.sh) for registration guards.
 
 Against the real Linear endpoint with an invalid key:
 

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Record a PR-ready task: store one validated canonical pr=<url> and the forge's
 # exact pr_head=<sha> when available, then atomically arm a static merge poll.
+# Before registration, the forge base must equal its repository default branch.
+# Wrong or unverifiable bases are refused without publishing task completion.
 # The watcher check source is byte-for-byte bin/fm-pr-poll.sh; task and PR data
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
@@ -59,6 +61,15 @@ if [ "$PROVIDER" = gitlab ] && ! command -v glab >/dev/null 2>&1; then
   echo "error: watching a GitLab merge request requires glab on PATH" >&2
   exit 1
 fi
+
+# Validate delivery destination before changing metadata or poll artifacts.
+# A stacked PR requires a delivery decision; registration never adopts it.
+# shellcheck source=bin/fm-pr-landed-lib.sh
+. "$SCRIPT_DIR/fm-pr-landed-lib.sh"
+fm_pr_require_default_base "$PROVIDER" "$HOST" "$PROJECT_PATH" "$NUMBER" || {
+  echo "error: PR default-branch destination could not be verified; registration refused" >&2
+  exit 1
+}
 
 # Neutralize any pre-fix poll before recording or arming this task. The
 # migration never executes legacy artifacts and holds watcher exclusion while

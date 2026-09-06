@@ -125,7 +125,8 @@ The worker reports the PR at the generated brief's CI-ready return point, after 
 ## PR ready, landing, and teardown
 
 For PR-based ship tasks, the ready signal depends on mode: `no-mistakes` uses the repository-condition-specific terminal report selected by `bin/fm-brief.sh`, while `direct-PR` reports `done: PR <url>` after opening the PR.
-Run `bin/fm-pr-check.sh <id> <PR url>`; it records `pr=` and the forge's `pr_head=` when available in the task's metadata and arms the watcher's merge poll.
+Run `bin/fm-pr-check.sh <id> <PR url>`; its default-base verification must succeed before accepting PR completion, and it records `pr=` and the forge's `pr_head=` when available in the task's metadata and arms the watcher's merge poll.
+A `wrong-base` poll signal means the forge merged to another branch: keep the task unresolved and route the delivery correction instead of recording landing or cleaning up its work.
 When a `LINEAR_API_KEY` is configured it also appends the matching Linear issue reference to the PR body, best-effort and never able to fail the check; `docs/linear.md` owns that contract.
 Tell the captain the PR's full URL, always the complete `https://...` link rather than a bare `#number`, a concise outcome summary, and the no-mistakes risk level when applicable.
 

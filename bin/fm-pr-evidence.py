@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Read the flat scalar records requested by fm-pr-merge.sh from gh-axi.
+"""Validate forge evidence consumed by fm-pr-landed-lib.sh.
 
-Usage: fm-pr-evidence.py pr|repository|comparison < response
+Usage: fm-pr-evidence.py pr|base|repository|comparison < gh-axi response
+       fm-pr-evidence.py gitlab-pr|gitlab-base|gitlab-repository|gitlab-ancestor < JSON
 The gh-axi 0.1.29 API has no raw JSON output mode: even --jq/--template
 results are rendered as TOON. This deliberately bounded fallback accepts only
 these flat records, decoding quoted strings with JSON's compatible scalar
@@ -81,9 +82,31 @@ def field(record, key, pattern=None, optional=False):
 
 
 def main():
-    record = read_record(sys.stdin.read())
+    mode = sys.argv[1]
+    text = sys.stdin.read()
+    if mode.startswith('gitlab-'):
+        try:
+            raw = json.loads(text)
+            if not isinstance(raw, dict):
+                raise ValueError('expected object')
+        except ValueError as exc:
+            raise EvidenceError('invalid forge evidence JSON') from exc
+        mode = mode.removeprefix('gitlab-')
+        record = raw
+        if mode in ('pr', 'base'):
+            record = dict(raw, base_ref=raw.get('target_branch'))
+        if mode == 'pr':
+            if raw.get('state') not in ('opened', 'closed', 'locked', 'merged'):
+                raise EvidenceError('invalid forge evidence field state')
+            record.update(merged=raw['state'] == 'merged',
+                          merge_commit=raw.get('merge_commit_sha') or raw.get('squash_commit_sha'))
+            # GitLab timestamps may carry millisecond precision.
+            if isinstance(record.get('merged_at'), str):
+                record['merged_at'] = re.sub(r'\.\d+Z$', 'Z', record['merged_at'])
+    else:
+        record = read_record(text)
     branch = r'[^\s\x00-\x1f\x7f]+'
-    if sys.argv[1] == 'pr':
+    if mode == 'pr':
         unmerged = record.get('merged') is False
         schema = [
             ('merged', None, False),
@@ -105,9 +128,13 @@ def main():
             raise missing
         if unmerged:
             values = values[:1]
-    elif sys.argv[1] == 'repository':
+    elif mode == 'base':
+        values = [field(record, 'base_ref', branch)]
+    elif mode == 'ancestor':
+        values = [field(record, 'id', r'[0-9a-f]{40}')]
+    elif mode == 'repository':
         values = [field(record, 'default_branch', branch)]
-    elif sys.argv[1] == 'comparison':
+    elif mode == 'comparison':
         values = [field(record, 'status', r'ahead|identical|behind|diverged')]
     else:
         raise EvidenceError('invalid forge evidence reader mode')

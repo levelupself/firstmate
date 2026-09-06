@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Static watcher program for a validated PR/MR poll sidecar.
-# It emits exactly one merged line for a merged PR or MR and stays silent
-# otherwise, including on every error, so a failed lookup can never be read as
-# a merge. The provider-tagged identity is data in the sidecar and is never
+# It emits merged only with shared default-branch landing evidence, or
+# wrong-base for a merge into another branch. All errors stay silent.
+# The watcher executes this canonical source after authenticating the copy.
+# Dependencies resolve only beside this source, never from the sidecar.
+# The provider-tagged identity is data in the sidecar and is never
 # interpolated into this source: these bytes are identical for every task.
-# Each provider is read through its own standard CLI, gh for GitHub and glab
-# for GitLab, so an upstream checkout needs no extra tooling to follow either.
+# Providers are read through gh-axi for GitHub and glab for GitLab.
+# Python validates their structured evidence; no forge state alone is enough.
 set -u
 LC_ALL=C
 export LC_ALL
@@ -62,8 +64,7 @@ case "$provider" in
       .|..|*[!A-Za-z0-9._-]*) exit 0 ;;
     esac
     [ "$url" = "https://github.com/$owner/$repo/pull/$number" ] || exit 0
-    state=$(gh pr view "$url" --json state -q .state 2>/dev/null) || exit 0
-    [ "$state" = MERGED ] && printf '%s\n' merged
+
     ;;
   gitlab)
     [ "${#host}" -ge 1 ] && [ "${#host}" -le 253 ] || exit 0
@@ -93,18 +94,21 @@ case "$provider" in
     done
     [ "$segments" -ge 2 ] || exit 0
     [ "$url" = "https://$host/$path/-/merge_requests/$number" ] || exit 0
-    # glab resolves the instance from the project URL passed to -R, so the host
-    # comes from the validated record rather than glab's configured default.
-    # It cannot take a merge request URL the way gh does: that form shells out
-    # to git for the current repository, and the watcher runs in no repository.
-    # The state is read from glab's own field output rather than its JSON,
-    # because plain glab has no field selector and firstmate does not require a
-    # JSON processor; only an exact "merged" wakes, so a changed format or an
-    # unreadable merge request stays silent instead of reporting a merge.
-    raw=$(glab mr view "$number" -R "https://$host/$path" 2>/dev/null) || exit 0
-    state=$(printf '%s\n' "$raw" | sed -n 's/^state:[[:space:]]*//p' | head -1) || exit 0
-    [ "$state" = merged ] && printf '%s\n' merged
+
     ;;
   *) exit 0 ;;
+esac
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-pr-landed-lib.sh
+. "$SCRIPT_DIR/fm-pr-landed-lib.sh" 2>/dev/null || exit 0
+if [ "$provider" = github ]; then
+  PR_OWNER=$owner PR_REPO=$repo PR_NUMBER=$number
+  fm_pr_load_github_landing 2>/dev/null
+else
+  fm_pr_load_gitlab_landing "$host" "$path" "$number" 2>/dev/null
+fi
+case "$?" in
+  0) printf '%s\n' merged ;;
+  5) printf '%s\n' wrong-base ;;
 esac
 exit 0

@@ -97,6 +97,10 @@ add_gh_mocks() {
   local case_dir=$1 head=$2
 cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ] && [[ " $* " = *"{base_ref: .base.ref}"* ]]; then
+  printf 'base_ref: %s\n' "${FM_TEST_REGISTRATION_BASE:-main}"
+  exit 0
+fi
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 if [ "${1:-} ${2:-}" = "pr checks" ]; then
   case "${FM_TEST_CHECK_STATE:-passing}" in
@@ -178,6 +182,10 @@ add_gh_mocks_merge_fails() {
   local case_dir=$1
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ] && [[ " $* " = *"{base_ref: .base.ref}"* ]]; then
+  printf 'base_ref: %s\n' "${FM_TEST_REGISTRATION_BASE:-main}"
+  exit 0
+fi
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 if [ "${1:-} ${2:-}" = "pr checks" ]; then
   printf '%s\n' 'summary: "2 passed, 0 failed, 2 total"' 'checks[2]{name,conclusion}:' '  unit,pass' '  lint,pass'
@@ -190,8 +198,11 @@ fi
 case "${1:-} ${2:-}" in
   "pr merge") echo "error: pr merge failed" >&2 ; exit 1 ;;
 esac
-if [ "${1:-}" = api ] && [[ "${2:-}" = */pulls/* ]]; then
-  printf '%s\n' 'merged: false' 'merged_at: null'
+if [ "${1:-}" = api ]; then
+  case "${4:-}" in
+    '{default_branch: .default_branch}') printf '%s\n' 'default_branch: main' ;;
+    *) printf '%s\n' 'merged: false' 'merged_at: null' ;;
+  esac
 fi
 exit 0
 SH
@@ -682,6 +693,10 @@ test_unconfirmed_merge_remains_prepared() {
   : > "$case_dir/gh-axi.log"
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ] && [[ " $* " = *"{base_ref: .base.ref}"* ]]; then
+  printf 'base_ref: %s\n' "${FM_TEST_REGISTRATION_BASE:-main}"
+  exit 0
+fi
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 if [ "${1:-} ${2:-}" = "pr checks" ]; then
   printf '%s\n' 'summary: "2 passed, 0 failed, 2 total"' 'checks[2]{name,conclusion}:' '  unit,pass' '  lint,pass'
@@ -692,7 +707,10 @@ if [ "${1:-}" = api ] && [[ " $* " = *"mergeable_state"* ]]; then
   exit 0
 fi
 if [ "${1:-}" = api ]; then
-  printf '%s\n' 'merged: false' 'merged_at: null'
+  case "${4:-}" in
+    '{default_branch: .default_branch}') printf '%s\n' 'default_branch: main' ;;
+    *) printf '%s\n' 'merged: false' 'merged_at: null' ;;
+  esac
 fi
 SH
   cat > "$case_dir/fakebin/gh" <<'SH'
@@ -729,6 +747,10 @@ test_gh_axi_scalar_envelopes_do_not_hide_landed_merge() {
   : > "$case_dir/gh-axi.log"
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ] && [[ " $* " = *"{base_ref: .base.ref}"* ]]; then
+  printf 'base_ref: %s\n' "${FM_TEST_REGISTRATION_BASE:-main}"
+  exit 0
+fi
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 if [ "${1:-} ${2:-}" = "pr checks" ]; then
   printf '%s\n' 'summary: "2 passed, 0 failed, 2 total"' 'checks[2]{name,conclusion}:' '  unit,pass' '  lint,pass'
@@ -801,6 +823,10 @@ test_post_merge_confirmation_retries_transient_comparison() {
   : > "$case_dir/gh-axi.log"
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ] && [[ " $* " = *"{base_ref: .base.ref}"* ]]; then
+  printf 'base_ref: %s\n' "${FM_TEST_REGISTRATION_BASE:-main}"
+  exit 0
+fi
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 if [ "${1:-} ${2:-}" = "pr checks" ]; then
   printf '%s\n' 'summary: "2 passed, 0 failed, 2 total"' 'checks[2]{name,conclusion}:' '  unit,pass' '  lint,pass'
@@ -868,6 +894,10 @@ test_post_merge_confirmation_exhaustion_remains_prepared() {
   : > "$case_dir/gh-axi.log"
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ] && [[ " $* " = *"{base_ref: .base.ref}"* ]]; then
+  printf 'base_ref: %s\n' "${FM_TEST_REGISTRATION_BASE:-main}"
+  exit 0
+fi
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 if [ "${1:-} ${2:-}" = "pr checks" ]; then
   printf '%s\n' 'summary: "2 passed, 0 failed, 2 total"' 'checks[2]{name,conclusion}:' '  unit,pass' '  lint,pass'
@@ -930,7 +960,15 @@ test_unreadable_merge_state_refuses_before_merge() {
   : > "$case_dir/gh-axi.log"
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ] && [[ " $* " = *"{base_ref: .base.ref}"* ]]; then
+  printf 'base_ref: %s\n' "${FM_TEST_REGISTRATION_BASE:-main}"
+  exit 0
+fi
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-}" = api ] && [ "${4:-}" = '{default_branch: .default_branch}' ]; then
+  printf '%s\n' 'default_branch: main'
+  exit 0
+fi
 if [ "${1:-}" = api ] && [[ "${2:-}" = */pulls/* ]]; then
   echo 'transient forge read failure' >&2
   exit 1
@@ -1115,6 +1153,10 @@ test_conflicting_concurrent_requests_merge_only_one_pr() {
   : > "$case_dir/gh-axi.log"
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ] && [[ " $* " = *"{base_ref: .base.ref}"* ]]; then
+  printf 'base_ref: %s\n' "${FM_TEST_REGISTRATION_BASE:-main}"
+  exit 0
+fi
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 if [ "${1:-} ${2:-}" = "pr checks" ]; then
   printf '%s\n' 'summary: "2 passed, 0 failed, 2 total"' 'checks[2]{name,conclusion}:' '  unit,pass' '  lint,pass'
