@@ -97,6 +97,12 @@ SH
   # merged PR or a lookup error override this file with the helpers below.
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ]; then
+  case "${4:-}" in
+    '{base_ref: .base.ref}') printf '%s\n' 'base_ref: main'; exit 0 ;;
+    '{default_branch: .default_branch}') printf '%s\n' 'default_branch: main'; exit 0 ;;
+  esac
+fi
 case "${1:-} ${2:-}" in
   "pr list") printf '%s\n' "count: 0 (showing first 0)" "pull_requests[]: []" ; exit 0 ;;
   "pr view") echo "error: pull request not found" >&2 ; exit 1 ;;
@@ -270,6 +276,12 @@ add_gh_pr_merged_for_head() {
   local case_dir=$1 head=$2
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ]; then
+  case "${4:-}" in
+    '{base_ref: .base.ref}') printf '%s\n' 'base_ref: main'; exit 0 ;;
+    '{default_branch: .default_branch}') printf '%s\n' 'default_branch: main'; exit 0 ;;
+  esac
+fi
 case "${1:-} ${2:-}" in
   "pr list")
     printf '%s\n' "count: 1 (showing first 1)" "pull_requests[1]{number,state}:" "  7,merged" ; exit 0 ;;
@@ -331,6 +343,12 @@ add_gh_axi_error() {
   local case_dir=$1
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ]; then
+  case "${4:-}" in
+    '{base_ref: .base.ref}') printf '%s\n' 'base_ref: main'; exit 0 ;;
+    '{default_branch: .default_branch}') printf '%s\n' 'default_branch: main'; exit 0 ;;
+  esac
+fi
 echo "error: gh-axi unavailable" >&2
 exit 1
 SH
@@ -735,6 +753,12 @@ test_pruned_backlog_record_with_stale_receipt_refuses_pushed_work() {
     > "$case_dir/data/pr-merges/task-x1.receipt"
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ]; then
+  case "${4:-}" in
+    '{base_ref: .base.ref}') printf '%s\n' 'base_ref: main'; exit 0 ;;
+    '{default_branch: .default_branch}') printf '%s\n' 'default_branch: main'; exit 0 ;;
+  esac
+fi
 case "${2:-}" in
   */compare/*) printf '%s\n' 'status: ahead' ;;
   */repos/*) printf '%s\n' 'default_branch: main' ;;

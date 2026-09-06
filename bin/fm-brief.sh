@@ -545,6 +545,17 @@ EOF
     ;;
 esac
 
+PR_DESTINATION=
+if [ "$MODE" != local-only ]; then
+  PR_CHECK_COMMAND="FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-pr-check.sh") $(shell_quote "$ID")"
+  IFS= read -r -d '' PR_DESTINATION <<EOF || true
+The delivery destination is the project's default branch and is fixed, not a worker implementation choice.
+Do not create or retarget a PR against a feature branch to shrink its diff; adopting a stacked PR requires an explicit delivery decision before proceeding.
+Before reporting PR completion, run \`$PR_CHECK_COMMAND <PR-url>\`; it must verify the returned base equals the repository default branch and accept registration.
+EOF
+  PR_DESTINATION=${PR_DESTINATION%$'\n'}
+fi
+
 # read -r -d '' preserves the heredoc's trailing newline that the removed
 # $(...) command substitution used to strip. Drop that one newline so generated
 # briefs stay byte-identical to the historical Bash 5 output.
@@ -571,6 +582,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 $SEARCH_GUIDANCE
 
 $RULE1
+$PR_DESTINATION
 2. Stay inside this worktree; modify nothing outside it.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Never set Git's \`skip-worktree\` or \`assume-unchanged\` index flags; they conceal tracked changes from safety checks.

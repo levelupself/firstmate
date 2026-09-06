@@ -303,31 +303,17 @@ if [ "$(receipt_value phase)" != merged ]; then
   write_provenance_receipt prepared "$AUTHORIZATION" "$PREPARED_EPOCH"
 fi
 
+# shellcheck source=bin/fm-pr-landed-lib.sh
+. "$SCRIPT_DIR/fm-pr-landed-lib.sh"
+
 load_merge_evidence() {
-  local parsed base_ref compare_query compare_status default_query rc
-  local -a fields
-  MERGE_QUERY=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER" \
-    --jq '{merged: .merged, merged_at: .merged_at, merge_commit: .merge_commit_sha, base_ref: .base.ref}' 2>/dev/null) \
-    || return 3
-  parsed=$(printf '%s\n' "$MERGE_QUERY" | python3 "$SCRIPT_DIR/fm-pr-evidence.py" pr) || return $?
-  mapfile -t fields <<< "$parsed"
-  [ "${fields[0]}" = true ] || return 1
-  MERGE_COMMIT=${fields[1]}
-  base_ref=${fields[2]}
-  MERGED_AT=${fields[3]:-}
-  default_query=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO" \
-    --jq '{default_branch: .default_branch}' 2>/dev/null) \
-    || return 2
-  DEFAULT_BRANCH=$(printf '%s\n' "$default_query" | python3 "$SCRIPT_DIR/fm-pr-evidence.py" repository) || return $?
-  [ "$base_ref" = "$DEFAULT_BRANCH" ] || return 2
-  compare_query=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO/compare/$MERGE_COMMIT...$DEFAULT_BRANCH" \
-    --jq '{status: .status}' 2>/dev/null) \
-    || return 2
-  compare_status=$(printf '%s\n' "$compare_query" | python3 "$SCRIPT_DIR/fm-pr-evidence.py" comparison) || {
-    rc=$?
-    return "$rc"
-  }
-  case "$compare_status" in ahead|identical) ;; *) return 2 ;; esac
+  local rc
+  fm_pr_load_github_landing && return 0
+  rc=$?
+  # The merge interface historically classifies wrong-base as unavailable
+  # default-branch evidence; the poll exposes the distinct reason.
+  [ "$rc" -ne 5 ] || return 2
+  return "$rc"
 }
 
 load_post_merge_evidence() {

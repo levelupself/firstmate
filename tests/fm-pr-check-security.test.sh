@@ -135,9 +135,16 @@ printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
 [ "${FM_TEST_GLAB_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GLAB_SLEEP"
 case " $* " in
   *" --output json "*)
-    printf '{"created_at":"%s"}\n' "${FM_TEST_GLAB_CREATED_AT:-2026-08-21T13:45:00Z}"
+    printf '{"created_at":"%s","state":"%s","target_branch":"%s","merge_commit_sha":"0123456789abcdef0123456789abcdef01234567"}\n' \
+      "${FM_TEST_GLAB_CREATED_AT:-2026-08-21T13:45:00Z}" "${FM_TEST_GLAB_STATE:-opened}" "${FM_TEST_BASE_REF:-main}"
     exit 0
     ;;
+  *"repository/merge_base"*)
+    printf '{"id":"%s"}\n' "${FM_TEST_GLAB_ANCESTOR:-0123456789abcdef0123456789abcdef01234567}"
+    exit 0
+    ;;
+  *"api "*) printf '%s\n' '{"default_branch":"main"}'; exit 0 ;;
+
 esac
 printf 'title:\tfixture merge request\nstate:\t%s\nauthor:\tsomeone\n' "${FM_TEST_GLAB_STATE:-opened}"
 SH
@@ -742,7 +749,7 @@ run_watcher_bounded() {
   local home=$1 fakebin=$2 check_interval=${FM_TEST_CHECK_INTERVAL:-0} watch_root=${FM_TEST_WATCH_ROOT:-$ROOT}
   shift 2
   perl -e 'my $pid=fork; die unless defined $pid; if (!$pid) { exec @ARGV } local $SIG{ALRM}=sub { kill "TERM", $pid; waitpid $pid, 0; exit 124 }; alarm 10; waitpid $pid, 0; alarm 0; exit($? >> 8)' \
-    env FM_HOME="$home" FM_ROOT_OVERRIDE="$watch_root" FM_CHECK_INTERVAL="$check_interval" FM_CHECK_TIMEOUT=1 \
+    env FM_TEST_GH_AXI_LOG="$home/../gh-axi.log" FM_TEST_GLAB_LOG="$home/../glab.log" FM_HOME="$home" FM_ROOT_OVERRIDE="$watch_root" FM_CHECK_INTERVAL="$check_interval" FM_CHECK_TIMEOUT=1 \
       FM_POLL=0.02 FM_HEARTBEAT=999999 FM_SIGNAL_GRACE=0 PATH="$fakebin:$BASE_PATH" "$WATCH" "$@"
 }
 
@@ -831,6 +838,15 @@ test_landing_evidence_and_registration() {
   [ "$rc" -ne 0 ] || fail "registration accepted a non-default base"
   grep -q 'wrong-base' "$dir/err" || fail "registration omitted wrong-base diagnostic"
   [ "$(state_snapshot "$dir/home/state")" = "$before" ] || fail "wrong-base registration changed existing records"
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
+  set +e
+  FM_TEST_GH_STATE=MERGED FM_TEST_BASE_REF=feature run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "wrong-base observation did not wake watcher"
+  [ "$(grep -c '^check: .*: wrong-base$' "$dir/watch.out")" -eq 1 ] || fail "wrong-base observation did not produce exactly one distinct wake"
+  [ -f "$dir/home/state/task-a.check.sh" ] || fail "wrong-base observation retired the poll"
+  [ ! -e "$dir/home/state/task-a.pr-poll-retirement" ] || fail "wrong-base observation acquired landing authority"
   pass "landing evidence rejects wrong base and missing ancestry; registration preserves records on refusal"
 }
 
@@ -865,14 +881,16 @@ test_static_poll_contract() {
   [ -z "$out" ] || fail "static poll emitted with malformed numeric data"
 
   make_poll_fixture "$dir"
+  : > "$dir/gh-axi.log"
   set +e
-  out=$(FM_STATE_OVERRIDE="$dir/home/state" FM_CHECK_TIMEOUT=1 FM_TEST_GH_LOG="$dir/gh.log" \
-    FM_TEST_GH_SLEEP=3 PATH="$dir/fakebin:$BASE_PATH" \
-    bash -c '. "$1"; run_check "$2"' bash "$WATCH" "$dir/home/state/task-a.check.sh")
+  out=$(FM_STATE_OVERRIDE="$dir/home/state" FM_CHECK_TIMEOUT=1 FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" \
+    FM_TEST_GH_STATE=MERGED FM_TEST_GH_SLEEP=3 PATH="$dir/fakebin:$BASE_PATH" \
+    bash -c '. "$1"; run_check "$2" --validated github https://github.com/o/r/pull/1 github.com o/r 1' bash "$WATCH" "$POLL")
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || fail "watcher run_check timeout wrapper failed"
   [ -z "$out" ] || fail "timed-out static poll emitted output"
+  [ -s "$dir/gh-axi.log" ] || fail "timeout fixture never entered the forge lookup"
 
   write_poll_meta "$dir/home/state" task-a https://github.com/o/r/pull/1
   fm_pr_poll_prepare "$dir/home/state" task-a github https://github.com/o/r/pull/1 github.com o/r 1 "$POLL" \
@@ -2938,6 +2956,10 @@ group/subgroup/project
   done
   out=$(FM_TEST_GLAB_STATE=merged run_poll "$dir")
   [ "$out" = merged ] || fail "GitLab poll did not emit exactly one merged line"
+  out=$(FM_TEST_GLAB_STATE=merged FM_TEST_BASE_REF=feature run_poll "$dir")
+  [ "$out" = wrong-base ] || fail "GitLab wrong-base merge emitted '$out'"
+  out=$(FM_TEST_GLAB_STATE=merged FM_TEST_GLAB_ANCESTOR=1111111111111111111111111111111111111111 run_poll "$dir")
+  [ -z "$out" ] || fail "GitLab missing ancestry emitted '$out'"
   out=$(FM_TEST_GLAB_FAIL=1 run_poll "$dir")
   [ -z "$out" ] || fail "GitLab poll emitted after a glab failure"
 
@@ -3415,7 +3437,7 @@ test_retirement_queue_failure_and_receipt_tampering() {
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "watcher retired despite queue publication failure"
-  [ -s "$dir/gh.log" ] || fail "queue failure fixture did not reach the authenticated poll"
+  [ -s "$dir/gh-axi.log" ] || fail "queue failure fixture did not reach the authenticated poll"
   [ "$(poll_artifact_snapshot "$state" task-a)" = "$before" ] || fail "queue failure changed poll artifacts"
   [ ! -e "$state/task-a.pr-poll-retirement" ] || fail "queue failure published a receipt"
 
