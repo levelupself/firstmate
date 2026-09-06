@@ -270,6 +270,28 @@ The blocking and bounded-follow-up mechanisms were validated across six harnesse
 | Grok | 0.2.112 native and 0.2.73 pre-native | Running-payload adaptive `Stop` | Native false-to-true continuation stayed in one process with two model turns and zero resume launches; the field-absent pre-native process launched exactly one guarded resume. |
 | Cursor | 2026.08.11-e8db854 | Awaited `stop` hook park returning one `followup_message` | Exit 2 ended the turn normally, proving it cannot block; a returned follow-up ran a genuine second turn; a sleeping hook held the boundary open and the wake landed after it; `loop_limit` stopped the hook being invoked at its ceiling. |
 
+### Claude Stop hook concurrency and rewake session identity, 2026-09-06
+
+Claude Code 2.1.263 on Linux 6.18.33.2-microsoft-standard-WSL2, in a throwaway project registering two `Stop` hooks in one entry, the first blocking and the second `asyncRewake`, each appending its start and end timestamps and its payload's `session_id` and `stop_hook_active`.
+
+The guard's `--claude` cooperation rests on these facts, so they are pinned here rather than inferred from the registration array's order.
+
+| Question | Method | Result |
+| --- | --- | --- |
+| Do the two `Stop` hooks run in registration order? | Both hooks log `date +%s.%N` on entry | No. First stop: first-registered at `1788683814.208365721`, second-registered at `1788683814.209787463`, 1.4 ms apart. Second stop: second-registered at `1788683819.281263459` started 0.45 ms BEFORE first-registered at `1788683819.281714199`. They start concurrently and the order is not stable. |
+| Does a blocking exit 2 from the first prevent the second in that same Stop? | First hook exits 2 after 1 s; second sleeps 3 s | No. On the blocked stop the first ended at `1788683815.212840830` with exit 2 and the second still ran to `1788683817.212387548`. |
+| Is `session_id` stable across a stop-hook continuation? | Compare both stops' payloads | Yes. Both stops carried `2de77ba8-6cbf-4432-8a66-64fac70fc952`, with `stop_hook_active=true` on the continuation. |
+| Is `session_id` stable across an `asyncRewake` rewake? | Second experiment: only the `asyncRewake` hook exits 2, waking the model | Yes. The rewake turn's stop carried the same `c8624c51-7fa2-41ef-a97a-4ac1e94d2af4` as the stop that produced it. |
+
+Two measurements from the same date set the guard's cooperative window, taken on a fixture primary home with one in-flight task:
+
+| Measurement | Method | Result |
+| --- | --- | --- |
+| `bin/fm-claude-stop-autoarm.sh` process start to owner-lock claim | Poll for `state/.claude-autoarm.lock/role` from the moment the hook process is spawned, 5 runs | 1256, 1653, 1406, 1139, 1129 ms |
+| Where that time goes | Time each pre-claim phase in-process, 3 runs | Session-lock ancestry resolution 390, 423, 519 ms; library sourcing 34, 36, 20 ms; scope, host and need checks under 40 ms each |
+
+An 800 ms guard window therefore could not reach the claim it was waiting for, which is why the default is now 2000 ms and why a `rewake` epoch naming the current session is honored on its own.
+
 ### Cursor primary park, 2026-08-13
 
 Cursor was validated as a primary on 2026-08-13 against the installed CLI on macOS 26.5.2 arm64 with tmux 3.6a, in a throwaway firstmate home on a private tmux socket, never against a live home and never with a user-scope hook.

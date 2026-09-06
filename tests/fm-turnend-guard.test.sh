@@ -1548,6 +1548,201 @@ test_hook_claude_mode_stale_rewake_epoch_blocks() {
   pass "fm-turnend-guard --claude: stale rewake epoch does not allow a blind stop"
 }
 
+# --- routine cycle boundary --------------------------------------------------
+# The auto-arm writes outcome=rewake when it hands the model an actionable close
+# and exits 2. The turn that handles that wake is the recovery turn, and its
+# length is unbounded (144s, 722s and 822s in the 2026-09-05 incidents), so the
+# epoch's wall-clock age is not a test of whose recovery it is. The session the
+# handoff was made to is, and the auto-arm records it.
+
+# <dir> <age seconds> - backdate the epoch record's mtime without rewriting it,
+# so the same unchanged epoch can be re-read after its freshness window passed.
+age_epoch_file() {
+  local dir=$1 age=$2 now stamp
+  now=$(date +%s)
+  if stamp=$(date -r "$((now - age))" +%Y%m%d%H%M.%S 2>/dev/null); then
+    touch -t "$stamp" "$dir/state/.claude-autoarm-epoch"
+  else
+    touch -t "$(date -d "@$((now - age))" +%Y%m%d%H%M.%S)" "$dir/state/.claude-autoarm-epoch"
+  fi
+}
+
+# <dir> <epoch> <session> <age seconds>
+seed_rewake_handoff() {
+  local dir=$1 epoch=$2 session=$3 age=$4 now
+  now=$(date +%s)
+  printf 'epoch=%s owner_pid=999 outcome=rewake updated_at=%s session=%s\n' \
+    "$epoch" "$((now - age))" "$session" > "$dir/state/.claude-autoarm-epoch"
+  age_epoch_file "$dir" "$age"
+}
+
+test_hook_claude_mode_allows_this_sessions_rewake_handoff_across_a_long_turn() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-handoff-long-turn")
+  : > "$dir/state/task1.meta"
+  seed_rewake_handoff "$dir" 7 sess-claude-mode 822
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" "--claude must honor its own session's rewake handoff after a recovery turn longer than the freshness window"
+  [ -z "$out" ] || fail "--claude rewake-handoff allow produced output: $out"
+  pass "fm-turnend-guard --claude: a same-session rewake handoff survives a recovery turn of any length"
+}
+
+test_hook_claude_mode_spends_a_rewake_handoff_exactly_once() {
+  local dir out status out2 status2
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-handoff-once")
+  : > "$dir/state/task1.meta"
+  seed_rewake_handoff "$dir" 7 sess-claude-mode 822
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" "the first stop after a rewake handoff must be allowed"
+  [ -z "$out" ] || fail "first rewake-handoff allow produced output: $out"
+  out2=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status2=$?
+  expect_code 2 "$status2" "a second stop on the same rewake handoff must block: nothing new is recovering"
+  assert_contains "$out2" "TURN WOULD END BLIND" "the spent-handoff block must carry the blind-turn banner"
+  pass "fm-turnend-guard --claude: one rewake handoff yields exactly one recovery turn"
+}
+
+test_hook_claude_mode_blocks_a_foreign_sessions_rewake_handoff() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-handoff-foreign")
+  : > "$dir/state/task1.meta"
+  seed_rewake_handoff "$dir" 7 sess-someone-else 822
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  expect_code 2 "$status" "--claude must not adopt a rewake handoff made to a different session"
+  assert_contains "$out" "TURN WOULD END BLIND" "the foreign-handoff block must carry the blind-turn banner"
+  pass "fm-turnend-guard --claude: a rewake handoff is scoped to the session it was made to"
+}
+
+# The freshness arm honors a rewake epoch too, so it must spend the same handoff
+# record. Otherwise a short handling turn is allowed by age with the epoch left
+# unspent, and the very same epoch buys a second allow once the window passes.
+test_hook_claude_mode_spends_a_freshness_allowed_rewake_handoff_once() {
+  local dir out status out2 status2
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-handoff-fresh-once")
+  : > "$dir/state/task1.meta"
+  seed_rewake_handoff "$dir" 7 sess-claude-mode 0
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" "a rewake handoff inside the freshness window must be allowed"
+  [ -z "$out" ] || fail "freshness-window rewake allow produced output: $out"
+  age_epoch_file "$dir" 822
+  out2=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status2=$?
+  expect_code 2 "$status2" "the same unchanged epoch must not buy a second recovery turn once its freshness window passed"
+  assert_contains "$out2" "TURN WOULD END BLIND" "the aged spent-handoff block must carry the blind-turn banner"
+  pass "fm-turnend-guard --claude: an epoch allowed by freshness is not allowed again after the window"
+}
+
+# The same bound for a legacy epoch carrying no session field: the age arm is
+# kept so an in-flight upgrade still cooperates, and it records the spend under
+# the guard's own session id.
+# The age arm is the only arm a sessionless epoch can take, so it carries the
+# whole one-allow bound for an epoch written before the auto-arm recorded
+# sessions. Drive the sequence the age arm alone decides: allowed once inside the
+# freshness window, then the same unchanged epoch observed again while the window
+# is still open, then again after it has expired. Only the first stop may pass.
+test_hook_claude_mode_spends_a_sessionless_rewake_epoch_once() {
+  local dir out status out2 status2 out3 status3
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-handoff-legacy-once")
+  : > "$dir/state/task1.meta"
+  printf 'epoch=9 owner_pid=999 outcome=rewake updated_at=%s\n' "$(date +%s)" \
+    > "$dir/state/.claude-autoarm-epoch"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" "a fresh epoch predating recorded sessions must still cooperate"
+  [ -z "$out" ] || fail "legacy fresh rewake allow produced output: $out"
+  age_epoch_file "$dir" 2
+  out2=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status2=$?
+  expect_code 2 "$status2" "a still-fresh epoch the age arm already honored must not buy a second recovery turn"
+  assert_contains "$out2" "TURN WOULD END BLIND" "the spent legacy-epoch block must carry the blind-turn banner"
+  age_epoch_file "$dir" 822
+  out3=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status3=$?
+  expect_code 2 "$status3" "a legacy epoch already honored by age must not be honored again once its window expired"
+  assert_contains "$out3" "TURN WOULD END BLIND" "the expired legacy-epoch block must carry the blind-turn banner"
+  pass "fm-turnend-guard --claude: a sessionless rewake epoch also yields exactly one recovery turn"
+}
+
+# The handoff bound depends on a spend record this guard can read back and
+# rewrite. A directory at that path swallows the write and reports success, so
+# nothing is ever recorded; the handoff must not be honored at all rather than
+# honored on every stop forever.
+test_hook_claude_mode_blocks_when_the_handoff_record_is_not_a_plain_file() {
+  local dir out status out2 status2 strays
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-handoff-unusable-record")
+  : > "$dir/state/task1.meta"
+  mkdir -p "$dir/state/.turnend-claude-rewake"
+  seed_rewake_handoff "$dir" 7 sess-claude-mode 822
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  expect_code 2 "$status" "a handoff that cannot be recorded as spent must not be honored"
+  assert_contains "$out" "TURN WOULD END BLIND" "the unrecordable-handoff block must carry the blind-turn banner"
+  out2=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status2=$?
+  expect_code 2 "$status2" "an unrecordable handoff must keep blocking rather than allowing every stop"
+  [ -d "$dir/state/.turnend-claude-rewake" ] || fail "the guard replaced the unusable handoff record"
+  strays=$(find "$dir/state/.turnend-claude-rewake" -mindepth 1 | wc -l | tr -d ' ')
+  [ "$strays" = 0 ] || fail "the guard left $strays temp handoff records inside the unusable path"
+  pass "fm-turnend-guard --claude: an unusable handoff record blocks instead of allowing forever"
+}
+
+# The boundary case driven end to end: the previous cycle closed with a rewake
+# this session handled, and both Stop hooks now fire together with the auto-arm
+# still working through its own pre-claim path. Claude Code starts both hooks
+# concurrently and an exit-2 from the guard does not stop its sibling, so the
+# auto-arm must still reach its arm while the guard allows the stop.
+test_hook_claude_mode_boundary_allows_while_the_stop_autoarm_is_still_starting() {
+  local dir guard_out guard_status auto_pid
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-boundary-integrated")
+  : > "$dir/state/task1.meta"
+  install_integrated_autoarm "$dir"
+  cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+echo "$$" >> "$FM_HOME/state/arm-ran"
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+printf 'stale: boundary fixture actionable\n'
+exit 0
+SH
+  chmod +x "$dir/bin/fm-watch-arm.sh"
+  seed_rewake_handoff "$dir" 7 sess-claude-mode 144
+  run_integrated_autoarm "$dir" >/dev/null 2>&1 &
+  auto_pid=$!
+  guard_out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); guard_status=$?
+  wait "$auto_pid" 2>/dev/null || true
+  expect_code 0 "$guard_status" "the routine cycle boundary must not report the fleet unsupervised"
+  [ -z "$guard_out" ] || fail "routine cycle boundary produced a banner: $guard_out"
+  assert_present "$dir/state/arm-ran" "the Stop-owned auto-arm did not arm the next cycle at the boundary"
+  pass "fm-turnend-guard --claude: a routine cycle boundary allows while its auto-arm sibling arms"
+}
+
+# Genuine absence, driven rather than asserted: the auto-arm really runs on this
+# Stop but is inert because another live session owns the home, so nothing will
+# recover. The guard must still block.
+test_hook_claude_mode_blocks_when_the_stop_autoarm_cannot_recover() {
+  local dir other guard_out guard_status auto_status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-genuine-absence")
+  : > "$dir/state/task1.meta"
+  install_integrated_autoarm "$dir"
+  cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+echo "$$" >> "$FM_HOME/state/arm-ran"
+printf 'stale: absence fixture actionable\n'
+exit 0
+SH
+  chmod +x "$dir/bin/fm-watch-arm.sh"
+  # The trailing no-op keeps the fake harness process alive instead of allowing
+  # bash to exec the final sleep into a non-harness process.
+  "$dir/fake-claude" -c 'sleep 60; :' &
+  other=$!
+  printf '%s\n' "$other" > "$dir/state/.lock"
+  # shellcheck disable=SC2016 # the fake harness expands FM_HOME inside its child shell.
+  printf '{"session_id":"sess-claude-mode","stop_hook_active":false}\n' \
+    | FM_HOME="$dir" "$dir/fake-claude" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"' >/dev/null 2>&1
+  auto_status=$?
+  guard_out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); guard_status=$?
+  kill "$other" 2>/dev/null || true
+  wait "$other" 2>/dev/null || true
+  expect_code 0 "$auto_status" "the auto-arm must stay inert while another live session owns the home"
+  assert_absent "$dir/state/arm-ran" "the inert auto-arm started an arm cycle anyway"
+  expect_code 2 "$guard_status" "genuine absence with nothing recovering must still block the turn"
+  assert_contains "$guard_out" "TURN WOULD END BLIND" "genuine absence must carry the blind-turn banner"
+  assert_contains "$guard_out" "Stop-owned auto-arm did not claim" "genuine absence must name the missing auto-arm claim"
+  pass "fm-turnend-guard --claude: a Stop whose auto-arm cannot recover still blocks"
+}
+
 test_hook_claude_mode_budget_without_verified_failure_keeps_blocking() {
   local dir out status i
   dir=$(make_primary_dir "$TMP_ROOT/hook-claude-budget")
@@ -1741,6 +1936,14 @@ test_hook_claude_mode_integrated_monotonic_fail_open
 test_hook_claude_mode_recovery_contention_is_not_ordinary_allow
 test_hook_claude_mode_concurrent_recovery_resets_are_idempotent
 test_hook_claude_mode_stale_rewake_epoch_blocks
+test_hook_claude_mode_allows_this_sessions_rewake_handoff_across_a_long_turn
+test_hook_claude_mode_spends_a_rewake_handoff_exactly_once
+test_hook_claude_mode_blocks_a_foreign_sessions_rewake_handoff
+test_hook_claude_mode_spends_a_freshness_allowed_rewake_handoff_once
+test_hook_claude_mode_spends_a_sessionless_rewake_epoch_once
+test_hook_claude_mode_blocks_when_the_handoff_record_is_not_a_plain_file
+test_hook_claude_mode_boundary_allows_while_the_stop_autoarm_is_still_starting
+test_hook_claude_mode_blocks_when_the_stop_autoarm_cannot_recover
 test_hook_claude_mode_budget_without_verified_failure_keeps_blocking
 test_hook_claude_mode_verified_failure_alarm_is_loud_and_once
 test_hook_claude_mode_fail_open_requires_notice_and_failure_epoch

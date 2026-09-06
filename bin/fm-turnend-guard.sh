@@ -52,14 +52,26 @@
 # guard ignores stop_hook_active and instead cooperates with the Stop-owned
 # auto-arm (bin/fm-claude-stop-autoarm.sh), which fires on the same Stop event:
 #   1. a live identity-matched watcher with a fresh beacon allows immediately;
-#   2. otherwise wait briefly (FM_CLAUDE_AUTOARM_SYNC_WAIT_MS, default 800ms)
-#      for the auto-arm to claim this home (state/.claude-autoarm.lock owner
-#      alive) or to record a fresh actionable exit-2 outcome
-#      (state/.claude-autoarm-epoch) for this event epoch - either proof allows
-#      without consuming a continuation, so one event epoch yields exactly one recovery turn;
+#   2. otherwise the auto-arm's own rewake handoff to THIS session allows
+#      immediately: state/.claude-autoarm-epoch carries outcome=rewake plus the
+#      session it exited 2 for, which is the routine cycle boundary - the
+#      previous watcher cycle closed, the model handled that wake, and this
+#      Stop's auto-arm arms the next cycle. That handoff is spent exactly once
+#      per epoch (state/.turnend-claude-rewake), so an auto-arm that stops
+#      recovering blocks on the very next stop. Only the recorded session
+#      identity decides whose recovery it is: the recovery turn's length is
+#      unbounded (144s, 722s and 822s in the 2026-09-05 incidents), so wall-clock
+#      age cannot answer that question. Age still admits an epoch written before
+#      the auto-arm recorded sessions, within FM_CLAUDE_AUTOARM_EPOCH_FRESH, and
+#      that arm spends the same record, so no rewake epoch is ever honored twice;
+#   3. otherwise wait briefly (FM_CLAUDE_AUTOARM_SYNC_WAIT_MS, default 2000ms,
+#      a floor because each poll costs the predicate on top of its sleep) for the
+#      auto-arm to claim this home (state/.claude-autoarm.lock owner alive) - the
+#      auto-arm needs 1.1-1.7s of its own scope, ancestry and need checks before
+#      it can claim, so a shorter window cannot establish that it did not;
 #      the first fresh exhausted-failure epoch preserves the bounded progression,
 #      while later fresh failed epochs consume it instead of resetting it;
-#   3. only when neither materializes is the auto-arm genuinely absent: re-block
+#   4. only when none materializes is the auto-arm genuinely absent: re-block
 #      with the repair banner, bounded to FM_CLAUDE_TURNEND_BLOCK_BUDGET
 #      (default 3) consecutive blocks per session - safely below Claude Code's
 #      hard 8-consecutive-block override - then allow one loud attended
@@ -76,10 +88,10 @@ WATCH="$SCRIPT_DIR/fm-watch.sh"
 CLAUDE_MODE=0
 CURSOR_MODE=0
 OPENCODE_MODE=0
-SYNC_WAIT_MS=${FM_CLAUDE_AUTOARM_SYNC_WAIT_MS:-800}
+SYNC_WAIT_MS=${FM_CLAUDE_AUTOARM_SYNC_WAIT_MS:-2000}
 EPOCH_FRESH=${FM_CLAUDE_AUTOARM_EPOCH_FRESH:-15}
 BLOCK_BUDGET=${FM_CLAUDE_TURNEND_BLOCK_BUDGET:-3}
-case "$SYNC_WAIT_MS" in ''|*[!0-9]*) SYNC_WAIT_MS=800 ;; esac
+case "$SYNC_WAIT_MS" in ''|*[!0-9]*) SYNC_WAIT_MS=2000 ;; esac
 case "$EPOCH_FRESH" in ''|*[!0-9]*|0) EPOCH_FRESH=15 ;; esac
 case "$BLOCK_BUDGET" in ''|*[!0-9]*|0) BLOCK_BUDGET=3 ;; esac
 
@@ -154,6 +166,8 @@ fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 
 BUDGET_FILE="$STATE/.turnend-claude-blocks"
 BUDGET_LOCK="$STATE/.turnend-claude-blocks.lock"
+EPOCH_FILE="$STATE/.claude-autoarm-epoch"
+REWAKE_SPENT="$STATE/.turnend-claude-rewake"
 OWNER_LOCK="$STATE/.claude-autoarm.lock"
 FAILURE_NOTICE="$STATE/.claude-autoarm-failure-notified"
 FAILURE_ALARM="$STATE/.claude-autoarm-failure-alarmed"
@@ -215,8 +229,8 @@ fi
 budget_account_current_epoch() {
   local current_epoch outcome old_session old_count old_epoch tmp initialized
   fm_lock_try_acquire "$BUDGET_LOCK" || return 1
-  current_epoch=$(sed -n 's/^epoch=\([0-9][0-9]*\) .*/\1/p' "$STATE/.claude-autoarm-epoch" 2>/dev/null || true)
-  outcome=$(sed -n 's/^.*outcome=\([a-z][a-z-]*\) .*$/\1/p' "$STATE/.claude-autoarm-epoch" 2>/dev/null || true)
+  current_epoch=$(sed -n 's/^epoch=\([0-9][0-9]*\) .*/\1/p' "$EPOCH_FILE" 2>/dev/null || true)
+  outcome=$(sed -n 's/^.*outcome=\([a-z][a-z-]*\) .*$/\1/p' "$EPOCH_FILE" 2>/dev/null || true)
   initialized=0
   COUNT=0
   if [ -f "$BUDGET_FILE" ]; then
@@ -261,6 +275,57 @@ budget_account_current_epoch() {
   return 0
 }
 
+# Records THIS session's claim on the current rewake epoch in
+# state/.turnend-claude-rewake, and is true only when this call is the one that
+# recorded it.
+#
+# Every arm that honors a rewake epoch spends it through here, keyed on the
+# guard's own session id and the epoch number, so the design's own bound holds:
+# one event epoch yields exactly one recovery turn. An auto-arm that stops
+# recovering therefore blocks on the very next stop instead of allowing
+# indefinitely, and a handoff this session cannot record as spent - unknown
+# session, unparseable epoch, already spent, a record that is not a plain file
+# this guard can read back, unwritable record - is not honored at all.
+rewake_handoff_spend() {
+  local current_epoch spent_session spent_epoch tmp
+  [ -n "$SESSION_ID" ] && [ "$SESSION_ID" != unknown ] || return 1
+  if [ -e "$REWAKE_SPENT" ] || [ -L "$REWAKE_SPENT" ]; then
+    [ -f "$REWAKE_SPENT" ] && [ ! -L "$REWAKE_SPENT" ] || return 1
+  fi
+  current_epoch=$(sed -n 's/^epoch=\([0-9][0-9]*\) .*/\1/p' "$EPOCH_FILE" 2>/dev/null || true)
+  case "$current_epoch" in ''|*[!0-9]*) return 1 ;; esac
+  spent_session=$(sed -n '1s/^session=//p' "$REWAKE_SPENT" 2>/dev/null || true)
+  spent_epoch=$(sed -n '2s/^epoch=//p' "$REWAKE_SPENT" 2>/dev/null || true)
+  if [ "$spent_session" = "$SESSION_ID" ] && [ "$spent_epoch" = "$current_epoch" ]; then
+    return 1
+  fi
+  tmp="$REWAKE_SPENT.tmp.$$"
+  if ! printf 'session=%s\nepoch=%s\n' "$SESSION_ID" "$current_epoch" > "$tmp" 2>/dev/null \
+    || ! mv -f "$tmp" "$REWAKE_SPENT" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+
+# True when state/.claude-autoarm-epoch holds a rewake the auto-arm handed to
+# THIS session and this session has not spent it yet.
+#
+# A rewake epoch is the auto-arm's record that it armed a watcher, ran a full
+# cycle, took an actionable close, and exited 2 to create the very turn now
+# ending. The next Stop's auto-arm arms the next cycle, so recovery is under way
+# and this stop must not be re-blocked. The interval between that record and this
+# stop is the model's handling turn, whose length is unbounded, so the epoch's
+# wall-clock age cannot decide whose recovery it is - only the session the
+# handoff names can.
+rewake_handoff_is_this_sessions() {
+  local epoch_session
+  epoch_session=$(sed -n 's/^.*[ ]session=\([^ ]*\).*$/\1/p' "$EPOCH_FILE" 2>/dev/null || true)
+  [ -n "$epoch_session" ] && [ "$epoch_session" = "$SESSION_ID" ] || return 1
+  rewake_handoff_spend
+}
+
 autoarm_owns_recovery() {
   local pid role outcome age
   fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME" && return 0
@@ -270,24 +335,29 @@ autoarm_owns_recovery() {
     [ ! -e "$FAILURE_NOTICE" ] || budget_account_current_epoch || true
     return 0
   fi
-  outcome=$(sed -n 's/^.*outcome=\([a-z][a-z-]*\) .*$/\1/p' "$STATE/.claude-autoarm-epoch" 2>/dev/null || true)
+  outcome=$(sed -n 's/^.*outcome=\([a-z][a-z-]*\) .*$/\1/p' "$EPOCH_FILE" 2>/dev/null || true)
   case "$outcome" in
     rewake)
-      age=$(fm_path_age "$STATE/.claude-autoarm-epoch")
-      if [ "$age" -lt "$EPOCH_FRESH" ]; then
+      # The age arm still admits an epoch written before the auto-arm recorded
+      # sessions, so an in-flight upgrade keeps its previous cooperation. It
+      # spends the same session-keyed handoff record, so an epoch honored by age
+      # is not honored a second time once the window has passed.
+      age=$(fm_path_age "$EPOCH_FILE")
+      if rewake_handoff_is_this_sessions \
+        || { [ "$age" -lt "$EPOCH_FRESH" ] && rewake_handoff_spend; }; then
         [ ! -e "$FAILURE_NOTICE" ] || budget_account_current_epoch || true
         return 0
       fi
       ;;
     failed)
-      age=$(fm_path_age "$STATE/.claude-autoarm-epoch")
+      age=$(fm_path_age "$EPOCH_FILE")
       if [ "$age" -lt "$EPOCH_FRESH" ] && [ -e "$FAILURE_NOTICE" ] \
         && budget_account_current_epoch; then
         [ "$BUDGET_INITIALIZED_FAILURE" -eq 1 ] && return 0
       fi
       ;;
     failed-suppressed)
-      age=$(fm_path_age "$STATE/.claude-autoarm-epoch")
+      age=$(fm_path_age "$EPOCH_FILE")
       if [ "$age" -lt "$EPOCH_FRESH" ] && [ -e "$FAILURE_NOTICE" ] \
         && budget_account_current_epoch; then
         :
@@ -355,7 +425,7 @@ failure_episode_verified() {
   local outcome
   [ ! -e "$STATE/.afk" ] || return 1
   [ -e "$FAILURE_NOTICE" ] || return 1
-  outcome=$(sed -n 's/^.*outcome=\([a-z][a-z-]*\) .*$/\1/p' "$STATE/.claude-autoarm-epoch" 2>/dev/null || true)
+  outcome=$(sed -n 's/^.*outcome=\([a-z][a-z-]*\) .*$/\1/p' "$EPOCH_FILE" 2>/dev/null || true)
   case "$outcome" in
     failed|failed-suppressed) return 0 ;;
     *) return 1 ;;

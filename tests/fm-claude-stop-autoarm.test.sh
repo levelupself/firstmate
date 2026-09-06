@@ -348,6 +348,19 @@ test_actionable_close_rewakes_with_reason() {
   pass "auto-arm: actionable close translates to exactly one exit-2 rewake with reason"
 }
 
+test_rewake_epoch_records_the_session_it_handed_the_wake_to() {
+  local dir status recorded
+  dir=$(make_primary_dir "$TMP_ROOT/rewake-session")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  run_autoarm "$dir" >/dev/null 2>&1; status=$?
+  expect_code 2 "$status" "an actionable arm close must exit 2 so Claude rewakes"
+  recorded=$(sed -n 's/^.*[ ]session=\([^ ]*\).*$/\1/p' "$dir/state/.claude-autoarm-epoch" 2>/dev/null || true)
+  [ "$recorded" = sess-autoarm ] \
+    || fail "rewake epoch must record the payload session so the turn-end guard can recognize its own handoff, got: '$recorded'"
+  pass "auto-arm: the rewake epoch names the session its handoff was made to"
+}
+
 test_actionable_close_with_live_successor_rewakes_once() {
   local dir out out2 status status2 pid identity
   dir=$(make_primary_dir "$TMP_ROOT/actionable-live-successor")
@@ -587,6 +600,7 @@ test_stale_lock_recovery_preserves_afk_and_need_gates
 test_resolves_outermost_claude_pid_in_nested_bgspare_chain
 test_inert_when_fleet_idle
 test_actionable_close_rewakes_with_reason
+test_rewake_epoch_records_the_session_it_handed_the_wake_to
 test_actionable_close_with_live_successor_rewakes_once
 test_failed_close_rewakes_with_failure_banner
 test_failed_cycles_notify_once_and_keep_retrying

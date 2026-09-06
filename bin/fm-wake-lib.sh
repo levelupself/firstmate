@@ -888,6 +888,14 @@ fm_task_set_lock_path() {  # <state-dir>
   printf '%s/.task-set.lock\n' "$state"
 }
 
+# fm_failure_episode_reset: retires one Claude auto-arm failure episode after
+# positive watcher recovery by clearing the block budget, the one-notice
+# marker, and the attended alarm together under the budget lock.
+#
+# state/.turnend-claude-rewake is deliberately NOT cleared here. It records
+# which auto-arm rewake epoch a session already spent as recovery evidence
+# (bin/fm-turnend-guard.sh), which is what holds one event epoch to exactly one
+# recovery turn; clearing it would let the same handoff be spent twice.
 fm_failure_episode_reset() {
   local state=$1 mode=${2:-acquire} lock current pid acquired=0 path
   lock="$state/.turnend-claude-blocks.lock"
