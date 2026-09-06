@@ -959,18 +959,27 @@ test_presentation_defaults_on_at_or_above_the_floor() {
   pass "herdr presentation: a home that set nothing gets the projection by default at or above the floor"
 }
 
+# Owns below-floor coverage independently of the real-Herdr CI pin.
+# Exercise the retired CI release directly, including a newer client talking
+# to an old running server: the server decides whether projection is safe.
 test_presentation_default_falls_back_below_the_floor() {
-  local dir config fb verdict stderr
-  dir="$TMP_ROOT/presentation-below-floor"; config="$dir/config"; mkdir -p "$config"
-  stderr="$dir/below-floor.err"
-  fb=$(make_release_fakebin "$dir" "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
-  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
-  [ "$verdict" = off ] || fail "an unconfigured home below the floor must fall back flat, got '$verdict'"
-  assert_contains "$(cat "$stderr")" "$BELOW_FLOOR_VERSION" \
-    "the below-floor warning must name the running release"
-  assert_contains "$(cat "$stderr")" "0.8.0" \
-    "the below-floor warning must name the upgrade that fixes it"
-  pass "herdr presentation: an unconfigured home below the floor falls back flat with one naming warning"
+  local dir config fb verdict stderr release
+  for release in client server; do
+    dir="$TMP_ROOT/presentation-below-floor-$release"; config="$dir/config"; mkdir -p "$config"
+    stderr="$dir/below-floor.err"
+    if [ "$release" = client ]; then
+      fb=$(make_release_fakebin "$dir" 16 0.7.4)
+    else
+      fb=$(make_release_fakebin "$dir" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION" true 16 0.7.4)
+    fi
+    verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
+    [ "$verdict" = off ] || fail "an unconfigured home below the floor must fall back flat ($release), got '$verdict'"
+    assert_contains "$(cat "$stderr")" "0.7.4" \
+      "the below-floor warning must name the running release"
+    assert_contains "$(cat "$stderr")" "0.8.0" \
+      "the below-floor warning must name the upgrade that fixes it"
+  done
+  pass "herdr presentation: unconfigured protocol-16 homes fall back flat with old clients or old running servers"
 }
 
 test_presentation_unreadable_release_falls_back() {
