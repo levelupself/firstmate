@@ -378,7 +378,6 @@ test_reconcile_reports_task_state_whose_record_retention_pruned() {
   # Its runtime record outlives the pruned row - the worktree and endpoint leak.
   fm_write_meta "$home/state/stranded-task.meta" \
     "window=firstmate:fm-stranded-task" \
-    "endpoint_task_id=stranded-task" \
     "worktree=$home/wt" \
     "project=$home/project" \
     "kind=ship" \

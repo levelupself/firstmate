@@ -397,7 +397,6 @@ reconcile_stranded() {
     [ -f "$meta" ] && [ ! -L "$meta" ] || continue
     grep -q '^kind=secondmate$' "$meta" 2>/dev/null && continue
     id=$(basename "$meta" .meta)
-    grep -qxF "endpoint_task_id=$id" "$meta" 2>/dev/null || continue
     state=$(row_state "$id" 2>/dev/null) || continue
     [ "$state" = absent ] || continue
     printf 'stranded=%s reason=backlog-record-absent\n' "$id"

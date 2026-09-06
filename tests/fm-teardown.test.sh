@@ -694,8 +694,8 @@ test_pruned_backlog_record_with_landed_work_is_torn_down() {
   case_dir=$(make_case pruned-record-landed)
   write_meta "$case_dir" no-mistakes ship
   add_retention_backlog "$case_dir"
-  wt_commit "$case_dir" "landed work"
-  add_fork_with_pushed_branch "$case_dir"
+  wt_commit_file "$case_dir" landed.txt "landed work"
+  land_on_origin_main "$case_dir" landed.txt "landed work"
   prune_completed_task_x1 "$case_dir"
 
   out=$(run_teardown_in_home "$case_dir") \
@@ -707,6 +707,47 @@ test_pruned_backlog_record_with_landed_work_is_torn_down() {
   [ ! -f "$case_dir/state/task-x1.meta" ] \
     || fail "cleanup left the finished task's state stranded after the pruned record"
   pass "a finished task whose record retention pruned is cleaned up without hand recovery"
+}
+
+test_pruned_backlog_record_with_pushed_open_pr_preserves_poll() {
+  local case_dir rc=0
+  command -v tasks-axi >/dev/null 2>&1 || {
+    echo "skip: tasks-axi not found (pruned-record open PR)"
+    return 0
+  }
+  case_dir=$(make_case pruned-record-open-pr)
+  write_meta "$case_dir" no-mistakes ship
+  add_retention_backlog "$case_dir"
+  wt_commit_file "$case_dir" pending.txt "unmerged work"
+  add_fork_with_pushed_branch "$case_dir"
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+printf 'OPEN\t%s\n' "$(git rev-parse HEAD)"
+SH
+  FM_HOME="$case_dir" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" \
+    PATH="$case_dir/fakebin:$PATH" "$PR_CHECK" task-x1 https://github.com/example/repo/pull/7 >/dev/null \
+    || fail "could not arm pruned open PR poll fixture"
+  prune_completed_task_x1 "$case_dir"
+
+  run_teardown_in_home "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "cleanup accepted a pushed open PR after retention"
+  assert_grep 'remains under its armed merge poll' "$case_dir/stderr" \
+    "cleanup did not report the preserved merge poll"
+  [ -d "$case_dir/wt" ] && [ -f "$case_dir/state/task-x1.meta" ] \
+    && [ -f "$case_dir/state/task-x1.check.sh" ] \
+    && [ -f "$case_dir/state/task-x1.pr-poll" ] \
+    && [ -f "$case_dir/state/task-x1.pr-poll-registration" ] \
+    || fail "cleanup lost the unmerged task or its poll pair"
+  rm "$case_dir/state/task-x1.check.sh"
+  rc=0
+  run_teardown_in_home "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "remote reachability alone authorized absent-row cleanup"
+  assert_grep 'no durable evidence proves its work landed' "$case_dir/stderr" \
+    "cleanup accepted pushed work without landing evidence"
+  [ -d "$case_dir/wt" ] && [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "cleanup lost unmerged work without an armed poll"
+  pass "pruned open PR retains its worktree and merge poll despite remote reachability"
 }
 
 test_pruned_backlog_record_with_unlanded_work_still_refuses() {
@@ -2894,6 +2935,7 @@ test_teardown_without_backlog_reports_and_proceeds
 test_teardown_refuses_when_backlog_row_is_missing
 test_pruned_backlog_record_with_landed_work_is_torn_down
 test_pruned_backlog_record_with_unlanded_work_still_refuses
+test_pruned_backlog_record_with_pushed_open_pr_preserves_poll
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_manual_teardown_refuses_missing_backlog_row
 test_manual_teardown_refuses_unverifiable_backlog

@@ -25,8 +25,9 @@
 # The backlog row is bookkeeping, never part of that proof: completed-history
 # retention is entitled to prune a finished task's Done entry, so requiring the
 # row would strand the worktree, endpoint, and state of work that already landed.
-# When the row is gone, the backlog step accepts this run's own completed
-# landed-work proof, or bin/fm-backlog-integrity.sh's durable landed evidence
+# When the row is gone, remote reachability alone is insufficient: the backlog
+# step requires a merged PR containing local work, content in the current default
+# branch, or bin/fm-backlog-integrity.sh's durable landed evidence
 # (an identity-bound merged-PR or local-landing receipt, or a scout report), and
 # refuses when neither exists. Absence of a record is never permission.
 # Tracked paths marked skip-worktree or assume-unchanged are treated as dirty
@@ -946,8 +947,16 @@ backlog_refresh_reminder() {
       printf '%s\n' "Backlog: $ID has no backlog record to update; cleanup proceeded under explicit discard authority."
       return 0
     fi
+    if [ -n "$PR_URL" ] && fm_pr_poll_artifacts_valid "$STATE" "$ID" "$SCRIPT_DIR/fm-pr-poll.sh"; then
+      PRESERVE_PR_POLL=1
+      echo "error: task $ID has no backlog record and remains under its armed merge poll; cleanup deferred" >&2
+      return 1
+    fi
     evidence=
-    if [ "$WORKTREE_LANDED_VERIFIED" = 1 ]; then
+    if [ "$WORKTREE_LANDED_VERIFIED" = 1 ] || {
+      [ "$KIND" = ship ] && [ -d "$WT" ] \
+        && work_is_landed "$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    }; then
       evidence=verified-landed-worktree
     else
       evidence=$("$SCRIPT_DIR/fm-backlog-integrity.sh" landed-evidence "$ID" 2>/dev/null) || evidence=
@@ -1297,6 +1306,7 @@ validate_worktree_teardown_safety() {
       echo "Merge the branch into local $DEFAULT first (bin/fm-merge-local.sh after the captain approves), or push to a fork/remote, or get the captain's explicit OK to discard, then --force." >&2
       return 1
     fi
+    WORKTREE_LANDED_VERIFIED=1
   elif [ -n "$dirty" ]; then
     echo "REFUSED: worktree $WT has uncommitted changes." >&2
     echo "uncommitted changes present" >&2
@@ -1314,13 +1324,9 @@ validate_worktree_teardown_safety() {
       echo "Push the branch, land its PR, or get the captain's explicit OK to discard, then --force." >&2
       return 1
     fi
+    WORKTREE_LANDED_VERIFIED=1
   fi
-  # Every proof above held for a ship worktree that is present and inspectable:
-  # nothing is hidden or uncommitted, and what is committed is on a remote, in a
-  # merged PR head, or already in the default branch. Record that so the backlog
-  # step can accept it as landed evidence when the task's row no longer exists.
-  # Scout and secondmate teardowns return above and never set it.
-  WORKTREE_LANDED_VERIFIED=1
+  return 0
 }
 
 # Fix 1 (see script header): does the active-or-most-recent no-mistakes run in
