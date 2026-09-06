@@ -39,10 +39,11 @@
 #     exit 2 to guarantee the next Stop-owned retry without repeating notice,
 #     until the synchronous guard has consumed its attended fail-open.
 #
-# The epoch ledger state/.claude-autoarm-epoch records the latest claim and
-# outcome so the synchronous Stop guard (bin/fm-turnend-guard.sh --claude) can
-# allow a stop whose recovery this hook already owns, instead of forcing a
-# duplicate continuation for the same event epoch. The failure marker
+# The epoch ledger state/.claude-autoarm-epoch records the latest claim, its
+# outcome, and the session the outcome was handed to, so the synchronous Stop
+# guard (bin/fm-turnend-guard.sh --claude) can allow a stop whose recovery this
+# hook already owns, instead of forcing a duplicate continuation for the same
+# event epoch. The failure marker
 # state/.claude-autoarm-failure-notified deduplicates the last-resort notice,
 # and state/.claude-autoarm-failure-alarmed bounds the attended fail-open and
 # suppresses any later automatic continuation in that unresolved episode.
@@ -145,6 +146,24 @@ if ! fm_lock_set_role "$OWNER_LOCK" autoarm; then
 fi
 trap 'fm_lock_release "$OWNER_LOCK"' EXIT
 
+# The session this firing belongs to, recorded in every epoch it writes. A
+# rewake epoch is a handoff to exactly one session, and the turn that handles it
+# has no bounded length, so the synchronous guard needs the handoff's owner
+# rather than the record's wall-clock age to recognize its own recovery turn
+# (docs/turnend-guard.md). Parsed after the inert gates so an idle, away, or
+# non-owning firing stays byte-for-byte inert, and left empty when jq is absent
+# or the id is not a single plain token, which keeps the epoch record one
+# space-separated line.
+SESSION_ID=
+if command -v jq >/dev/null 2>&1; then
+  SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -r '
+    if type == "object" and ((.session_id | type) == "string") then .session_id else empty end
+  ' 2>/dev/null || true)
+fi
+case "$SESSION_ID" in
+  *[!A-Za-z0-9._-]*) SESSION_ID= ;;
+esac
+
 write_epoch() {  # <outcome>
   local outcome=$1 seq tmp
   seq=$(sed -n 's/^epoch=\([0-9][0-9]*\) .*/\1/p' "$EPOCH" 2>/dev/null || true)
@@ -153,8 +172,8 @@ write_epoch() {  # <outcome>
   esac
   seq=$((seq + 1))
   tmp="$EPOCH.tmp.$$"
-  printf 'epoch=%s owner_pid=%s outcome=%s updated_at=%s\n' \
-    "$seq" "${BASHPID:-$$}" "$outcome" "$(date +%s)" > "$tmp" 2>/dev/null \
+  printf 'epoch=%s owner_pid=%s outcome=%s updated_at=%s session=%s\n' \
+    "$seq" "${BASHPID:-$$}" "$outcome" "$(date +%s)" "$SESSION_ID" > "$tmp" 2>/dev/null \
     && mv -f "$tmp" "$EPOCH" 2>/dev/null
   rm -f "$tmp" 2>/dev/null || true
 }

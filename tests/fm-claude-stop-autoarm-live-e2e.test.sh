@@ -143,6 +143,14 @@ fi
   || fail "cooperative guard consumed a forced continuation while the auto-arm launch was healthy"
 [ "$(sed -n 's/^.*outcome=\([a-z][a-z]*\) .*$/\1/p' "$HOME_DIR/state/.claude-autoarm-epoch" 2>/dev/null)" = rewake ] \
   || fail "auto-arm epoch ledger must record the rewake outcome"
+# The cooperative guard recognizes its own recovery turn by the session a rewake
+# was handed to, so the real Stop payload must carry session_id and that id must
+# survive an asyncRewake continuation. A stub cannot prove either.
+LIVE_SESSION=$(grep -o '"session_id":"[^"]*"' "$TRANSCRIPT" 2>/dev/null | head -1 | cut -d'"' -f4)
+[ -n "$LIVE_SESSION" ] || fail "Claude $CLAUDE_VERSION reported no session_id, so rewake handoffs cannot be attributed"
+EPOCH_SESSION=$(sed -n 's/^.*[ ]session=\([^ ]*\).*$/\1/p' "$HOME_DIR/state/.claude-autoarm-epoch" 2>/dev/null || true)
+[ "$EPOCH_SESSION" = "$LIVE_SESSION" ] \
+  || fail "Claude $CLAUDE_VERSION rewake epoch names '$EPOCH_SESSION' after two rewake cycles, expected the session '$LIVE_SESSION'"
 [ ! -e "$HOME_DIR/state/.claude-autoarm.lock" ] || fail "auto-arm owner lock was left behind"
 
 # Live-owner negative control: a separate supported-harness process owns a
