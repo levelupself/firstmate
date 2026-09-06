@@ -106,16 +106,22 @@ case "${1:-} ${2:-}" in
     ;;
   "pr merge"*) : > "$FM_HOME/state/.test-pr-merged" ;;
   "api "*/pulls/*)
-    if [ -f "$FM_HOME/state/.test-pr-merged" ]; then
+    [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
+    [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
+    if [[ " $* " = *"{base_ref: .base.ref}"* ]]; then
+      printf 'base_ref: %s\n' "${FM_TEST_BASE_REF:-main}"
+      exit 0
+    fi
+    if [ -f "${FM_HOME:-/nonexistent}/state/.test-pr-merged" ] || [ "${FM_TEST_GH_STATE:-OPEN}" = MERGED ]; then
       printf '%s\n' 'merged: true' 'merged_at: "2026-08-20T12:45:00Z"' \
         'merge_commit: "0123456789abcdef0123456789abcdef01234567"' \
-        'base_ref: "main"'
+        "base_ref: ${FM_TEST_BASE_REF:-main}"
     else
       printf '%s\n' 'merged: false' 'merged_at: null' 'merge_commit: null' \
         'base_ref: "main"' 'mergeable_state: "clean"'
     fi
     ;;
-  "api "*/compare/*) printf '%s\n' 'status: ahead' ;;
+  "api "*/compare/*) printf '%s\n' "status: ${FM_TEST_COMPARE_STATUS:-ahead}" ;;
   "api "*/repos/*) printf '%s\n' 'default_branch: main' ;;
 esac
 exit "${FM_TEST_GH_AXI_RC:-0}"
@@ -795,9 +801,37 @@ make_poll_fixture() {
 
 run_poll() {
   local dir=$1
-  FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
+  FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
     PATH="$dir/fakebin:$BASE_PATH" \
-    bash "$dir/home/state/task-a.check.sh"
+    bash -c 'poll=$1; shift; source "$poll"' "$dir/home/state/task-a.check.sh" "$POLL"
+}
+
+test_landing_evidence_and_registration() {
+  local dir out rc before
+  dir=$(make_case landing-evidence)
+  make_poll_fixture "$dir"
+  out=$(FM_TEST_GH_STATE=MERGED FM_TEST_BASE_REF=feature run_poll "$dir")
+  [ "$out" = wrong-base ] || fail "wrong-base merged PR emitted '$out', expected wrong-base"
+  for comparison in ahead identical; do
+    out=$(FM_TEST_GH_STATE=MERGED FM_TEST_COMPARE_STATUS="$comparison" run_poll "$dir")
+    [ "$out" = merged ] || fail "$comparison default-branch evidence did not emit merged"
+  done
+  for comparison in behind diverged; do
+    out=$(FM_TEST_GH_STATE=MERGED FM_TEST_COMPARE_STATUS="$comparison" run_poll "$dir")
+    [ -z "$out" ] || fail "$comparison commit falsely emitted '$out'"
+  done
+  out=$(FM_TEST_GH_STATE=OPEN run_poll "$dir")
+  [ -z "$out" ] || fail "open PR emitted '$out'"
+  write_task_meta "$dir"
+  before=$(state_snapshot "$dir/home/state")
+  set +e
+  FM_TEST_BASE_REF=feature run_check_entry "$dir" task-a https://github.com/o/r/pull/1 > "$dir/out" 2> "$dir/err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "registration accepted a non-default base"
+  grep -q 'wrong-base' "$dir/err" || fail "registration omitted wrong-base diagnostic"
+  [ "$(state_snapshot "$dir/home/state")" = "$before" ] || fail "wrong-base registration changed existing records"
+  pass "landing evidence rejects wrong base and missing ancestry; registration preserves records on refusal"
 }
 
 test_static_poll_contract() {
@@ -3436,6 +3470,8 @@ test_gitlab_merged_poll_retires() {
 }
 
 test_parser_matrix
+test_landing_evidence_and_registration
+
 test_gitlab_merge_watch
 test_gitlab_records_forge_open_time
 test_merged_poll_retires_once
