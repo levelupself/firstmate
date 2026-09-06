@@ -512,8 +512,10 @@ tests/fm-backend-herdr.test.sh
 ```
 
 Observed guarantees: every measured release classifies as the table records; either the protocol or the version signal alone carries an at-or-above verdict, and each divergent pair flips once the carrying signal is removed; client and running selected-session server verdicts compose conservatively, an unreadable server-running state and losing both release signals report indeterminate and fall back flat, the default is rechecked after server ensure before projection publication, an unconfigured home is projected only at or above the floor, an explicit `on`, including the historical empty opt-in file, is honored below it, and the below-floor warning is emitted once per home per detected release rather than once per spawn.
+This suite owns the below-floor branch independently of whatever release is installed, and covers the retired protocol-16 CI pin 0.7.4 explicitly in both shapes it can present: as the running client, and as an old running server queried by a current at-floor client after an upgrade.
+Each falls back flat with one warning naming the running 0.7.4 release and the 0.8.0 upgrade that restores the projection.
 
-The whole real-Herdr lane was run on 2026-08-05 against both the CI-pinned Herdr 0.7.4 protocol 16, which is below the floor, and Herdr 0.8.0 protocol 19, which is at it:
+The whole real-Herdr lane was run on 2026-08-05 against both Herdr 0.7.4 protocol 16, then the CI pin and below the floor, and Herdr 0.8.0 protocol 19, which is at it:
 
 ```sh
 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh bin/fm-test-run.sh --lane real-herdr-gated
@@ -528,6 +530,7 @@ ok - real Herdr lab: a home that configured nothing falls back flat on below-flo
 ```
 
 Every other case in that suite uses an explicit opt-in or opt-out, so the floor leaves them unchanged on both releases.
+CI now installs Herdr 0.8.0 protocol 19 and asserts that exact pin and floor, so the below-floor arm above is retained recorded evidence rather than something the required lane still exercises; the portable classifier suite carries that branch on every run.
 
 Direct lab probes on 2026-07-28 established the removal rules the emptying-close plan relies on, each verified with `workspace list` focus reads around one mutation in a guarded `fm-lab-` session:
 
