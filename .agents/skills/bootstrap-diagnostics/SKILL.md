@@ -50,6 +50,8 @@ When any diagnostic needs captain attention, report the plain consequence and re
 - `BACKLOG_INTEGRITY: clean` - lifecycle rows, dependency edges, and answered decision records already agree with durable evidence, so no action is needed.
 - `BACKLOG_INTEGRITY: <repairs>` - session start repaired each named interrupted transition from a preserved report, landing receipt, resolved dependency, or decision file; inspect the named evidence only when a repair is surprising.
 - `BACKLOG_INTEGRITY: failed (<reason>)` - startup could not reconcile the backlog safely, so report the exact reason and repair the named record before trusting fleet counts.
+- `BACKLOG_INTEGRITY: stranded=<id> reason=backlog-record-absent` - that task's durable runtime record outlives its backlog row, usually because completed-history retention pruned a finished entry, so its worktree and endpoint are still held with nothing in the queue naming them.
+  Reconciliation only reports it; run cleanup for the named task, which proceeds on durable landed-work evidence and refuses when the work has not landed.
 - `FLEET_SYNC: <repo>: skipped: <reason>` - a benign one-off skip (offline, no origin, local-only); bootstrap continued, investigate only if it blocks work.
   A skip can also report the bounded fleet-refresh timeout (`FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT`, or a fleet-size-aware default with a 20 second floor); a timeout never blocks startup.
 - `FLEET_SYNC: <repo>: DRIFT: local-only default is <ahead> ahead, <behind> behind <remote>/<default>` - fleet sync left the local-only project untouched but found a configured publication remote that differs from its local default branch.

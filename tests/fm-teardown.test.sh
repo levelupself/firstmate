@@ -636,15 +636,101 @@ test_teardown_refuses_when_backlog_row_is_missing() {
   mkdir -p "$case_dir/data"
   printf '## In flight\n\n## Queued\n\n## Done\n' > "$case_dir/data/backlog.md"
   add_compatible_tasks_axi "$case_dir"
+  # No worktree left to inspect, so no landed-work proof runs and no durable
+  # landing receipt exists: the missing row is backed by no evidence at all.
+  rm -rf "$case_dir/wt"
 
   FM_FAKE_TASKS_SHOW_MISSING=1 run_teardown "$case_dir" \
     > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
-  [ "$rc" -ne 0 ] || fail "teardown tolerated a missing row in an existing backlog"
-  assert_grep 'task task-x1 is absent from the backlog' "$case_dir/stderr" \
-    "teardown did not identify the missing authoritative row"
+  [ "$rc" -ne 0 ] || fail "teardown tolerated a missing row backed by no landed evidence"
+  assert_grep 'task task-x1 is absent from the backlog and no durable evidence proves its work landed' \
+    "$case_dir/stderr" "teardown did not identify the unevidenced missing record"
   [ -f "$case_dir/state/task-x1.meta" ] \
     || fail "teardown retired task state after the lifecycle write failed"
-  pass "teardown refuses a missing row in an existing backlog"
+  pass "teardown refuses a missing row that no landed evidence backs"
+}
+
+# Give the case its own real tasks-axi backlog whose completed-history retention
+# keeps exactly one Done entry, so the tests below prune a finished record by
+# driving retention instead of depending on how many entries happen to exist.
+add_retention_backlog() {  # <case-dir>
+  local case_dir=$1
+  mkdir -p "$case_dir/data"
+  printf 'backend = "markdown"\n\n[markdown]\npath = "data/backlog.md"\narchive = "data/done-archive.md"\ndone_keep = 1\n' \
+    > "$case_dir/.tasks.toml"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$case_dir/data/backlog.md"
+}
+
+# Add <id> and close it Done against <pr>, in the case's own backlog.
+complete_task_with_pr() {  # <case-dir> <id> <pr-url>
+  ( cd "$1" && tasks-axi add "$2" "$2 fixture" >/dev/null && tasks-axi "done" "$2" --pr "$3" >/dev/null )
+}
+
+# Run teardown with the case dir as the firstmate home, so the real tasks-axi
+# reads the case's own .tasks.toml and backlog instead of the repo's.
+run_teardown_in_home() {  # <case-dir> [extra args...]
+  local case_dir=$1
+  shift
+  ( export FM_HOME="$case_dir"; run_teardown "$case_dir" "$@" )
+}
+
+# Complete task-x1, then complete a second task so retention prunes task-x1's
+# Done entry, and confirm the record really is gone before teardown runs.
+prune_completed_task_x1() {  # <case-dir>
+  local case_dir=$1
+  complete_task_with_pr "$case_dir" task-x1 https://github.com/example/repo/pull/7
+  complete_task_with_pr "$case_dir" task-x2 https://github.com/example/repo/pull/8
+  ( cd "$case_dir" && tasks-axi show task-x1 >/dev/null 2>&1 ) \
+    && fail "completed-history retention did not prune the task-x1 record"
+  return 0
+}
+
+test_pruned_backlog_record_with_landed_work_is_torn_down() {
+  local case_dir out
+  command -v tasks-axi >/dev/null 2>&1 || {
+    echo "skip: tasks-axi not found (pruned-record cleanup)"
+    return 0
+  }
+  case_dir=$(make_case pruned-record-landed)
+  write_meta "$case_dir" no-mistakes ship
+  add_retention_backlog "$case_dir"
+  wt_commit "$case_dir" "landed work"
+  add_fork_with_pushed_branch "$case_dir"
+  prune_completed_task_x1 "$case_dir"
+
+  out=$(run_teardown_in_home "$case_dir") \
+    || fail "cleanup refused a landed task whose Done record retention had pruned"
+  printf '%s\n' "$out" | grep -F 'no backlog record' >/dev/null \
+    || fail "cleanup did not report the pruned record: $out"
+  printf '%s\n' "$out" | grep -F 'verified-landed-worktree' >/dev/null \
+    || fail "cleanup did not name the landed-work evidence it proceeded on: $out"
+  [ ! -f "$case_dir/state/task-x1.meta" ] \
+    || fail "cleanup left the finished task's state stranded after the pruned record"
+  pass "a finished task whose record retention pruned is cleaned up without hand recovery"
+}
+
+test_pruned_backlog_record_with_unlanded_work_still_refuses() {
+  local case_dir rc=0
+  command -v tasks-axi >/dev/null 2>&1 || {
+    echo "skip: tasks-axi not found (pruned-record refusal)"
+    return 0
+  }
+  case_dir=$(make_case pruned-record-unlanded)
+  write_meta "$case_dir" local-only ship
+  add_retention_backlog "$case_dir"
+  # Committed but on no remote, not in the default branch, and with no landing
+  # receipt: the work is genuinely unlanded.
+  wt_commit "$case_dir" "unlanded work"
+  prune_completed_task_x1 "$case_dir"
+
+  run_teardown_in_home "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "cleanup discarded unlanded work once the record was pruned"
+  assert_grep 'REFUSED' "$case_dir/stderr" \
+    "cleanup did not refuse unlanded work whose record retention had pruned"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "cleanup retired task state despite refusing unlanded work"
+  [ -d "$case_dir/wt" ] || fail "cleanup removed the worktree holding unlanded work"
+  pass "unlanded work still refuses cleanup after retention prunes its record"
 }
 
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present() {
@@ -673,11 +759,12 @@ test_manual_teardown_refuses_missing_backlog_row() {
   printf '%s\n' manual > "$case_dir/config/backlog-backend"
   mkdir -p "$case_dir/data"
   printf '## In flight\n\n## Queued\n\n## Done\n' > "$case_dir/data/backlog.md"
+  rm -rf "$case_dir/wt"
 
   run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   [ "$rc" -ne 0 ] || fail "manual cleanup tolerated a missing backlog row"
-  assert_grep 'task task-x1 is absent from the backlog' "$case_dir/stderr" \
-    "manual cleanup did not identify the missing row"
+  assert_grep 'task task-x1 is absent from the backlog and no durable evidence proves its work landed' \
+    "$case_dir/stderr" "manual cleanup did not identify the unevidenced missing row"
   [ -f "$case_dir/state/task-x1.meta" ] \
     || fail "manual cleanup retired task state after missing-row refusal"
   pass "manual cleanup refuses an existing backlog without its task row"
@@ -2805,6 +2892,8 @@ test_local_only_fork_remote_allows
 test_teardown_preserves_open_pr_poll_when_compatible
 test_teardown_without_backlog_reports_and_proceeds
 test_teardown_refuses_when_backlog_row_is_missing
+test_pruned_backlog_record_with_landed_work_is_torn_down
+test_pruned_backlog_record_with_unlanded_work_still_refuses
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_manual_teardown_refuses_missing_backlog_row
 test_manual_teardown_refuses_unverifiable_backlog

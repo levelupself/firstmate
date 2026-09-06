@@ -22,6 +22,13 @@
 # A gh lookup error falls back to the content check; if that is also inconclusive,
 # teardown refuses rather than risk discarding unlanded work.
 # Uncommitted changes are never landed.
+# The backlog row is bookkeeping, never part of that proof: completed-history
+# retention is entitled to prune a finished task's Done entry, so requiring the
+# row would strand the worktree, endpoint, and state of work that already landed.
+# When the row is gone, the backlog step accepts this run's own completed
+# landed-work proof, or bin/fm-backlog-integrity.sh's durable landed evidence
+# (an identity-bound merged-PR or local-landing receipt, or a scout report), and
+# refuses when neither exists. Absence of a record is never permission.
 # Tracked paths marked skip-worktree or assume-unchanged are treated as dirty
 # because those index flags hide changes
 # from the ordinary `git status --porcelain` safety check.
@@ -921,12 +928,36 @@ work_is_landed() {
 }
 
 backlog_refresh_reminder() {
-  local pr report_path show task_state
+  local pr report_path show task_state row_status evidence
   local -a done_args
   [ "$KIND" = secondmate ] && return 0
-  "$SCRIPT_DIR/fm-backlog-integrity.sh" check-row "$ID" --allow-absent || return 1
-  if [ ! -e "$DATA/backlog.md" ] && [ ! -L "$DATA/backlog.md" ]; then
+  row_status=$("$SCRIPT_DIR/fm-backlog-integrity.sh" row-state "$ID") || return 1
+  if [ "$row_status" = no-backlog ]; then
     printf '%s\n' "Backlog: cleanup for $ID proceeded with no backlog present; there was no lifecycle row to update."
+    return 0
+  fi
+  if [ "$row_status" = absent ]; then
+    # Completed-history retention is entitled to prune this task's Done row, so
+    # cleanup must never depend on the row still being there. It falls back to
+    # evidence the backlog cannot delete: this run's own completed landed-work
+    # proof, or a durable identity-bound landing receipt or scout report. With
+    # neither, absence of a record is not permission - cleanup still refuses.
+    if [ "$FORCE" = --force ]; then
+      printf '%s\n' "Backlog: $ID has no backlog record to update; cleanup proceeded under explicit discard authority."
+      return 0
+    fi
+    evidence=
+    if [ "$WORKTREE_LANDED_VERIFIED" = 1 ]; then
+      evidence=verified-landed-worktree
+    else
+      evidence=$("$SCRIPT_DIR/fm-backlog-integrity.sh" landed-evidence "$ID" 2>/dev/null) || evidence=
+    fi
+    if [ -z "$evidence" ]; then
+      echo "error: task $ID is absent from the backlog and no durable evidence proves its work landed" >&2
+      echo "Restore the task's record, or land its work, before cleanup can retire this task's state." >&2
+      return 1
+    fi
+    printf '%s\n' "Backlog: $ID has no backlog record - completed history retention prunes old Done entries - so cleanup proceeded on durable landed-work evidence ($evidence)."
     return 0
   fi
   if fm_tasks_axi_backend_available "$CONFIG"; then
@@ -1192,6 +1223,8 @@ teardown_treehouse_return() {
   return 1
 }
 
+# Set to 1 only by a ship worktree that completed every landed-work proof below.
+WORKTREE_LANDED_VERIFIED=0
 validate_worktree_teardown_safety() {
   local hidden_raw hidden entry tag path flag
   local dirty_raw dirty unpushed_raw unpushed DEFAULT unmerged_raw unmerged branch
@@ -1282,6 +1315,12 @@ validate_worktree_teardown_safety() {
       return 1
     fi
   fi
+  # Every proof above held for a ship worktree that is present and inspectable:
+  # nothing is hidden or uncommitted, and what is committed is on a remote, in a
+  # merged PR head, or already in the default branch. Record that so the backlog
+  # step can accept it as landed evidence when the task's row no longer exists.
+  # Scout and secondmate teardowns return above and never set it.
+  WORKTREE_LANDED_VERIFIED=1
 }
 
 # Fix 1 (see script header): does the active-or-most-recent no-mistakes run in
