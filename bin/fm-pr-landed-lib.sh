@@ -19,6 +19,7 @@ fm_pr_load_github_landing() {
   [ "${fields[0]}" = true ] || return 1
   MERGE_COMMIT=${fields[1]}
   base_ref=${fields[2]}
+  # shellcheck disable=SC2034 # Public result consumed by the merge caller.
   MERGED_AT=${fields[3]:-}
   default_query=$(gh-axi api "/repos/$PR_OWNER/$PR_REPO" \
     --jq '{default_branch: .default_branch}' 2>/dev/null) \
@@ -45,6 +46,7 @@ fm_pr_load_gitlab_landing() {  # <host> <project-path> <number>
   [ "${fields[0]}" = true ] || return 1
   MERGE_COMMIT=${fields[1]}
   base_ref=${fields[2]}
+  # shellcheck disable=SC2034 # Public result consumed by the merge caller.
   MERGED_AT=${fields[3]:-}
   project=${project//\//%2F}
   raw=$(glab api --hostname "$host" "projects/$project" 2>/dev/null) || return 2

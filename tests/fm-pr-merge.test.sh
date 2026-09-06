@@ -965,6 +965,10 @@ if [ "${1:-}" = api ] && [[ " $* " = *"{base_ref: .base.ref}"* ]]; then
   exit 0
 fi
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-}" = api ] && [ "${4:-}" = '{default_branch: .default_branch}' ]; then
+  printf '%s\n' 'default_branch: main'
+  exit 0
+fi
 if [ "${1:-}" = api ] && [[ "${2:-}" = */pulls/* ]]; then
   echo 'transient forge read failure' >&2
   exit 1
