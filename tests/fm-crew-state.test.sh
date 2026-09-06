@@ -1410,6 +1410,30 @@ test_pipeline_owned_submitted_head_behind_local_work_is_rejected() {
   pass "pipeline-owned submitted head behind local work remains unmatched"
 }
 
+test_pipeline_owned_invalid_relationship_is_rejected() {
+  local variant d head out
+  for variant in mismatch missing wrong-owner nested-owner; do
+    reset_fakes
+    d=$(new_case "pipeline-owned-$variant")
+    make_repo_on_branch "$d/wt" fm/feat-invalid
+    head=$(git -C "$d/wt" rev-parse HEAD)
+    make_fakebin "$d" >/dev/null
+    fm_write_meta "$d/state/invalid.meta" "window=fm:fm-invalid" "worktree=$d/wt" "kind=ship" "harness=codex"
+    FM_FAKE_AXI_STATUS=$(run_pipeline_owned_fixing fm/feat-invalid "$head" "$head")
+    case "$variant" in
+      mismatch) FM_FAKE_AXI_STATUS=$(printf '%s\n' "$FM_FAKE_AXI_STATUS" | sed 's/submitted_head:.*/submitted_head: "4444444444444444444444444444444444444444"/') ;;
+      missing) FM_FAKE_AXI_STATUS=$(printf '%s\n' "$FM_FAKE_AXI_STATUS" | sed '/submitted_head:/d') ;;
+      wrong-owner) FM_FAKE_AXI_STATUS=$(printf '%s\n' "$FM_FAKE_AXI_STATUS" | sed 's/    pipeline:/    unrelated:/') ;;
+      nested-owner) FM_FAKE_AXI_STATUS=$(printf '%s\n' "$FM_FAKE_AXI_STATUS" | sed 's/      submitted_head:/        submitted_head:/') ;;
+    esac
+    FM_FAKE_RUNS_LIST=""
+    out=$(run_crew_state "$d" invalid)
+    assert_not_contains "$out" "source: run-step" "$variant pipeline relationship must not fall back to equal legacy head"
+    assert_contains "$out" "state: unknown" "$variant relationship leaves Codex unknown"
+  done
+  pass "invalid pipeline ownership cannot use legacy head fallback"
+}
+
 test_unmatched_codex_pane_remains_unknown() {
   reset_fakes
   local d out
@@ -1517,6 +1541,7 @@ test_usage_error
 test_historical_same_branch_rewritten_head_not_current
 test_active_run_descendant_fix_head_remains_current
 test_pipeline_owned_unavailable_current_head_uses_submitted_head
+test_pipeline_owned_invalid_relationship_is_rejected
 test_pipeline_owned_different_branch_is_rejected
 test_pipeline_owned_submitted_head_behind_local_work_is_rejected
 test_unmatched_codex_pane_remains_unknown

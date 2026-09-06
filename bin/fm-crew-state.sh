@@ -184,9 +184,8 @@ RUN_OUT=""
 nm_field() {  # <key>
   fm_nm_field "$RUN_OUT" "$1"
 }
-# Scalar value nested anywhere under the run's branch_sync block. The block is
-# bounded by indentation so a top-level run field with the same name cannot be
-# mistaken for branch-sync evidence.
+# Read only direct branch_sync fields or direct pipeline child fields.
+# Indentation binds each scalar to its structural owner.
 nm_branch_sync_field() {  # <key>
   local key=$1
   printf '%s\n' "$RUN_OUT" | awk -v key="$key" '
@@ -201,7 +200,9 @@ nm_branch_sync_field() {  # <key>
       if (indent <= base) exit
       line = $0
       sub(/^[[:space:]]*/, "", line)
-      if (index(line, key ":") == 1) {
+      if (indent == base + 2) pipeline = (line == "pipeline:")
+      owned = (key == "state" && indent == base + 2) ||               (key == "submitted_head" && pipeline && indent == base + 4)
+      if (owned && index(line, key ":") == 1) {
         sub("^" key ":[[:space:]]*", "", line)
         print line
         exit
@@ -397,8 +398,9 @@ nm_run_head_matches_worktree() {
   local_full=$(git -C "$WT" rev-parse HEAD 2>/dev/null) || return 1
   branch_sync_state=$(strip_quotes "$(nm_branch_sync_field state)")
   submitted_head=$(strip_quotes "$(nm_branch_sync_field submitted_head)")
-  if [ "$branch_sync_state" = pipeline_owned ] && [ "$submitted_head" = "$local_full" ]; then
-    return 0
+  if [ "$branch_sync_state" = pipeline_owned ]; then
+    [ "$submitted_head" = "$local_full" ]
+    return $?
   fi
   run_head=$(strip_quotes "$(nm_field head)")
   fm_nm_head_matches_worktree "$WT" "$run_head"
