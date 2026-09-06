@@ -800,6 +800,43 @@ fm_backend_herdr_presentation_session_lock_path() {  # <session>
   printf '%s/order-%s.lock' "$dir" "$key"
 }
 
+# The presentation lock is held across whole operations, never single calls:
+# a teardown keeps it from before the isolated copy is returned until after the
+# exact pane is closed and the durable records are removed. Healthy holds
+# therefore run to tens of seconds on a loaded host, so a caller that must not
+# give up needs a queue budget measured in minutes rather than seconds.
+# Only a LIVE holder can consume that budget - fm_lock_try_acquire reclaims an
+# abandoned hold on the spot - so the ceiling bounds a wedged process and never
+# a crashed one.
+# Callers that can degrade safely instead of queueing (a spawn that falls back
+# to the flat layout in bin/fm-spawn.sh, the best-effort close in
+# fm_backend_herdr_kill) deliberately keep their own much smaller bound and do
+# not use this budget.
+# The budget is FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS 0.1s polls
+# (default 1200, so 120s) and a wait that outlives a quick mutation announces
+# itself after FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_POLLS so a long queue
+# is never a silent stall.
+# fm_backend_herdr_presentation_lock_queue: the single owner of how long a
+# caller that cannot degrade waits for the shared session presentation lock.
+# Returns non-zero only after the whole budget is spent against a live holder.
+# fm_lock_try_acquire must already be available to the caller.
+fm_backend_herdr_presentation_lock_queue() {  # <lock-path> <operation>
+  local lock_path=$1 operation=$2 attempt=0 max notice
+  max=${FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS:-1200}
+  notice=${FM_BACKEND_HERDR_PRESENTATION_LOCK_NOTICE_POLLS:-50}
+  while [ "$attempt" -lt "$max" ]; do
+    if fm_lock_try_acquire "$lock_path"; then
+      return 0
+    fi
+    if [ "$attempt" = "$notice" ]; then
+      echo "waiting for the herdr session presentation lock held by pid ${FM_LOCK_HELD_PID:-unknown} before $operation" >&2
+    fi
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 # fm_backend_herdr_projection_focus_snapshot: print the exact active
 # workspace and tab ids as one tab-separated record.
 # Presentation mutations use this read-only snapshot as their sole focus
@@ -4339,6 +4376,8 @@ fm_backend_herdr_kill() {  # <target>
     # shellcheck source=bin/fm-wake-lib.sh
     . "$FM_BACKEND_HERDR_ROOT/bin/fm-wake-lib.sh"
   fi
+  # A deferred close is safe and loud, so this stays a short bound rather than
+  # the queue budget that fm_backend_herdr_presentation_lock_queue owns.
   if lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session"); then
     while [ "$attempt" -lt 50 ]; do
       if fm_lock_try_acquire "$lock_path"; then

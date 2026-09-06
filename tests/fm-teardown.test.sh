@@ -1904,8 +1904,11 @@ SH
   while [ ! -e "$ready" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited + 1)); done
   [ -e "$ready" ] || fail "herdr-orphan-refusal: the contending lock holder never started"
 
+  # This holder never lets go, so the queue budget is cut to a few polls: the
+  # case proves the wait is bounded, not how long the shipped budget is.
   rc=0
   FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
+    FM_BACKEND_HERDR_PRESENTATION_LOCK_QUEUE_POLLS=5 \
     run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   if [ "$rc" -eq 0 ]; then
     : > "$release"; wait "$holder_pid" 2>/dev/null || true
@@ -1942,6 +1945,63 @@ SH
   grep -q "teardown task-x1 complete" "$case_dir/stdout2" \
     || fail "herdr-orphan-refusal: the successful retry did not report completion"
   pass "herdr flat teardown refuses before returning the isolated copy under lock contention and the retry completes cleanly"
+}
+
+# A teardown holds the shared session presentation lock across its whole
+# destructive sequence - the isolated copy return, the exact pane close, and
+# durable record removal - so a healthy holder legitimately occupies the lock
+# for tens of seconds. A second teardown of the same session must queue behind
+# that holder instead of refusing, or ordinary concurrent cleanup of two
+# workers that finish together intermittently demands a manual rerun.
+test_herdr_flat_teardown_waits_out_a_healthy_lock_holder() {
+  local case_dir log closed lock ready holder_pid rc thlog hold=15
+  case_dir=$(make_case herdr-lock-handoff)
+  write_meta "$case_dir" local-only ship
+  configure_flat_herdr_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; : > "$log"
+  closed="$case_dir/closed"
+  : > "$case_dir/state/task-x1.status"
+  : > "$case_dir/state/task-x1.turn-ended"
+  thlog="$case_dir/treehouse.log"; : > "$thlog"
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$thlog"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+
+  lock=$(FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" PATH="$case_dir/fakebin:$PATH" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_session_lock_path default' "$ROOT") \
+    || fail "herdr-lock-handoff: could not resolve the fixture presentation lock path"
+  ready="$case_dir/lock-ready"
+  # A holder that occupies the lock for longer than a quick mutation and then
+  # finishes normally, exactly like a concurrent teardown's destructive phase.
+  ROOT="$ROOT" LOCK="$lock" READY="$ready" HOLD="$hold" bash -c '
+    . "$ROOT/bin/fm-wake-lib.sh"
+    fm_lock_try_acquire "$LOCK" || exit 1
+    : > "$READY"
+    sleep "$HOLD"
+    fm_lock_release "$LOCK"
+  ' &
+  holder_pid=$!
+  local waited=0
+  while [ ! -e "$ready" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited + 1)); done
+  [ -e "$ready" ] || fail "herdr-lock-handoff: the contending lock holder never started"
+
+  rc=0
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  wait "$holder_pid" 2>/dev/null || true
+  if [ "$rc" -ne 0 ]; then
+    fail "herdr-lock-handoff: teardown refused instead of waiting out a healthy ${hold}s lock holder: $(cat "$case_dir/stderr")"
+  fi
+  [ -e "$closed" ] || fail "herdr-lock-handoff: the queued teardown never closed the pane under the lock"
+  [ -s "$thlog" ] || fail "herdr-lock-handoff: the queued teardown never returned the isolated copy"
+  [ ! -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-lock-handoff: the queued teardown left the endpoint metadata behind"
+  grep -q "teardown task-x1 complete" "$case_dir/stdout" \
+    || fail "herdr-lock-handoff: the queued teardown did not report completion"
+  pass "herdr teardown queues behind a healthy presentation lock holder instead of refusing"
 }
 
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence() {
@@ -3059,6 +3119,7 @@ test_herdr_teardown_clears_escalation_marker
 test_teardown_removes_usage_cache_entry
 test_teardown_captures_effort_before_removing_meta
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes
+test_herdr_flat_teardown_waits_out_a_healthy_lock_holder
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence
 test_herdr_flat_teardown_preflight_refuses_before_changes
 test_forced_secondmate_herdr_child_preflight_refuses_before_changes

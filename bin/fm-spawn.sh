@@ -803,6 +803,10 @@ trap spawn_abort_cleanup EXIT
 # One bounded lock per live Herdr session/socket, shared across all homes.
 # <session> is required so secondmate and primary spawns serialize against the
 # same session without writing any other home's state directory.
+# A spawn that cannot get the lock still launches, flat and with a warning, so
+# this keeps a short bound on purpose rather than the minutes-long queue budget
+# that fm_backend_herdr_presentation_lock_queue owns for callers which cannot
+# degrade.
 spawn_herdr_presentation_order_lock_acquire() {
   local session=${1:-} max_attempts=${2:-50} attempt lock_path
   [ -n "$session" ] || session=$(fm_backend_herdr_session)
