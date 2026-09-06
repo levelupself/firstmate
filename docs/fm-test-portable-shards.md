@@ -111,5 +111,8 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | portable serial 1-4 | job `timeout-minutes: 30` | The old 15-minute cap killed still-passing shards before their true duration was known, so 30 minutes provides provisional headroom until completed timing artifacts support a tighter bound. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
+The Herdr family-run step also holds its presentation-lock queue budget below that step bound, so a wedged lock refuses with its preserved diagnostics instead of being killed by the tripwire.
+[docs/verification/runtime-backends.md](verification/runtime-backends.md) owns that budget and why the lane differs from the production default.
+
 Timeouts are hang tripwires rather than expected healthy durations.
 `.github/workflows/ci.yml` owns the exact numbers.
