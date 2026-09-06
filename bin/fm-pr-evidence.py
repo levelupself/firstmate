@@ -2,12 +2,15 @@
 """Read the flat scalar records requested by fm-pr-merge.sh from gh-axi.
 
 Usage: fm-pr-evidence.py pr|repository|comparison < response
-The installed gh-axi API has no raw JSON output mode: even --jq/--template
+The gh-axi 0.1.29 API has no raw JSON output mode: even --jq/--template
 results are rendered as TOON. This deliberately bounded fallback accepts only
 these flat records, decoding quoted strings with JSON's compatible scalar
 escapes and validating both quoted and bare values against the field schema.
-It is not a general TOON decoder. Missing/null evidence exits 2 (retryable);
-present malformed evidence exits 4 with its field name (never retryable).
+It is not a general TOON decoder. Missing/null required evidence exits 2
+(retryable); optional fields may be absent/null. Every present schema field
+is validated before returning retryable absence, so missing evidence cannot
+mask malformed evidence, which exits 4 with its field name (never retryable).
+tests/fm-pr-merge.test.sh covers this precedence and both scalar styles.
 Successful output is one value per line in the order consumed by the caller.
 """
 import json
