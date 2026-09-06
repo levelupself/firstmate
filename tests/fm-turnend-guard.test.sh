@@ -1555,17 +1555,25 @@ test_hook_claude_mode_stale_rewake_epoch_blocks() {
 # epoch's wall-clock age is not a test of whose recovery it is. The session the
 # handoff was made to is, and the auto-arm records it.
 
-# <dir> <epoch> <session> <age seconds>
-seed_rewake_handoff() {
-  local dir=$1 epoch=$2 session=$3 age=$4 now stamp
+# <dir> <age seconds> - backdate the epoch record's mtime without rewriting it,
+# so the same unchanged epoch can be re-read after its freshness window passed.
+age_epoch_file() {
+  local dir=$1 age=$2 now stamp
   now=$(date +%s)
-  printf 'epoch=%s owner_pid=999 outcome=rewake updated_at=%s session=%s\n' \
-    "$epoch" "$((now - age))" "$session" > "$dir/state/.claude-autoarm-epoch"
   if stamp=$(date -r "$((now - age))" +%Y%m%d%H%M.%S 2>/dev/null); then
     touch -t "$stamp" "$dir/state/.claude-autoarm-epoch"
   else
     touch -t "$(date -d "@$((now - age))" +%Y%m%d%H%M.%S)" "$dir/state/.claude-autoarm-epoch"
   fi
+}
+
+# <dir> <epoch> <session> <age seconds>
+seed_rewake_handoff() {
+  local dir=$1 epoch=$2 session=$3 age=$4 now
+  now=$(date +%s)
+  printf 'epoch=%s owner_pid=999 outcome=rewake updated_at=%s session=%s\n' \
+    "$epoch" "$((now - age))" "$session" > "$dir/state/.claude-autoarm-epoch"
+  age_epoch_file "$dir" "$age"
 }
 
 test_hook_claude_mode_allows_this_sessions_rewake_handoff_across_a_long_turn() {
@@ -1602,6 +1610,43 @@ test_hook_claude_mode_blocks_a_foreign_sessions_rewake_handoff() {
   expect_code 2 "$status" "--claude must not adopt a rewake handoff made to a different session"
   assert_contains "$out" "TURN WOULD END BLIND" "the foreign-handoff block must carry the blind-turn banner"
   pass "fm-turnend-guard --claude: a rewake handoff is scoped to the session it was made to"
+}
+
+# The freshness arm honors a rewake epoch too, so it must spend the same handoff
+# record. Otherwise a short handling turn is allowed by age with the epoch left
+# unspent, and the very same epoch buys a second allow once the window passes.
+test_hook_claude_mode_spends_a_freshness_allowed_rewake_handoff_once() {
+  local dir out status out2 status2
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-handoff-fresh-once")
+  : > "$dir/state/task1.meta"
+  seed_rewake_handoff "$dir" 7 sess-claude-mode 0
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" "a rewake handoff inside the freshness window must be allowed"
+  [ -z "$out" ] || fail "freshness-window rewake allow produced output: $out"
+  age_epoch_file "$dir" 822
+  out2=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status2=$?
+  expect_code 2 "$status2" "the same unchanged epoch must not buy a second recovery turn once its freshness window passed"
+  assert_contains "$out2" "TURN WOULD END BLIND" "the aged spent-handoff block must carry the blind-turn banner"
+  pass "fm-turnend-guard --claude: an epoch allowed by freshness is not allowed again after the window"
+}
+
+# The same bound for a legacy epoch carrying no session field: the age arm is
+# kept so an in-flight upgrade still cooperates, and it records the spend under
+# the guard's own session id.
+test_hook_claude_mode_spends_a_sessionless_rewake_epoch_once() {
+  local dir out status out2 status2
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-handoff-legacy-once")
+  : > "$dir/state/task1.meta"
+  printf 'epoch=9 owner_pid=999 outcome=rewake updated_at=%s\n' "$(date +%s)" \
+    > "$dir/state/.claude-autoarm-epoch"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" "a fresh epoch predating recorded sessions must still cooperate"
+  [ -z "$out" ] || fail "legacy fresh rewake allow produced output: $out"
+  age_epoch_file "$dir" 822
+  out2=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status2=$?
+  expect_code 2 "$status2" "a legacy epoch already honored by age must not be honored again"
+  assert_contains "$out2" "TURN WOULD END BLIND" "the aged legacy-epoch block must carry the blind-turn banner"
+  pass "fm-turnend-guard --claude: a sessionless rewake epoch also yields exactly one recovery turn"
 }
 
 # The boundary case driven end to end: the previous cycle closed with a rewake
@@ -1864,6 +1909,8 @@ test_hook_claude_mode_stale_rewake_epoch_blocks
 test_hook_claude_mode_allows_this_sessions_rewake_handoff_across_a_long_turn
 test_hook_claude_mode_spends_a_rewake_handoff_exactly_once
 test_hook_claude_mode_blocks_a_foreign_sessions_rewake_handoff
+test_hook_claude_mode_spends_a_freshness_allowed_rewake_handoff_once
+test_hook_claude_mode_spends_a_sessionless_rewake_epoch_once
 test_hook_claude_mode_boundary_allows_while_the_stop_autoarm_is_still_starting
 test_hook_claude_mode_blocks_when_the_stop_autoarm_cannot_recover
 test_hook_claude_mode_budget_without_verified_failure_keeps_blocking

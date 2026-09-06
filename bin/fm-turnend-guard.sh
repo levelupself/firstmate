@@ -62,7 +62,8 @@
 #      identity decides whose recovery it is: the recovery turn's length is
 #      unbounded (144s, 722s and 822s in the 2026-09-05 incidents), so wall-clock
 #      age cannot answer that question. Age still admits an epoch written before
-#      the auto-arm recorded sessions, within FM_CLAUDE_AUTOARM_EPOCH_FRESH;
+#      the auto-arm recorded sessions, within FM_CLAUDE_AUTOARM_EPOCH_FRESH, and
+#      that arm spends the same record, so no rewake epoch is ever honored twice;
 #   3. otherwise wait briefly (FM_CLAUDE_AUTOARM_SYNC_WAIT_MS, default 2000ms,
 #      a floor because each poll costs the predicate on top of its sleep) for the
 #      auto-arm to claim this home (state/.claude-autoarm.lock owner alive) - the
@@ -274,26 +275,20 @@ budget_account_current_epoch() {
   return 0
 }
 
-# True when state/.claude-autoarm-epoch holds a rewake the auto-arm handed to
-# THIS session and this session has not spent it yet.
+# Records THIS session's claim on the current rewake epoch in
+# state/.turnend-claude-rewake, and is true only when this call is the one that
+# recorded it.
 #
-# A rewake epoch is the auto-arm's record that it armed a watcher, ran a full
-# cycle, took an actionable close, and exited 2 to create the very turn now
-# ending. The next Stop's auto-arm arms the next cycle, so recovery is under way
-# and this stop must not be re-blocked. The interval between that record and this
-# stop is the model's handling turn, whose length is unbounded, so the epoch's
-# wall-clock age cannot decide whose recovery it is - only the session the
-# handoff names can.
-#
-# Spending it exactly once per epoch keeps the design's own bound: one event
-# epoch yields exactly one recovery turn. An auto-arm that stops recovering
-# therefore blocks on the very next stop instead of allowing indefinitely, and
-# a handoff this session cannot record as spent is not honored at all.
-rewake_handoff_is_this_sessions() {
-  local epoch_session current_epoch spent_session spent_epoch tmp
+# Every arm that honors a rewake epoch spends it through here, keyed on the
+# guard's own session id and the epoch number, so the design's own bound holds:
+# one event epoch yields exactly one recovery turn. An auto-arm that stops
+# recovering therefore blocks on the very next stop instead of allowing
+# indefinitely, and a handoff this session cannot record as spent - unknown
+# session, unparseable epoch, already spent, unwritable record - is not honored
+# at all.
+rewake_handoff_spend() {
+  local current_epoch spent_session spent_epoch tmp
   [ -n "$SESSION_ID" ] && [ "$SESSION_ID" != unknown ] || return 1
-  epoch_session=$(sed -n 's/^.*[ ]session=\([^ ]*\).*$/\1/p' "$EPOCH_FILE" 2>/dev/null || true)
-  [ "$epoch_session" = "$SESSION_ID" ] || return 1
   current_epoch=$(sed -n 's/^epoch=\([0-9][0-9]*\) .*/\1/p' "$EPOCH_FILE" 2>/dev/null || true)
   case "$current_epoch" in ''|*[!0-9]*) return 1 ;; esac
   spent_session=$(sed -n '1s/^session=//p' "$REWAKE_SPENT" 2>/dev/null || true)
@@ -311,6 +306,23 @@ rewake_handoff_is_this_sessions() {
   return 0
 }
 
+# True when state/.claude-autoarm-epoch holds a rewake the auto-arm handed to
+# THIS session and this session has not spent it yet.
+#
+# A rewake epoch is the auto-arm's record that it armed a watcher, ran a full
+# cycle, took an actionable close, and exited 2 to create the very turn now
+# ending. The next Stop's auto-arm arms the next cycle, so recovery is under way
+# and this stop must not be re-blocked. The interval between that record and this
+# stop is the model's handling turn, whose length is unbounded, so the epoch's
+# wall-clock age cannot decide whose recovery it is - only the session the
+# handoff names can.
+rewake_handoff_is_this_sessions() {
+  local epoch_session
+  epoch_session=$(sed -n 's/^.*[ ]session=\([^ ]*\).*$/\1/p' "$EPOCH_FILE" 2>/dev/null || true)
+  [ -n "$epoch_session" ] && [ "$epoch_session" = "$SESSION_ID" ] || return 1
+  rewake_handoff_spend
+}
+
 autoarm_owns_recovery() {
   local pid role outcome age
   fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME" && return 0
@@ -324,9 +336,12 @@ autoarm_owns_recovery() {
   case "$outcome" in
     rewake)
       # The age arm still admits an epoch written before the auto-arm recorded
-      # sessions, so an in-flight upgrade keeps its previous cooperation.
+      # sessions, so an in-flight upgrade keeps its previous cooperation. It
+      # spends the same session-keyed handoff record, so an epoch honored by age
+      # is not honored a second time once the window has passed.
       age=$(fm_path_age "$EPOCH_FILE")
-      if [ "$age" -lt "$EPOCH_FRESH" ] || rewake_handoff_is_this_sessions; then
+      if rewake_handoff_is_this_sessions \
+        || { [ "$age" -lt "$EPOCH_FRESH" ] && rewake_handoff_spend; }; then
         [ ! -e "$FAILURE_NOTICE" ] || budget_account_current_epoch || true
         return 0
       fi
