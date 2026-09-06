@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 # Shared forge landing evidence for merge confirmation and trusted polling.
 # Callers supply SCRIPT_DIR and PR_OWNER/PR_REPO/PR_NUMBER for GitHub.
-# Success sets MERGE_COMMIT, DEFAULT_BRANCH and MERGED_AT.
-# Returns: 0 landed, 1 unmerged, 2 missing ancestry/evidence, 3 lookup failure,
+# Landing-reader success requires a merged PR targeting the default branch
+# and proof that its merge commit equals or is an ancestor of that branch's head.
+# GitHub accepts ahead/identical comparison status; GitLab requires the API
+# merge base to equal the merge commit. Neither accepts forge state alone.
+# Landing-reader success sets MERGE_COMMIT, DEFAULT_BRANCH and MERGED_AT.
+# Landing readers return: 0 landed, 1 unmerged, 2 missing ancestry/evidence, 3 lookup failure,
 # 4 malformed evidence, 5 merged to a non-default base (wrong-base).
+# fm_pr_require_default_base checks destination only, including for open PRs:
+# 0 matching base, 2 absent evidence, 3 lookup failure, 4 malformed evidence,
+# 5 non-default base.
 # No retries here: the merge caller owns retries, and the watcher bounds the
 # entire poll process group with its existing check timeout.
 # fm-pr-evidence.py owns scalar/JSON schema validation.

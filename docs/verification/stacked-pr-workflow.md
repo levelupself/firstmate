@@ -89,6 +89,7 @@ Multiple dependent tasks are the only shape that preserves those identities, wit
 That shape is not first-class today because `fm-spawn.sh` allocates a clean default-branch worktree and exposes no parent-base option.
 Every dependent task would need custom parent setup, and every low-stack revision would require ordered steering and revalidation through all live descendants.
 The no-mistakes result above leaves that shape without a supported validation path.
+The current registration boundary is owned by [`bin/fm-pr-check.sh`](../../bin/fm-pr-check.sh), and [`bin/fm-brief.sh`](../../bin/fm-brief.sh) owns the generated delivery-destination instructions.
 
 The recommended main-as-stack process uses multiple serial tasks instead.
 Each task lands one semantic increment on `main`, and the next dependent task starts from that landed commit.
