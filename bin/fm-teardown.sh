@@ -1253,8 +1253,6 @@ teardown_treehouse_return() {
   return 1
 }
 
-# This legacy flag is not evidence for the absent-row boundary; see header.
-WORKTREE_LANDED_VERIFIED=0
 validate_worktree_teardown_safety() {
   local hidden_raw hidden entry tag path flag
   local dirty_raw dirty unpushed_raw unpushed DEFAULT unmerged_raw unmerged branch
@@ -1327,7 +1325,6 @@ validate_worktree_teardown_safety() {
       echo "Merge the branch into local $DEFAULT first (bin/fm-merge-local.sh after the captain approves), or push to a fork/remote, or get the captain's explicit OK to discard, then --force." >&2
       return 1
     fi
-    WORKTREE_LANDED_VERIFIED=1
   elif [ -n "$dirty" ]; then
     echo "REFUSED: worktree $WT has uncommitted changes." >&2
     echo "uncommitted changes present" >&2
@@ -1345,7 +1342,6 @@ validate_worktree_teardown_safety() {
       echo "Push the branch, land its PR, or get the captain's explicit OK to discard, then --force." >&2
       return 1
     fi
-    WORKTREE_LANDED_VERIFIED=1
   fi
   return 0
 }
