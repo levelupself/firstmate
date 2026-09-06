@@ -22,6 +22,16 @@
 # A gh lookup error falls back to the content check; if that is also inconclusive,
 # teardown refuses rather than risk discarding unlanded work.
 # Uncommitted changes are never landed.
+# When an existing backlog lacks the task row, non-force cleanup additionally
+# requires an existing ship worktree's current HEAD to
+# be an ancestor of the merged PR head, or its content in the up-to-date default
+# branch; remote reachability and unpushed-only patch equivalence do not qualify.
+# Only when no ship worktree remains may bin/fm-backlog-integrity.sh's durable
+# identity-bound landing receipt or completed scout report authorize cleanup.
+# That evidence never overrides a failed current-worktree safety check.
+# A recorded PR with valid armed merge poll artifacts defers cleanup ahead of
+# either proof. Without qualifying proof, cleanup refuses; absence is never permission.
+# docs/architecture.md owns the rationale for independence from retained rows.
 # Tracked paths marked skip-worktree or assume-unchanged are treated as dirty
 # because those index flags hide changes
 # from the ordinary `git status --porcelain` safety check.
@@ -920,13 +930,64 @@ work_is_landed() {
   content_in_default
 }
 
+current_head_in_merged_pr() {
+  local branch=$1 target view state head current
+  if [ -n "$PR_URL" ]; then
+    target=$PR_URL
+  else
+    target=$(pr_number_from_branch "$branch") || return 1
+  fi
+  [ -n "$target" ] || return 1
+  view=$(cd "$WT" && gh pr view "$target" --json state,headRefOid -q '.state + "\t" + .headRefOid' 2>/dev/null) || return 1
+  state=${view%%$'\t'*}
+  head=${view#*$'\t'}
+  [ "$state" != "$view" ] || return 1
+  case "$state" in
+    MERGED|merged) ;;
+    *) return 1 ;;
+  esac
+  [ -n "$head" ] || return 1
+  ensure_commit_object "$target" "$head" || return 1
+  current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
+  git -C "$WT" merge-base --is-ancestor "$current" "$head" 2>/dev/null
+}
+
 backlog_refresh_reminder() {
-  local pr report_path show task_state
+  local pr report_path show task_state row_status evidence
   local -a done_args
   [ "$KIND" = secondmate ] && return 0
-  "$SCRIPT_DIR/fm-backlog-integrity.sh" check-row "$ID" --allow-absent || return 1
-  if [ ! -e "$DATA/backlog.md" ] && [ ! -L "$DATA/backlog.md" ]; then
+  row_status=$("$SCRIPT_DIR/fm-backlog-integrity.sh" row-state "$ID") || return 1
+  if [ "$row_status" = no-backlog ]; then
     printf '%s\n' "Backlog: cleanup for $ID proceeded with no backlog present; there was no lifecycle row to update."
+    return 0
+  fi
+  if [ "$row_status" = absent ]; then
+    if [ "$FORCE" = --force ]; then
+      printf '%s\n' "Backlog: $ID has no backlog record to update; cleanup proceeded under explicit discard authority."
+      return 0
+    fi
+    if [ -n "$PR_URL" ] && fm_pr_poll_artifacts_valid "$STATE" "$ID" "$SCRIPT_DIR/fm-pr-poll.sh"; then
+      PRESERVE_PR_POLL=1
+      echo "error: task $ID has no backlog record and remains under its armed merge poll; cleanup deferred" >&2
+      return 1
+    fi
+    evidence=
+    if [ "$KIND" = ship ] && { [ -e "$WT" ] || [ -L "$WT" ]; }; then
+      if [ -d "$WT" ] && {
+        current_head_in_merged_pr "$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null)" \
+          || content_in_default
+      }; then
+        evidence=verified-landed-worktree
+      fi
+    else
+      evidence=$("$SCRIPT_DIR/fm-backlog-integrity.sh" landed-evidence "$ID" 2>/dev/null) || evidence=
+    fi
+    if [ -z "$evidence" ]; then
+      echo "error: task $ID is absent from the backlog and no durable evidence proves its work landed" >&2
+      echo "Restore the task's record, or land its work, before cleanup can retire this task's state." >&2
+      return 1
+    fi
+    printf '%s\n' "Backlog: $ID has no backlog record - completed history retention prunes old Done entries - so cleanup proceeded on durable landed-work evidence ($evidence)."
     return 0
   fi
   if fm_tasks_axi_backend_available "$CONFIG"; then
@@ -1282,6 +1343,7 @@ validate_worktree_teardown_safety() {
       return 1
     fi
   fi
+  return 0
 }
 
 # Fix 1 (see script header): does the active-or-most-recent no-mistakes run in

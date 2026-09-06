@@ -2,11 +2,26 @@
 # Own guarded backlog lifecycle writes and repair interrupted lifecycle edges.
 # Usage: fm-backlog-integrity.sh check-start <id>
 #        fm-backlog-integrity.sh check-row <id> [--allow-absent]
+#        fm-backlog-integrity.sh row-state <id>
+#        fm-backlog-integrity.sh landed-evidence <id>
 #        fm-backlog-integrity.sh start <id>
 #        fm-backlog-integrity.sh done <id> [--pr <url>|--report <path>|--note <text>]
 #        fm-backlog-integrity.sh landed <id> <pr-merge|local-merge> [done flags]
 #        fm-backlog-integrity.sh failed <id>
 #        fm-backlog-integrity.sh reconcile
+#
+# row-state prints `no-backlog`, `present`, or `absent` for <id> and fails when
+# the backlog data cannot be positively verified. It is the read-only query
+# behind check-row, so a caller that must distinguish a pruned record from a
+# missing backlog does not re-implement either test.
+#
+# landed-evidence prints the durable evidence kind (`merged-pr`,
+# `local-landing`, or `scout-report`) for <id>'s recorded delivery, and fails when
+# no such evidence exists. Landing receipts are identity-bound to the task's
+# launch receipt and re-verified against the forge or the local default branch;
+# scout evidence requires a nonempty report and a latest terminal status of done.
+# This query survives completed-history retention but does not inspect current
+# worktree content. bin/fm-teardown.sh's header owns when it may authorize cleanup.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,22 +42,42 @@ backend_enabled() {
   fm_tasks_axi_backend_available "$CONFIG"
 }
 
-check_row() {
-  local id=$1 allow_absent=${2:-} rows
+# Read-only classification of <id> against the backlog: no-backlog, present, or
+# absent. Fails (never prints a verdict) when the backlog data is not a positively
+# verifiable regular file.
+row_state() {
+  local id=$1 rows
   if [ ! -e "$DATA/backlog.md" ] && [ ! -L "$DATA/backlog.md" ]; then
-    [ "$allow_absent" = --allow-absent ] && return 0
-    fail "backlog is absent; refusing lifecycle start for $id"
+    printf 'no-backlog\n'
+    return 0
   fi
   [ -f "$DATA/backlog.md" ] && [ ! -L "$DATA/backlog.md" ] \
     || fail "could not verify the backlog record for $id"
   if backend_enabled && tasks_axi show "$id" --full >/dev/null 2>&1; then
+    printf 'present\n'
     return 0
   fi
   rows=$("$SCRIPT_DIR/fm-backlog-tsv.sh" "$DATA/backlog.md") \
     || fail "could not verify the backlog record for $id"
-  printf '%s\n' "$rows" \
-    | awk -F '\t' -v id="$id" '$2 == id { found = 1 } END { exit(found ? 0 : 1) }' \
-    || fail "task $id is absent from the backlog"
+  if printf '%s\n' "$rows" \
+    | awk -F '\t' -v id="$id" '$2 == id { found = 1 } END { exit(found ? 0 : 1) }'; then
+    printf 'present\n'
+  else
+    printf 'absent\n'
+  fi
+}
+
+check_row() {
+  local id=$1 allow_absent=${2:-} state
+  state=$(row_state "$id") || exit 1
+  case "$state" in
+    no-backlog)
+      [ "$allow_absent" = --allow-absent ] && return 0
+      fail "backlog is absent; refusing lifecycle start for $id"
+      ;;
+    absent) fail "task $id is absent from the backlog" ;;
+  esac
+  return 0
 }
 
 show_field() {
@@ -238,10 +273,11 @@ valid_local_receipt() {
   valid_timestamp "$(receipt_value "$receipt" event_at)"
 }
 
+# Durable delivery evidence (see header), independent of any backlog row. Takes
+# the task kind rather than a row so it answers for a task whose record is gone.
 landed_work_evidence() {
-  local id=$1 show=$2 kind report receipt project default_branch landed_sha terminal
+  local id=$1 kind=$2 report receipt project default_branch landed_sha terminal
   LANDED_EVIDENCE=
-  kind=$(show_field "$show" kind)
   report="$DATA/$id/report.md"
   terminal=$(grep -E '^(done|failed):' "$STATE/$id.status" 2>/dev/null | tail -1 || true)
   if [ "$kind" = scout ] && [ -s "$report" ] && [ "${terminal%%:*}" = "done" ]; then
@@ -267,11 +303,30 @@ landed_work_evidence() {
   return 1
 }
 
+# Task kind for <id>: the backlog row's kind when the row is readable, else the
+# durable runtime record, so a pruned row does not erase a scout's identity.
+task_kind() {
+  local id=$1 show=${2:-} kind=
+  [ -z "$show" ] || kind=$(show_field "$show" kind)
+  [ -n "$kind" ] || kind=$(sed -n 's/^kind=//p' "$STATE/$id.meta" 2>/dev/null | tail -1)
+  printf '%s' "$kind"
+}
+
+landed_evidence_cmd() {
+  local id=$1 show=
+  if backend_enabled; then
+    show=$(tasks_axi show "$id" --full 2>/dev/null) || show=
+  fi
+  landed_work_evidence "$id" "$(task_kind "$id" "$show")" \
+    || fail "task $id has no durable landed-work evidence"
+  printf '%s\n' "$LANDED_EVIDENCE"
+}
+
 reconcile_orphan() {
   local id=$1 receipt pr show
   [ ! -f "$STATE/$id.meta" ] || return 0
   show=$(tasks_axi show "$id" --full 2>/dev/null) || fail "could not read orphan task $id"
-  if landed_work_evidence "$id" "$show"; then
+  if landed_work_evidence "$id" "$(task_kind "$id" "$show")"; then
     case "$LANDED_EVIDENCE" in
       scout-report) tasks_axi "done" "$id" --report "data/$id/report.md" >/dev/null || fail "could not close orphan scout $id" ;;
       merged-pr)
@@ -328,8 +383,28 @@ $rows
 EOF
 }
 
+# Report every task whose durable runtime record outlives its backlog row.
+# Completed-history retention is entitled to prune a Done row, and a row can also
+# be hand-removed, so a task can hold a worktree, an endpoint, and state files
+# with nothing left in the queue to name it. Cleanup resolves that from landed
+# evidence, but only once someone knows the task is there - this makes the leak
+# visible instead of silent. Reporting only: reconcile never tears anything down.
+# Secondmate homes are never backlog items, so their records are not stranded.
+reconcile_stranded() {
+  local meta id state
+  [ -d "$STATE" ] || return 0
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+    grep -q '^kind=secondmate$' "$meta" 2>/dev/null && continue
+    id=$(basename "$meta" .meta)
+    state=$(row_state "$id" 2>/dev/null) || continue
+    [ "$state" = absent ] || continue
+    printf 'stranded=%s reason=backlog-record-absent\n' "$id"
+  done
+}
+
 reconcile() {
-  local rows row id detail='' line blocker_repairs decision_repairs
+  local rows row id detail='' line blocker_repairs decision_repairs stranded
   backend_enabled || { printf 'BACKLOG_INTEGRITY: skipped (tasks-axi backend unavailable)\n'; return 0; }
   rows=$(tasks_axi list --state in_flight) || fail "could not list in-flight backlog rows"
   while IFS= read -r row; do
@@ -354,12 +429,20 @@ EOF
 $decision_repairs
 EOF
   fi
+  stranded=$(reconcile_stranded) || fail "could not survey stranded task records"
+  while IFS= read -r line; do
+    [ -z "$line" ] || detail="${detail}${detail:+; }$line"
+  done <<EOF
+$stranded
+EOF
   printf 'BACKLOG_INTEGRITY: %s\n' "${detail:-clean}"
 }
 
 case "${1:-}" in
   check-start) [ "$#" -eq 2 ] || exit 2; check_start "$2" ;;
   check-row) [ "$#" -ge 2 ] && [ "$#" -le 3 ] || exit 2; check_row "$2" "${3:-}" ;;
+  row-state) [ "$#" -eq 2 ] || exit 2; row_state "$2" ;;
+  landed-evidence) [ "$#" -eq 2 ] || exit 2; landed_evidence_cmd "$2" ;;
   start) [ "$#" -eq 2 ] || exit 2; guarded_start "$2" ;;
   done) [ "$#" -ge 2 ] || exit 2; id=$2; shift 2; record_done "$id" "$@" ;;
   landed) [ "$#" -ge 3 ] || exit 2; id=$2; context=$3; shift 3; record_landed "$id" "$context" "$@" ;;

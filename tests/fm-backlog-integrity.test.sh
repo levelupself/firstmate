@@ -213,6 +213,52 @@ SH
   pass "valid merged receipt closes only its bound launch"
 }
 
+test_landed_evidence_survives_pruned_completed_record() {
+  local home id=pruned-pr fakebin evidence rc=0
+  home=$(make_home pruned-record-evidence)
+  # Keep exactly one completed entry so closing a second task prunes this one,
+  # driving retention instead of depending on how many entries happen to exist.
+  printf 'backend = "markdown"\n\n[markdown]\npath = "data/backlog.md"\narchive = "data/done-archive.md"\ndone_keep = 1\n' \
+    > "$home/.tasks.toml"
+  printf '%s\n' 'schema=fm-task-launch.v1' "task_id=$id" \
+    'spawned_at=2026-09-02T12:00:00Z' > "$home/state/$id.launch-receipt"
+  mkdir -p "$home/data/pr-merges"
+  printf '%s\n' 'schema=fm-pr-merge.v3' "task_id=$id" 'pr=https://github.com/example/repo/pull/1' \
+    'repository=example/repo' 'default_branch=main' \
+    'merge_commit=1111111111111111111111111111111111111111' \
+    'spawned_at=2026-09-02T12:00:00Z' 'phase=merged' 'authorization=live-meta' \
+    'prepared_epoch=1' 'merged_at=2026-09-02T12:01:00Z' \
+    > "$home/data/pr-merges/$id.receipt"
+  fakebin="$home/fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+case "${2:-}" in
+  */compare/*) printf '%s\n' 'status: ahead' ;;
+  */repos/*) printf '%s\n' 'default_branch: main' ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/gh-axi"
+  (cd "$home" && tasks-axi add "$id" "$id" >/dev/null \
+    && tasks-axi "done" "$id" --pr https://github.com/example/repo/pull/1 >/dev/null \
+    && tasks-axi add newer-task "Newer task" >/dev/null \
+    && tasks-axi "done" newer-task --pr https://github.com/example/repo/pull/2 >/dev/null)
+  (cd "$home" && tasks-axi show "$id" >/dev/null 2>&1) \
+    && fail "completed-history retention did not prune the $id record"
+
+  evidence=$(PATH="$fakebin:$PATH" run_integrity "$home" landed-evidence "$id") \
+    || fail "landed evidence was lost with the pruned completed record"
+  [ "$evidence" = merged-pr ] \
+    || fail "pruned record reported unexpected landed evidence: $evidence"
+  set +e
+  PATH="$fakebin:$PATH" run_integrity "$home" landed-evidence unknown-task >/dev/null 2>&1
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a task with no landing receipt reported landed evidence"
+  pass "durable landed evidence outlives a pruned completed record"
+}
+
 test_merge_commit_outside_default_reopens_orphan() {
   local home id=unlanded-pr fakebin
   home=$(make_home unlanded-pr)
@@ -316,8 +362,40 @@ test_failed_start_does_not_poison_retry_binding() {
   pass "failed backlog start leaves no binding that poisons retry"
 }
 
+test_reconcile_reports_task_state_whose_record_retention_pruned() {
+  local home out
+  home=$(make_home stranded-after-retention)
+  # Keep exactly one completed entry, so the second completion prunes the first
+  # by driving retention rather than by how many entries happen to exist.
+  printf 'backend = "markdown"\n\n[markdown]\npath = "data/backlog.md"\narchive = "data/done-archive.md"\ndone_keep = 1\n' \
+    > "$home/.tasks.toml"
+  (cd "$home" && tasks-axi add stranded-task "Stranded task" >/dev/null \
+    && tasks-axi "done" stranded-task --pr https://github.com/example/repo/pull/7 >/dev/null \
+    && tasks-axi add newer-task "Newer task" >/dev/null \
+    && tasks-axi "done" newer-task --pr https://github.com/example/repo/pull/8 >/dev/null)
+  (cd "$home" && tasks-axi show stranded-task >/dev/null 2>&1) \
+    && fail "completed-history retention did not prune the stranded-task record"
+  # Its runtime record outlives the pruned row - the worktree and endpoint leak.
+  fm_write_meta "$home/state/stranded-task.meta" \
+    "window=firstmate:fm-stranded-task" \
+    "worktree=$home/wt" \
+    "project=$home/project" \
+    "kind=ship" \
+    "mode=no-mistakes"
+  # A secondmate home is never a backlog item and must never be reported.
+  fm_write_secondmate_meta "$home/state/second-home.meta" "$home/second"
+
+  out=$(run_integrity "$home" reconcile) || fail "reconcile failed while surveying stranded records"
+  assert_contains "$out" 'stranded=stranded-task' \
+    "reconcile left the pruned task's stranded state silent"
+  assert_not_contains "$out" 'stranded=second-home' \
+    "reconcile reported a secondmate home as a stranded backlog item"
+  pass "reconcile reports task state whose backlog record retention pruned"
+}
+
 test_dispatch_refuses_absent_backlog
 test_landed_work_reports_absent_backlog
+test_reconcile_reports_task_state_whose_record_retention_pruned
 test_finished_row_cannot_be_resurrected
 test_three_orphans_are_repaired_without_blinding
 test_resolved_blocker_edge_is_removed
@@ -326,6 +404,7 @@ test_partial_scout_report_does_not_close_orphan
 test_unreadable_blocker_is_not_cleared
 test_invalid_landing_receipts_do_not_close_orphans
 test_landing_receipt_must_match_durable_launch
+test_landed_evidence_survives_pruned_completed_record
 test_merge_commit_outside_default_reopens_orphan
 test_pr_receipt_identity_must_match_forge_authority
 test_failed_start_does_not_poison_retry_binding
