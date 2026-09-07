@@ -346,15 +346,22 @@ jobs:
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
-          shopt -s nullglob
-          inputs=("$RUNNER_TEMP"/fm-test-aggregate/fm-test-timing-*.json)
-          if [ "${#inputs[@]}" -eq 0 ]; then
-            echo "::warning::no per-lane timing JSON found to aggregate"
-            exit 0
-          fi
+          # Recursive on purpose. upload-artifact roots a multi-path artifact
+          # at the least common ancestor of its paths, so the Herdr lane - which
+          # uploads diagnostics beside its timing JSON - carries a directory
+          # prefix that survives merge-multiple. A top-level-only glob would
+          # silently skip that lane's JSON.
+          shopt -s nullglob globstar
+          inputs=("$RUNNER_TEMP"/fm-test-aggregate/**/fm-test-timing-*.json)
+          # The job dependencies above already make a run with no lane artifact
+          # red at the gate. --require-ci-lanes tells the same truth a second
+          # time, here, where the number is built: the input set must be exactly
+          # the lane inventory bin/fm-test-run.sh owns, so an aggregation that
+          # consumed nothing - or lost one lane of the set - fails instead of
+          # warning and reporting a summary over what is left.
           bin/fm-test-run.sh --aggregate-json \
             "$RUNNER_TEMP/fm-test/fm-test-timing-aggregate.json" \
-            "${inputs[@]}"
+            --require-ci-lanes ${inputs[@]+"${inputs[@]}"}
       - name: Upload aggregate timing artifact
         if: always()
         uses: actions/upload-artifact@v4

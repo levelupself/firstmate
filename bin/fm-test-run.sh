@@ -19,6 +19,7 @@
 #   fm-test-run.sh --list --lane portable-parallel-1
 #   fm-test-run.sh --list-families
 #   fm-test-run.sh --list-lanes
+#   fm-test-run.sh --list-ci-timing-artifacts
 #   fm-test-run.sh --check-coverage
 #
 # Aggregation (no suite execution):
@@ -27,10 +28,18 @@
 #     no test is refused (exit 2, naming the input) instead of contributing a
 #     phantom zero to the combined summary, so a combined "0 failed" always
 #     means tests actually ran.
+#   fm-test-run.sh --aggregate-json <out.json> --require-ci-lanes <lane.json>...
+#     Additionally refuse an input set that is not exactly the CI lane
+#     inventory (--list-ci-timing-artifacts): exit 2 naming the missing,
+#     unrecognized, or repeated artifacts. CI uses this so an aggregation that
+#     consumed no lane, lost one, or counted one twice cannot report success.
 #
 # Options:
 #   --json <path>   write a deterministic timing artifact after the run
 #   --list          print selected script paths (one per line) and exit 0
+#   --require-ci-lanes
+#                   with --aggregate-json, require the inputs to be exactly the
+#                   CI lane timing artifacts (--list-ci-timing-artifacts)
 #   --base <ref>    with --changed, compare against this ref (default: origin/main)
 #   --exclude-family <name>
 #                   drop scripts whose primary family matches <name> after selection
@@ -73,9 +82,12 @@
 # otherwise be indistinguishable from a green suite by exit status alone. The
 # same rule holds one layer up: --aggregate-json exits 2 rather than summing a
 # lane artifact whose summary.total is 0, because an aggregate that absorbs an
-# empty lane is the same false green as an exit code of zero.
-# Inspection modes (--list, --list-families, --list-lanes) do not run tests and
-# keep their own exit contract.
+# empty lane is the same false green as an exit code of zero. --require-ci-lanes
+# extends that rule to the lane set itself: an input set that is not exactly the
+# CI lane inventory - none of it, part of it, an artifact it does not list, or
+# one lane supplied twice - is refused rather than summed.
+# Inspection modes (--list, --list-families, --list-lanes,
+# --list-ci-timing-artifacts) do not run tests and keep their own exit contract.
 #
 # Family labels, the changed-file map, and production portable-shard composition
 # live in this script only (one owner). The proven-isolated candidate set remains
@@ -97,8 +109,10 @@ MODE=
 LIST_ONLY=0
 LIST_FAMILIES=0
 LIST_LANES=0
+LIST_CI_TIMING_ARTIFACTS=0
 CHECK_COVERAGE=0
 AGGREGATE_OUT=
+REQUIRE_CI_LANES=0
 FAMILY=
 LANE=
 BASE_REF=origin/main
@@ -300,6 +314,84 @@ list_known_lanes() {
     i=$((i + 1))
   done
   printf '%s\n' real-herdr-gated
+}
+
+# Exact timing-artifact basenames a complete CI aggregate must consume, derived
+# from the lane inventory above so a lane cannot be added without the aggregate
+# requiring its artifact. The serial shard count is PORTABLE_SERIAL_SHARDS, the
+# same number the CI matrix is already pinned to by portable_serial_shard_index,
+# so growing the matrix cannot leave this requirement behind. The unsharded
+# portable-serial lane is a local convenience with no CI job of its own; its
+# shards carry that coverage.
+list_ci_timing_artifacts() {
+  local lane spec
+  while IFS= read -r lane; do
+    case "$lane" in
+      portable-serial) ;;
+      portable-serial-*of*)
+        spec=${lane#portable-serial-}
+        printf 'fm-test-timing-portable-serial-%s.json\n' "${spec%%of*}"
+        ;;
+      real-herdr-gated) printf 'fm-test-timing-herdr.json\n' ;;
+      *) printf 'fm-test-timing-%s.json\n' "$lane" ;;
+    esac
+  done < <(list_known_lanes)
+}
+
+# Refuse an aggregate whose inputs are not exactly the CI lane set. Each lane
+# job uploads its timing artifact even when that lane fails, so a lane absent
+# here produced no artifact at all, and summing the remainder would report a
+# combined total over fewer lanes than CI ran - the same false green as
+# aggregating a lane that executed no test.
+require_ci_lane_inputs() {
+  local tmp p compared repeated missing unexpected refusal
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-ci-lanes.XXXXXX") \
+    || die "--require-ci-lanes could not create a temporary directory"
+  list_ci_timing_artifacts | LC_ALL=C sort -u >"$tmp/expected"
+  : >"$tmp/actual"
+  for p in "$@"; do
+    basename "$p" >>"$tmp/actual"
+  done
+  LC_ALL=C sort "$tmp/actual" -o "$tmp/actual"
+  # Refused rather than collapsed: aggregate_timing_json sums every path it is
+  # handed, so a lane reaching this check twice would satisfy the set below
+  # while contributing its summary.total twice to the combined number. The set
+  # comparison runs against the deduplicated list so a repeated lane is
+  # reported only as repeated, never also as an unrecognized one.
+  repeated=$(uniq -d "$tmp/actual" | tr '\n' ' ')
+  LC_ALL=C sort -u "$tmp/actual" >"$tmp/present"
+  # Both comparisons run under the same LC_ALL=C collation as the sorts that
+  # feed them, and their status is kept instead of being swallowed by a
+  # pipeline: a comparison that could not complete must refuse loudly rather
+  # than yield an empty difference that reads as a satisfied lane set.
+  compared=0
+  LC_ALL=C comm -23 "$tmp/expected" "$tmp/present" >"$tmp/missing" || compared=1
+  LC_ALL=C comm -13 "$tmp/expected" "$tmp/present" >"$tmp/unexpected" || compared=1
+  missing=$(tr '\n' ' ' <"$tmp/missing")
+  unexpected=$(tr '\n' ' ' <"$tmp/unexpected")
+  rm -rf "$tmp"
+  repeated=${repeated% }
+  missing=${missing% }
+  unexpected=${unexpected% }
+  if [ "$compared" -ne 0 ]; then
+    die "--require-ci-lanes could not compare the supplied artifacts against the CI lane inventory (see --list-ci-timing-artifacts). A comparison that did not complete cannot show the lane set is complete, so the aggregate is refused rather than reported as covering every lane."
+  fi
+  # Every non-empty category is reported in one refusal: a lane renamed on one
+  # side only produces a missing entry and an unrecognized entry together, and
+  # reporting the missing one alone would advise a rerun that cannot fix it.
+  refusal=""
+  if [ -n "$missing" ]; then
+    refusal="$refusal Missing CI lane timing artifacts: $missing. Every CI lane uploads its timing artifact even when that lane fails, so a lane absent here produced none at all; aggregating the rest would report a combined summary covering fewer lanes than CI ran. Rerun the lanes that produced no artifact, then aggregate again."
+  fi
+  if [ -n "$unexpected" ]; then
+    refusal="$refusal Artifacts supplied that this lane inventory does not list: $unexpected. Either the workflow and this inventory have drifted apart, or an artifact left over from an earlier attempt of the same run was picked up; compare with --list-ci-timing-artifacts and reconcile the inventory or narrow the inputs instead of aggregating an unrecognized lane."
+  fi
+  if [ -n "$repeated" ]; then
+    refusal="$refusal CI lane timing artifacts supplied more than once: $repeated. Each lane contributes one artifact, and every input is summed, so aggregating a repeated lane would count its totals twice. Supply each lane artifact exactly once."
+  fi
+  if [ -n "$refusal" ]; then
+    die "--require-ci-lanes refused the supplied CI lane timing artifact set.$refusal"
+  fi
 }
 
 # Exact proven-isolated candidate set (same paths as
@@ -1343,6 +1435,14 @@ while [ "$#" -gt 0 ]; do
       LIST_LANES=1
       shift
       ;;
+    --list-ci-timing-artifacts)
+      LIST_CI_TIMING_ARTIFACTS=1
+      shift
+      ;;
+    --require-ci-lanes)
+      REQUIRE_CI_LANES=1
+      shift
+      ;;
     --check-coverage)
       CHECK_COVERAGE=1
       shift
@@ -1411,13 +1511,27 @@ if [ "$LIST_LANES" -eq 1 ]; then
   exit 0
 fi
 
+if [ "$LIST_CI_TIMING_ARTIFACTS" -eq 1 ]; then
+  list_ci_timing_artifacts
+  exit 0
+fi
+
 if [ "$CHECK_COVERAGE" -eq 1 ]; then
   run_coverage_guard
   exit $?
 fi
 
+if [ "$REQUIRE_CI_LANES" -eq 1 ] && [ "${MODE:-}" != "aggregate" ]; then
+  die "--require-ci-lanes is only meaningful with --aggregate-json"
+fi
+
 if [ "${MODE:-}" = "aggregate" ]; then
   [ -n "$AGGREGATE_OUT" ] || die "--aggregate-json requires an output path"
+  # Checked before the generic empty-input refusal so an aggregation handed no
+  # lane at all reports which lanes it expected, not just that it got none.
+  if [ "$REQUIRE_CI_LANES" -eq 1 ]; then
+    require_ci_lane_inputs ${SCRIPTS[@]+"${SCRIPTS[@]}"}
+  fi
   [ "${#SCRIPTS[@]}" -gt 0 ] || die "--aggregate-json requires at least one input timing JSON"
   for s in "${SCRIPTS[@]}"; do
     [ -f "$s" ] || die "aggregate input not found: $s"
