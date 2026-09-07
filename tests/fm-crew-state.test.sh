@@ -1395,15 +1395,21 @@ test_pipeline_owned_different_branch_is_rejected() {
 
 test_pipeline_owned_submitted_head_behind_local_work_is_rejected() {
   reset_fakes
-  local d submitted_head out
+  local d submitted_head short out
   d=$(new_case pipeline-owned-local-advanced)
   make_repo_on_branch "$d/wt" fm/feat-local-advanced
   submitted_head=$(git -C "$d/wt" rev-parse HEAD)
   git -C "$d/wt" commit -q --allow-empty -m 'additional local work'
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/local-advanced.meta" "window=fm:fm-local-advanced" "worktree=$d/wt" "kind=ship" "harness=codex"
   FM_FAKE_AXI_STATUS=$(run_pipeline_owned_fixing fm/feat-local-advanced "$submitted_head" 3333333333333333333333333333333333333333)
-  FM_FAKE_RUNS_LIST=""
+  # The rejected run is also listed for THIS branch with a sha the coarse rule
+  # would happily accept; ownership rejection must outrank that weaker rule.
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/feat-local-advanced ${short}  2026-08-10 09:00
+EOF
+)"
   out=$(run_crew_state "$d" local-advanced)
   assert_not_contains "$out" "source: run-step" "a submitted head behind local work must be rejected"
   assert_contains "$out" "state: unknown" "unverifiable Codex pane stays unknown after head mismatch"
@@ -1411,12 +1417,13 @@ test_pipeline_owned_submitted_head_behind_local_work_is_rejected() {
 }
 
 test_pipeline_owned_invalid_relationship_is_rejected() {
-  local variant d head out
+  local variant d head short out
   for variant in mismatch missing wrong-owner nested-owner; do
     reset_fakes
     d=$(new_case "pipeline-owned-$variant")
     make_repo_on_branch "$d/wt" fm/feat-invalid
     head=$(git -C "$d/wt" rev-parse HEAD)
+    short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
     make_fakebin "$d" >/dev/null
     fm_write_meta "$d/state/invalid.meta" "window=fm:fm-invalid" "worktree=$d/wt" "kind=ship" "harness=codex"
     FM_FAKE_AXI_STATUS=$(run_pipeline_owned_fixing fm/feat-invalid "$head" "$head")
@@ -1426,9 +1433,16 @@ test_pipeline_owned_invalid_relationship_is_rejected() {
       wrong-owner) FM_FAKE_AXI_STATUS=$(printf '%s\n' "$FM_FAKE_AXI_STATUS" | sed 's/    pipeline:/    unrelated:/') ;;
       nested-owner) FM_FAKE_AXI_STATUS=$(printf '%s\n' "$FM_FAKE_AXI_STATUS" | sed 's/      submitted_head:/        submitted_head:/') ;;
     esac
-    FM_FAKE_RUNS_LIST=""
+    # Same-branch runs-list row whose sha equals this worktree head: the coarse
+    # ownership-blind rule would attribute it as "validating (background run)",
+    # so it must stay unreachable once ownership authoritatively rejected it.
+    FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/feat-invalid ${short}  2026-08-10 09:00
+EOF
+)"
     out=$(run_crew_state "$d" invalid)
     assert_not_contains "$out" "source: run-step" "$variant pipeline relationship must not fall back to equal legacy head"
+    assert_not_contains "$out" "background run" "$variant rejection must not be resurrected by the coarse runs list"
     assert_contains "$out" "state: unknown" "$variant relationship leaves Codex unknown"
   done
   pass "invalid pipeline ownership cannot use legacy head fallback"
@@ -1446,7 +1460,8 @@ test_unmatched_codex_pane_remains_unknown() {
   FM_FAKE_BUSY=1
   out=$(run_crew_state "$d" codex-unverified)
   assert_contains "$out" "state: unknown" "Codex pane must remain unknown without a matching run"
-  assert_contains "$out" "codex-unverified" "Codex fallback must continue refusing to guess"
+  assert_contains "$out" "source: pane" "the unmatched crew falls through to the pane reader"
+  assert_contains "$out" "harness state unavailable" "Codex fallback must continue refusing to guess"
   pass "unmatched Codex pane fallback remains unknown"
 }
 

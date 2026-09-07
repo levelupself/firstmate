@@ -392,15 +392,22 @@ nm_runs_status_for_branch() {  # <branch>
 CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
 
 # Match published pipeline ownership before the legacy head rule owned by
-# fm_nm_head_matches_worktree in bin/fm-nm-run-lib.sh.
+# fm_nm_head_matches_worktree in bin/fm-nm-run-lib.sh. Exit codes carry WHY a
+# match failed, because the two failures deserve different handling: 0 the run
+# binds to this worktree; NM_OWNERSHIP_REJECTED (2) the run publishes a
+# pipeline_owned relationship whose submitted head is not this worktree's code
+# identity - an authoritative "not this crew's code" answer that no weaker rule
+# may overturn; 1 no published relationship bound it, so coarser attribution
+# may still try.
+NM_OWNERSHIP_REJECTED=2
 nm_run_head_matches_worktree() {
   local run_head local_full branch_sync_state submitted_head
   local_full=$(git -C "$WT" rev-parse HEAD 2>/dev/null) || return 1
   branch_sync_state=$(strip_quotes "$(nm_branch_sync_field state)")
   submitted_head=$(strip_quotes "$(nm_branch_sync_field submitted_head)")
   if [ "$branch_sync_state" = pipeline_owned ]; then
-    [ "$submitted_head" = "$local_full" ]
-    return $?
+    [ "$submitted_head" = "$local_full" ] || return "$NM_OWNERSHIP_REJECTED"
+    return 0
   fi
   run_head=$(strip_quotes "$(nm_field head)")
   fm_nm_head_matches_worktree "$WT" "$run_head"
@@ -426,12 +433,28 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
   RUN_OUT=$(nm_run axi status)
   if [ -n "$RUN_OUT" ]; then
     run_branch=$(strip_quotes "$(nm_field branch)")
-    if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] && nm_run_head_matches_worktree; then
+    # Branch match is a precondition for asking about code identity at all, so
+    # a non-matching branch keeps the plain "unmatched" code (1).
+    HEAD_MATCH=1
+    if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ]; then
+      HEAD_MATCH=0
+      nm_run_head_matches_worktree || HEAD_MATCH=$?
+    fi
+    if [ "$HEAD_MATCH" = 0 ]; then
       HAVE_RUN=1
+    elif [ "$HEAD_MATCH" = "$NM_OWNERSHIP_REJECTED" ]; then
+      # This crew's own branch published a pipeline_owned relationship that does
+      # NOT bind this worktree. That is the authoritative answer about code
+      # identity, so the coarse runs-list rule below - plain equality/ancestry
+      # on a short sha, strictly weaker and ownership-blind - must not resurrect
+      # the very run ownership just rejected. No run is attributed; the crew
+      # falls through to pane/log and honestly reports unknown.
+      :
     else
       # The active-or-most-recent run is for another branch, or same branch with
-      # a rewritten/diverged head (the CLI is alive and answered; only the
-      # attribution missed) - try the coarse fallback.
+      # a rewritten/diverged head and no published ownership relationship (the
+      # CLI is alive and answered; only the attribution missed) - try the coarse
+      # fallback.
       # Deliberately nested inside `[ -n "$RUN_OUT" ]`: an empty/timed-out
       # primary call means the CLI itself did not respond, so retrying it
       # immediately with a second bounded call would just double the wait
