@@ -96,6 +96,8 @@ It separately verifies that the portable serial CI shards are non-empty, disjoin
 
 Portable shards, each portable serial shard, and the Herdr lane upload runner-generated timing JSON.
 `bin/fm-test-run.sh --aggregate-json` creates the combined summary artifact.
+The aggregate job passes `--require-ci-lanes`, so a combined summary is refused unless its inputs are exactly the lane set `bin/fm-test-run.sh --list-ci-timing-artifacts` prints.
+That inventory is derived from the lane list above, which keeps the required artifacts in step with the shard count rather than with a number written into the workflow.
 `.github/workflows/ci.yml` owns the exact artifact names and aggregation wiring.
 
 ## Local entry points

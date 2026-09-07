@@ -970,6 +970,145 @@ JSON
   pass "aggregate refuses a lane artifact whose summary.total is 0"
 }
 
+# Emit a minimal one-script lane timing artifact so aggregate-set assertions can
+# be exercised without running a real lane.
+write_lane_timing_fixture() {
+  cat >"$1" <<JSON
+{
+  "run_id": "$2",
+  "selection": "$2",
+  "started_at": "2026-09-06T00:00:00Z",
+  "finished_at": "2026-09-06T00:00:01Z",
+  "summary": {"total": 1, "failed": 0, "skipped_gate": 0, "duration_ms": 1000},
+  "scripts": [{"path": "tests/a.test.sh", "family": "pure-contract-unit", "duration_ms": 1000, "exit": 0, "gate_skip": false}]
+}
+JSON
+}
+
+test_ci_timing_artifact_inventory_tracks_the_lane_set() {
+  local listed lanes name expected_serial got_serial i
+  listed=$("$RUNNER" --list-ci-timing-artifacts) \
+    || fail "--list-ci-timing-artifacts must print the CI timing artifact inventory"
+  [ -n "$listed" ] || fail "--list-ci-timing-artifacts printed nothing"
+  [ "$(printf '%s\n' "$listed" | sort | uniq | wc -l | tr -d ' ')" = \
+    "$(printf '%s\n' "$listed" | wc -l | tr -d ' ')" ] \
+    || fail "--list-ci-timing-artifacts must not repeat an artifact: $listed"
+  while IFS= read -r name; do
+    case "$name" in
+      fm-test-timing-*.json) ;;
+      *) fail "not a lane timing artifact basename: $name" ;;
+    esac
+  done <<EOF
+$listed
+EOF
+  lanes=$("$RUNNER" --list-lanes)
+  # The unsharded convenience lane has no CI job, so it must not be required.
+  printf '%s\n' "$listed" | grep -Fxq 'fm-test-timing-portable-serial.json' \
+    && fail "the unsharded portable-serial lane is not a CI job and must not be required"
+  # One required artifact per CI lane job: both parallel shards, every serial
+  # shard this runner configures, and the required Herdr lane.
+  printf '%s\n' "$listed" | grep -Fxq 'fm-test-timing-portable-parallel-1.json' \
+    || fail "portable parallel shard 1 is not required by the aggregate"
+  printf '%s\n' "$listed" | grep -Fxq 'fm-test-timing-portable-parallel-2.json' \
+    || fail "portable parallel shard 2 is not required by the aggregate"
+  printf '%s\n' "$listed" | grep -Fxq 'fm-test-timing-herdr.json' \
+    || fail "the required Herdr lane is not required by the aggregate"
+  expected_serial=$(printf '%s\n' "$lanes" | grep -c '^portable-serial-[0-9]*of[0-9]*$')
+  got_serial=$(printf '%s\n' "$listed" | grep -c '^fm-test-timing-portable-serial-[0-9]*\.json$')
+  [ "$expected_serial" -gt 0 ] || fail "--list-lanes advertises no portable serial shards"
+  [ "$got_serial" -eq "$expected_serial" ] \
+    || fail "aggregate requires $got_serial serial shard artifacts but $expected_serial shard lanes exist"
+  i=1
+  while [ "$i" -le "$expected_serial" ]; do
+    printf '%s\n' "$listed" | grep -Fxq "fm-test-timing-portable-serial-$i.json" \
+      || fail "serial shard $i has a CI lane but no required timing artifact"
+    i=$((i + 1))
+  done
+  pass "CI timing artifact inventory names one artifact per CI lane job"
+}
+
+test_aggregate_require_ci_lanes_refuses_an_incomplete_set() {
+  local tmp listed name first rc err out count
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-agglanes.XXXXXX")
+  listed=$("$RUNNER" --list-ci-timing-artifacts) \
+    || { rm -rf "$tmp"; fail "--list-ci-timing-artifacts must print the CI timing artifact inventory"; }
+  [ -n "$listed" ] || { rm -rf "$tmp"; fail "--list-ci-timing-artifacts printed nothing"; }
+  mkdir -p "$tmp/all"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    write_lane_timing_fixture "$tmp/all/$name" "${name%.json}"
+  done <<EOF
+$listed
+EOF
+  first=$(printf '%s\n' "$listed" | head -1)
+
+  # Zero downloaded lanes is the case that used to short-circuit as success:
+  # an aggregation that consumed nothing must never report a green summary.
+  set +e
+  "$RUNNER" --aggregate-json "$tmp/none.json" --require-ci-lanes >"$tmp/out0" 2>"$tmp/err0"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] \
+    || { rm -rf "$tmp"; fail "aggregating zero CI lanes must fail, got $rc"; }
+  err=$(cat "$tmp/err0")
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    assert_contains "$err" "$name" "zero-lane refusal names every missing lane artifact"
+  done <<EOF
+$listed
+EOF
+  [ ! -e "$tmp/none.json" ] \
+    || { rm -rf "$tmp"; fail "a refused aggregate must not write a combined artifact"; }
+
+  # A partially-missing set is the failure a bare zero-input check cannot see.
+  mkdir -p "$tmp/partial"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    [ "$name" = "$first" ] && continue
+    cp "$tmp/all/$name" "$tmp/partial/$name"
+  done <<EOF
+$listed
+EOF
+  set +e
+  "$RUNNER" --aggregate-json "$tmp/partial.json" --require-ci-lanes "$tmp"/partial/*.json \
+    >"$tmp/out1" 2>"$tmp/err1"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] \
+    || { rm -rf "$tmp"; fail "aggregating an incomplete CI lane set must fail, got $rc"; }
+  err=$(cat "$tmp/err1")
+  assert_contains "$err" "$first" "incomplete-set refusal names the missing lane artifact"
+  grep -q '^FM_TEST_AGGREGATE ' "$tmp/out1" \
+    && { rm -rf "$tmp"; fail "a refused aggregate must not print a combined summary"; }
+  [ ! -e "$tmp/partial.json" ] \
+    || { rm -rf "$tmp"; fail "a refused aggregate must not write a combined artifact"; }
+
+  # A lane artifact this runner does not know about means the workflow and the
+  # composition owner disagree; aggregating it would hide that drift.
+  cp "$tmp/all/$first" "$tmp/all/fm-test-timing-not-a-lane.json"
+  set +e
+  "$RUNNER" --aggregate-json "$tmp/extra.json" --require-ci-lanes "$tmp"/all/*.json \
+    >"$tmp/out2" 2>"$tmp/err2"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] \
+    || { rm -rf "$tmp"; fail "aggregating an unrecognized lane artifact must fail, got $rc"; }
+  assert_contains "$(cat "$tmp/err2")" "fm-test-timing-not-a-lane.json" \
+    "unexpected-artifact refusal names the artifact it does not recognize"
+  rm -f "$tmp/all/fm-test-timing-not-a-lane.json"
+
+  # The complete set still aggregates, so the guard adds a refusal rather than
+  # blocking the healthy path.
+  out=$("$RUNNER" --aggregate-json "$tmp/full.json" --require-ci-lanes "$tmp"/all/*.json) \
+    || { rm -rf "$tmp"; fail "the complete CI lane set must still aggregate"; }
+  count=$(printf '%s\n' "$listed" | grep -c .)
+  assert_contains "$out" "FM_TEST_AGGREGATE lanes=$count " "complete aggregate covers every CI lane"
+  [ -f "$tmp/full.json" ] \
+    || { rm -rf "$tmp"; fail "the complete CI lane set must write a combined artifact"; }
+  rm -rf "$tmp"
+  pass "aggregate refuses a CI lane set that is empty, incomplete, or unrecognized"
+}
+
 test_list_all_exact_suite_coverage
 test_family_selection
 test_optional_gate_family_declarations
@@ -996,3 +1135,5 @@ test_herdr_ci_family_run_has_a_step_timeout
 test_herdr_ci_nested_with_name_is_not_a_step
 test_aggregate_json
 test_aggregate_refuses_a_lane_that_ran_nothing
+test_ci_timing_artifact_inventory_tracks_the_lane_set
+test_aggregate_require_ci_lanes_refuses_an_incomplete_set
