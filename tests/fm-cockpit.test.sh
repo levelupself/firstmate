@@ -1221,7 +1221,7 @@ test_sections_config_sets_the_pane_arrangement() {
 }
 
 test_sizing_preflight_refuses_unsafe_geometry() {
-  local ratios out rc before
+  local ratios out rc before counts
   for ratios in '0.0500 0.5000' '0.9500 0.5000' '0.1500 0.1000' 'NaN 0.5000'; do
     reset_layout_frame
     before=$(cat "$HERDR_STATE/panes.tsv")
@@ -1243,7 +1243,27 @@ test_sizing_preflight_refuses_unsafe_geometry() {
     assert_not_contains "$(cat "$HERDR_LOG")" 'pane mutation' "invalid computed geometry reached Herdr"
     [ "$(cat "$HERDR_STATE/panes.tsv")" = "$before" ] || fail "computed refusal changed panes"
   done
-  pass "every split ratio and every resulting band share is checked before any pane call"
+  for counts in unavailable '{}' '{"waiting":-1}' 'null' '[1,2,3]' \
+    '{"waiting":0,"ready":0,"in-flight":0,"blocked":0,"finished":0,"failed":0.5}'; do
+    reset_layout_frame
+    before=$(cat "$HERDR_STATE/panes.tsv")
+    out=$(
+      exec 2>&1
+      . "$ROOT/bin/backends/herdr.sh"
+      fm_backend_herdr_cockpit_row_counts() {
+        [ "$counts" != unavailable ] || return 1
+        printf '%s\n' "$counts"
+      }
+      fm_backend_herdr_cli() { printf 'pane mutation\n' >> "$HERDR_LOG"; return 1; }
+      fm_backend_herdr_cockpit_create_fleet_panes fmtest w3 w3:t1 w3:p1 "$LAYOUT_HOME"
+    )
+    rc=$?
+    [ "$rc" -ne 0 ] || fail "invalid row counts were accepted: $counts"
+    assert_contains "$out" 'fleet row counts are unavailable or invalid' "count refusal omitted the problem"
+    assert_not_contains "$(cat "$HERDR_LOG")" 'pane mutation' "invalid counts reached Herdr"
+    [ "$(cat "$HERDR_STATE/panes.tsv")" = "$before" ] || fail "count refusal changed panes"
+  done
+  pass "every split ratio, final band share, and automatic count is checked before any pane call"
 }
 
 test_automatic_rows_override_and_empty_floor() {
@@ -1343,6 +1363,8 @@ test_invalid_sections_config_refuses_without_changing_the_screen() {
   out=$(run_layout_cockpit adopt 2>&1) \
     && fail "an arrangement past the supported pane count was accepted"
   assert_contains "$out" "at most 6" "the refusal did not name the supported pane count"
+  assert_not_contains "$(cat "$HERDR_LOG")" 'pane split' "duplicate or excessive sections split a pane"
+  [ "$(layout_rows)" = "$before" ] || fail "duplicate or excessive sections rearranged the frame"
   pass "an invalid arrangement refuses and leaves the screen exactly as it was"
 }
 

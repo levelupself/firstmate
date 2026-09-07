@@ -2966,23 +2966,49 @@ fm_backend_herdr_cockpit_sizing() {  # <home>
         tail=0
         for (j=i;j<=n;j++) tail+=share[j]
         ratio[i]=sprintf("%.4f",share[i]/tail)
-        if (!(ratio[i]>=0.10 && ratio[i]<=0.90)) {
-          print "pane " i " split ratio " ratio[i] " is outside 0.10-0.90"; exit 1
-        }
         actual[i]=remaining*ratio[i]; remaining-=actual[i]
       }
       actual[n]=remaining
-      for (i=1;i<=n;i++) {
-        if (n>1 && !(actual[i]>=0.15 && actual[i]<=0.85)) {
-          print "pane " i " final band share " actual[i] " is outside 0.15-0.85"; exit 1
-        }
-      }
       for (i=1;i<=n;i++) printf "%s\t%s\t%.2f%% (weight %s from %s)\n",pane[i],ratio[i],100*actual[i],w[i],source[i]
     }'); then
     printf 'COCKPIT: fleet sizing refused: %s.\n' "$plan" >&2
     return 1
   fi
   FM_BACKEND_HERDR_COCKPIT_SIZING_PLAN=$plan
+}
+
+# Validate the complete wire plan at the mutation boundary, independently of
+# its producer. A valid split ratio can still yield an undersized final pane.
+fm_backend_herdr_cockpit_validate_sizing() {
+  local problem
+  if ! problem=$(printf '%s\n' "$FM_BACKEND_HERDR_COCKPIT_SIZING_PLAN" | \
+    awk -F '\t' -v panes="$FM_BACKEND_HERDR_COCKPIT_SECTIONS_PANES" '
+      BEGIN { n=split(panes,names,"|"); remaining=1 }
+      {
+        if (NF != 3 || NR > n || $1 != names[NR]) {
+          print "pane " NR " has an invalid sizing record"; bad=1; exit 1
+        }
+        if (NR < n) {
+          if ($2 !~ /^[0-9]+[.][0-9]+$/ || !($2>=0.10 && $2<=0.90)) {
+            print "pane " NR " split ratio \"" $2 "\" is outside 0.10-0.90"; bad=1; exit 1
+          }
+          share=remaining*$2; remaining-=share
+        } else {
+          if ($2 != "") { print "last pane has an unexpected split ratio"; bad=1; exit 1 }
+          share=remaining
+        }
+        if (n>1 && !(share>=0.15 && share<=0.85)) {
+          print "pane " NR " final band share " share " is outside 0.15-0.85"; bad=1; exit 1
+        }
+      }
+      END {
+        if (bad) exit 1
+        if (NR != n) { print "sizing record count does not match pane count"; exit 1 }
+      }
+    '); then
+    printf 'COCKPIT: fleet sizing refused: %s.\n' "$problem" >&2
+    return 1
+  fi
 }
 
 # Build this home's fleet region in one deliberate, announced motion.
@@ -3013,6 +3039,7 @@ fm_backend_herdr_cockpit_create_fleet_panes() {  # <session> <workspace> <tab> <
   fm_backend_herdr_cockpit_layout "$home" || return 1
   fm_backend_herdr_cockpit_sections "$home" || return 1
   fm_backend_herdr_cockpit_sizing "$home" || return 1
+  fm_backend_herdr_cockpit_validate_sizing || return 1
   layout_source=$FM_BACKEND_HERDR_COCKPIT_LAYOUT_SOURCE
   [ "$layout_source" != default ] || layout_source='built-in defaults'
   sections_source=$FM_BACKEND_HERDR_COCKPIT_SECTIONS_SOURCE
