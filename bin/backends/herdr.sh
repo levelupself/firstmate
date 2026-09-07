@@ -2791,11 +2791,11 @@ fm_backend_herdr_cockpit_sections() {  # <home>
   # arrangement that could never fit the band is refused as that, rather than as
   # whichever section name it happened to repeat while overflowing.
   while IFS= read -r line; do
-    line=$(printf '%s' "$line" | tr -d '[:space:]')
+    line=$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
     case "$line" in ''|'#'*) continue ;; esac
     weight=auto
     if [[ $line == *@* ]]; then
-      weight=${line#*@}
+      weight=$(printf '%s' "${line#*@}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
       line=${line%%@*}
       if ! [[ $weight =~ ^[0-9]+([.][0-9]+)?$ ]] ||
          ! awk -v w="$weight" 'BEGIN { exit !(w > 0 && w <= 1000000) }'; then
@@ -2804,6 +2804,7 @@ fm_backend_herdr_cockpit_sections() {  # <home>
         return 1
       fi
     fi
+    line=$(printf '%s' "$line" | tr -d '[:space:]')
     FM_BACKEND_HERDR_COCKPIT_SECTIONS_WEIGHTS="${FM_BACKEND_HERDR_COCKPIT_SECTIONS_WEIGHTS}${FM_BACKEND_HERDR_COCKPIT_SECTIONS_WEIGHTS:+|}$weight"
     count=$((count + 1))
     FM_BACKEND_HERDR_COCKPIT_SECTIONS_PANES="${FM_BACKEND_HERDR_COCKPIT_SECTIONS_PANES}${FM_BACKEND_HERDR_COCKPIT_SECTIONS_PANES:+|}$line"

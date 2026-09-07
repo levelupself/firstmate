@@ -60,6 +60,31 @@ At the supported maximum of six equally weighted panes, each share is 1/6 = 0.16
 The current proportional allocation and its bounds are specified in [`docs/configuration.md`](../configuration.md) "Cockpit fleet sections".
 `tests/fm-cockpit.test.sh` checks the equal-weight wire ratios, automatic row weighting, explicit overrides, empty-pane reservation, creation-only sizing, and pre-mutation refusal for invalid ratios and final shares.
 
+## Proportional drawn rectangles
+
+Verified on 2026-09-07 through the guarded named-session lab, using the authoritative `pane layout` rectangles rather than pty dimensions or screenshot inference.
+The focused executable verification is:
+
+```sh
+FM_COCKPIT_SIZING_ONLY=1 \
+HERDR_LAB_HELPER=/absolute/path/to/bin/fm-herdr-lab.sh \
+bash tests/fm-cockpit-herdr-e2e.test.sh
+```
+
+The automatic fixture contains three waiting task rows and nineteen ready task rows, measured through the production renderer and built through the production fleet builder.
+The measured 54-column band produced these rectangles, with all panes at y=1 and height=6:
+
+| Case | Drawn x positions | Drawn widths | Inner wire ratios |
+| --- | --- | --- | --- |
+| Automatic 3:19 | 26, 40 | 14, 40 | 0.2527 |
+| Equal explicit weights | 26, 44, 62 | 18, 18, 18 | 0.3333, 0.5000 |
+| Empty automatic pane and explicit 19 | 26, 35 | 9, 45 | 0.1600 |
+
+The test asserts each split's integer rounding exactly, contiguous rectangles, matching heights, a retained empty-pane floor, and unchanged layout after task membership changes.
+Equal weights also match every drawn rectangle of an independently constructed historical equal-split layout exactly.
+A counterfactual replacing the allocation formula with equality fails the automatic case with `AssertionError: ([0.5], [0.2527])`.
+`tests/fm-cockpit.test.sh` additionally rejects embedded spaces and tabs inside weights before the fleet builder calls any pane interface, while accepting historical section-name whitespace and whitespace around the delimiter.
+
 ## Drawn geometry remains authoritative when the pty diverges
 
 Verified on 2026-08-15 against Herdr 0.7.3 in a guarded lab session.

@@ -1307,7 +1307,7 @@ test_automatic_rows_override_and_empty_floor() {
 test_weighted_sections_and_stable_adoption() {
   local out body first before weight
   reset_layout_frame
-  printf 'waiting @3\nready @19\n' > "$LAYOUT_HOME/config/cockpit-sections"
+  printf ' wait ing \t@ 3 \t\nrea dy @\t19 \n' > "$LAYOUT_HOME/config/cockpit-sections"
   out=$(run_layout_cockpit adopt 2>&1) || fail "weighted arrangement adoption failed: $out"
   first=$(fleet_pane_at 1)
   body=$(cat "$HERDR_LOG")
@@ -1322,7 +1322,7 @@ test_weighted_sections_and_stable_adoption() {
   assert_not_contains "$(cat "$HERDR_LOG")" 'pane split' "existing region was resized"
   [ "$(layout_rows)" = "$before" ] || fail "existing region moved"
 
-  for weight in '' 0 -1 NaN inf 1e3 1.2.3 1000001 '1@2'; do
+  for weight in '1 9' $'1\t9' '1 .9' '1. 9' '' 0 -1 NaN inf 1e3 1.2.3 1000001 '1@2'; do
     reset_layout_frame
     before=$(cat "$HERDR_STATE/panes.tsv")
     printf 'waiting @%s\nready\n' "$weight" > "$LAYOUT_HOME/config/cockpit-sections"
@@ -1330,6 +1330,14 @@ test_weighted_sections_and_stable_adoption() {
     assert_contains "$out" 'weight' "weight refusal did not explain the problem"
     assert_not_contains "$(cat "$HERDR_LOG")" 'pane split' "invalid weight split a pane"
     [ "$(cat "$HERDR_STATE/panes.tsv")" = "$before" ] || fail "invalid weight changed existing panes"
+    : > "$HERDR_LOG"
+    out=$(
+      . "$ROOT/bin/backends/herdr.sh"
+      fm_backend_herdr_cli() { printf 'pane call\n' >> "$HERDR_LOG"; return 1; }
+      fm_backend_herdr_cockpit_create_fleet_panes fmtest w3 w3:t1 w3:p1 "$LAYOUT_HOME" 2>&1
+    ) && fail "invalid weight reached fleet creation"
+    assert_contains "$out" 'weight' "builder refusal omitted the invalid weight"
+    [ ! -s "$HERDR_LOG" ] || fail "invalid weight reached a pane call"
   done
   pass "explicit weights shape the band once and invalid weights preserve every pane"
 }
