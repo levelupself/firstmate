@@ -56,8 +56,8 @@ fm_nm_field() {  # <toon-output> <key>
 }
 
 # The legacy head rule, applied by fm_nm_run_matches_worktree below whenever a
-# run publishes no branch_sync relationship of its own. 0 if run head $2 matches
-# worktree $1's code identity:
+# run does not publish `branch_sync.state: pipeline_owned`. 0 if run head $2
+# matches worktree $1's code identity:
 #   - missing/empty head: cannot bind; reject
 #   - equal commits (short or full SHA): match
 #   - worktree HEAD is an ancestor of run head: match (pipeline fix commits on
@@ -122,7 +122,8 @@ FM_NM_OWNERSHIP_REJECTED=2
 #   FM_NM_OWNERSHIP_REJECTED   published relationship does NOT bind this
 #                              worktree; equality/ancestry fallbacks must not
 #                              resurrect it
-# With no published relationship the legacy head rule in
+# Whenever a run does not publish `branch_sync.state: pipeline_owned` - no
+# relationship at all, or any other state - the legacy head rule in
 # fm_nm_head_matches_worktree decides, returning 0 or 1.
 fm_nm_run_matches_worktree() {  # <worktree> <toon-output>
   local wt=$1 out=$2 local_full sync_state submitted_head run_head

@@ -2396,14 +2396,15 @@ test_another_branchs_parked_run_is_never_touched() {
 # A run parked at a gate that has published a pipeline_owned relationship: its
 # own fix tip lives only in the pipeline's worktree and cannot be resolved here,
 # so only the submitted head can bind it to this task.
-parked_pipeline_owned_axi_status_toon() {  # <branch> <submitted-head> <run-id>
+parked_pipeline_owned_axi_status_toon() {  # <branch> <submitted-head> [run-id] [run-head]
+  local run_head=${4:-9999999999999999999999999999999999999999}
   cat <<EOF
 run:
   id: "${3:-01RUN}"
   branch: $1
   status: awaiting_approval
   awaiting_agent: parked 2m10s
-  head: "9999999999999999999999999999999999999999"
+  head: "$run_head"
   pr: ""
   findings: none
   branch_sync:
@@ -2413,7 +2414,7 @@ run:
       clean: true
     pipeline:
       submitted_head: "$2"
-      current_head: "9999999999999999999999999999999999999999"
+      current_head: "$run_head"
 gate: review
 EOF
 }
@@ -2442,16 +2443,18 @@ test_parked_pipeline_owned_run_is_aborted_before_teardown() {
 }
 
 test_parked_pipeline_owned_run_for_other_code_is_never_touched() {
-  local case_dir rc
+  local case_dir rc head
   case_dir=$(make_case parked-pipeline-owned-mismatch)
   write_meta "$case_dir" no-mistakes ship
   land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
 
   rc=0
-  # Same branch, but the published submitted head is not this worktree's code.
-  # The relationship is authoritative, so no weaker rule may claim the run.
+  # Same branch, and a run head the legacy equality rule would happily bind -
+  # but the published submitted head is not this worktree's code. That
+  # relationship is authoritative, so no weaker rule may claim the run.
   FM_FAKE_AXI_STATUS="$(parked_pipeline_owned_axi_status_toon fm/task-x1 \
-    4444444444444444444444444444444444444444)" \
+    4444444444444444444444444444444444444444 01RUN "$head")" \
   FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 

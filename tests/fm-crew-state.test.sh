@@ -1411,9 +1411,6 @@ test_pipeline_owned_unavailable_current_head_uses_submitted_head() {
   pass "pipeline-owned run binds through submitted head when current head is unavailable"
 }
 
-# The published relationship is a text contract from another process, so an
-# incidental trailing space on the owner key must not silently unbind the run
-# and strand the crew on the coarse-fallback-suppressed unknown row.
 test_pipeline_owned_binds_in_the_published_status_shape() {
   reset_fakes
   local d submitted_head out
@@ -1453,6 +1450,9 @@ EOF
   pass "the published shape rejects a run bound to other code"
 }
 
+# The published relationship is a text contract from another process, so an
+# incidental trailing space on the owner key must not silently unbind the run
+# and strand the crew on the coarse-fallback-suppressed unknown row.
 test_pipeline_owned_binds_despite_trailing_whitespace() {
   reset_fakes
   local d submitted_head out
