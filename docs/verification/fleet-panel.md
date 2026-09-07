@@ -3,7 +3,7 @@
 Audience: maintainer verification.
 
 This record holds reusable evidence for the fleet panel projection and watch-mode repaint guarantees.
-The implementation is shared by `bin/fm-fleet-view.sh` and `bin/fm-cockpit.sh`, while `tests/fm-fleet-snapshot-view.test.sh` owns automated readiness agreement, section ordering, height truncation, independent section rendering, and residual-line coverage.
+The implementation is shared by `bin/fm-fleet-view.sh` and `bin/fm-cockpit.sh`, while `tests/fm-fleet-snapshot-view.test.sh` owns automated readiness agreement, section ordering, height truncation, independent section rendering, residual-line coverage, and the in-flight row that names its authoritative run step instead of reporting unavailable state.
 `tests/fm-fleet-view-project-groups.test.sh` owns project grouping, fair per-project truncation, distinguishing id tails, and the stable no-repository group.
 `tests/fm-fleet-view-pane-fit-smoke.test.sh` owns the real-pane fit that a `LINES`-driven fixture cannot reach, because supplying `LINES` takes the explicit-override branch and never measures anything.
 `tests/fm-cockpit.test.sh` owns the generated Herdr pane-command guarantee that every section watcher resolves through the tracked code root while receiving the operational home separately through `FM_HOME`.
