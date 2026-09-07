@@ -147,6 +147,26 @@ arg_value() {
 }
 
 label=$(arg_value --label "$@" || true)
+
+# Post-create abort arming. fm-spawn resolves the task worktree from the pane
+# shell's own answer rather than the cwd this fake reports, so the abort tasks'
+# pane has to answer with the same non-worktree directory the pane-get patch
+# below reports. Only that answer is rewritten - the pane keeps running its own
+# live shell - so the spawn refuses its isolation check with the workspace and
+# tab already created, which is the state this fixture exercises.
+if [ "${1:-} ${2:-}" = "pane run" ] && [ -d "$POST_CREATE_ABORT_CONTROL" ]; then
+  for task_dir in "$POST_CREATE_ABORT_CONTROL"/abort-*; do
+    [ -d "$task_dir" ] || continue
+    [ "${3:-}" = "$(cat "$task_dir/task-pane" 2>/dev/null || true)" ] || continue
+    case "${4:-}" in
+      "pwd -P"*)
+        set -- "$1" "$2" "$3" \
+          "printf '%s\n' '$POST_CREATE_ABORT_CONTROL/not-a-worktree'${4#pwd -P}"
+        ;;
+    esac
+    break
+  done
+fi
 if [ "${1:-} ${2:-}" = "workspace list" ] && [ -d "$ACTIVE_SEEDED_CONTROL" ]; then
   stage=$(cat "$ACTIVE_SEEDED_CONTROL/stage" 2>/dev/null || true)
   if [ "$stage" = task-created ]; then
