@@ -1263,7 +1263,7 @@ test_sizing_preflight_refuses_unsafe_geometry() {
     assert_not_contains "$(cat "$HERDR_LOG")" 'pane mutation' "invalid counts reached Herdr"
     [ "$(cat "$HERDR_STATE/panes.tsv")" = "$panes_before" ] || fail "count refusal changed panes"
   done
-  pass "every split ratio, final band share, and automatic count is checked panes_before any pane call"
+  pass "every split ratio, final band share, and automatic count is checked before any pane call"
 }
 
 test_automatic_rows_override_and_empty_floor() {
