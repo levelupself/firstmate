@@ -152,6 +152,43 @@ fm_test_reap_orphans
 # whose installed version bootstrap gates, so a fixture cannot be reported as an
 # unparseable build simply for answering `--version` with nothing.
 
+# fm_fake_pane_shell <fake-tmux-path> [default-cwd]: give an already-written
+# fake tmux a pane shell of its own.
+#
+# fm-spawn.sh proves a task worktree by asking the pane's shell for its physical
+# cwd rather than trusting the terminal's reported pane path (bin/fm-spawn.sh,
+# confirm_spawn_shell_cwd), so a fake that models a pane must also model that
+# shell or every spawn it drives refuses. This inserts one clause after the
+# fake's shebang: `pwd` lines arriving through send-keys run in
+# FM_FAKE_SHELL_CWD, falling back to <default-cwd> when given and otherwise to
+# the FM_FAKE_PANE_PATH the fake already reports as the pane's - so a fixture
+# sets FM_FAKE_SHELL_CWD only when it deliberately drives the reported path and
+# the shell's real location apart. Every other sent line falls through to the
+# fake's own dispatch, unexecuted.
+fm_fake_pane_shell() {
+  local fake=$1 default=${2:-} fallback tmp
+  if [ -n "$default" ]; then
+    fallback="\${FM_FAKE_SHELL_CWD:-$default}"
+  else
+    # shellcheck disable=SC2016  # literal text for the generated fake, not this shell
+    fallback='${FM_FAKE_SHELL_CWD:-${FM_FAKE_PANE_PATH:-.}}'
+  fi
+  tmp="$fake.pane-shell"
+  {
+    head -n 1 "$fake"
+    cat <<SH
+if [ "\${1:-}" = send-keys ] && [ "\${2:-}" = -t ]; then
+  case "\${4:-}" in
+    pwd|pwd\ *) ( cd "$fallback" && eval "\$4" ) || true ;;
+  esac
+fi
+SH
+    tail -n +2 "$fake"
+  } > "$tmp"
+  mv -f "$tmp" "$fake"
+  chmod +x "$fake"
+}
+
 fm_fakebin() {
   local dir=$1 fakebin="$1/fakebin"
   mkdir -p "$fakebin"

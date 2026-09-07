@@ -785,6 +785,7 @@ esac
 exit 0
 SH
   chmod +x "$fb/tmux"
+  fm_fake_pane_shell "$fb/tmux" "$wt"
   fm_fake_exit0 "$fb" treehouse
   printf '%s\n' "$fb"
 }
@@ -855,6 +856,7 @@ esac
 exit 0
 SH
   chmod +x "$fb/tmux"
+  fm_fake_pane_shell "$fb/tmux" "$wt"
   fm_fake_exit0 "$fb" treehouse
   printf '%s\n' "$fb"
 }

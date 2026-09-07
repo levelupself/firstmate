@@ -34,6 +34,7 @@ make_home() {  # <name> [<registry-line>...]
   mkdir -p "$home/data" "$home/state" "$home/config" "$projects/proj" "$fakebin"
   printf '#!/bin/sh\nexit 1\n' > "$fakebin/tmux"
   chmod +x "$fakebin/tmux"
+  fm_fake_pane_shell "$fakebin/tmux"
   if [ "$#" -gt 0 ]; then
     printf '%s\n' "$@" > "$home/data/projects.md"
   fi

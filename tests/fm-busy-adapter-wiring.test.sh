@@ -35,6 +35,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  fm_fake_pane_shell "$fakebin/tmux"
   fm_fake_exit0 "$fakebin" treehouse pi opencode claude codex
   printf '%s\n' "$fakebin"
 }

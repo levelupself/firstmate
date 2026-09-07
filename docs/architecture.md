@@ -138,7 +138,7 @@ All are harness-scoped rather than a global pattern union, and none is a recorde
 ## Runtime session backends
 
 The runtime backend is the session-provider layer below firstmate's scripts.
-It owns task endpoint creation, bounded capture, text/key sends, current-path reads for spawn-time worktree discovery when the backend does not create the worktree itself, live-window fallback lookup, agent-process liveness probes where verified, and endpoint teardown.
+It owns task endpoint creation, bounded capture, text/key sends, current-path reads for the spawn-time worktree-discovery settle wait when the backend does not create the worktree itself, live-window fallback lookup, agent-process liveness probes where verified, and endpoint teardown.
 `bin/fm-backend.sh` centralizes backend selection, `state/<id>.meta` helpers, metadata-only cleanup identity validation, selector resolution, and operation dispatch; `bin/backends/tmux.sh` is the verified reference adapter ([`docs/tmux-backend.md`](tmux-backend.md)), and `bin/backends/herdr.sh` (P2), `bin/backends/zellij.sh` (P3), `bin/backends/orca.sh` (P4), and `bin/backends/cmux.sh` (P5) are experimental task-spawn adapters.
 [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns new-spawn backend selection precedence and authorization.
 Runtime auto-detection is innermost-first: `$TMUX` wins over `HERDR_ENV=1`, which wins over cmux's primary `CMUX_WORKSPACE_ID` marker and documented fallback signals; auto-detected herdr or cmux prints a one-time opt-out notice, auto-detected tmux stays silent, and zellij and orca are never auto-detected (only explicit selection).
@@ -165,8 +165,10 @@ Codex App support is recorded in `docs/codex-app-backend.md`; it is not selectab
 
 Crewmates never intentionally touch your project clone; [treehouse](https://github.com/kunchenguid/treehouse) pools clean worktrees for tmux, herdr, zellij, and cmux tasks, while Orca creates its own worktrees for `backend=orca`.
 For ship and scout work, `fm-spawn.sh` refuses to launch unless the resolved task path is a real git worktree root that is distinct from the project primary checkout.
+Where a pane enters a pooled worktree, that resolved path is the pane shell's own `pwd -P` rather than the terminal backend's reported pane path, because a reported path is a rendered surface that can name a real pooled worktree the shell never entered.
+Confirming it and launching are therefore one step: a shell still in the primary checkout launches no agent and records no `worktree=` at all, and a shell that is somewhere else is recorded where it actually is.
 `fm-spawn.sh` also owns the base-freshness boundary for every fresh ship and scout: a clean task worktree with no remotes visibly keeps its local base, while one with any configured remote must match the fetched tip of origin's resolved default branch, and any unsafe or unverifiable base stops the spawn.
-Its header owns the exact refusal mechanics, while `tests/fm-spawn-pool-base-freshen.test.sh` owns the portable regression coverage.
+Its header owns the exact refusal mechanics, while `tests/fm-spawn-worktree-settle.test.sh` and `tests/fm-spawn-pool-base-freshen.test.sh` own the portable regression coverage.
 
 The firstmate repo has one extra exposure because it can dispatch crewmates to work on itself.
 Its operating checkout (`FM_ROOT`) and the disposable crewmate worktrees are all linked git worktrees of the same repository, so the valid discriminator is branch state, not whether the checkout is linked.

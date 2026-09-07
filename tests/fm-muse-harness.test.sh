@@ -97,6 +97,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  fm_fake_pane_shell "$fakebin/tmux"
   cp "$(command -v bash)" "$fakebin/muse-bin-test-version"
   cat > "$fakebin/muse" <<'SH'
 #!/usr/bin/env bash
@@ -447,6 +448,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  fm_fake_pane_shell "$fakebin/tmux"
   fm_write_meta "$home/state/$id.meta" \
     "window=fm-send:0" "endpoint_task_id=$id" "worktree=$case_dir" \
     "project=$case_dir" "harness=$harness" "kind=ship" "mode=no-mistakes" "yolo=off"

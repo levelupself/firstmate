@@ -63,6 +63,7 @@ SH
 printf '%s\n' '{"overview":{"cost":0,"calls":0,"tokens":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}},"models":[]}'
 SH
   chmod +x "$fakebin/tmux" "$fakebin/codeburn"
+  fm_fake_pane_shell "$fakebin/tmux"
   fm_fake_exit0 "$fakebin" treehouse
   cat > "$fakebin/timeout" <<'SH'
 #!/usr/bin/env bash
