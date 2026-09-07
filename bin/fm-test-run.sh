@@ -343,10 +343,10 @@ list_ci_timing_artifacts() {
 # combined total over fewer lanes than CI ran - the same false green as
 # aggregating a lane that executed no test.
 require_ci_lane_inputs() {
-  local tmp p repeated missing unexpected
+  local tmp p compared repeated missing unexpected refusal
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-ci-lanes.XXXXXX") \
     || die "--require-ci-lanes could not create a temporary directory"
-  list_ci_timing_artifacts | LC_ALL=C sort >"$tmp/expected"
+  list_ci_timing_artifacts | LC_ALL=C sort -u >"$tmp/expected"
   : >"$tmp/actual"
   for p in "$@"; do
     basename "$p" >>"$tmp/actual"
@@ -354,22 +354,42 @@ require_ci_lane_inputs() {
   LC_ALL=C sort "$tmp/actual" -o "$tmp/actual"
   # Refused rather than collapsed: aggregate_timing_json sums every path it is
   # handed, so a lane reaching this check twice would satisfy the set below
-  # while contributing its summary.total twice to the combined number.
+  # while contributing its summary.total twice to the combined number. The set
+  # comparison runs against the deduplicated list so a repeated lane is
+  # reported only as repeated, never also as an unrecognized one.
   repeated=$(uniq -d "$tmp/actual" | tr '\n' ' ')
-  missing=$(comm -23 "$tmp/expected" "$tmp/actual" | LC_ALL=C sort -u | tr '\n' ' ')
-  unexpected=$(comm -13 "$tmp/expected" "$tmp/actual" | LC_ALL=C sort -u | tr '\n' ' ')
+  LC_ALL=C sort -u "$tmp/actual" >"$tmp/present"
+  # Both comparisons run under the same LC_ALL=C collation as the sorts that
+  # feed them, and their status is kept instead of being swallowed by a
+  # pipeline: a comparison that could not complete must refuse loudly rather
+  # than yield an empty difference that reads as a satisfied lane set.
+  compared=0
+  LC_ALL=C comm -23 "$tmp/expected" "$tmp/present" >"$tmp/missing" || compared=1
+  LC_ALL=C comm -13 "$tmp/expected" "$tmp/present" >"$tmp/unexpected" || compared=1
+  missing=$(tr '\n' ' ' <"$tmp/missing")
+  unexpected=$(tr '\n' ' ' <"$tmp/unexpected")
   rm -rf "$tmp"
-  repeated=${repeated%% }
-  missing=${missing%% }
-  unexpected=${unexpected%% }
-  if [ -n "$repeated" ]; then
-    die "--require-ci-lanes received the same CI lane timing artifact more than once: $repeated. Each lane contributes one artifact, and every input is summed, so aggregating a repeated lane would count its totals twice. Supply each lane artifact exactly once."
+  repeated=${repeated% }
+  missing=${missing% }
+  unexpected=${unexpected% }
+  if [ "$compared" -ne 0 ]; then
+    die "--require-ci-lanes could not compare the supplied artifacts against the CI lane inventory (see --list-ci-timing-artifacts). A comparison that did not complete cannot show the lane set is complete, so the aggregate is refused rather than reported as covering every lane."
   fi
+  # Every non-empty category is reported in one refusal: a lane renamed on one
+  # side only produces a missing entry and an unrecognized entry together, and
+  # reporting the missing one alone would advise a rerun that cannot fix it.
+  refusal=""
   if [ -n "$missing" ]; then
-    die "--require-ci-lanes is missing CI lane timing artifacts: $missing. Every CI lane uploads its timing artifact even when that lane fails, so a lane absent here produced none at all; aggregating the rest would report a combined summary covering fewer lanes than CI ran. Rerun the lanes that produced no artifact, then aggregate again."
+    refusal="$refusal Missing CI lane timing artifacts: $missing. Every CI lane uploads its timing artifact even when that lane fails, so a lane absent here produced none at all; aggregating the rest would report a combined summary covering fewer lanes than CI ran. Rerun the lanes that produced no artifact, then aggregate again."
   fi
   if [ -n "$unexpected" ]; then
-    die "--require-ci-lanes received timing artifacts this runner does not list as CI lanes: $unexpected. The workflow and this lane inventory disagree (see --list-ci-timing-artifacts); reconcile them instead of aggregating an unrecognized lane."
+    refusal="$refusal Artifacts supplied that this lane inventory does not list: $unexpected. Either the workflow and this inventory have drifted apart, or an artifact left over from an earlier attempt of the same run was picked up; compare with --list-ci-timing-artifacts and reconcile the inventory or narrow the inputs instead of aggregating an unrecognized lane."
+  fi
+  if [ -n "$repeated" ]; then
+    refusal="$refusal CI lane timing artifacts supplied more than once: $repeated. Each lane contributes one artifact, and every input is summed, so aggregating a repeated lane would count its totals twice. Supply each lane artifact exactly once."
+  fi
+  if [ -n "$refusal" ]; then
+    die "--require-ci-lanes refused the supplied CI lane timing artifact set.$refusal"
   fi
 }
 

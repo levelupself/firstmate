@@ -1109,6 +1109,50 @@ EOF
   pass "aggregate refuses a CI lane set that is empty, incomplete, or unrecognized"
 }
 
+test_aggregate_require_ci_lanes_reports_a_renamed_lane_once() {
+  local tmp listed name first renamed rc err refusals
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggrename.XXXXXX")
+  listed=$("$RUNNER" --list-ci-timing-artifacts) \
+    || { rm -rf "$tmp"; fail "--list-ci-timing-artifacts must print the CI timing artifact inventory"; }
+  [ -n "$listed" ] || { rm -rf "$tmp"; fail "--list-ci-timing-artifacts printed nothing"; }
+  mkdir -p "$tmp/renamed"
+  first=$(printf '%s\n' "$listed" | head -1)
+  renamed="${first%.json}-renamed.json"
+  # Renaming a lane artifact on one side only is the likeliest real drift: it
+  # makes one artifact missing and one unrecognized at the same time. Reporting
+  # the missing name alone advises a rerun that can never fix a rename, so the
+  # single refusal must name both halves.
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    if [ "$name" = "$first" ]; then
+      write_lane_timing_fixture "$tmp/renamed/$renamed" "${renamed%.json}"
+    else
+      write_lane_timing_fixture "$tmp/renamed/$name" "${name%.json}"
+    fi
+  done <<EOF
+$listed
+EOF
+  set +e
+  "$RUNNER" --aggregate-json "$tmp/renamed.json" --require-ci-lanes "$tmp"/renamed/*.json \
+    >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] \
+    || { rm -rf "$tmp"; fail "aggregating a renamed CI lane artifact must fail, got $rc"; }
+  err=$(cat "$tmp/err")
+  assert_contains "$err" "$first" "renamed-lane refusal names the missing lane artifact"
+  assert_contains "$err" "$renamed" "renamed-lane refusal names the unrecognized artifact"
+  refusals=$(printf '%s\n' "$err" | grep -c -- '--require-ci-lanes refused' || true)
+  [ "$refusals" = "1" ] \
+    || { rm -rf "$tmp"; fail "a renamed lane must produce one combined refusal, got $refusals"; }
+  grep -q '^FM_TEST_AGGREGATE ' "$tmp/out" \
+    && { rm -rf "$tmp"; fail "a refused aggregate must not print a combined summary"; }
+  [ ! -e "$tmp/renamed.json" ] \
+    || { rm -rf "$tmp"; fail "a refused aggregate must not write a combined artifact"; }
+  rm -rf "$tmp"
+  pass "aggregate reports a renamed CI lane as missing and unrecognized in one refusal"
+}
+
 test_aggregate_require_ci_lanes_refuses_a_repeated_lane_artifact() {
   local tmp listed name first rc err
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggdup.XXXXXX")
@@ -1171,4 +1215,5 @@ test_aggregate_json
 test_aggregate_refuses_a_lane_that_ran_nothing
 test_ci_timing_artifact_inventory_tracks_the_lane_set
 test_aggregate_require_ci_lanes_refuses_an_incomplete_set
+test_aggregate_require_ci_lanes_reports_a_renamed_lane_once
 test_aggregate_require_ci_lanes_refuses_a_repeated_lane_artifact
