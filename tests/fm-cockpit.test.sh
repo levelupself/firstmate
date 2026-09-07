@@ -1221,10 +1221,10 @@ test_sections_config_sets_the_pane_arrangement() {
 }
 
 test_sizing_preflight_refuses_unsafe_geometry() {
-  local ratios out rc before counts
+  local ratios out rc panes_before count_fixture
   for ratios in '0.0500 0.5000' '0.9500 0.5000' '0.1500 0.1000' 'NaN 0.5000'; do
     reset_layout_frame
-    before=$(cat "$HERDR_STATE/panes.tsv")
+    panes_before=$(cat "$HERDR_STATE/panes.tsv")
     # Inject a faulty computed plan at the producer boundary, then execute the
     # public region builder. Safe individual ratios can still produce an unsafe
     # final share: 0.15 followed by 0.10 leaves pane two just 8.5% of the band.
@@ -1232,7 +1232,7 @@ test_sizing_preflight_refuses_unsafe_geometry() {
       exec 2>&1
       . "$ROOT/bin/backends/herdr.sh"
       fm_backend_herdr_cockpit_sizing() {
-        FM_BACKEND_HERDR_COCKPIT_SIZING_PLAN=$(printf 'waiting\t%s\tbad\nready\t%s\tbad\nin-flight,blocked\t\tbad\n' ${ratios})
+        FM_BACKEND_HERDR_COCKPIT_SIZING_PLAN=$(printf 'waiting\t%s\tbad\nready\t%s\tbad\nin-flight,blocked\t\tbad\n' "${ratios%% *}" "${ratios#* }")
       }
       fm_backend_herdr_cli() { printf 'pane mutation\n' >> "$HERDR_LOG"; return 1; }
       fm_backend_herdr_cockpit_create_fleet_panes fmtest w3 w3:t1 w3:p1 "$LAYOUT_HOME"
@@ -1241,29 +1241,29 @@ test_sizing_preflight_refuses_unsafe_geometry() {
     [ "$rc" -ne 0 ] || fail "unsafe geometry was accepted: $ratios"
     assert_contains "$out" 'fleet sizing refused' "computed refusal omitted the sizing problem"
     assert_not_contains "$(cat "$HERDR_LOG")" 'pane mutation' "invalid computed geometry reached Herdr"
-    [ "$(cat "$HERDR_STATE/panes.tsv")" = "$before" ] || fail "computed refusal changed panes"
+    [ "$(cat "$HERDR_STATE/panes.tsv")" = "$panes_before" ] || fail "computed refusal changed panes"
   done
-  for counts in unavailable '{}' '{"waiting":-1}' 'null' '[1,2,3]' \
+  for count_fixture in unavailable '{}' '{"waiting":-1}' 'null' '[1,2,3]' \
     '{"waiting":0,"ready":0,"in-flight":0,"blocked":0,"finished":0,"failed":0.5}'; do
     reset_layout_frame
-    before=$(cat "$HERDR_STATE/panes.tsv")
+    panes_before=$(cat "$HERDR_STATE/panes.tsv")
     out=$(
       exec 2>&1
       . "$ROOT/bin/backends/herdr.sh"
       fm_backend_herdr_cockpit_row_counts() {
-        [ "$counts" != unavailable ] || return 1
-        printf '%s\n' "$counts"
+        [ "$count_fixture" != unavailable ] || return 1
+        printf '%s\n' "$count_fixture"
       }
       fm_backend_herdr_cli() { printf 'pane mutation\n' >> "$HERDR_LOG"; return 1; }
       fm_backend_herdr_cockpit_create_fleet_panes fmtest w3 w3:t1 w3:p1 "$LAYOUT_HOME"
     )
     rc=$?
-    [ "$rc" -ne 0 ] || fail "invalid row counts were accepted: $counts"
+    [ "$rc" -ne 0 ] || fail "invalid row counts were accepted: $count_fixture"
     assert_contains "$out" 'fleet row counts are unavailable or invalid' "count refusal omitted the problem"
     assert_not_contains "$(cat "$HERDR_LOG")" 'pane mutation' "invalid counts reached Herdr"
-    [ "$(cat "$HERDR_STATE/panes.tsv")" = "$before" ] || fail "count refusal changed panes"
+    [ "$(cat "$HERDR_STATE/panes.tsv")" = "$panes_before" ] || fail "count refusal changed panes"
   done
-  pass "every split ratio, final band share, and automatic count is checked before any pane call"
+  pass "every split ratio, final band share, and automatic count is checked panes_before any pane call"
 }
 
 test_automatic_rows_override_and_empty_floor() {
