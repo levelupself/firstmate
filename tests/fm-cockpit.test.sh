@@ -1220,6 +1220,70 @@ test_sections_config_sets_the_pane_arrangement() {
   pass "config/cockpit-sections chooses how many fleet panes there are and what each one holds"
 }
 
+test_sizing_preflight_refuses_unsafe_geometry() {
+  local ratios out rc before
+  for ratios in '0.0500 0.5000' '0.9500 0.5000' '0.1500 0.1000' 'NaN 0.5000'; do
+    reset_layout_frame
+    before=$(cat "$HERDR_STATE/panes.tsv")
+    # Inject a faulty computed plan at the producer boundary, then execute the
+    # public region builder. Safe individual ratios can still produce an unsafe
+    # final share: 0.15 followed by 0.10 leaves pane two just 8.5% of the band.
+    out=$(
+      exec 2>&1
+      . "$ROOT/bin/backends/herdr.sh"
+      fm_backend_herdr_cockpit_sizing() {
+        FM_BACKEND_HERDR_COCKPIT_SIZING_PLAN=$(printf 'waiting\t%s\tbad\nready\t%s\tbad\nin-flight,blocked\t\tbad\n' ${ratios})
+      }
+      fm_backend_herdr_cli() { printf 'pane mutation\n' >> "$HERDR_LOG"; return 1; }
+      fm_backend_herdr_cockpit_create_fleet_panes fmtest w3 w3:t1 w3:p1 "$LAYOUT_HOME"
+    )
+    rc=$?
+    [ "$rc" -ne 0 ] || fail "unsafe geometry was accepted: $ratios"
+    assert_contains "$out" 'fleet sizing refused' "computed refusal omitted the sizing problem"
+    assert_not_contains "$(cat "$HERDR_LOG")" 'pane mutation' "invalid computed geometry reached Herdr"
+    [ "$(cat "$HERDR_STATE/panes.tsv")" = "$before" ] || fail "computed refusal changed panes"
+  done
+  pass "every split ratio and every resulting band share is checked before any pane call"
+}
+
+test_automatic_rows_override_and_empty_floor() {
+  local out i first before
+  reset_layout_frame
+  mkdir -p "$LAYOUT_HOME/data"
+  {
+    printf '## In flight\n\n## Queued\n'
+    for i in 1 2 3; do
+      printf -- '- [ ] decision-%s - Decision (kind: captain) (hold: choose option) (hold-kind: captain)\n' "$i"
+    done
+    for i in $(seq 1 19); do
+      printf -- '- [ ] ready-%s - Ready task (kind: ship) (repo: demo)\n  Implement the described change.\n' "$i"
+    done
+    printf '\n## Done\n'
+  } > "$LAYOUT_HOME/data/backlog.md"
+  printf 'waiting\nready\n' > "$LAYOUT_HOME/config/cockpit-sections"
+  out=$(run_layout_cockpit adopt 2>&1) || fail "automatic sizing failed: $out"
+  first=$(fleet_pane_at 1)
+  assert_contains "$(cat "$HERDR_LOG")" "pane split $first --direction right --ratio 0.2527" \
+    "actual 3-row/19-row groups did not receive proportional space"
+  assert_contains "$out" 'weight 19 from automatic rows' "automatic weight was not announced"
+  before=$(cat "$HERDR_STATE/panes.tsv")
+  rm "$LAYOUT_HOME/data/backlog.md"
+  : > "$HERDR_LOG"
+  run_layout_cockpit adopt >/dev/null 2>&1 || fail "empty-count re-adoption failed"
+  [ "$(cat "$HERDR_STATE/panes.tsv")" = "$before" ] || fail "row-count change moved the screen"
+  assert_not_contains "$(cat "$HERDR_LOG")" 'pane split' "row-count change resized a live region"
+
+  reset_layout_frame
+  printf 'waiting\nready @19\n' > "$LAYOUT_HOME/config/cockpit-sections"
+  out=$(run_layout_cockpit adopt 2>&1) || fail "mixed sizing failed: $out"
+  first=$(fleet_pane_at 1)
+  assert_contains "$(cat "$HERDR_LOG")" "pane split $first --direction right --ratio 0.1600" \
+    "an empty pane did not retain its floor"
+  assert_contains "$out" 'weight 0 from automatic rows' "empty automatic source missing"
+  assert_contains "$out" 'weight 19 from config' "override did not replace the automatic zero"
+  pass "real row counts size panes once, explicit weights win, and empty panes keep their floor"
+}
+
 test_weighted_sections_and_stable_adoption() {
   local out body first before weight
   reset_layout_frame
@@ -1816,6 +1880,8 @@ test_display_and_steer_boundary_remains_explicit
 test_panel_renders_the_live_frame_and_fleet_view
 test_panel_degrades_visibly_outside_herdr
 test_dead_head_is_preserved_until_explicit_new_context
+test_sizing_preflight_refuses_unsafe_geometry
+test_automatic_rows_override_and_empty_floor
 test_weighted_sections_and_stable_adoption
 test_default_layout_warns_before_it_changes_the_screen
 test_sections_config_sets_the_pane_arrangement

@@ -32,9 +32,10 @@ $ herdr pane layout --pane w1:p1
 The original pane received 6 of 23 rows and the new pane 17, so `--ratio` names the first child's share.
 A fleet-last order can pass `1 - <fleet share>` directly; a fleet-first order passes the fleet share and then reorders.
 
-## Splitting the newest child repeatedly divides the band into equal panes
+## Splitting the newest child uses the remaining band
 
-Each split's rect is the previous split's remainder, so the share that leaves the pane being split with one N-th of the whole band is `1 / (panes still to place)`.
+Each split's rect is the previous split's remainder, so a desired band share must be divided by the sum of the remaining desired shares before passing it as `--ratio`.
+Equal weights reduce this to `1 / (panes still to place)`, preserving the equal-pane evidence below.
 For three panes that is 1/3 and then 1/2.
 The 28% band above was divided across its own axis with those two ratios.
 
@@ -55,7 +56,9 @@ $ herdr pane layout --pane w1:p2
 
 The three fleet panes took 18 columns each of the 54-column band and kept the band's 6 rows, while the supervisor `w1:p2` kept its own 17 rows at full width.
 Creation order is also screen order left to right, and the later splits are nested inside the band rather than against the supervisor, so dividing the band never resizes or rebuilds the pane holding the supervisor.
-At the supported maximum of six panes, the smallest share is 1/6 = 0.1667, still above the 0.1 floor Herdr silently clamps to.
+At the supported maximum of six equally weighted panes, each share is 1/6 = 0.1667, still above the 0.1 floor Herdr silently clamps to.
+The current proportional allocation and its bounds are specified in [`docs/configuration.md`](../configuration.md) "Cockpit fleet sections".
+`tests/fm-cockpit.test.sh` checks the equal-weight wire ratios, automatic row weighting, explicit overrides, empty-pane reservation, creation-only sizing, and pre-mutation refusal for invalid ratios and final shares.
 
 ## Drawn geometry remains authoritative when the pty diverges
 

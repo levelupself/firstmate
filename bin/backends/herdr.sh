@@ -2771,7 +2771,8 @@ fm_backend_herdr_cockpit_layout() {  # <home>
 # the operator's rows twice on one answer, which is a mistake worth naming
 # rather than obeying.
 fm_backend_herdr_cockpit_sections() {  # <home>
-  local home=$1 config file content line name seen="" count=0
+  local home=$1 config file content line name weight seen="" count=0
+  FM_BACKEND_HERDR_COCKPIT_SECTIONS_WEIGHTS=""
   FM_BACKEND_HERDR_COCKPIT_SECTIONS_PANES=""
   FM_BACKEND_HERDR_COCKPIT_SECTIONS_COUNT=0
   FM_BACKEND_HERDR_COCKPIT_SECTIONS_SOURCE=default
@@ -2792,6 +2793,18 @@ fm_backend_herdr_cockpit_sections() {  # <home>
   while IFS= read -r line; do
     line=$(printf '%s' "$line" | tr -d '[:space:]')
     case "$line" in ''|'#'*) continue ;; esac
+    weight=auto
+    if [[ $line == *@* ]]; then
+      weight=${line#*@}
+      line=${line%%@*}
+      if ! [[ $weight =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+         ! awk -v w="$weight" 'BEGIN { exit !(w > 0 && w <= 1000000) }'; then
+        printf 'COCKPIT: fleet pane "%s" weight "%s" must be a positive decimal no greater than 1000000.\n' \
+          "$line" "$weight" >&2
+        return 1
+      fi
+    fi
+    FM_BACKEND_HERDR_COCKPIT_SECTIONS_WEIGHTS="${FM_BACKEND_HERDR_COCKPIT_SECTIONS_WEIGHTS}${FM_BACKEND_HERDR_COCKPIT_SECTIONS_WEIGHTS:+|}$weight"
     count=$((count + 1))
     FM_BACKEND_HERDR_COCKPIT_SECTIONS_PANES="${FM_BACKEND_HERDR_COCKPIT_SECTIONS_PANES}${FM_BACKEND_HERDR_COCKPIT_SECTIONS_PANES:+|}$line"
   done <<EOF
@@ -2905,6 +2918,73 @@ EOF
   return 1
 }
 
+# Read the renderer's own untruncated row classification exactly once. Keeping
+# membership there avoids a second interpretation of waiting/ready task state.
+fm_backend_herdr_cockpit_row_counts() {  # <home>
+  FM_HOME="$1" "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" --section-counts
+}
+
+# Resolve and validate the entire inner geometry without calling Herdr.
+# Reserve 16% per pane, then distribute the remainder by weight. This keeps an
+# empty pane useful and caps any pane at 84% (less with more than two panes).
+# Independently validate rounded split ratios in [0.10,0.90] AND reconstructed
+# band shares in [0.15,0.85]: the 1% margin covers four-decimal rounding while
+# staying comfortably above Herdr's 0.1 clamp. A lone pane owns the whole band.
+# Sizing is creation-only; a live painter never calls this function.
+fm_backend_herdr_cockpit_sizing() {  # <home>
+  local counts='{}' inputs plan
+  if [[ "|$FM_BACKEND_HERDR_COCKPIT_SECTIONS_WEIGHTS|" == *'|auto|'* ]]; then
+    if ! counts=$(fm_backend_herdr_cockpit_row_counts "$1") ||
+       ! printf '%s\n' "$counts" | jq -e '
+         type == "object" and
+         all(.["waiting", "ready", "in-flight", "blocked", "finished", "failed"];
+             type == "number" and . >= 0 and . <= 1000000 and . == floor)
+       ' >/dev/null 2>&1; then
+      printf 'COCKPIT: fleet row counts are unavailable or invalid; refusing to size the region.\n' >&2
+      return 1
+    fi
+  fi
+  inputs=$(jq -cn --arg panes "$FM_BACKEND_HERDR_COCKPIT_SECTIONS_PANES" \
+    --arg weights "$FM_BACKEND_HERDR_COCKPIT_SECTIONS_WEIGHTS" --argjson counts "$counts" '
+    ($panes | split("|")) as $panes | ($weights | split("|")) as $weights
+    | [range(0; $panes|length) as $i
+       | {pane:$panes[$i], source:(if $weights[$i] == "auto" then "automatic rows" else "config" end),
+          weight:(if $weights[$i] == "auto" then
+                    [$panes[$i] | split(",")[] | $counts[.]] | add
+                  else $weights[$i] | tonumber end)}]
+    ') || return 1
+  # awk formats exactly as the previous equal-pane implementation did. Validate
+  # the resulting wire values, not just the ideal floating-point fractions.
+  if ! plan=$(printf '%s\n' "$inputs" | jq -r '.[] | [.pane,.weight,.source] | @tsv' | awk -F '\t' '
+    { pane[NR]=$1; w[NR]=$2; source[NR]=$3; sum+=$2 }
+    END {
+      n=NR
+      if (n < 1 || n > 6) { print "invalid pane count"; exit 1 }
+      for (i=1;i<=n;i++) share[i]=(n == 1 ? 1 : 0.16+(1-0.16*n)*(sum == 0 ? 1/n : w[i]/sum))
+      remaining=1
+      for (i=1;i<n;i++) {
+        tail=0
+        for (j=i;j<=n;j++) tail+=share[j]
+        ratio[i]=sprintf("%.4f",share[i]/tail)
+        if (!(ratio[i]>=0.10 && ratio[i]<=0.90)) {
+          print "pane " i " split ratio " ratio[i] " is outside 0.10-0.90"; exit 1
+        }
+        actual[i]=remaining*ratio[i]; remaining-=actual[i]
+      }
+      actual[n]=remaining
+      for (i=1;i<=n;i++) {
+        if (n>1 && !(actual[i]>=0.15 && actual[i]<=0.85)) {
+          print "pane " i " final band share " actual[i] " is outside 0.15-0.85"; exit 1
+        }
+      }
+      for (i=1;i<=n;i++) printf "%s\t%s\t%.2f%% (weight %s from %s)\n",pane[i],ratio[i],100*actual[i],w[i],source[i]
+    }'); then
+    printf 'COCKPIT: fleet sizing refused: %s.\n' "$plan" >&2
+    return 1
+  fi
+  FM_BACKEND_HERDR_COCKPIT_SIZING_PLAN=$plan
+}
+
 # Build this home's fleet region in one deliberate, announced motion.
 #
 # The operator's screen is never rearranged silently: the warning below is
@@ -2919,11 +2999,9 @@ EOF
 # any registered agent intact, and every later split divides the band this
 # adoption just created.
 #
-# The band is divided by splitting the newest fleet pane again, so the k-th of
-# N-1 divisions passes ratio 1/(N-k+1) - the share that leaves the pane being
-# split with exactly one N-th of the band. Herdr's --ratio names the first
-# child, and each split's rect is the previous split's remainder, which is what
-# makes that sequence come out equal (docs/verification/cockpit-fleet-layout.md).
+# The preflight below resolves all final shares and all first-child split
+# ratios before the first mutation; split i uses share(i-1) / sum(remaining).
+# Equal weights retain the historical four-decimal 1/3, 1/2 sequence.
 #
 # Prints two lines: the created pane ids, comma-separated in reading order, and
 # their aligned --section arguments separated by "|". A failure at any point
@@ -2934,6 +3012,7 @@ fm_backend_herdr_cockpit_create_fleet_panes() {  # <session> <workspace> <tab> <
   local layout_source sections_source created="" split_from direction
   fm_backend_herdr_cockpit_layout "$home" || return 1
   fm_backend_herdr_cockpit_sections "$home" || return 1
+  fm_backend_herdr_cockpit_sizing "$home" || return 1
   layout_source=$FM_BACKEND_HERDR_COCKPIT_LAYOUT_SOURCE
   [ "$layout_source" != default ] || layout_source='built-in defaults'
   sections_source=$FM_BACKEND_HERDR_COCKPIT_SECTIONS_SOURCE
@@ -2941,7 +3020,10 @@ fm_backend_herdr_cockpit_create_fleet_panes() {  # <session> <workspace> <tab> <
   total=$FM_BACKEND_HERDR_COCKPIT_SECTIONS_COUNT
   printf 'COCKPIT: this screen is about to change - adding the %s.\n' \
     "$(fm_backend_herdr_cockpit_layout_describe)" >&2
-  printf 'COCKPIT: layout read from %s and arrangement from %s; no existing pane is closed, replaced, or re-split. Edit %s/%s to choose another direction, order, or ratio, and %s/%s to choose which sections share a pane.\n' \
+  printf 'COCKPIT: fleet band shares: %s; fixed until the region is rebuilt.\n' \
+    "$(printf '%s\n' "$FM_BACKEND_HERDR_COCKPIT_SIZING_PLAN" | awk -F '\t' \
+      '{printf "%s%s %s", (NR == 1 ? "" : "; "), $1, $3}')" >&2
+  printf 'COCKPIT: layout read from %s and arrangement from %s; no existing pane is closed, replaced, or re-split. Edit %s/%s to choose another direction, order, or ratio, and %s/%s to choose which sections share a pane and optional @weight overrides.\n' \
     "$layout_source" "$sections_source" \
     "${FM_CONFIG_OVERRIDE:-$home/config}" "$FM_BACKEND_HERDR_COCKPIT_LAYOUT_FILE" \
     "${FM_CONFIG_OVERRIDE:-$home/config}" "$FM_BACKEND_HERDR_COCKPIT_SECTIONS_FILE" >&2
@@ -2954,8 +3036,8 @@ fm_backend_herdr_cockpit_create_fleet_panes() {  # <session> <workspace> <tab> <
     index=$((index + 1))
     if [ "$index" -gt 1 ]; then
       direction=$FM_BACKEND_HERDR_COCKPIT_LAYOUT_INNER_SPLIT
-      ratio=$(awk -v remaining="$((total - index + 2))" \
-        'BEGIN { printf "%.4f", 1 / remaining }')
+      ratio=$(printf '%s\n' "$FM_BACKEND_HERDR_COCKPIT_SIZING_PLAN" | \
+        awk -F '\t' -v row="$((index - 1))" 'NR == row {print $2}')
     fi
     out=$(fm_backend_herdr_cli "$session" pane split "$split_from" \
       --direction "$direction" --ratio "$ratio" \
