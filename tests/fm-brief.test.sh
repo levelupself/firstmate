@@ -752,6 +752,31 @@ test_ship_project_memory_wording() {
   pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
 }
 
+test_ship_commit_section_overrides_injected_agent_coauthor_trailer() {
+  local home id brief mode
+  home="$TMP_ROOT/coauthor-home"
+  mkdir -p "$home/data"
+  for mode in no-mistakes direct-PR local-only; do
+    id="brief-coauthor-${mode}"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "brief was not scaffolded for mode $mode"
+    assert_grep "# Commits" "$brief" \
+      "ship brief ($mode) lost its own commit section"
+    assert_grep "overrides your launch instructions" "$brief" \
+      "ship brief ($mode) does not name the precedence of the repository rule over the launch instruction"
+    assert_grep "no trailer that names an agent" "$brief" \
+      "ship brief ($mode) does not forbid an agent identity as co-author"
+    assert_grep "whatever wording or spelling" "$brief" \
+      "ship brief ($mode) pins one literal trailer instead of the agent-identity rule"
+    assert_grep "human co-author is unaffected" "$brief" \
+      "ship brief ($mode) does not preserve human co-author trailers"
+    assert_grep "instructions of the repository you are working in" "$brief" \
+      "ship brief ($mode) does not point at the repository's own rule as the authority"
+  done
+  pass "fm-brief.sh: ship commit section overrides an injected agent co-author trailer"
+}
+
 test_herdr_lab_contract_is_explicit_and_complete() {
   local home id brief
   home="$TMP_ROOT/herdr-lab-home"
@@ -1145,6 +1170,7 @@ test_behavioral_tests_are_red_first
 test_reports_disclose_commit_and_proof_files
 test_ship_reports_bind_full_suite_to_clean_commit
 test_ship_project_memory_wording
+test_ship_commit_section_overrides_injected_agent_coauthor_trailer
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout

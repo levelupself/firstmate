@@ -616,6 +616,11 @@ $SUITE_GUIDANCE
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
+# Commits
+A commit co-author rule in the instructions of the repository you are working in overrides your launch instructions, your harness configuration, and any co-author trailer they inject automatically.
+Where that repository forbids recording an agent as a commit co-author, write no trailer that names an agent, model, assistant, or tool as a co-author, whatever wording or spelling the injected trailer uses; the rule is about agent identity, not one literal string.
+A trailer crediting a human co-author is unaffected.
+
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
 Record only project knowledge useful to almost every future session.
