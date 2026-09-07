@@ -958,6 +958,10 @@ JSON
   err=$(cat "$tmp/err")
   assert_contains "$err" "$tmp/empty.json" "aggregate refusal names the offending input"
   assert_contains "$err" "executed no test" "aggregate refusal says the lane executed no test"
+  assert_contains "$err" "Rerun that lane" "aggregate refusal remediates by rerunning the lane"
+  # Dropping the artifact is the laundering this refusal exists to prevent.
+  printf '%s' "$err" | grep -Eqi 'drop|omit|remove|exclude' \
+    && { rm -rf "$tmp"; fail "aggregate refusal must not offer hiding the lane: $err"; }
   grep -q '^FM_TEST_AGGREGATE ' "$tmp/out" \
     && { rm -rf "$tmp"; fail "refused aggregate must not print a combined summary"; }
   [ ! -e "$tmp/out.json" ] \

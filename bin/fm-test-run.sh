@@ -760,7 +760,8 @@ if empty:
         print(
             f"fm-test-run: aggregate input {path} reports summary.total=0, so that "
             "lane executed no test; summing it would report a false green. Rerun "
-            "that lane so it executes tests, or drop its artifact from the inputs.",
+            "that lane until it executes tests, then aggregate the artifact that "
+            "run produces.",
             file=sys.stderr,
         )
     sys.exit(2)
