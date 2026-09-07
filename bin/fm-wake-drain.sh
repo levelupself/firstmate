@@ -112,16 +112,6 @@ EOF
   [ "$shown" -gt 0 ] || return 0
 }
 
-_fm_wake_drain_key_is_reserved() {  # <key>
-  local key=$1 prefix
-  for prefix in ${FM_CLASSIFY_RESERVED_KEY_PREFIXES:-$FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT}; do
-    case "$key" in
-      "$prefix"*) return 0 ;;
-    esac
-  done
-  return 1
-}
-
 # Print the consolidated OPEN DECISIONS section: every still-open
 # needs-decision/blocked, fleet-wide, folded from the durable status logs by
 # fm-classify-lib.sh's status_open_decisions fold (via its cursor-backed
@@ -150,7 +140,7 @@ print_open_decisions_section() {
 
   while IFS=$(printf '\t') read -r task key verb note; do
     [ -n "$task" ] || continue
-    _fm_wake_drain_key_is_reserved "$key" && has_reserved=1 || has_regular=1
+    fm_decision_key_is_reserved "$key" && has_reserved=1 || has_regular=1
     line="$task"
     [ "$key" = default ] || line="$line [key=$key]"
     line="$line $verb: $note"

@@ -116,6 +116,30 @@ test_reserved_key_namespace_is_owned_by_its_library() {
   pass "a reserved decision key can only be opened or closed by its owning library"
 }
 
+test_mixed_key_classes_each_get_their_own_close_hint() {
+  local dir state out
+  dir=$(make_case mixed-key-classes)
+  state="$dir/state"
+  out="$dir/drain.out"
+  # One regular and one reserved decision open at the same time: the two key
+  # classes close through different flows, so the section must carry both
+  # remedies rather than picking one for the whole fleet.
+  printf 'needs-decision [key=api-shape]: pick REST or RPC\n' > "$state/task-regular.status"
+  printf 'blocked [key=pending-reply-abcdef0123456789]: pending-reply-missed: task=ios pending-reply-id=abcdef0123456789 request=ship it\n' > "$state/task-reserved.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on mixed decision key classes"
+
+  grep -F 'task-regular [key=api-shape] needs-decision: pick REST or RPC' "$out" >/dev/null \
+    || fail "the regular decision was dropped when a reserved one was open: $(cat "$out")"
+  grep -F 'task-reserved [key=pending-reply-abcdef0123456789]' "$out" >/dev/null \
+    || fail "the reserved decision was dropped when a regular one was open: $(cat "$out")"
+  grep -F "for regular keys, close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'" "$out" >/dev/null \
+    || fail "the answerer-closes hint vanished once a reserved decision was also open: $(cat "$out")"
+  grep -F 'pending-reply keys are closed by the pending-reply close flow in bin/fm-pending-reply-lib.sh' "$out" >/dev/null \
+    || fail "the reserved-key hint vanished once a regular decision was also open: $(cat "$out")"
+  pass "a regular and a reserved decision open together each print their own close hint"
+}
+
 test_later_unrelated_terminal_line_does_not_close_it() {
   local dir state out
   dir=$(make_case unrelated-terminal)
@@ -252,6 +276,7 @@ test_explicit_resolution_closes_it
 test_keyed_captain_held_parking_position_matrix
 test_later_unrelated_terminal_line_does_not_close_it
 test_reserved_key_namespace_is_owned_by_its_library
+test_mixed_key_classes_each_get_their_own_close_hint
 test_no_open_decisions_prints_nothing
 test_open_decision_surfaces_even_with_an_unrelated_queued_wake
 test_buried_decision_surfaces_on_the_empty_queue_fast_path
