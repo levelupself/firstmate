@@ -660,6 +660,9 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  # A crew/scout spawn also asks the pane's own shell where it is, so the stub
+  # has to answer for that shell as well as for the reported pane path.
+  fm_fake_pane_shell "$fakebin/tmux"
   fm_fake_exit0 "$fakebin" pi
   printf '%s\n' "$fakebin"
 }
