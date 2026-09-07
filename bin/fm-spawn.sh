@@ -140,11 +140,13 @@
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from the primary project checkout.
-#   The task path itself comes from the pane shell's own `pwd -P`, written to
-#   state/.<id>.spawn-cwd and removed as soon as it is read, never from the
-#   terminal backend's reported pane path alone: entering the worktree and
-#   launching are one step, so a shell still sitting in the primary checkout
-#   launches no agent and records no worktree=. FM_SPAWN_CWD_PROOF_ATTEMPTS,
+#   The task path itself comes from the pane shell's own `pwd -P`, written to a
+#   numbered per-attempt file under state/.<id>.spawn-cwd.d/ and discarded whole
+#   once the answer decides the spawn, never from the terminal backend's reported
+#   pane path alone: entering the worktree and launching are one step, so a shell
+#   still sitting in the primary checkout launches no agent and records no
+#   worktree=. The directory is removed on both the launch and the refusal path,
+#   so no probe artifact outlives the spawn. FM_SPAWN_CWD_PROOF_ATTEMPTS,
 #   FM_SPAWN_CWD_PROOF_POLLS, and FM_SPAWN_CWD_PROOF_INTERVAL tune that wait.
 #   Before a fresh ship or scout worker starts, a task worktree with remotes fetches
 #   origin, resolves the current remote default branch, and resets to its tip.
@@ -2256,38 +2258,65 @@ spawn_send_key() {  # <target> <key>
 # sentence as the sole guard where AGENTS.md section 8 requires two.
 #
 # Entering the worktree and launching must therefore be one step. The shell
-# writes its physical cwd to a private state file and that file - not the
-# reported pane path - decides both whether to launch and what worktree= records,
-# so the durable record cannot name a directory the agent is not in. No answer,
-# or an answer still inside the primary checkout, refuses here, before any
-# metadata is written and before any agent is launched.
+# writes its physical cwd into a private per-spawn state directory and that
+# answer - not the reported pane path - decides both whether to launch and what
+# worktree= records, so the durable record cannot name a directory the agent is
+# not in. No answer, or an answer still inside the primary checkout, refuses
+# here, before any metadata is written and before any agent is launched.
+#
+# Each attempt writes its own numbered answer file, because an earlier attempt's
+# probe can still be queued in a busy shell and land after a later attempt has
+# already read: numbering keeps every answer attributable, and discarding the
+# whole directory by rename means a probe that arrives after the decision has no
+# directory left to write into rather than resurrecting a state file nothing
+# will clean.
+discard_spawn_cwd_proofs() {  # <proof-dir>
+  local doomed="$1.discarded.$$"
+  if mv "$1" "$doomed" 2>/dev/null; then
+    rm -rf "$doomed"
+  else
+    rm -rf "$1"
+  fi
+}
+
+read_spawn_cwd_answer() {  # <proof-dir> <highest-attempt>  (prints the newest answer, consuming all)
+  local dir=$1 k=$2 line answer=''
+  while [ "$k" -ge 1 ]; do
+    if [ -s "$dir/$k" ]; then
+      line=$(head -n 1 "$dir/$k" 2>/dev/null || true)
+      [ -n "$answer" ] || answer=$line
+      rm -f "$dir/$k"
+    fi
+    k=$((k - 1))
+  done
+  printf '%s\n' "$answer"
+}
+
 confirm_spawn_shell_cwd() {  # <inspect-target>  (sets WT)
-  local inspect_target=$1 proof proof_quoted attempts polls interval i j seen seen_real wt_real
-  proof="$STATE/.$ID.spawn-cwd"
-  # Single-quote the redirect target for the pane's shell, escaping any literal
-  # quote in the operational home's own path.
-  proof_quoted="'${proof//\'/\'\\''}'"
+  local inspect_target=$1 proof_dir attempts polls interval i j seen seen_real wt_real
+  proof_dir="$STATE/.$ID.spawn-cwd.d"
   attempts=${FM_SPAWN_CWD_PROOF_ATTEMPTS:-3}
   polls=${FM_SPAWN_CWD_PROOF_POLLS:-10}
   interval=${FM_SPAWN_CWD_PROOF_INTERVAL:-0.5}
-  mkdir -p "$STATE"
+  discard_spawn_cwd_proofs "$proof_dir"
+  mkdir -p "$proof_dir"
   seen=
   i=0
   while [ "$i" -lt "$attempts" ]; do
     i=$((i + 1))
-    rm -f "$proof"
-    spawn_send_text_line "$WT_TARGET" "pwd -P > $proof_quoted" || true
+    spawn_send_text_line "$WT_TARGET" "pwd -P > $(shell_quote "$proof_dir/$i")" || true
     j=0
-    while [ "$j" -lt "$polls" ]; do
-      [ -s "$proof" ] && break
+    while :; do
+      seen=$(read_spawn_cwd_answer "$proof_dir" "$i")
+      [ -n "$seen" ] && break
+      [ "$j" -lt "$polls" ] || break
       j=$((j + 1))
       sleep "$interval"
     done
-    seen=$(head -n 1 "$proof" 2>/dev/null || true)
     if [ -n "$seen" ]; then
       seen_real=$(real_path_or_raw "$seen")
       if [ "$seen_real" != "$PROJ_ABS_REAL" ]; then
-        rm -f "$proof"
+        discard_spawn_cwd_proofs "$proof_dir"
         wt_real=$(real_path_or_raw "$WT")
         if [ "$seen_real" != "$wt_real" ]; then
           echo "notice: window $inspect_target reported '$WT' but its shell is in '$seen'; recording the shell's own directory" >&2
@@ -2297,7 +2326,7 @@ confirm_spawn_shell_cwd() {  # <inspect-target>  (sets WT)
       fi
     fi
   done
-  rm -f "$proof"
+  discard_spawn_cwd_proofs "$proof_dir"
   echo "error: the shell in window $inspect_target reports '${seen:-no answer}', not an isolated worktree; refusing to launch an agent or record a worktree it never entered. Inspect window $inspect_target" >&2
   exit 1
 }
