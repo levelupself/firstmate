@@ -114,6 +114,16 @@ fm_send_id_from_meta() {  # <meta-file>
   printf '%s' "${base%.meta}"
 }
 
+fm_send_key_is_reserved() {  # <slug>
+  local key=$1 prefix
+  for prefix in ${FM_CLASSIFY_RESERVED_KEY_PREFIXES:-$FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT}; do
+    case "$key" in
+      "$prefix"*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 # fm_send_clear_after_interrupt: muse RESTORES the interrupted prompt back into
 # the composer when Escape cancels a turn, as real bright text (verified: fg
 # 38;2;204;211;219, luminance ~210, muse 0.1.0-R708.1), not de-emphasised ghost
@@ -367,6 +377,10 @@ if [ -n "$RESOLVE_KEYS" ]; then
   RESOLVE_STATUS_FILE="$STATE/$RESOLVE_TASK_ID.status"
   resolve_open_set=$(status_open_decisions "$RESOLVE_STATUS_FILE")
   for k in $RESOLVE_KEYS; do
+    if fm_send_key_is_reserved "$k"; then
+      echo "error: --resolve-key '$k' is reserved to pending-reply decisions owned by bin/fm-pending-reply-lib.sh (closed through fm_pending_reply_close_escalation), so the advertised answerer-closes path does not apply; nothing was sent." >&2
+      exit 1
+    fi
     case "$resolve_open_set" in
       "$k"$'\t'*|*$'\n'"$k"$'\t'*) ;;
       *)

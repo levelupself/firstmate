@@ -112,6 +112,16 @@ EOF
   [ "$shown" -gt 0 ] || return 0
 }
 
+_fm_wake_drain_key_is_reserved() {  # <key>
+  local key=$1 prefix
+  for prefix in ${FM_CLASSIFY_RESERVED_KEY_PREFIXES:-$FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT}; do
+    case "$key" in
+      "$prefix"*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 # Print the consolidated OPEN DECISIONS section: every still-open
 # needs-decision/blocked, fleet-wide, folded from the durable status logs by
 # fm-classify-lib.sh's status_open_decisions fold (via its cursor-backed
@@ -128,7 +138,7 @@ EOF
 # Bounded and silent: prints nothing when no decision is open, which is the
 # common case.
 print_open_decisions_section() {
-  local snapshot=${1:-} open task key verb note line item_bytes=220 global_bytes=4000
+  local snapshot=${1:-} has_reserved=0 has_regular=0 open task key verb note line item_bytes=220 global_bytes=4000
   local output='' used=0 shown=0 omitted=0 bytes
 
   if [ -n "$snapshot" ]; then
@@ -140,6 +150,7 @@ print_open_decisions_section() {
 
   while IFS=$(printf '\t') read -r task key verb note; do
     [ -n "$task" ] || continue
+    _fm_wake_drain_key_is_reserved "$key" && has_reserved=1 || has_regular=1
     line="$task"
     [ "$key" = default ] || line="$line [key=$key]"
     line="$line $verb: $note"
@@ -167,11 +178,16 @@ EOF
   if [ "$omitted" -gt 0 ]; then
     printf 'OPEN DECISIONS: %d more omitted (byte cap)\n' "$omitted" || return 1
   fi
-  # Answerer-closes hint, printed at exactly the moment an answer gets written:
-  # the send that answers a listed decision also closes it, so closure never
-  # depends on the busy worker writing a matching resolved line (contract:
-  # bin/fm-send.sh header).
-  printf "OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'\n" || return 1
+  if [ "$has_regular" -eq 1 ]; then
+    # Answerer-closes hint, printed at exactly the moment an answer gets written:
+    # the send that answers a listed decision also closes it, so closure never
+    # depends on the busy worker using a matching resolved line (contract:
+    # bin/fm-send.sh header).
+    printf "OPEN DECISIONS: for regular keys, close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'\n" || return 1
+  fi
+  if [ "$has_reserved" -eq 1 ]; then
+    printf 'OPEN DECISIONS: pending-reply keys are closed by the pending-reply close flow in bin/fm-pending-reply-lib.sh (fm_pending_reply_close_escalation), not by --resolve-key.\n' || return 1
+  fi
 }
 
 print_status_sections() {

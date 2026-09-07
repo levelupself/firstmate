@@ -32,7 +32,7 @@ test_buried_decision_still_surfaces() {
   grep -F 'OPEN DECISIONS' "$out" >/dev/null || fail "buried decision produced no OPEN DECISIONS section"
   grep -F 'task1' "$out" | grep -F '[key=api-shape]' | grep -F 'pick REST or RPC' >/dev/null \
     || fail "buried needs-decision was not surfaced with its task, key, and note"
-  grep -F "close one by answering it: bin/fm-send.sh <task> --resolve-key <key>" "$out" >/dev/null \
+  grep -F "for regular keys, close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'" "$out" >/dev/null \
     || fail "open section is missing the answerer-closes hint"
   pass "a needs-decision buried under later routine/other-key lines still reports as open"
 }
@@ -100,6 +100,11 @@ test_reserved_key_namespace_is_owned_by_its_library() {
     || fail "a foreign resolution cleared a reserved decision it does not own: $(cat "$out")"
   if grep -F 'shipping is blocked on infra' "$out" >/dev/null; then
     fail "a foreign line took over a reserved decision key: $(cat "$out")"
+  fi
+  grep -F 'pending-reply keys are closed by the pending-reply close flow in bin/fm-pending-reply-lib.sh' "$out" >/dev/null \
+    || fail "reserved open decisions no longer print their owning close flow: $(cat "$out")"
+  if grep -F 'close one by answering it: bin/fm-send.sh <task> --resolve-key <key>' "$out" >/dev/null; then
+    fail "reserved decisions still advertise the fm-send close path: $(cat "$out")"
   fi
 
   # The owner's own resolution, which speaks that namespace's vocabulary, closes it.
