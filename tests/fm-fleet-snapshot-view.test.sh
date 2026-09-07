@@ -14,6 +14,7 @@ SNAPSHOT="$ROOT/bin/fm-fleet-snapshot.sh"
 VIEW="$ROOT/bin/fm-fleet-view.sh"
 BEARINGS="$ROOT/bin/fm-bearings-snapshot.sh"
 TMP_ROOT=$(fm_test_tmproot fm-fleet-snapshot)
+fm_git_identity fmtest fmtest@example.invalid
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
@@ -22,6 +23,9 @@ make_fakebin() {  # <dir>
   fb=$(fm_fakebin "$1")
   cat > "$fb/no-mistakes" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = axi ] && [ "${2:-}" = status ]; then
+  printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"
+fi
 exit 0
 SH
   cat > "$fb/tmux" <<'SH'
@@ -217,6 +221,107 @@ test_fixture_snapshot_json() {
     | .state == "done" and .pr_url == "https://github.com/kunchenguid/firstmate/pull/7"
   ' >/dev/null || fail "done backlog PR row missing"
   pass "fixture snapshot covers task rows, backlog rows, pointers, and stable ordering"
+}
+
+# Shared fixture: one in-flight crew whose only authoritative source is an
+# active pipeline-owned run, i.e. a run whose own fix tip deliberately lives
+# outside the crew worktree and cannot be resolved there. Sets
+# PIPELINE_OWNED_HOME and PIPELINE_OWNED_FAKEBIN and exports FM_FAKE_AXI_STATUS.
+PIPELINE_OWNED_HOME=""
+PIPELINE_OWNED_FAKEBIN=""
+setup_pipeline_owned_fixture() {  # <case-name>
+  local home head
+  home=$(make_home "$1")
+  mkdir -p "$home/projects/pipeline-owned"
+  git -C "$home/projects/pipeline-owned" init -q
+  git -C "$home/projects/pipeline-owned" commit -q --allow-empty -m init
+  git -C "$home/projects/pipeline-owned" checkout -q -b fm/pipeline-owned
+  head=$(git -C "$home/projects/pipeline-owned" rev-parse HEAD)
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] pipeline-owned - Owned run (repo: firstmate) (kind: ship) (since 2026-08-10)
+EOF
+  fm_write_meta "$home/state/pipeline-owned.meta" \
+    "window=firstmate:fm-pipeline-owned" \
+    "worktree=$home/projects/pipeline-owned" \
+    "project=firstmate" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=no-mistakes"
+  PIPELINE_OWNED_FAKEBIN=$(make_fakebin "$home")
+  # The shape `no-mistakes axi status` actually publishes: `branch_sync:` is a
+  # sibling of `run:` at indent 0, emitted after the step tables, with the
+  # run's own head abbreviated and `pr_state:`/`local.head:` neighbouring the
+  # keys the owner binding reads.
+  FM_FAKE_AXI_STATUS=$(cat <<EOF
+run:
+  id: "01PIPELINE"
+  branch: fm/pipeline-owned
+  status: fixing
+  head: 4dca364b
+  pr: ""
+steps[2]{step,status,findings,duration_ms}:
+  intent,completed,0,0
+  review,fixing,1,0
+active_steps[1]{step,status}:
+  review,fixing
+branch_sync:
+  pr_state: none
+  safety: safe
+  state: pipeline_owned
+  local:
+    head: $head
+    clean: true
+  pipeline:
+    submitted_head: $head
+    current_head: 4dca364b
+  next_action: none
+EOF
+)
+  export FM_FAKE_AXI_STATUS
+  PIPELINE_OWNED_HOME=$home
+}
+
+test_pipeline_owned_validation_step_renders_in_fleet_view() {
+  local home fakebin out view
+  setup_pipeline_owned_fixture pipeline-owned
+  home=$PIPELINE_OWNED_HOME
+  fakebin=$PIPELINE_OWNED_FAKEBIN
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "pipeline-owned")
+    | .current_state.state == "working"
+      and .current_state.source == "run-step"
+      and .current_state.detail == "validating (fixing)"
+  ' >/dev/null || fail "snapshot discarded the authoritative pipeline-owned run: $out"
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
+  assert_contains "$view" "fixing" "fleet view must render the real validation step"
+  assert_not_contains "$view" "state unavailable" "fleet view must not fall back to unverifiable Codex state"
+  assert_contains "$view" "Owned run" "the in-flight row must still carry the task title"
+  unset FM_FAKE_AXI_STATUS
+  pass "pipeline-owned validation step survives snapshot and fleet rendering"
+}
+
+# A stale needs-decision log line makes crew-state append its own reconciliation
+# note after the step detail. That note is internal wording; it must never
+# consume the clipped row's width at the task title's expense.
+test_reconciled_run_detail_keeps_the_task_title() {
+  local home fakebin out view
+  setup_pipeline_owned_fixture pipeline-owned-reconciled
+  home=$PIPELINE_OWNED_HOME
+  fakebin=$PIPELINE_OWNED_FAKEBIN
+  printf 'working: started\nneeds-decision: pick A or B\n' > "$home/state/pipeline-owned.status"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "pipeline-owned")
+    | .current_state.detail == "validating (fixing) · status-log superseded by active run"
+  ' >/dev/null || fail "crew-state no longer reconciles the stale log against the run: $out"
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
+  assert_contains "$view" "validating (fixing)" "the real validation step must survive reconciliation"
+  assert_contains "$view" "Owned run" "the reconciliation note must not clip the task title away"
+  assert_not_contains "$view" "superseded" "internal reconciliation wording does not belong in the in-flight row"
+  unset FM_FAKE_AXI_STATUS
+  pass "a reconciled run detail keeps the task title in the in-flight row"
 }
 
 # R1 owner contract: main_inventory discloses orphan in-flight and unstructured
@@ -1491,10 +1596,14 @@ if [ "${1:-}" = pane ] && [ "${2:-}" = layout ]; then
     '{result:{layout:{panes:[{pane_id:$pane,rect:{x:0,y:0,width:45,height:20}}]}}}'
   exit 0
 fi
+painter_cwd=$PAINTER_HOME
+[ "$mode" != home ] || painter_cwd=/wrong/home
 if [ "${1:-}" = pane ] && [ "${2:-}" = get ]; then
   tab=$(cat "$PAINTER_HOME/reported-tab" 2>/dev/null || printf 'w9:t1')
-  cwd=$PAINTER_HOME
-  [ "$mode" != home ] || cwd=/wrong/home
+  # Herdr samples ONE foreground process for this pane-level field, so it reads
+  # back as a forked child's cwd whenever a child is foreground. The knob models
+  # exactly that: the painter has not moved, the sample landed on its child.
+  cwd=${PAINTER_FOREGROUND_CWD:-$painter_cwd}
   jq -cn --arg pane "${3:-${HERDR_PANE_ID:?}}" --arg tab "$tab" --arg cwd "$cwd" \
     '{result:{pane:{pane_id:$pane,workspace_id:"w9",tab_id:$tab,foreground_cwd:$cwd}}}'
   exit 0
@@ -1518,8 +1627,10 @@ else
      "--herdr-session",$session,"--herdr-pane",$pane,"--watch","0.1"]
     + (if $sections == "" then [] else ["--section",$sections] end)')
 fi
-jq -cn --arg pane "${asked_pane:?}" --argjson argv "$argv" '
-  {result:{type:"pane_process_info",process_info:{pane_id:$pane,foreground_processes:[{argv:$argv}]}}}'
+jq -cn --arg pane "${asked_pane:?}" --argjson argv "$argv" --arg cwd "$painter_cwd" '
+  {result:{type:"pane_process_info",
+    process_info:{pane_id:$pane,shell_pid:101,foreground_process_group_id:101,
+      foreground_processes:[{pid:101,cwd:$cwd,argv:$argv}]}}}'
 SH
   chmod +x "$fakebin/herdr"
   printf '%s\n' "$ROOT/bin"
@@ -2057,6 +2168,38 @@ test_watch_refuses_a_recorded_pane_with_wrong_process_identity() {
   pass "a recorded pane paints only with the authoritative process identity"
 }
 
+# The home half of that identity is the PAINTER PROCESS's own cwd, not the
+# pane-level foreground_cwd. Herdr samples that field from whichever process is
+# foreground at the instant of the read, and this painter forks short-lived
+# children on every redraw - the snapshot, then one crew read per crew - each of
+# which resolves its own script directory before doing anything else. So the
+# sample lands on the code root while the painter has not moved, and reading it
+# retired a correctly bound painter mid-run for a frame that was fine.
+test_a_forked_childs_cwd_never_unbinds_a_recorded_painter() {
+  local home dir pid rc
+  home=$(make_home painter-child-cwd)
+  dir=$(painter_bin "$home")
+  write_cockpit_record "$home" 'w9:p2' 'waiting'
+  PAINTER_FOREGROUND_CWD="$ROOT/bin" \
+    FM_HOME="$home" COLUMNS=45 LINES=20 \
+    HERDR_SESSION=lab-session HERDR_PANE_ID=w9:p2 HERDR_TAB_ID=w9:t1 \
+    PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" \
+    PAINTER_REPORTED_SECTIONS=waiting PATH="$home/fakebin:$PATH" \
+    "$dir/fm-fleet-view.sh" --watch 0.1 --section waiting \
+    > "$home/child-cwd.out" 2>&1 &
+  pid=$!
+  rc=0
+  wait_for_paint "$home/child-cwd.out" 'YOUR DECISIONS' || rc=1
+  [ "$rc" = 0 ] && [ -e "$home/state/.fleet-painter-w9:p2.lock" ] || rc=1
+  kill -0 "$pid" 2>/dev/null || rc=1
+  reap_painter "$pid"
+  [ "$rc" = 0 ] \
+    || fail "a bound painter was retired because its own child was foreground: $(cat "$home/child-cwd.out")"
+  assert_not_contains "$(cat "$home/child-cwd.out")" 'not this frame' \
+    "a forked child's cwd was still read as the painter's own home"
+  pass "a painter's forked child being foreground never unbinds its recorded pane"
+}
+
 # --- ready membership follows the authoritative live-task records ------------
 #
 # Dispatch writes state/<id>.meta immediately; the backlog document is edited
@@ -2320,6 +2463,8 @@ SH
 
 test_empty_fleet_json
 test_fixture_snapshot_json
+test_pipeline_owned_validation_step_renders_in_fleet_view
+test_reconciled_run_detail_keeps_the_task_title
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state
@@ -2364,4 +2509,5 @@ test_geometry_probe_names_its_exact_permanent_cause
 test_pane_identity_splits_painters_sharing_one_frame
 test_transient_geometry_evidence_is_reported_not_interleaved
 test_watch_refuses_a_recorded_pane_with_wrong_process_identity
+test_a_forked_childs_cwd_never_unbinds_a_recorded_painter
 test_non_watch_outputs_remain_byte_exact

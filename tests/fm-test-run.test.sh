@@ -133,6 +133,9 @@ init_changed_fixture_repo() {
     fm-pi-watch-extension.test.sh \
     fm-afk-return.test.sh \
     fm-bearings-snapshot.test.sh \
+    fm-fleet-snapshot-view.test.sh \
+    fm-crew-state.test.sh \
+    fm-teardown.test.sh \
     fm-backend-cmux.test.sh \
     fm-backend-zellij.test.sh \
     fm-backend-orca.test.sh; do
@@ -142,6 +145,8 @@ init_changed_fixture_repo() {
   : >"$repo/tests/lib.sh"
   : >"$repo/tests/fm-backend-herdr-eventwait.test.py"
   : >"$repo/bin/fm-supervisor-target-lib.sh"
+  : >"$repo/bin/fm-crew-state.sh"
+  : >"$repo/bin/fm-nm-run-lib.sh"
   : >"$repo/bin/unmapped-source.sh"
   printf '# .claude/settings.json\n# .pi/extensions/fm-primary-turnend-guard.ts\n' \
     >>"$repo/tests/fm-cd-pretool-check.test.sh"
@@ -184,6 +189,24 @@ test_changed_dependency_selection_and_unmapped_failure() {
   assert_contains "$listed" "tests/fm-afk-return.test.sh" "supervisor target selects afk coverage"
   git -C "$repo" add bin/fm-supervisor-target-lib.sh
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm supervisor-change
+
+  # The per-crew current-state read and the attribution primitives it sources
+  # decide what every in-flight fleet row shows, so a change to either must
+  # re-run the rendered snapshot/view coverage as well as its own unit family.
+  printf '\n' >>"$repo/bin/fm-crew-state.sh"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" "tests/fm-crew-state.test.sh" "crew-state source selects its own contract coverage"
+  assert_contains "$listed" "tests/fm-fleet-snapshot-view.test.sh" "crew-state source selects the rendered fleet coverage"
+  git -C "$repo" add bin/fm-crew-state.sh
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm crew-state-change
+
+  printf '\n' >>"$repo/bin/fm-nm-run-lib.sh"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" "tests/fm-crew-state.test.sh" "run attribution selects crew-state coverage"
+  assert_contains "$listed" "tests/fm-teardown.test.sh" "run attribution selects teardown coverage"
+  assert_contains "$listed" "tests/fm-fleet-snapshot-view.test.sh" "run attribution selects the rendered fleet coverage"
+  git -C "$repo" add bin/fm-nm-run-lib.sh
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm nm-run-lib-change
 
   printf '\n' >>"$repo/.agents/skills/example/SKILL.md"
   printf '\n' >>"$repo/.claude/settings.json"

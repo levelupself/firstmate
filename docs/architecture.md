@@ -44,7 +44,7 @@ This home's answerer close, pending-reply escalation close, and captain-held par
 A turn-ended-only queue row omits its historical status annotation when that status file exactly matches the same seen marker.
 Any direct or remaining historical annotation prints every status line unread at the presentation cursor instead of replaying only the latest line.
 `bin/fm-crew-state.sh <id>` is the cheap current-state read for an actionable heartbeat review: it attributes a no-mistakes run, active or terminal, only when it matches the crew's branch and current code identity, then keeps that run-step authoritative even if the pane has closed.
-The script header owns the exact run-head ancestry rules.
+`bin/fm-nm-run-lib.sh`'s `fm_nm_run_matches_worktree` owns that code-identity rule for every consumer, including the pipeline-owned case where the run's own fix tip deliberately lives outside the crew worktree until it is pushed, so the run is bound by the head the crew submitted instead.
 During no-mistakes' `ci` monitor phase, it also reads the ci step log tail because `axi status` reports both "still waiting on checks" and "checks green, waiting on merge" as `ci,running`.
 The most recent recognized ci log marker wins, so checks-green monitoring reports done while a later re-arm, failed-check, or issue marker returns the crew to working.
 Only when no matching run exists does it consult semantic busy state; exact busy reports working, exact idle permits fallback to a status-log event whose verb maps to a recognized run-state, and unknown or a dead pane stays unknown instead of trusting a stale log.
@@ -55,6 +55,7 @@ For whole-fleet read-only review, `bin/fm-fleet-snapshot.sh --json` emits schema
 `bin/fm-fleet-view.sh` renders that snapshot as a height-bounded panel ordered around decisions, ready queued capacity, in-flight work, and genuinely blocked queued work, while finished and failed history remains available through independent section filters.
 Live rows are grouped by project and share limited height fairly across projects while retaining state and priority order within each group.
 Unknown live runtime state stays in the in-flight projection, and each shortened live project group discloses its omitted row count.
+An in-flight row whose state comes from an authoritative run step names that step ahead of the task title, so validation work reads as the step it is running rather than as a bare title.
 READY separates the queued set `tasks-axi ready` returns: rows the snapshot marks `dispatch_clear` render plainly, while rows whose own durable contract stops the backlog from confirming dispatch render with a `?` marker and the reason, and the heading counts the two apart.
 The snapshot owns the `dispatch_clear` judgement, while the renderer reconciles queued ids against the snapshot's live task inventory.
 The queue sections drop one row from that set: a queued row whose id already appears in the snapshot's live task rows is work a worker holds, covering legacy data and an interrupted lifecycle write without offering the work twice.

@@ -203,6 +203,63 @@ run:
 EOF
 }
 
+run_pipeline_owned_fixing() {  # <branch> <submitted-head> <current-head>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: fixing
+  head: "$3"
+  pr: ""
+  findings: none
+  branch_sync:
+    state: pipeline_owned
+    local:
+      head: "$2"
+      clean: true
+    pipeline:
+      submitted_head: "$2"
+      current_head: "$3"
+  steps[2]{step,status,findings,duration_ms}:
+    intent,completed,0,0
+    review,fixing,1,0
+EOF
+}
+
+# The shape `no-mistakes axi status` actually publishes: `branch_sync:` is a
+# SIBLING of `run:` at indent 0, emitted after the step tables, with `state:`
+# and `pipeline:` at +2 and `submitted_head:` at +4. `pr_state:` and
+# `local.head:` are the real neighbours that shadow the keys being read, and the
+# run's own head is abbreviated. Owner binding must hold against this shape, not
+# only against the run-nested fixtures above.
+run_pipeline_owned_published_shape() {  # <branch> <submitted-head> <current-head>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: fixing
+  head: $3
+  pr: ""
+  findings: none
+steps[2]{step,status,findings,duration_ms}:
+  intent,completed,0,0
+  review,fixing,1,0
+active_steps[1]{step,status}:
+  review,fixing
+branch_sync:
+  pr_state: none
+  safety: safe
+  state: pipeline_owned
+  local:
+    head: $2
+    clean: true
+  pipeline:
+    submitted_head: $2
+    current_head: $3
+  next_action: none
+EOF
+}
+
 run_top_level_ci() {  # <branch>
   cat <<EOF
 run:
@@ -1332,6 +1389,176 @@ test_active_run_descendant_fix_head_remains_current() {
   pass "active run with valid descendant fix head remains current"
 }
 
+# Pipeline-owned fix commits live only in no-mistakes' worktree before push.
+# The published submitted-head relationship must bind that run without requiring
+# its current head to resolve in the crew worktree.
+test_pipeline_owned_unavailable_current_head_uses_submitted_head() {
+  reset_fakes
+  local d submitted_head unavailable_head out
+  d=$(new_case pipeline-owned-unavailable-head)
+  make_repo_on_branch "$d/wt" fm/feat-pipeline-owned
+  submitted_head=$(git -C "$d/wt" rev-parse HEAD)
+  unavailable_head=1111111111111111111111111111111111111111
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/pipe-owned.meta" "window=fm:fm-pipe-owned" "worktree=$d/wt" "kind=ship" "harness=codex"
+  FM_FAKE_AXI_STATUS=$(run_pipeline_owned_fixing fm/feat-pipeline-owned "$submitted_head" "$unavailable_head")
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  out=$(run_crew_state "$d" pipe-owned)
+  assert_contains "$out" "source: run-step" "pipeline-owned run must outrank the unverifiable Codex pane"
+  assert_contains "$out" "state: working" "pipeline-owned fixing run remains working"
+  assert_contains "$out" "validating (fixing)" "the exact validation step must be rendered"
+  pass "pipeline-owned run binds through submitted head when current head is unavailable"
+}
+
+test_pipeline_owned_binds_in_the_published_status_shape() {
+  reset_fakes
+  local d submitted_head out
+  d=$(new_case pipeline-owned-published-shape)
+  make_repo_on_branch "$d/wt" fm/feat-published
+  submitted_head=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/published.meta" "window=fm:fm-published" "worktree=$d/wt" "kind=ship" "harness=codex"
+  FM_FAKE_AXI_STATUS=$(run_pipeline_owned_published_shape fm/feat-published "$submitted_head" 6c69c409)
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  out=$(run_crew_state "$d" published)
+  assert_contains "$out" "source: run-step" "the published top-level branch_sync shape must bind the run"
+  assert_contains "$out" "state: working" "a pipeline-owned fixing run remains working in the published shape"
+  assert_contains "$out" "validating (fixing)" "the exact validation step must be rendered from the published shape"
+  pass "pipeline ownership binds in the shape axi status actually publishes"
+}
+
+test_pipeline_owned_published_shape_rejects_a_foreign_submitted_head() {
+  reset_fakes
+  local d short out
+  d=$(new_case pipeline-owned-published-mismatch)
+  make_repo_on_branch "$d/wt" fm/feat-published-mismatch
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/published-mismatch.meta" "window=fm:fm-published-mismatch" "worktree=$d/wt" "kind=ship" "harness=codex"
+  FM_FAKE_AXI_STATUS=$(run_pipeline_owned_published_shape fm/feat-published-mismatch \
+    7777777777777777777777777777777777777777 6c69c409)
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/feat-published-mismatch ${short}  2026-08-10 09:00
+EOF
+)"
+  out=$(run_crew_state "$d" published-mismatch)
+  assert_not_contains "$out" "source: run-step" "a foreign submitted head must be rejected in the published shape too"
+  assert_not_contains "$out" "background run" "the rejection must not be resurrected by the coarse runs list"
+  assert_contains "$out" "state: unknown" "the rejected relationship leaves Codex unknown"
+  pass "the published shape rejects a run bound to other code"
+}
+
+# The published relationship is a text contract from another process, so an
+# incidental trailing space on the owner key must not silently unbind the run
+# and strand the crew on the coarse-fallback-suppressed unknown row.
+test_pipeline_owned_binds_despite_trailing_whitespace() {
+  reset_fakes
+  local d submitted_head out
+  d=$(new_case pipeline-owned-trailing-space)
+  make_repo_on_branch "$d/wt" fm/feat-trailing
+  submitted_head=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/trailing.meta" "window=fm:fm-trailing" "worktree=$d/wt" "kind=ship" "harness=codex"
+  FM_FAKE_AXI_STATUS=$(run_pipeline_owned_fixing fm/feat-trailing "$submitted_head" 5555555555555555555555555555555555555555)
+  FM_FAKE_AXI_STATUS=$(printf '%s\n' "$FM_FAKE_AXI_STATUS" | sed 's/^    pipeline:$/    pipeline: /')
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  out=$(run_crew_state "$d" trailing)
+  assert_contains "$out" "source: run-step" "a trailing space on the owner key must not unbind the run"
+  assert_contains "$out" "validating (fixing)" "the exact validation step must still be rendered"
+  pass "pipeline ownership binds through insignificant trailing whitespace"
+}
+
+test_pipeline_owned_different_branch_is_rejected() {
+  reset_fakes
+  local d submitted_head out
+  d=$(new_case pipeline-owned-other-branch)
+  make_repo_on_branch "$d/wt" fm/feat-local
+  submitted_head=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/other-branch.meta" "window=fm:fm-other-branch" "worktree=$d/wt" "kind=ship" "harness=codex"
+  FM_FAKE_AXI_STATUS=$(run_pipeline_owned_fixing fm/feat-other "$submitted_head" 2222222222222222222222222222222222222222)
+  FM_FAKE_RUNS_LIST=""
+  out=$(run_crew_state "$d" other-branch)
+  assert_not_contains "$out" "source: run-step" "a pipeline-owned run from another branch must be rejected"
+  assert_contains "$out" "state: unknown" "unverifiable Codex pane stays unknown after branch mismatch"
+  pass "pipeline-owned run from a different branch remains unmatched"
+}
+
+test_pipeline_owned_submitted_head_behind_local_work_is_rejected() {
+  reset_fakes
+  local d submitted_head short out
+  d=$(new_case pipeline-owned-local-advanced)
+  make_repo_on_branch "$d/wt" fm/feat-local-advanced
+  submitted_head=$(git -C "$d/wt" rev-parse HEAD)
+  git -C "$d/wt" commit -q --allow-empty -m 'additional local work'
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/local-advanced.meta" "window=fm:fm-local-advanced" "worktree=$d/wt" "kind=ship" "harness=codex"
+  FM_FAKE_AXI_STATUS=$(run_pipeline_owned_fixing fm/feat-local-advanced "$submitted_head" 3333333333333333333333333333333333333333)
+  # The rejected run is also listed for THIS branch with a sha the coarse rule
+  # would happily accept; ownership rejection must outrank that weaker rule.
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/feat-local-advanced ${short}  2026-08-10 09:00
+EOF
+)"
+  out=$(run_crew_state "$d" local-advanced)
+  assert_not_contains "$out" "source: run-step" "a submitted head behind local work must be rejected"
+  assert_contains "$out" "state: unknown" "unverifiable Codex pane stays unknown after head mismatch"
+  pass "pipeline-owned submitted head behind local work remains unmatched"
+}
+
+test_pipeline_owned_invalid_relationship_is_rejected() {
+  local variant d head short out
+  for variant in mismatch missing wrong-owner nested-owner; do
+    reset_fakes
+    d=$(new_case "pipeline-owned-$variant")
+    make_repo_on_branch "$d/wt" fm/feat-invalid
+    head=$(git -C "$d/wt" rev-parse HEAD)
+    short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+    make_fakebin "$d" >/dev/null
+    fm_write_meta "$d/state/invalid.meta" "window=fm:fm-invalid" "worktree=$d/wt" "kind=ship" "harness=codex"
+    FM_FAKE_AXI_STATUS=$(run_pipeline_owned_fixing fm/feat-invalid "$head" "$head")
+    case "$variant" in
+      mismatch) FM_FAKE_AXI_STATUS=$(printf '%s\n' "$FM_FAKE_AXI_STATUS" | sed 's/submitted_head:.*/submitted_head: "4444444444444444444444444444444444444444"/') ;;
+      missing) FM_FAKE_AXI_STATUS=$(printf '%s\n' "$FM_FAKE_AXI_STATUS" | sed '/submitted_head:/d') ;;
+      wrong-owner) FM_FAKE_AXI_STATUS=$(printf '%s\n' "$FM_FAKE_AXI_STATUS" | sed 's/    pipeline:/    unrelated:/') ;;
+      nested-owner) FM_FAKE_AXI_STATUS=$(printf '%s\n' "$FM_FAKE_AXI_STATUS" | sed 's/      submitted_head:/        submitted_head:/') ;;
+    esac
+    # Same-branch runs-list row whose sha equals this worktree head: the coarse
+    # ownership-blind rule would attribute it as "validating (background run)",
+    # so it must stay unreachable once ownership authoritatively rejected it.
+    FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/feat-invalid ${short}  2026-08-10 09:00
+EOF
+)"
+    out=$(run_crew_state "$d" invalid)
+    assert_not_contains "$out" "source: run-step" "$variant pipeline relationship must not fall back to equal legacy head"
+    assert_not_contains "$out" "background run" "$variant rejection must not be resurrected by the coarse runs list"
+    assert_contains "$out" "state: unknown" "$variant relationship leaves Codex unknown"
+  done
+  pass "invalid pipeline ownership cannot use legacy head fallback"
+}
+
+test_unmatched_codex_pane_remains_unknown() {
+  reset_fakes
+  local d out
+  d=$(new_case codex-unverified)
+  make_repo_on_branch "$d/wt" fm/feat-codex-unverified
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/codex-unverified.meta" "window=fm:fm-codex-unverified" "worktree=$d/wt" "kind=ship" "harness=codex"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  out=$(run_crew_state "$d" codex-unverified)
+  assert_contains "$out" "state: unknown" "Codex pane must remain unknown without a matching run"
+  assert_contains "$out" "source: pane" "the unmatched crew falls through to the pane reader"
+  assert_contains "$out" "harness state unavailable" "Codex fallback must continue refusing to guess"
+  pass "unmatched Codex pane fallback remains unknown"
+}
+
 # Head-binding: local work that advanced past the run head invalidates the run.
 test_local_advanced_past_run_head_invalidates() {
   reset_fakes
@@ -1422,6 +1649,14 @@ test_not_provably_working_when_stopped
 test_usage_error
 test_historical_same_branch_rewritten_head_not_current
 test_active_run_descendant_fix_head_remains_current
+test_pipeline_owned_unavailable_current_head_uses_submitted_head
+test_pipeline_owned_binds_despite_trailing_whitespace
+test_pipeline_owned_binds_in_the_published_status_shape
+test_pipeline_owned_published_shape_rejects_a_foreign_submitted_head
+test_pipeline_owned_invalid_relationship_is_rejected
+test_pipeline_owned_different_branch_is_rejected
+test_pipeline_owned_submitted_head_behind_local_work_is_rejected
+test_unmatched_codex_pane_remains_unknown
 test_local_advanced_past_run_head_invalidates
 test_missing_run_head_falls_back_to_current_state
 

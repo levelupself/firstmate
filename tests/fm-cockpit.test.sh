@@ -66,6 +66,24 @@ pane_field() {  # <row> <field-number>
   printf '%s' "$1" | awk -F '\t' -v n="$2" '{print $n}'
 }
 
+# The home a pane's own processes run from. Herdr reports this per process in
+# `pane process-info` AND, separately, as the pane-level foreground_cwd sample
+# in `pane get`; both are modelled here so ownership can be driven independently
+# of whichever process is foreground at the moment of a sample.
+pane_process_cwd() {  # <workspace>
+  local fixture_root
+  if [ -n "${FM_FAKE_FLEET_CWD:-}" ]; then
+    printf '%s' "$FM_FAKE_FLEET_CWD"
+    return 0
+  fi
+  fixture_root=$(dirname "$(dirname "$state")")
+  case "$1" in
+    w1) printf '%s' "$fixture_root/home" ;;
+    w2) printf '%s' "$fixture_root/second-home" ;;
+    w3) printf '%s' "$fixture_root/layout-home" ;;
+  esac
+}
+
 case "${1:-} ${2:-}" in
   "status --json")
     printf '%s\n' '{"client":{"protocol":16,"version":"0.7.3"},"server":{"running":true}}'
@@ -129,15 +147,10 @@ case "${1:-} ${2:-}" in
       printf '%s\n' '{"error":{"code":"pane_not_found"}}'
     else
       workspace=$(pane_field "$row" 4)
-      cwd=${FM_FAKE_FLEET_CWD:-}
-      if [ -z "$cwd" ]; then
-        fixture_root=$(dirname "$(dirname "$state")")
-        case "$workspace" in
-          w1) cwd="$fixture_root/home" ;;
-          w2) cwd="$fixture_root/second-home" ;;
-          w3) cwd="$fixture_root/layout-home" ;;
-        esac
-      fi
+      # Herdr samples ONE foreground process for this field, so it reads back as
+      # a forked child's cwd whenever a child is foreground. The knob models
+      # exactly that: the painter has not moved, the sample landed on its child.
+      cwd=${FM_FAKE_FOREGROUND_CWD:-$(pane_process_cwd "$workspace")}
       jq -n --arg id "$(pane_field "$row" 1)" --arg label "$(pane_field "$row" 2)" \
         --arg tab "$(pane_field "$row" 3)" --arg workspace "$workspace" --arg cwd "$cwd" \
         '{result:{pane:{pane_id:$id,label:$label,tab_id:$tab,workspace_id:$workspace,
@@ -253,11 +266,12 @@ case "${1:-} ${2:-}" in
         printf '[]'
       fi
     }
+    info_cwd=$(pane_process_cwd "$(pane_field "$row" 4)")
     emit_processes() {  # <argv-json>
-      jq -n --arg pane "$info_pane" --argjson argv "$1" \
+      jq -n --arg pane "$info_pane" --argjson argv "$1" --arg cwd "$info_cwd" \
         '{result:{type:"pane_process_info",process_info:{pane_id:$pane,shell_pid:100,
           foreground_process_group_id:101,foreground_processes:[
-            {pid:101,name:"bash",argv:$argv}]}}}'
+            {pid:101,name:"bash",argv:$argv,cwd:$cwd}]}}}'
     }
     case "$status" in
       fleet-live)
@@ -332,11 +346,11 @@ case "${1:-} ${2:-}" in
           --arg exact "$FM_COCKPIT_ROOT/bin/fm-fleet-view.sh" \
           --arg other "/wrong/checkout/bin/fm-fleet-view.sh" \
           --arg geometry "$FM_COCKPIT_ROOT/bin/fm-herdr-pane-geometry.sh" \
-          --arg section "$pane_section" \
+          --arg section "$pane_section" --arg cwd "$info_cwd" \
           '{result:{type:"pane_process_info",process_info:{pane_id:$pane,shell_pid:100,
             foreground_process_group_id:101,foreground_processes:[
-              {pid:101,name:"bash",argv:["bash",$exact,"--watch","--section",$section]},
-              {pid:102,name:"bash",argv:["bash",$other,"--geometry-command",$geometry,
+              {pid:101,name:"bash",cwd:$cwd,argv:["bash",$exact,"--watch","--section",$section]},
+              {pid:102,name:"bash",cwd:$cwd,argv:["bash",$other,"--geometry-command",$geometry,
                 "--watch","--section",$section]}]}}}'
         ;;
       fleet-no-watch)
@@ -1088,6 +1102,7 @@ run_layout_cockpit() {  # <action> [<args...>]
     FM_FAKE_HERDR_LOG="$HERDR_LOG" \
     FM_FAKE_FLEET_HOME="${FM_FAKE_FLEET_HOME:-}" \
     FM_FAKE_FLEET_CWD="${FM_FAKE_FLEET_CWD:-}" \
+    FM_FAKE_FOREGROUND_CWD="${FM_FAKE_FOREGROUND_CWD:-}" \
     FM_COCKPIT_ROOT="$ROOT" \
     HERDR_ENV=1 \
     HERDR_SESSION=fmtest \
@@ -1457,12 +1472,38 @@ test_cockpit_liveness_requires_exact_painter_ownership() {
   out=$(run_layout_cockpit status 2>&1) \
     && fail "a painter running from another home was accepted"
   assert_contains "$out" "(fleet-no-fleet-process)" \
-    "the wrong foreground cwd did not fail painter identity"
+    "a painter whose own cwd is another home did not fail painter identity"
 
   FM_FAKE_FLEET_CWD=""
   run_layout_cockpit status >/dev/null 2>&1 \
-    || fail "the exact painter executable and foreground cwd were rejected"
-  pass "cockpit liveness requires the exact painter executable and foreground cwd"
+    || fail "the exact painter executable and its own cwd were rejected"
+  pass "cockpit liveness requires the exact painter executable and its own cwd"
+}
+
+# Herdr's pane-level foreground_cwd is ONE sample of whichever process is
+# foreground at that instant. A watching painter forks short-lived children on
+# every redraw - the snapshot, then one crew read per crew - and each resolves
+# its own script directory first, so that sample lands on the code root while
+# the painter itself has not moved. Reading it made a live region report
+# no-fleet-process at random: on 2026-09-07 a cockpit placement in CI refused
+# with "could not place cockpit-two in the viewport" for a frame that was fine,
+# on the same code that had passed the run before. Ownership is the painter
+# process's OWN cwd, which never moves.
+test_a_forked_childs_cwd_never_unbinds_a_live_painter() {
+  local out
+  reset_layout_frame
+  run_layout_cockpit adopt >/dev/null 2>&1 || fail "banner adoption failed"
+  set_fleet_pane_status fleet-live >/dev/null
+  FM_FAKE_FOREGROUND_CWD="$ROOT"
+  out=$(run_layout_cockpit status 2>&1) || {
+    FM_FAKE_FOREGROUND_CWD=""
+    fail "a live painter was unbound because its own child was foreground: $out"
+  }
+  assert_contains "$out" "COCKPIT: live " "the live frame was not reported"
+  assert_not_contains "$out" "no-fleet-process" \
+    "a forked child's cwd was still read as the painter's home"
+  FM_FAKE_FOREGROUND_CWD=""
+  pass "a painter's forked child being foreground never unbinds the live region"
 }
 
 test_an_unresolved_home_path_still_matches_the_live_banner() {
@@ -1757,6 +1798,7 @@ test_a_later_pane_cleanup_failure_reports_each_pane_still_on_screen
 test_failed_record_publication_reports_when_the_screen_cannot_be_restored
 test_re_adoption_neither_warns_nor_touches_the_screen
 test_cockpit_liveness_requires_exact_painter_ownership
+test_a_forked_childs_cwd_never_unbinds_a_live_painter
 test_an_unresolved_home_path_still_matches_the_live_banner
 test_fleet_diagnostics_name_the_check_that_failed
 test_a_fleet_painter_without_the_geometry_binding_is_not_live

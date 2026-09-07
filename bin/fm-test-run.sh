@@ -991,11 +991,14 @@ families_for_changed_path() {
       printf '%s\n' pr-forge
       ;;
     bin/fm-nm-run-lib.sh)
-      # Shared no-mistakes run-attribution primitives, sourced by both
+      # Shared no-mistakes run-attribution primitives, sourced by
       # bin/fm-crew-state.sh (pure-contract-unit) and bin/fm-teardown.sh's
-      # pre-teardown run abort (pr-forge).
+      # pre-teardown run abort (pr-forge). bin/fm-fleet-snapshot.sh shells out
+      # to fm-crew-state.sh per crew, so the rendered in-flight row this
+      # attribution decides is covered by snapshot-bearings too.
       printf '%s\n' pure-contract-unit
       printf '%s\n' pr-forge
+      printf '%s\n' snapshot-bearings
       ;;
     bin/fm-composer-lib.sh)
       # The shared shape catalogue is vendor-rendered signal; a change to it
@@ -1019,8 +1022,14 @@ families_for_changed_path() {
       # lane's contract coverage re-runs.
       printf '%s\n' real-herdr-gated
       ;;
+    bin/fm-crew-state.sh)
+      # The per-crew current-state read, and the source of every in-flight row
+      # bin/fm-fleet-snapshot.sh renders by shelling out to it.
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' snapshot-bearings
+      ;;
     bin/fm-lint.sh|bin/fm-install-shellcheck.sh|\
-    bin/fm-brief.sh|bin/fm-ensure-agents-md.sh|bin/fm-crew-state.sh|\
+    bin/fm-brief.sh|bin/fm-ensure-agents-md.sh|\
     bin/fm-decision-hold.sh|bin/fm-decision-surface.mjs|bin/fm-supervision*|bin/fm-transition-lib.sh|\
     bin/fm-tmux-lib.sh|bin/fm-marker-lib.sh|bin/fm-operational-input.sh|bin/fm-tasks-axi-lib.sh|\
     bin/fm-vendor-auth-probe.sh|\
