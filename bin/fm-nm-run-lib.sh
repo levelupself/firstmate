@@ -71,3 +71,67 @@ fm_nm_head_matches_worktree() {  # <worktree> <run_head>
   [ "$run_full" = "$local_full" ] && return 0
   git -C "$wt" merge-base --is-ancestor "$local_full" "$run_full" 2>/dev/null
 }
+
+# Scalar value of a DIRECT `branch_sync:` child, or a direct child of that
+# block's own `pipeline:` child, in captured `axi status` output $1.
+# Indentation binds each scalar to its structural owner, so a same-named key
+# under a sibling block (`local:`) or nested deeper is never read as if it were
+# the published relationship.
+fm_nm_branch_sync_field() {  # <toon-output> <key>
+  printf '%s\n' "$1" | awk -v key="$2" '
+    /^[[:space:]]*branch_sync:[[:space:]]*$/ {
+      active = 1
+      base = match($0, /[^[:space:]]/) - 1
+      next
+    }
+    active {
+      if ($0 !~ /[^[:space:]]/) next
+      indent = match($0, /[^[:space:]]/) - 1
+      if (indent <= base) exit
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      sub(/[[:space:]]+$/, "", line)
+      if (indent == base + 2) pipeline = (line == "pipeline:")
+      owned = (key == "state" && indent == base + 2) || \
+              (key == "submitted_head" && pipeline && indent == base + 4)
+      if (owned && index(line, key ":") == 1) {
+        sub("^" key ":[[:space:]]*", "", line)
+        print line
+        exit
+      }
+    }
+  '
+}
+
+# Exit code reserved for an authoritative ownership rejection (see below).
+FM_NM_OWNERSHIP_REJECTED=2
+
+# Does the run described by captured `axi status` output $2 belong to worktree
+# $1's code identity? This is the whole attribution decision - callers add only
+# the branch precondition and what to do with the answer.
+#
+# A run that publishes `branch_sync.state: pipeline_owned` is stating its own
+# relationship to the branch: `pipeline.submitted_head` is the commit the crew
+# handed over, while `pipeline.current_head` is the pipeline's own fix tip,
+# which deliberately lives only in the pipeline's worktree until it is pushed
+# and therefore cannot be resolved here. That published relationship is the
+# authority, so it is decided by exact submitted-head equality alone and no
+# weaker rule may overturn it in either direction:
+#   0                          submitted head is this worktree's HEAD
+#   FM_NM_OWNERSHIP_REJECTED   published relationship does NOT bind this
+#                              worktree; equality/ancestry fallbacks must not
+#                              resurrect it
+# With no published relationship the legacy head rule in
+# fm_nm_head_matches_worktree decides, returning 0 or 1.
+fm_nm_run_matches_worktree() {  # <worktree> <toon-output>
+  local wt=$1 out=$2 local_full sync_state submitted_head run_head
+  local_full=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || return 1
+  sync_state=$(fm_nm_strip_quotes "$(fm_nm_branch_sync_field "$out" state)")
+  if [ "$sync_state" = pipeline_owned ]; then
+    submitted_head=$(fm_nm_strip_quotes "$(fm_nm_branch_sync_field "$out" submitted_head)")
+    [ "$submitted_head" = "$local_full" ] || return "$FM_NM_OWNERSHIP_REJECTED"
+    return 0
+  fi
+  run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$out" head)")
+  fm_nm_head_matches_worktree "$wt" "$run_head"
+}

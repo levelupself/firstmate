@@ -184,32 +184,6 @@ RUN_OUT=""
 nm_field() {  # <key>
   fm_nm_field "$RUN_OUT" "$1"
 }
-# Read only direct branch_sync fields or direct pipeline child fields.
-# Indentation binds each scalar to its structural owner.
-nm_branch_sync_field() {  # <key>
-  local key=$1
-  printf '%s\n' "$RUN_OUT" | awk -v key="$key" '
-    /^[[:space:]]*branch_sync:[[:space:]]*$/ {
-      active = 1
-      base = match($0, /[^[:space:]]/) - 1
-      next
-    }
-    active {
-      if ($0 !~ /[^[:space:]]/) next
-      indent = match($0, /[^[:space:]]/) - 1
-      if (indent <= base) exit
-      line = $0
-      sub(/^[[:space:]]*/, "", line)
-      if (indent == base + 2) pipeline = (line == "pipeline:")
-      owned = (key == "state" && indent == base + 2) ||               (key == "submitted_head" && pipeline && indent == base + 4)
-      if (owned && index(line, key ":") == 1) {
-        sub("^" key ":[[:space:]]*", "", line)
-        print line
-        exit
-      }
-    }
-  '
-}
 # Finding count from a findings[N]{...} table header; empty when none.
 nm_findings_count() {
   printf '%s\n' "$RUN_OUT" | grep -oE 'findings\[[0-9]+\]' | head -1 | grep -oE '[0-9]+'
@@ -391,31 +365,10 @@ nm_runs_status_for_branch() {  # <branch>
 # scratch worktree); with no branch there is no run to attribute to this crew.
 CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
 
-# Match published pipeline ownership before the legacy head rule owned by
-# fm_nm_head_matches_worktree in bin/fm-nm-run-lib.sh. Exit codes carry WHY a
-# match failed, because the two failures deserve different handling: 0 the run
-# binds to this worktree; NM_OWNERSHIP_REJECTED (2) the run publishes a
-# pipeline_owned relationship whose submitted head is not this worktree's code
-# identity - an authoritative "not this crew's code" answer that no weaker rule
-# may overturn; 1 no published relationship bound it, so coarser attribution
-# may still try.
-NM_OWNERSHIP_REJECTED=2
-nm_run_head_matches_worktree() {
-  local run_head local_full branch_sync_state submitted_head
-  local_full=$(git -C "$WT" rev-parse HEAD 2>/dev/null) || return 1
-  branch_sync_state=$(strip_quotes "$(nm_branch_sync_field state)")
-  submitted_head=$(strip_quotes "$(nm_branch_sync_field submitted_head)")
-  if [ "$branch_sync_state" = pipeline_owned ]; then
-    [ "$submitted_head" = "$local_full" ] || return "$NM_OWNERSHIP_REJECTED"
-    return 0
-  fi
-  run_head=$(strip_quotes "$(nm_field head)")
-  fm_nm_head_matches_worktree "$WT" "$run_head"
-}
-
 # Coarse runs-list rows are "<status> <branch> <short-sha> ...". 0 if the short
-# sha for this branch row matches the worktree head under the same rules as
-# nm_run_head_matches_worktree (equal, or local is ancestor of run tip).
+# sha for this branch row matches the worktree head under the legacy head rule
+# in fm_nm_head_matches_worktree (equal, or local is ancestor of run tip). The
+# runs list publishes no branch_sync relationship, so this is all it can say.
 nm_coarse_head_matches_worktree() {  # <short-sha>
   fm_nm_head_matches_worktree "$WT" "$1"
 }
@@ -434,15 +387,16 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
   if [ -n "$RUN_OUT" ]; then
     run_branch=$(strip_quotes "$(nm_field branch)")
     # Branch match is a precondition for asking about code identity at all, so
-    # a non-matching branch keeps the plain "unmatched" code (1).
+    # a non-matching branch keeps the plain "unmatched" code (1). The decision
+    # itself is owned by fm_nm_run_matches_worktree in bin/fm-nm-run-lib.sh.
     HEAD_MATCH=1
     if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ]; then
       HEAD_MATCH=0
-      nm_run_head_matches_worktree || HEAD_MATCH=$?
+      fm_nm_run_matches_worktree "$WT" "$RUN_OUT" || HEAD_MATCH=$?
     fi
     if [ "$HEAD_MATCH" = 0 ]; then
       HAVE_RUN=1
-    elif [ "$HEAD_MATCH" = "$NM_OWNERSHIP_REJECTED" ]; then
+    elif [ "$HEAD_MATCH" = "$FM_NM_OWNERSHIP_REJECTED" ]; then
       # This crew's own branch published a pipeline_owned relationship that does
       # NOT bind this worktree. That is the authoritative answer about code
       # identity, so the coarse runs-list rule below - plain equality/ancestry

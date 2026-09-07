@@ -2393,6 +2393,76 @@ test_another_branchs_parked_run_is_never_touched() {
   pass "a parked run on another branch is never aborted by this task's teardown (ownership is precise)"
 }
 
+# A run parked at a gate that has published a pipeline_owned relationship: its
+# own fix tip lives only in the pipeline's worktree and cannot be resolved here,
+# so only the submitted head can bind it to this task.
+parked_pipeline_owned_axi_status_toon() {  # <branch> <submitted-head> <run-id>
+  cat <<EOF
+run:
+  id: "${3:-01RUN}"
+  branch: $1
+  status: awaiting_approval
+  awaiting_agent: parked 2m10s
+  head: "9999999999999999999999999999999999999999"
+  pr: ""
+  findings: none
+  branch_sync:
+    state: pipeline_owned
+    local:
+      head: "$2"
+      clean: true
+    pipeline:
+      submitted_head: "$2"
+      current_head: "9999999999999999999999999999999999999999"
+gate: review
+EOF
+}
+
+test_parked_pipeline_owned_run_is_aborted_before_teardown() {
+  local case_dir rc head
+  case_dir=$(make_case parked-pipeline-owned-abort)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  # The run head is a pipeline fix commit that does not exist in this worktree,
+  # so the legacy head rule alone cannot bind the run - yet it is genuinely
+  # parked at this task's gate and must not be left orphaned.
+  FM_FAKE_AXI_STATUS="$(parked_pipeline_owned_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "parked-pipeline-owned-abort: teardown should still succeed"
+  assert_present "$case_dir/nm-abort.log" \
+    "parked-pipeline-owned-abort: a pipeline-owned parked run was orphaned instead of aborted"
+  assert_grep "abort --run 01RUN" "$case_dir/nm-abort.log" \
+    "parked-pipeline-owned-abort: axi abort did not target the verified run id"
+  pass "a pipeline-owned parked run whose fix tip is absent here is still aborted, not orphaned"
+}
+
+test_parked_pipeline_owned_run_for_other_code_is_never_touched() {
+  local case_dir rc
+  case_dir=$(make_case parked-pipeline-owned-mismatch)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+
+  rc=0
+  # Same branch, but the published submitted head is not this worktree's code.
+  # The relationship is authoritative, so no weaker rule may claim the run.
+  FM_FAKE_AXI_STATUS="$(parked_pipeline_owned_axi_status_toon fm/task-x1 \
+    4444444444444444444444444444444444444444)" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "parked-pipeline-owned-mismatch: teardown should still succeed"
+  assert_absent "$case_dir/nm-abort.log" \
+    "parked-pipeline-owned-mismatch: teardown aborted a run whose published owner is other code"
+  assert_not_contains "$(cat "$case_dir/stderr")" "aborting" \
+    "parked-pipeline-owned-mismatch: teardown reported aborting a run it does not own"
+  pass "a pipeline-owned parked run bound to other code is never aborted by this teardown"
+}
+
 test_own_autonomous_run_is_left_alone() {
   local case_dir rc head
   case_dir=$(make_case autonomous-run-left-alone)
@@ -2856,6 +2926,8 @@ test_mismatched_run_after_abort_refuses_unconfirmed
 test_empty_status_after_abort_refuses_unconfirmed
 test_not_found_status_after_abort_confirms_completion
 test_another_branchs_parked_run_is_never_touched
+test_parked_pipeline_owned_run_is_aborted_before_teardown
+test_parked_pipeline_owned_run_for_other_code_is_never_touched
 test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped

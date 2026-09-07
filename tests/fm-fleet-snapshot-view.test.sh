@@ -233,7 +233,7 @@ test_pipeline_owned_validation_step_renders_in_fleet_view() {
   head=$(git -C "$home/projects/pipeline-owned" rev-parse HEAD)
   cat > "$home/data/backlog.md" <<'EOF'
 ## In flight
-- [ ] pipeline-owned - Pipeline-owned validation (repo: firstmate) (kind: ship) (since 2026-08-10)
+- [ ] pipeline-owned - Owned run (repo: firstmate) (kind: ship) (since 2026-08-10)
 EOF
   fm_write_meta "$home/state/pipeline-owned.meta" \
     "window=firstmate:fm-pipeline-owned" \
@@ -270,8 +270,24 @@ EOF
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
   assert_contains "$view" "fixing" "fleet view must render the real validation step"
   assert_not_contains "$view" "state unavailable" "fleet view must not fall back to unverifiable Codex state"
+  assert_contains "$view" "Owned run" "the in-flight row must still carry the task title"
+
+  # A stale needs-decision log line makes crew-state append its own
+  # reconciliation note after the step detail. That note is internal wording; it
+  # must never consume the clipped row's width at the task title's expense.
+  printf 'working: started\nneeds-decision: pick A or B\n' > "$home/state/pipeline-owned.status"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "pipeline-owned")
+    | .current_state.detail == "validating (fixing) · status-log superseded by active run"
+  ' >/dev/null || fail "crew-state no longer reconciles the stale log against the run: $out"
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
+  assert_contains "$view" "validating (fixing)" "the real validation step must survive reconciliation"
+  assert_contains "$view" "Owned run" "the reconciliation note must not clip the task title away"
+  assert_not_contains "$view" "superseded" "internal reconciliation wording does not belong in the in-flight row"
   unset FM_FAKE_AXI_STATUS
   pass "pipeline-owned validation step survives snapshot and fleet rendering"
+  pass "a reconciled run detail keeps the task title in the in-flight row"
 }
 
 # R1 owner contract: main_inventory discloses orphan in-flight and unstructured

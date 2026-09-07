@@ -1377,6 +1377,27 @@ test_pipeline_owned_unavailable_current_head_uses_submitted_head() {
   pass "pipeline-owned run binds through submitted head when current head is unavailable"
 }
 
+# The published relationship is a text contract from another process, so an
+# incidental trailing space on the owner key must not silently unbind the run
+# and strand the crew on the coarse-fallback-suppressed unknown row.
+test_pipeline_owned_binds_despite_trailing_whitespace() {
+  reset_fakes
+  local d submitted_head out
+  d=$(new_case pipeline-owned-trailing-space)
+  make_repo_on_branch "$d/wt" fm/feat-trailing
+  submitted_head=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/trailing.meta" "window=fm:fm-trailing" "worktree=$d/wt" "kind=ship" "harness=codex"
+  FM_FAKE_AXI_STATUS=$(run_pipeline_owned_fixing fm/feat-trailing "$submitted_head" 5555555555555555555555555555555555555555)
+  FM_FAKE_AXI_STATUS=$(printf '%s\n' "$FM_FAKE_AXI_STATUS" | sed 's/^    pipeline:$/    pipeline: /')
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  out=$(run_crew_state "$d" trailing)
+  assert_contains "$out" "source: run-step" "a trailing space on the owner key must not unbind the run"
+  assert_contains "$out" "validating (fixing)" "the exact validation step must still be rendered"
+  pass "pipeline ownership binds through insignificant trailing whitespace"
+}
+
 test_pipeline_owned_different_branch_is_rejected() {
   reset_fakes
   local d submitted_head out
@@ -1556,6 +1577,7 @@ test_usage_error
 test_historical_same_branch_rewritten_head_not_current
 test_active_run_descendant_fix_head_remains_current
 test_pipeline_owned_unavailable_current_head_uses_submitted_head
+test_pipeline_owned_binds_despite_trailing_whitespace
 test_pipeline_owned_invalid_relationship_is_rejected
 test_pipeline_owned_different_branch_is_rejected
 test_pipeline_owned_submitted_head_behind_local_work_is_rejected

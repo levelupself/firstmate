@@ -603,7 +603,10 @@ render_once() {
     | ([$in_flight[]
         | (.current_state.state // "unknown") as $state
         | (.current_state.source // "") as $source
-        | (.current_state.detail // "") as $detail
+        # Only the leading segment of the run detail: crew-state appends its own
+        # reconciliation notes after " · ", and those must not push the task
+        # title out of the clipped row.
+        | (((.current_state.detail // "") | split(" · ") | first) // "") as $detail
         | {id:(.id // "unknown"),marker:"• ",project:task_project(.),
            project_sort:(task_project(.) | ascii_downcase),
            state_rank:(if $state == "working" then 0 elif $state == "unknown" then 2 else 1 end),
