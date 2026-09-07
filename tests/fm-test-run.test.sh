@@ -923,6 +923,49 @@ assert len(doc["scripts"])==3
   pass "aggregate-json merges lane timing artifacts"
 }
 
+test_aggregate_refuses_a_lane_that_ran_nothing() {
+  local tmp rc err
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggempty.XXXXXX")
+  cat >"$tmp/ran.json" <<'JSON'
+{
+  "run_id": "ran",
+  "selection": "lane=portable-parallel-1",
+  "started_at": "2026-07-22T00:00:00Z",
+  "finished_at": "2026-07-22T00:01:00Z",
+  "summary": {"total": 1, "failed": 0, "skipped_gate": 0, "duration_ms": 1000},
+  "scripts": [{"path": "tests/a.test.sh", "family": "pure-contract-unit", "duration_ms": 1000, "exit": 0, "gate_skip": false}]
+}
+JSON
+  # A refused lane still uploads its deterministic empty artifact; summing it
+  # would report "0 failed" for a lane that executed no test.
+  cat >"$tmp/empty.json" <<'JSON'
+{
+  "run_id": "empty",
+  "selection": "lane=portable-serial",
+  "started_at": "2026-07-22T00:00:00Z",
+  "finished_at": "2026-07-22T00:00:00Z",
+  "summary": {"total": 0, "failed": 0, "skipped_gate": 0, "duration_ms": 0},
+  "scripts": []
+}
+JSON
+  set +e
+  "$RUNNER" --aggregate-json "$tmp/out.json" "$tmp/ran.json" "$tmp/empty.json" \
+    >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] \
+    || { rm -rf "$tmp"; fail "aggregating a lane that ran nothing must exit 2, got $rc"; }
+  err=$(cat "$tmp/err")
+  assert_contains "$err" "$tmp/empty.json" "aggregate refusal names the offending input"
+  assert_contains "$err" "executed no test" "aggregate refusal says the lane executed no test"
+  grep -q '^FM_TEST_AGGREGATE ' "$tmp/out" \
+    && { rm -rf "$tmp"; fail "refused aggregate must not print a combined summary"; }
+  [ ! -e "$tmp/out.json" ] \
+    || { rm -rf "$tmp"; fail "refused aggregate must not write a combined artifact"; }
+  rm -rf "$tmp"
+  pass "aggregate refuses a lane artifact whose summary.total is 0"
+}
+
 test_list_all_exact_suite_coverage
 test_family_selection
 test_optional_gate_family_declarations
@@ -948,3 +991,4 @@ test_jobs_parallel_scheduler_and_failure_propagation
 test_herdr_ci_family_run_has_a_step_timeout
 test_herdr_ci_nested_with_name_is_not_a_step
 test_aggregate_json
+test_aggregate_refuses_a_lane_that_ran_nothing

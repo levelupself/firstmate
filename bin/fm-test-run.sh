@@ -23,6 +23,10 @@
 #
 # Aggregation (no suite execution):
 #   fm-test-run.sh --aggregate-json <out.json> <lane.json> [more lane.json...]
+#     Every input must report summary.total > 0. A lane artifact that executed
+#     no test is refused (exit 2, naming the input) instead of contributing a
+#     phantom zero to the combined summary, so a combined "0 failed" always
+#     means tests actually ran.
 #
 # Options:
 #   --json <path>   write a deterministic timing artifact after the run
@@ -66,7 +70,10 @@
 # A run that executes no test never reports success: no selection mode, and a
 # selection mode that resolves to zero scripts (an empty --changed set, or an
 # --exclude-family that removes everything), both exit 2. An empty run would
-# otherwise be indistinguishable from a green suite by exit status alone.
+# otherwise be indistinguishable from a green suite by exit status alone. The
+# same rule holds one layer up: --aggregate-json exits 2 rather than summing a
+# lane artifact whose summary.total is 0, because an aggregate that absorbs an
+# empty lane is the same false green as an exit code of zero.
 # Inspection modes (--list, --list-families, --list-lanes) do not run tests and
 # keep their own exit contract.
 #
@@ -739,14 +746,32 @@ from pathlib import Path
 
 out = Path(sys.argv[1])
 inputs = [Path(p) for p in sys.argv[2:]]
+docs = []
+for path in inputs:
+    docs.append((path, json.loads(path.read_text(encoding="utf-8"))))
+
+empty = [
+    path
+    for path, doc in docs
+    if int((doc.get("summary") or {}).get("total") or 0) == 0
+]
+if empty:
+    for path in empty:
+        print(
+            f"fm-test-run: aggregate input {path} reports summary.total=0, so that "
+            "lane executed no test; summing it would report a false green. Rerun "
+            "that lane so it executes tests, or drop its artifact from the inputs.",
+            file=sys.stderr,
+        )
+    sys.exit(2)
+
 lanes = []
 all_scripts = []
 failed = 0
 skipped = 0
 total = 0
 wall_ms = 0
-for path in inputs:
-    doc = json.loads(path.read_text(encoding="utf-8"))
+for path, doc in docs:
     summary = doc.get("summary") or {}
     lane = {
         "path": str(path),
@@ -1387,7 +1412,7 @@ if [ "${MODE:-}" = "aggregate" ]; then
   for s in "${SCRIPTS[@]}"; do
     [ -f "$s" ] || die "aggregate input not found: $s"
   done
-  aggregate_timing_json "$AGGREGATE_OUT" "${SCRIPTS[@]}"
+  aggregate_timing_json "$AGGREGATE_OUT" "${SCRIPTS[@]}" || exit $?
   exit 0
 fi
 
