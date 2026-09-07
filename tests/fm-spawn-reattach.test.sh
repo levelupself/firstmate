@@ -100,6 +100,7 @@ case "${1:-}" in
       [ -z "${FM_FAKE_LAUNCH_FAIL:-}" ] || case "${1:-}" in *claude*) exit 1 ;; esac
     else
       printf '%s\n' "${1:-}" >> "$D/keys"
+      [ -z "${FM_FAKE_ENTER_FAIL:-}" ] || [ "${1:-}" != Enter ] || exit 1
     fi
     exit 0
     ;;
@@ -199,6 +200,7 @@ run_reattach() {  # <case-dir> <args...>
   env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
     FM_SPAWN_NO_GUARD=1 \
     FM_FAKE_LAUNCH_FAIL="${FM_FAKE_LAUNCH_FAIL:-}" \
+    FM_FAKE_ENTER_FAIL="${FM_FAKE_ENTER_FAIL:-}" \
     FM_FAKE_NEW_WINDOW_FAIL="${FM_FAKE_NEW_WINDOW_FAIL:-}" \
     FM_FAKE_STATUS_FAIL="${FM_FAKE_STATUS_FAIL:-}" \
     FM_FAKE_PANE_PID="${FM_FAKE_PANE_PID:-}" \
@@ -548,6 +550,40 @@ test_launch_failure_restores_everything() {
   pass "fm-spawn reattach: a failure after the endpoint exists restores the record and removes it"
 }
 
+# The prior record is the only rollback material a reattach has. When the
+# restore itself cannot be completed, destroying that copy would leave the task
+# bound to an endpoint the rollback just removed with nothing left to undo it.
+test_failed_restore_keeps_the_prior_record() {
+  local dir id=rt-restorefail retained out rc preserved
+  dir=$(new_case restorefail "$id")
+  retained="$dir/pool/7/proj"
+  # Fail only the restore move, so the operation gets past publication and then
+  # cannot put the prior record back.
+  cat > "$dir/fakebin/mv" <<'SH'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in *reattach-prior*) exit 1 ;; esac
+done
+[ ! -x /bin/mv ] || exec /bin/mv "$@"
+exec /usr/bin/mv "$@"
+SH
+  chmod +x "$dir/fakebin/mv"
+  snapshot "$dir" "$id"
+  out=$(FM_FAKE_ENTER_FAIL=1 run_reattach "$dir" "$id" --reattach-worktree "$retained"); rc=$?
+  expect_code 1 "$rc" "a failure after publication must fail the operation"$'\n'"$out"
+  [ ! -s "$dir/fake/windows" ] \
+    || fail "the failed reattach left the replacement endpoint behind"
+
+  preserved=$(find "$dir/home/state" -name ".$id.meta.reattach-prior.*" | head -1)
+  [ -n "$preserved" ] \
+    || fail "a failed restore deleted the only copy of task $id's prior record"$'\n'"$out"
+  cmp -s "$dir/meta.before" "$preserved" \
+    || fail "the preserved copy is not the record the reattach displaced"
+  assert_contains "$out" "$preserved" \
+    "the warning must name where the only copy of the prior record was left"
+  pass "fm-spawn reattach: a restore that fails keeps the prior record and says where it is"
+}
+
 test_ownership_race_after_endpoint_creation_refuses() {
   local dir id=rt-race retained out rc racer
   dir=$(new_case race "$id")
@@ -593,6 +629,7 @@ run_case test_staged_launch_line_actually_runs_the_agent
 run_case test_success_gates_the_agent_behind_the_published_record
 run_case test_recorded_trace_carrier_survives_reattach
 run_case test_launch_failure_restores_everything
+run_case test_failed_restore_keeps_the_prior_record
 run_case test_ownership_race_after_endpoint_creation_refuses
 
 echo "# all fm-spawn-reattach tests passed"

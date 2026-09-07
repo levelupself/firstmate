@@ -797,7 +797,13 @@ spawn_abort_cleanup() {
       REATTACH_META_PUBLISHED=0
       REATTACH_META_PRIOR=
     else
-      echo "warning: could not restore task $ID's prior record after the failed reattach" >&2
+      # The preserved copy is now the only record of the prior binding, so it
+      # must outlive this process rather than be swept by the cleanup tail
+      # below. Disown it here (the tail removes only what is still owned) and
+      # name where it lives, because a warning that cannot be acted on leaves
+      # the task bound to an endpoint that was just removed.
+      echo "warning: could not restore task $ID's prior record after the failed reattach; its only copy is preserved at $REATTACH_META_PRIOR and must be moved back over $STATE/$ID.meta by hand" >&2
+      REATTACH_META_PRIOR=
     fi
   fi
   if [ "$RELAUNCH_REPLACEMENT_PENDING" = 1 ] \
@@ -928,8 +934,15 @@ spawn_herdr_presentation_order_lock_acquire() {
   return 1
 }
 
-clear_relaunch_harness_wiring() {
-  local harness=$1 wt=$2 state=$3 id=$4 token_path token auth_path path
+# The single owner of "which per-task paths does one harness wire up in one
+# worktree and one state directory". Prints them one per line, global turn-end
+# auth path first, and fails without printing a partial set if any part of that
+# resolution cannot be completed. Every caller - the snapshot a reattach backs
+# up, the retirement that clears a superseded incarnation, and the restore that
+# undoes a rollback - reads the set from here, so a rollback can never delete a
+# path it has no backup for.
+harness_wiring_paths() {  # <harness> <worktree> <state-dir> <id>
+  local harness wt=$2 state=$3 id=$4 token_path token auth_path
   # The wiring arms above match on harness PREFIXES, because a task launched
   # from a raw command records that command's basename rather than the exact
   # adapter name. The retirement tables are keyed by the exact adapter, so the
@@ -937,36 +950,34 @@ clear_relaunch_harness_wiring() {
   # as, say, `grok-2` would have wiring armed and never retired. An
   # unrecognized value resolves to no adapter, which is also the case in which
   # no wiring was armed to begin with.
-  harness=$(fm_control_harness_family "$harness") || harness=
+  harness=$(fm_control_harness_family "$1") || harness=
   token_path=$(fm_control_harness_turnend_token_path "$harness" "$state" "$id") || return 1
   token=
   if [ -n "$token_path" ] && [ -f "$token_path" ]; then
     IFS= read -r token < "$token_path" || [ -n "$token" ] || return 1
   fi
   auth_path=$(fm_control_harness_turnend_auth_path "$harness" "$token") || return 1
-  if [ -n "$auth_path" ]; then
-    rm -f -- "$auth_path" || return 1
-  fi
+  [ -z "$auth_path" ] || printf '%s\n' "$auth_path"
+  fm_control_harness_wiring_paths "$harness" "$wt" "$state" "$id"
+}
+
+# Remove every path the enumerator yields. A resolution that cannot be
+# completed removes nothing and reports it, which is the safe direction here:
+# the caller warns and the wiring is left in place rather than half-cleared.
+clear_relaunch_harness_wiring() {
+  local paths path
+  paths=$(harness_wiring_paths "$@") || return 1
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     rm -f -- "$path" || return 1
   done <<EOF
-$(fm_control_harness_wiring_paths "$harness" "$wt" "$state" "$id")
+$paths
 EOF
 }
 
-# The per-task wiring paths one harness owns in the retained copy and this
-# home's state, auth path first. Same resolution clear_relaunch_harness_wiring
-# uses, so a snapshot and its retirement always describe the same set.
+# The same set, resolved against the retained copy and this home's state.
 reattach_harness_wiring_paths() {  # <harness>
-  local harness token_path token auth_path
-  harness=$(fm_control_harness_family "$1") || harness=
-  token_path=$(fm_control_harness_turnend_token_path "$harness" "$STATE_REAL" "$ID") || return 1
-  token=
-  [ -z "$token_path" ] || [ ! -f "$token_path" ] || IFS= read -r token < "$token_path" || return 1
-  auth_path=$(fm_control_harness_turnend_auth_path "$harness" "$token") || return 1
-  [ -z "$auth_path" ] || printf '%s\n' "$auth_path"
-  fm_control_harness_wiring_paths "$harness" "$WT" "$STATE_REAL" "$ID"
+  harness_wiring_paths "$1" "$WT" "$STATE_REAL" "$ID"
 }
 
 # A reattach arms wiring on the same per-task paths a previous incarnation may
