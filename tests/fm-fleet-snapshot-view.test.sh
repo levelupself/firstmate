@@ -223,9 +223,15 @@ test_fixture_snapshot_json() {
   pass "fixture snapshot covers task rows, backlog rows, pointers, and stable ordering"
 }
 
-test_pipeline_owned_validation_step_renders_in_fleet_view() {
-  local home fakebin head out view
-  home=$(make_home pipeline-owned)
+# Shared fixture: one in-flight crew whose only authoritative source is an
+# active pipeline-owned run, i.e. a run whose own fix tip deliberately lives
+# outside the crew worktree and cannot be resolved there. Sets
+# PIPELINE_OWNED_HOME and PIPELINE_OWNED_FAKEBIN and exports FM_FAKE_AXI_STATUS.
+PIPELINE_OWNED_HOME=""
+PIPELINE_OWNED_FAKEBIN=""
+setup_pipeline_owned_fixture() {  # <case-name>
+  local home head
+  home=$(make_home "$1")
   mkdir -p "$home/projects/pipeline-owned"
   git -C "$home/projects/pipeline-owned" init -q
   git -C "$home/projects/pipeline-owned" commit -q --allow-empty -m init
@@ -242,7 +248,7 @@ EOF
     "harness=codex" \
     "kind=ship" \
     "mode=no-mistakes"
-  fakebin=$(make_fakebin "$home")
+  PIPELINE_OWNED_FAKEBIN=$(make_fakebin "$home")
   FM_FAKE_AXI_STATUS=$(cat <<EOF
 run:
   id: "01PIPELINE"
@@ -260,6 +266,14 @@ run:
 EOF
 )
   export FM_FAKE_AXI_STATUS
+  PIPELINE_OWNED_HOME=$home
+}
+
+test_pipeline_owned_validation_step_renders_in_fleet_view() {
+  local home fakebin out view
+  setup_pipeline_owned_fixture pipeline-owned
+  home=$PIPELINE_OWNED_HOME
+  fakebin=$PIPELINE_OWNED_FAKEBIN
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
   printf '%s' "$out" | jq -e '
     .tasks[] | select(.id == "pipeline-owned")
@@ -271,10 +285,18 @@ EOF
   assert_contains "$view" "fixing" "fleet view must render the real validation step"
   assert_not_contains "$view" "state unavailable" "fleet view must not fall back to unverifiable Codex state"
   assert_contains "$view" "Owned run" "the in-flight row must still carry the task title"
+  unset FM_FAKE_AXI_STATUS
+  pass "pipeline-owned validation step survives snapshot and fleet rendering"
+}
 
-  # A stale needs-decision log line makes crew-state append its own
-  # reconciliation note after the step detail. That note is internal wording; it
-  # must never consume the clipped row's width at the task title's expense.
+# A stale needs-decision log line makes crew-state append its own reconciliation
+# note after the step detail. That note is internal wording; it must never
+# consume the clipped row's width at the task title's expense.
+test_reconciled_run_detail_keeps_the_task_title() {
+  local home fakebin out view
+  setup_pipeline_owned_fixture pipeline-owned-reconciled
+  home=$PIPELINE_OWNED_HOME
+  fakebin=$PIPELINE_OWNED_FAKEBIN
   printf 'working: started\nneeds-decision: pick A or B\n' > "$home/state/pipeline-owned.status"
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
   printf '%s' "$out" | jq -e '
@@ -286,7 +308,6 @@ EOF
   assert_contains "$view" "Owned run" "the reconciliation note must not clip the task title away"
   assert_not_contains "$view" "superseded" "internal reconciliation wording does not belong in the in-flight row"
   unset FM_FAKE_AXI_STATUS
-  pass "pipeline-owned validation step survives snapshot and fleet rendering"
   pass "a reconciled run detail keeps the task title in the in-flight row"
 }
 
@@ -2392,6 +2413,7 @@ SH
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_pipeline_owned_validation_step_renders_in_fleet_view
+test_reconciled_run_detail_keeps_the_task_title
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state

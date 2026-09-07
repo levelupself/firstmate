@@ -55,8 +55,9 @@ fm_nm_field() {  # <toon-output> <key>
   printf '%s\n' "$1" | sed -n "s/^[[:space:]]*$2:[[:space:]]*\(.*\)/\1/p" | head -1
 }
 
-# 0 if run head $2 matches worktree $1's code identity, per the same rule
-# everywhere this attribution is needed:
+# The legacy head rule, applied by fm_nm_run_matches_worktree below whenever a
+# run publishes no branch_sync relationship of its own. 0 if run head $2 matches
+# worktree $1's code identity:
 #   - missing/empty head: cannot bind; reject
 #   - equal commits (short or full SHA): match
 #   - worktree HEAD is an ancestor of run head: match (pipeline fix commits on
