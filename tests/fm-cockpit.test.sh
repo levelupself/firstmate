@@ -1220,6 +1220,36 @@ test_sections_config_sets_the_pane_arrangement() {
   pass "config/cockpit-sections chooses how many fleet panes there are and what each one holds"
 }
 
+test_weighted_sections_and_stable_adoption() {
+  local out body first before weight
+  reset_layout_frame
+  printf 'waiting @3\nready @19\n' > "$LAYOUT_HOME/config/cockpit-sections"
+  out=$(run_layout_cockpit adopt 2>&1) || fail "weighted arrangement adoption failed: $out"
+  first=$(fleet_pane_at 1)
+  body=$(cat "$HERDR_LOG")
+  assert_contains "$body" "pane split $first --direction right --ratio 0.2527" \
+    "3:19 weights did not give the larger pane three quarters of the band"
+  assert_contains "$out" 'weight 3 from config' "notice omitted explicit weight source"
+  assert_contains "$out" '25.27%' "notice omitted the applied share"
+  before=$(layout_rows)
+  : > "$HERDR_LOG"
+  printf 'waiting @19\nready @3\n' > "$LAYOUT_HOME/config/cockpit-sections"
+  run_layout_cockpit adopt >/dev/null 2>&1 || fail "weighted re-adoption failed"
+  assert_not_contains "$(cat "$HERDR_LOG")" 'pane split' "existing region was resized"
+  [ "$(layout_rows)" = "$before" ] || fail "existing region moved"
+
+  for weight in '' 0 -1 NaN inf 1e3 1.2.3 1000001 '1@2'; do
+    reset_layout_frame
+    before=$(cat "$HERDR_STATE/panes.tsv")
+    printf 'waiting @%s\nready\n' "$weight" > "$LAYOUT_HOME/config/cockpit-sections"
+    out=$(run_layout_cockpit adopt 2>&1) && fail "invalid weight $weight was accepted"
+    assert_contains "$out" 'weight' "weight refusal did not explain the problem"
+    assert_not_contains "$(cat "$HERDR_LOG")" 'pane split' "invalid weight split a pane"
+    [ "$(cat "$HERDR_STATE/panes.tsv")" = "$before" ] || fail "invalid weight changed existing panes"
+  done
+  pass "explicit weights shape the band once and invalid weights preserve every pane"
+}
+
 test_invalid_sections_config_refuses_without_changing_the_screen() {
   local out rc before
   reset_layout_frame
@@ -1786,6 +1816,7 @@ test_display_and_steer_boundary_remains_explicit
 test_panel_renders_the_live_frame_and_fleet_view
 test_panel_degrades_visibly_outside_herdr
 test_dead_head_is_preserved_until_explicit_new_context
+test_weighted_sections_and_stable_adoption
 test_default_layout_warns_before_it_changes_the_screen
 test_sections_config_sets_the_pane_arrangement
 test_invalid_sections_config_refuses_without_changing_the_screen
