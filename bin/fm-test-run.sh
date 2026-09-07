@@ -30,9 +30,9 @@
 #     means tests actually ran.
 #   fm-test-run.sh --aggregate-json <out.json> --require-ci-lanes <lane.json>...
 #     Additionally refuse an input set that is not exactly the CI lane
-#     inventory (--list-ci-timing-artifacts): exit 2 naming the missing or
-#     unrecognized artifacts. CI uses this so an aggregation that consumed no
-#     lane, or lost one, cannot report success.
+#     inventory (--list-ci-timing-artifacts): exit 2 naming the missing,
+#     unrecognized, or repeated artifacts. CI uses this so an aggregation that
+#     consumed no lane, lost one, or counted one twice cannot report success.
 #
 # Options:
 #   --json <path>   write a deterministic timing artifact after the run
@@ -343,7 +343,7 @@ list_ci_timing_artifacts() {
 # combined total over fewer lanes than CI ran - the same false green as
 # aggregating a lane that executed no test.
 require_ci_lane_inputs() {
-  local tmp p missing unexpected
+  local tmp p repeated missing unexpected
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-ci-lanes.XXXXXX") \
     || die "--require-ci-lanes could not create a temporary directory"
   list_ci_timing_artifacts | LC_ALL=C sort >"$tmp/expected"
@@ -351,12 +351,20 @@ require_ci_lane_inputs() {
   for p in "$@"; do
     basename "$p" >>"$tmp/actual"
   done
-  LC_ALL=C sort -u "$tmp/actual" -o "$tmp/actual"
-  missing=$(comm -23 "$tmp/expected" "$tmp/actual" | tr '\n' ' ')
-  unexpected=$(comm -13 "$tmp/expected" "$tmp/actual" | tr '\n' ' ')
+  LC_ALL=C sort "$tmp/actual" -o "$tmp/actual"
+  # Refused rather than collapsed: aggregate_timing_json sums every path it is
+  # handed, so a lane reaching this check twice would satisfy the set below
+  # while contributing its summary.total twice to the combined number.
+  repeated=$(uniq -d "$tmp/actual" | tr '\n' ' ')
+  missing=$(comm -23 "$tmp/expected" "$tmp/actual" | LC_ALL=C sort -u | tr '\n' ' ')
+  unexpected=$(comm -13 "$tmp/expected" "$tmp/actual" | LC_ALL=C sort -u | tr '\n' ' ')
   rm -rf "$tmp"
+  repeated=${repeated%% }
   missing=${missing%% }
   unexpected=${unexpected%% }
+  if [ -n "$repeated" ]; then
+    die "--require-ci-lanes received the same CI lane timing artifact more than once: $repeated. Each lane contributes one artifact, and every input is summed, so aggregating a repeated lane would count its totals twice. Supply each lane artifact exactly once."
+  fi
   if [ -n "$missing" ]; then
     die "--require-ci-lanes is missing CI lane timing artifacts: $missing. Every CI lane uploads its timing artifact even when that lane fails, so a lane absent here produced none at all; aggregating the rest would report a combined summary covering fewer lanes than CI ran. Rerun the lanes that produced no artifact, then aggregate again."
   fi

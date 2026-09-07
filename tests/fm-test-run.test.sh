@@ -1109,6 +1109,40 @@ EOF
   pass "aggregate refuses a CI lane set that is empty, incomplete, or unrecognized"
 }
 
+test_aggregate_require_ci_lanes_refuses_a_repeated_lane_artifact() {
+  local tmp listed name first rc err
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggdup.XXXXXX")
+  listed=$("$RUNNER" --list-ci-timing-artifacts) \
+    || { rm -rf "$tmp"; fail "--list-ci-timing-artifacts must print the CI timing artifact inventory"; }
+  mkdir -p "$tmp/dup/nested"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    write_lane_timing_fixture "$tmp/dup/$name" "${name%.json}"
+  done <<EOF
+$listed
+EOF
+  first=$(printf '%s\n' "$listed" | head -1)
+  # The same lane reachable at two depths is what a recursive artifact search
+  # can hand over. Collapsing it would satisfy the set check while its totals
+  # were counted twice, so the duplicate must be refused, not normalized away.
+  cp "$tmp/dup/$first" "$tmp/dup/nested/$first"
+  set +e
+  "$RUNNER" --aggregate-json "$tmp/dup.json" --require-ci-lanes \
+    "$tmp"/dup/*.json "$tmp"/dup/nested/*.json >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] \
+    || { rm -rf "$tmp"; fail "aggregating the same lane artifact twice must fail, got $rc"; }
+  err=$(cat "$tmp/err")
+  assert_contains "$err" "$first" "duplicate refusal names the repeated lane artifact"
+  grep -q '^FM_TEST_AGGREGATE ' "$tmp/out" \
+    && { rm -rf "$tmp"; fail "a refused aggregate must not print a combined summary"; }
+  [ ! -e "$tmp/dup.json" ] \
+    || { rm -rf "$tmp"; fail "a refused aggregate must not write a combined artifact"; }
+  rm -rf "$tmp"
+  pass "aggregate refuses the same CI lane artifact supplied more than once"
+}
+
 test_list_all_exact_suite_coverage
 test_family_selection
 test_optional_gate_family_declarations
@@ -1137,3 +1171,4 @@ test_aggregate_json
 test_aggregate_refuses_a_lane_that_ran_nothing
 test_ci_timing_artifact_inventory_tracks_the_lane_set
 test_aggregate_require_ci_lanes_refuses_an_incomplete_set
+test_aggregate_require_ci_lanes_refuses_a_repeated_lane_artifact
