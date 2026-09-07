@@ -59,6 +59,14 @@
 #   per-task harness wiring it displaced; the replacement agent is staged behind
 #   a gate on its own published spawn_gen=, so it can never start against a
 #   binding that was not committed.
+#   It rebinds the task and deliberately does NOT reclaim the copy the task was
+#   bound to before. That copy stays allocated, is never returned to the pool,
+#   and keeps an allocation-ledger acquire with no matching release, which
+#   correctly records that it is still allocated. Reclaiming it automatically
+#   would mean `treehouse return`, which terminates processes and discards the
+#   copy, and this path has proved nothing about its contents - so returning it
+#   is a separate deliberate decision. A successful reattach names that copy in
+#   a notice instead.
 #   tmux only, because it is the sole backend that can both prove a missing
 #   endpoint and create a replacement directly in an existing directory.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
@@ -744,6 +752,7 @@ REATTACH_META_PRIOR=
 REATTACH_META_PUBLISHED=0
 REATTACH_WIRING_BACKUP=
 REATTACH_PANE_PID=
+REATTACH_DISPLACED_WT=
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
 
@@ -966,7 +975,15 @@ reattach_harness_wiring_paths() {  # <harness>
 # the exact prior state and a success retire only what the new harness no
 # longer uses.
 snapshot_reattach_harness_wiring() {
-  local path index=0 seen=$'\n'
+  local path index=0 seen=$'\n' prior_paths new_paths
+  # Resolve both harnesses BEFORE opening the loop. Feeding the loop from a
+  # here-doc would discard each substitution's exit status, so a failed
+  # resolution would produce a silently partial backup while arming went ahead -
+  # and a later rollback would then delete armed paths with nothing to restore.
+  # A resolution that cannot be completed refuses here instead, before anything
+  # is armed.
+  prior_paths=$(reattach_harness_wiring_paths "$RELAUNCH_PRIOR_HARNESS") || return 1
+  new_paths=$(reattach_harness_wiring_paths "$HARNESS") || return 1
   REATTACH_WIRING_BACKUP="$STATE/.$ID.reattach-wiring.${BASHPID:-$$}"
   rm -rf "$REATTACH_WIRING_BACKUP"
   mkdir -p "$REATTACH_WIRING_BACKUP" || return 1
@@ -980,8 +997,8 @@ snapshot_reattach_harness_wiring() {
     fi
     index=$((index + 1))
   done <<EOF
-$(reattach_harness_wiring_paths "$RELAUNCH_PRIOR_HARNESS")
-$(reattach_harness_wiring_paths "$HARNESS")
+$prior_paths
+$new_paths
 EOF
 }
 
@@ -1231,6 +1248,9 @@ if [ "$RECOVERY" -eq 1 ]; then
         exit 1
         ;;
     esac
+    # The copy the record names today. A reattach rebinds the task away from it,
+    # and deliberately does NOT reclaim it: see the success notice below.
+    REATTACH_DISPLACED_WT=$(fm_meta_get "$RELAUNCH_META" worktree)
     [ -d "$REATTACH_WT_ARG" ] || {
       echo "error: retained copy '$REATTACH_WT_ARG' is missing; there is nothing to reattach task $ID to" >&2
       exit 1
@@ -3556,6 +3576,19 @@ if [ "$REATTACH" -eq 1 ]; then
   REATTACH_META_PRIOR=
   rm -rf -- "$REATTACH_WIRING_BACKUP"
   REATTACH_WIRING_BACKUP=
+  # The task is now bound to the retained copy, which leaves the copy it was
+  # bound to before still allocated to it and never returned to the pool. That
+  # is deliberate, not an oversight: this recovery proved nothing about the
+  # displaced copy, and `treehouse return` terminates processes and discards the
+  # copy, so reclaiming it automatically could destroy uncommitted work exactly
+  # as this path exists to prevent. No allocation-ledger release is recorded for
+  # it either, because none happened - the unpaired acquire correctly says the
+  # copy is still allocated. Returning it is a separate, deliberate decision, so
+  # name it here and leave it alone.
+  if [ -n "$REATTACH_DISPLACED_WT" ] \
+     && [ "$(real_path_or_raw "$REATTACH_DISPLACED_WT")" != "$(real_path_or_raw "$WT")" ]; then
+    echo "notice: task $ID was bound to '$REATTACH_DISPLACED_WT' before this recovery; it is left untouched and still allocated, because its contents are unproven. Inspect it and return it to the pool yourself if it holds nothing you need." >&2
+  fi
 fi
 
 SPAWN_DELIVERY=

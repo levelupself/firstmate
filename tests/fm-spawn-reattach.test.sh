@@ -230,6 +230,16 @@ assert_nothing_changed() {  # <case-dir> <id> <retained>
     || fail "a refused reattach left a worktree-allocation ledger behind"
 }
 
+# The displaced copy is the one the record named before the recovery. It must be
+# named on success and never touched, and never mentioned when nothing moved.
+assert_no_displacement_notice() {  # <output>
+  case "$1" in
+    *'left untouched and still allocated'*)
+      fail "a refused reattach announced a displacement that never happened"
+      ;;
+  esac
+}
+
 # --- 1. refusals before anything changes ------------------------------------
 
 test_missing_copy_refuses() {
@@ -439,6 +449,61 @@ test_success_gates_the_agent_behind_the_published_record() {
   pass "fm-spawn reattach: the replacement agent starts only after the new binding is published"
 }
 
+test_displaced_copy_is_named_and_left_alone() {
+  local dir id=rt-displaced retained returned out rc ledger
+  dir=$(new_case displaced "$id")
+  retained="$dir/pool/7/proj"
+  returned="$dir/pool/3/proj"
+  printf 'work that was never proved\n' > "$returned/unproven.txt"
+  out=$(run_reattach "$dir" "$id" --reattach-worktree "$retained"); rc=$?
+  expect_code 0 "$rc" "the reattach should succeed"$'\n'"$out"
+
+  assert_contains "$out" "$returned" \
+    "a successful reattach must name the copy it displaced so it can be dealt with deliberately"
+  assert_contains "$out" "left untouched and still allocated" \
+    "the notice must say the displaced copy was not reclaimed"
+
+  [ -d "$returned" ] \
+    || fail "the reattach removed the displaced copy instead of leaving it alone"
+  [ "$(cat "$returned/unproven.txt")" = 'work that was never proved' ] \
+    || fail "the reattach touched content in the displaced copy it had proved nothing about"
+  assert_no_grep 'return' "$dir/fake/treehouse.log" \
+    "the reattach must never ask treehouse to return the displaced copy"
+
+  # No release may be invented for a copy that was never returned: an unpaired
+  # acquire is the honest record that it is still allocated.
+  ledger=$(find "$dir/home/data/worktree-allocations" -type f 2>/dev/null | head -1)
+  if [ -n "$ledger" ]; then
+    assert_no_grep '"event":"release"' "$ledger" \
+      "the reattach recorded a pool release that never happened"
+  fi
+  pass "fm-spawn reattach: the displaced copy is named, left allocated, and never returned or faked as released"
+}
+
+test_unresolvable_wiring_snapshot_refuses_before_arming() {
+  local dir id=rt-wiring retained token out rc
+  dir=$(new_case wiring "$id")
+  retained="$dir/pool/7/proj"
+  # grok is a harness whose per-task wiring resolution reads a turn-end token
+  # file. An unreadable token makes that resolution fail, which is the case a
+  # snapshot must refuse on: arming would otherwise proceed with a partial
+  # backup that a rollback could not restore.
+  sed -i 's/^harness=.*/harness=grok/' "$dir/home/state/$id.meta"
+  token="$dir/home/state/$id.grok-turnend-token"
+  printf 'prior-token\n' > "$token"
+  chmod 000 "$token"
+  snapshot "$dir" "$id"
+  out=$(run_reattach "$dir" "$id" --reattach-worktree "$retained"); rc=$?
+  chmod 600 "$token"
+  expect_code 1 "$rc" "an unresolvable wiring snapshot must refuse"$'\n'"$out"
+  assert_contains "$out" "existing harness wiring" \
+    "the refusal must name the wiring it could not preserve"
+  assert_nothing_changed "$dir" "$id" "$retained"
+  [ "$(cat "$token")" = 'prior-token' ] \
+    || fail "the refused reattach disturbed the prior turn-end token"
+  pass "fm-spawn reattach: wiring that cannot be preserved refuses before anything is armed"
+}
+
 # --- 3. all-or-nothing ------------------------------------------------------
 
 # Trace context is default-off, so its interaction with a held record lock and
@@ -504,19 +569,30 @@ test_ownership_race_after_endpoint_creation_refuses() {
   pass "fm-spawn reattach: an owner that arrives before publication is caught and rolled back"
 }
 
-test_missing_copy_refuses
-test_wrong_branch_refuses
-test_live_agent_refuses
-test_task_identity_mismatch_refuses
-test_existing_endpoint_refuses
-test_unreadable_ownership_refuses
-test_delivery_axes_cannot_be_overridden
-test_unidentifiable_replacement_pane_refuses
-test_uncommitted_content_survives_reattach
-test_staged_launch_line_actually_runs_the_agent
-test_success_gates_the_agent_behind_the_published_record
-test_recorded_trace_carrier_survives_reattach
-test_launch_failure_restores_everything
-test_ownership_race_after_endpoint_creation_refuses
+# Run each case through a dispatcher: a name with no matching function is a
+# missing test, which must fail the run rather than pass quietly.
+run_case() {  # <function-name>
+  if ! declare -F "$1" >/dev/null; then
+    fail "test case $1 is listed but not defined"
+  fi
+  "$1"
+}
+
+run_case test_missing_copy_refuses
+run_case test_wrong_branch_refuses
+run_case test_live_agent_refuses
+run_case test_task_identity_mismatch_refuses
+run_case test_existing_endpoint_refuses
+run_case test_unreadable_ownership_refuses
+run_case test_delivery_axes_cannot_be_overridden
+run_case test_unidentifiable_replacement_pane_refuses
+run_case test_uncommitted_content_survives_reattach
+run_case test_displaced_copy_is_named_and_left_alone
+run_case test_unresolvable_wiring_snapshot_refuses_before_arming
+run_case test_staged_launch_line_actually_runs_the_agent
+run_case test_success_gates_the_agent_behind_the_published_record
+run_case test_recorded_trace_carrier_survives_reattach
+run_case test_launch_failure_restores_everything
+run_case test_ownership_race_after_endpoint_creation_refuses
 
 echo "# all fm-spawn-reattach tests passed"
