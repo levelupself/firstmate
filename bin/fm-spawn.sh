@@ -32,6 +32,35 @@
 #   or herdr), refuses unless the endpoint's shell is sitting in the recorded
 #   worktree, and clears the previous harness's per-task wiring before arming
 #   the new incarnation.
+#        fm-spawn.sh <task-id> --reattach-worktree <retained-copy> [--harness <name>] [--model <name>] [--effort <level>]
+#   --reattach-worktree is the other half of recovery: it creates a REPLACEMENT
+#   endpoint directly inside an existing retained copy and republishes that
+#   endpoint plus worktree binding for the task, atomically. It exists for the
+#   case neither other path can serve - the task's endpoint is gone AND its
+#   record names a different copy than the one holding the work, so --relaunch
+#   has nothing to adopt and a fresh spawn would take another copy and refresh
+#   it to origin's default branch, stranding the work.
+#   The retained path is the ONLY axis the caller supplies; kind, project,
+#   delivery contract, harness, and profile axes all come from the task's own
+#   record, and contradicting any of them is a refusal.
+#   Before creating anything it requires: the record validates and carries this
+#   exact task's identity, its kind is ship or scout, the recorded endpoint is
+#   positively missing (an endpoint that still exists is --relaunch's job), the
+#   named path is an isolated worktree root on branch fm/<task-id>, and
+#   `treehouse status --json` names that copy exactly once with no lease and no
+#   process this spawn cannot claim. Every one of those is re-proved once the
+#   replacement endpoint exists and before anything durable is published, so the
+#   facts have to hold at publication rather than merely when first read.
+#   Nothing here fetches, resets, checks out, cleans, forces, discards, or
+#   returns the copy: uncommitted content is preserved exactly, and a copy that
+#   cannot be positively proved is refused rather than repaired.
+#   It is all-or-nothing. A failure at any point removes the replacement
+#   endpoint, restores the prior record byte-for-byte, and puts back the
+#   per-task harness wiring it displaced; the replacement agent is staged behind
+#   a gate on its own published spawn_gen=, so it can never start against a
+#   binding that was not committed.
+#   tmux only, because it is the sole backend that can both prove a missing
+#   endpoint and create a replacement directly in an existing directory.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -103,7 +132,8 @@
 #   creation through metadata publication, so concurrent same-id spawns serialize
 #   even when they select different backends. A fresh spawn first takes the
 #   per-home task-set lock and refuses rather than waits when forced teardown owns
-#   it; relaunch is exempt because the existing task's control lock covers it.
+#   it; both recovery modes are exempt because the existing task's control lock
+#   covers them.
 #   With no harness arg, a crewmate/scout spawn resolves the CREW harness only when
 #   config/crew-dispatch.json is absent. When that file exists, crewmate/scout
 #   spawns require an explicit harness so firstmate cannot silently skip dispatch
@@ -199,7 +229,7 @@
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
 # success line and state/<id>.meta omit them.
-# Every fresh spawn or relaunch records a new spawn_gen= incarnation token so durable
+# Every fresh spawn, relaunch, or retained-copy reattach records a new spawn_gen= incarnation token so durable
 # consumers can distinguish a replacement worker that reuses the same task id.
 # When the home session's frozen trace-context decision is enabled (see
 # docs/configuration.md and bin/fm-trace-context-lib.sh), the meta also records
@@ -304,6 +334,9 @@ MODE_SET=0
 YOLO_SET=0
 TRACEPARENT_SET=0
 RELAUNCH=0
+REATTACH=0
+REATTACH_WT_ARG=
+REATTACH_WT_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -319,6 +352,7 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
+      reattach-worktree) REATTACH_WT_ARG=$a; REATTACH_WT_SET=1; REATTACH=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -328,6 +362,8 @@ for a in "$@"; do
     --scout) KIND=scout; KIND_SET=1 ;;
     --secondmate) KIND=secondmate; KIND_SET=1 ;;
     --relaunch) RELAUNCH=1 ;;
+    --reattach-worktree) want_value=reattach-worktree ;;
+    --reattach-worktree=*) REATTACH_WT_ARG=${a#--reattach-worktree=}; REATTACH_WT_SET=1; REATTACH=1 ;;
     --harness) want_value=harness ;;
     --harness=*) HARNESS_ARG=${a#--harness=}; HARNESS_SET=1 ;;
     --model) want_value=model ;;
@@ -353,6 +389,15 @@ done
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
+[ "$REATTACH_WT_SET" -eq 0 ] || [ -n "$REATTACH_WT_ARG" ] || { echo "error: --reattach-worktree requires a non-empty value" >&2; exit 1; }
+[ $((RELAUNCH + REATTACH)) -le 1 ] || { echo "error: --relaunch and --reattach-worktree are different recovery paths; pass exactly one" >&2; exit 1; }
+# RECOVERY is the shared "this task already exists" predicate. Both recovery
+# modes re-launch a task whose record is authoritative, so every axis a fresh
+# spawn resolves is instead adopted from that record. They differ only in what
+# they reuse: --relaunch reuses the recorded endpoint AND the recorded copy,
+# while --reattach-worktree creates a replacement endpoint bound to a retained
+# copy the record no longer names.
+RECOVERY=$((RELAUNCH + REATTACH))
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
 # Nothing else may reach the pane's TRACEPARENT export.
@@ -371,15 +416,18 @@ case "$EFFORT" in
   *) echo "error: --effort must be one of low, medium, high, xhigh, max" >&2; exit 1 ;;
 esac
 
-# --relaunch reuses an existing task's endpoint, worktree, project, and kind,
-# so every axis this block resolves for a fresh spawn instead comes from that
-# task's own durable record below. Contradicting it on the command line is a
-# refusal rather than a silently-ignored flag.
-if [ "$RELAUNCH" -eq 1 ]; then
-  [ "$BACKEND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded backend; --backend cannot override it" >&2; exit 1; }
-  [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2; exit 1; }
-  [ "$MODE_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded delivery mode; --mode cannot override it" >&2; exit 1; }
-  [ "$YOLO_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded yolo posture; --yolo cannot override it" >&2; exit 1; }
+# A recovery mode reuses an existing task's project and kind (and, for
+# --relaunch, its endpoint and copy), so every axis this block resolves for a
+# fresh spawn instead comes from that task's own durable record below.
+# Contradicting it on the command line is a refusal rather than a
+# silently-ignored flag.
+if [ "$RECOVERY" -eq 1 ]; then
+  recovery_flag=--relaunch
+  [ "$REATTACH" -eq 0 ] || recovery_flag=--reattach-worktree
+  [ "$BACKEND_SET" -eq 0 ] || { echo "error: $recovery_flag reuses the task's recorded backend; --backend cannot override it" >&2; exit 1; }
+  [ "$KIND_SET" -eq 0 ] || { echo "error: $recovery_flag reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2; exit 1; }
+  [ "$MODE_SET" -eq 0 ] || { echo "error: $recovery_flag reuses the task's recorded delivery mode; --mode cannot override it" >&2; exit 1; }
+  [ "$YOLO_SET" -eq 0 ] || { echo "error: $recovery_flag reuses the task's recorded yolo posture; --yolo cannot override it" >&2; exit 1; }
 else
   # Delivery contract (AGENTS.md section 7). A ship task's mode and yolo are
   # firstmate's per-task decision, so they are required and closed-set validated
@@ -691,6 +739,11 @@ RELAUNCH_REPLACEMENT_BUSY_GEN=
 RELAUNCH_REPLACEMENT_HARNESS=
 RELAUNCH_REPLACEMENT_STATE=
 RELAUNCH_REPLACEMENT_WT=
+REATTACH_ABORT_ENDPOINT=0
+REATTACH_META_PRIOR=
+REATTACH_META_PUBLISHED=0
+REATTACH_WIRING_BACKUP=
+REATTACH_PANE_PID=
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
 
@@ -712,7 +765,32 @@ parse_orca_worktree_result() {
 }
 
 spawn_abort_cleanup() {
-  local status=$?
+  local status=$? reattach_windows
+  # A reattach that got as far as creating a replacement endpoint must leave
+  # nothing behind. The endpoint goes first: an orphan pane whose shell sits in
+  # the retained copy would make that copy look owned and block the next
+  # recovery, while a record still naming the new binding just reads as one
+  # more missing endpoint the same operation can retry.
+  if [ "$REATTACH_ABORT_ENDPOINT" = 1 ]; then
+    REATTACH_ABORT_ENDPOINT=0
+    if [ -n "${T:-}" ]; then
+      fm_backend_kill "$BACKEND" "$T" 2>/dev/null || true
+      reattach_windows=$(tmux list-windows -t "=${T%%:*}" -F '#{window_name}' 2>/dev/null) \
+        || reattach_windows=__unreadable__
+      if [ "$reattach_windows" = __unreadable__ ] \
+         || printf '%s\n' "$reattach_windows" | grep -qxF "${T#*:}"; then
+        echo "warning: could not prove the replacement endpoint $T was removed after the failed reattach of $ID; close it before retrying so the retained copy reads as unowned" >&2
+      fi
+    fi
+  fi
+  if [ "$REATTACH_META_PUBLISHED" = 1 ] && [ -f "$REATTACH_META_PRIOR" ]; then
+    if mv -f -- "$REATTACH_META_PRIOR" "$STATE/$ID.meta"; then
+      REATTACH_META_PUBLISHED=0
+      REATTACH_META_PRIOR=
+    else
+      echo "warning: could not restore task $ID's prior record after the failed reattach" >&2
+    fi
+  fi
   if [ "$RELAUNCH_REPLACEMENT_PENDING" = 1 ] \
      && [ "$SPAWN_META_PUBLISH_STARTED" = 1 ] \
      && [ -n "$SPAWN_META_TMP" ] \
@@ -735,6 +813,13 @@ spawn_abort_cleanup() {
           --gen "$RELAUNCH_REPLACEMENT_BUSY_GEN"; then
         echo "warning: could not retire replacement busy generation after aborted relaunch of $ID" >&2
       fi
+    fi
+    # clear_relaunch_harness_wiring above removes the paths this attempt armed,
+    # which for a reattach can be the same per-task paths the previous
+    # incarnation already owned. Put back exactly what was there.
+    if [ -n "$REATTACH_WIRING_BACKUP" ]; then
+      restore_reattach_harness_wiring \
+        || echo "warning: could not restore task $ID's prior harness wiring after the failed reattach" >&2
     fi
   fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
@@ -800,6 +885,8 @@ spawn_abort_cleanup() {
     fm_lock_release "$SPAWN_CONTROL_LOCK" || true
   fi
   [ -z "$SPAWN_META_TMP" ] || rm -f "$SPAWN_META_TMP" 2>/dev/null || true
+  [ -z "$REATTACH_META_PRIOR" ] || rm -f "$REATTACH_META_PRIOR" 2>/dev/null || true
+  [ -z "$REATTACH_WIRING_BACKUP" ] || rm -rf "$REATTACH_WIRING_BACKUP" 2>/dev/null || true
   if [ "$CONFIG_INHERIT_LOCK_HELD" = 1 ]; then
     CONFIG_INHERIT_LOCK_HELD=0
     fm_lock_release "$CONFIG_INHERIT_LOCK" || true
@@ -859,6 +946,74 @@ $(fm_control_harness_wiring_paths "$harness" "$wt" "$state" "$id")
 EOF
 }
 
+# The per-task wiring paths one harness owns in the retained copy and this
+# home's state, auth path first. Same resolution clear_relaunch_harness_wiring
+# uses, so a snapshot and its retirement always describe the same set.
+reattach_harness_wiring_paths() {  # <harness>
+  local harness token_path token auth_path
+  harness=$(fm_control_harness_family "$1") || harness=
+  token_path=$(fm_control_harness_turnend_token_path "$harness" "$STATE_REAL" "$ID") || return 1
+  token=
+  [ -z "$token_path" ] || [ ! -f "$token_path" ] || IFS= read -r token < "$token_path" || return 1
+  auth_path=$(fm_control_harness_turnend_auth_path "$harness" "$token") || return 1
+  [ -z "$auth_path" ] || printf '%s\n' "$auth_path"
+  fm_control_harness_wiring_paths "$harness" "$WT" "$STATE_REAL" "$ID"
+}
+
+# A reattach arms wiring on the same per-task paths a previous incarnation may
+# already own, so back them up before arming. Both the recorded harness and the
+# one this attempt launches are covered, which is what lets a rollback restore
+# the exact prior state and a success retire only what the new harness no
+# longer uses.
+snapshot_reattach_harness_wiring() {
+  local path index=0 seen=$'\n'
+  REATTACH_WIRING_BACKUP="$STATE/.$ID.reattach-wiring.${BASHPID:-$$}"
+  rm -rf "$REATTACH_WIRING_BACKUP"
+  mkdir -p "$REATTACH_WIRING_BACKUP" || return 1
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case "$seen" in *$'\n'"$path"$'\n'*) continue ;; esac
+    seen="$seen$path"$'\n'
+    printf '%s\n' "$path" > "$REATTACH_WIRING_BACKUP/$index.path" || return 1
+    if [ -f "$path" ] && [ ! -L "$path" ]; then
+      cp -p -- "$path" "$REATTACH_WIRING_BACKUP/$index.data" || return 1
+    fi
+    index=$((index + 1))
+  done <<EOF
+$(reattach_harness_wiring_paths "$RELAUNCH_PRIOR_HARNESS")
+$(reattach_harness_wiring_paths "$HARNESS")
+EOF
+}
+
+restore_reattach_harness_wiring() {
+  local path_file path data status=0
+  for path_file in "$REATTACH_WIRING_BACKUP"/*.path; do
+    [ -f "$path_file" ] || continue
+    IFS= read -r path < "$path_file" || { status=1; continue; }
+    data=${path_file%.path}.data
+    if [ -f "$data" ]; then
+      mkdir -p -- "$(dirname "$path")" 2>/dev/null || true
+      cp -p -- "$data" "$path" || status=1
+    else
+      rm -f -- "$path" || status=1
+    fi
+  done
+  return "$status"
+}
+
+# On success, drop any snapshotted path the launched harness no longer uses -
+# the leftovers of a reattach that also switched harness.
+retire_reattach_harness_wiring() {
+  local current path_file path
+  current=$(reattach_harness_wiring_paths "$HARNESS") || return 1
+  for path_file in "$REATTACH_WIRING_BACKUP"/*.path; do
+    [ -f "$path_file" ] || continue
+    IFS= read -r path < "$path_file" || return 1
+    printf '%s\n' "$current" | grep -qxF -- "$path" && continue
+    rm -f -- "$path" || return 1
+  done
+}
+
 spawn_herdr_presentation_order_lock_release() {
   [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" = 1 ] || return 0
   HERDR_PRESENTATION_ORDER_LOCK_HELD=0
@@ -873,8 +1028,8 @@ spawn_herdr_presentation_order_lock_release() {
 # one (task ids are bare slugs), so they fall straight through to the logic below.
 idpart=${POS[0]:-}
 idpart=${idpart%%=*}
-if [ "$RELAUNCH" -eq 1 ] && [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ]; then
-  echo "error: --relaunch is single-task only; relaunch each task explicitly" >&2
+if [ "$RECOVERY" -eq 1 ] && [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ]; then
+  echo "error: recovery is single-task only; recover each task explicitly" >&2
   exit 1
 fi
 if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in */*) false ;; *) true ;; esac; then
@@ -912,7 +1067,7 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
 fi
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
-if [ "$RELAUNCH" -eq 1 ]; then
+if [ "$RECOVERY" -eq 1 ]; then
   SPAWN_CONTROL_LOCK="$STATE/.control-$ID.lock"
   control_owner=$(cat "$SPAWN_CONTROL_LOCK/pid" 2>/dev/null || true)
   if [ "$control_owner" = "$PPID" ] && fm_pid_alive "$control_owner"; then
@@ -924,7 +1079,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     exit 1
   fi
 fi
-if [ "$RELAUNCH" -eq 0 ]; then
+if [ "$RECOVERY" -eq 0 ]; then
   mkdir -p "$STATE" || {
     echo "error: could not create parent state directory" >&2
     exit 1
@@ -969,7 +1124,7 @@ fi
 # recorded in meta only when it is NOT tmux (fm-teardown.sh and fm-watch.sh's
 # window_backend/fm_backend_of_meta already treat an absent backend= as tmux),
 # so the default path's meta stays byte-identical.
-if [ "$RELAUNCH" -eq 0 ]; then
+if [ "$RECOVERY" -eq 0 ]; then
   if [ "$BACKEND_SET" -eq 1 ]; then
     BACKEND=$BACKEND_ARG
   else
@@ -989,7 +1144,7 @@ if [ "$RELAUNCH" -eq 0 ]; then
     fm_backend_orca_runtime_check || exit 1
   fi
 fi
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+if [ "$RECOVERY" -eq 0 ] && [ "$KIND" != secondmate ]; then
   "$FM_ROOT/bin/fm-backlog-integrity.sh" check-start "$ID" || exit 1
 fi
 SPAWN_TASK_LOCK="$STATE/.spawn-$ID.lock"
@@ -1002,20 +1157,22 @@ PROJ=
 ARG3=
 FIRSTMATE_HOME=
 
-# --relaunch adoption: every identity axis comes from the task's own validated
-# durable record, never from the command line, so a relaunch can only ever
-# re-launch the task it names. The endpoint identity check is the same shared
-# validation teardown uses, so a malformed, ambiguous, or foreign record
+# Recovery adoption: every identity axis comes from the task's own validated
+# durable record, never from the command line, so a recovery can only ever
+# re-launch the task it names. The retained copy path is the single exception,
+# and it is not adopted on the caller's word either - it must prove the task's
+# own branch and an unowned copy below. The endpoint identity check is the same
+# shared validation teardown uses, so a malformed, ambiguous, or foreign record
 # refuses here exactly as it refuses there.
 RELAUNCH_PRIOR_HARNESS=
-if [ "$RELAUNCH" -eq 1 ]; then
+if [ "$RECOVERY" -eq 1 ]; then
   [ "${#POS[@]}" -eq 1 ] || {
-    echo "error: --relaunch takes the task id only; its project or home comes from the task's own record" >&2
+    echo "error: $recovery_flag takes the task id only; its project or home comes from the task's own record" >&2
     exit 1
   }
   RELAUNCH_META="$STATE/$ID.meta"
   [ -f "$RELAUNCH_META" ] || {
-    echo "error: --relaunch needs an existing task record; no $RELAUNCH_META" >&2
+    echo "error: $recovery_flag needs an existing task record; no $RELAUNCH_META" >&2
     exit 1
   }
   fm_backend_validate_task_endpoint "$RELAUNCH_META" "$ID" || exit 1
@@ -1023,28 +1180,67 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RELAUNCH_TARGET=$FM_BACKEND_VALIDATED_TARGET
   fm_backend_validate_spawn "$BACKEND" || exit 1
   fm_backend_source "$BACKEND" || exit 1
-  # A relaunch must PROVE the previous agent is gone before it launches another
-  # one into the same endpoint, and only tmux and herdr have a recovery-grade
-  # classifier that can (bin/fm-control-lib.sh owns that capability table).
+  # Recovery must PROVE the previous agent is gone before it launches another
+  # one, and only tmux and herdr have a recovery-grade classifier that can
+  # (bin/fm-control-lib.sh owns that capability table).
   fm_control_backend_state_verified "$BACKEND" || {
-    echo "error: backend '$BACKEND' has no recovery-grade agent-state classifier, so a relaunch cannot prove the previous agent exited; refusing rather than risking two agents in one endpoint" >&2
+    echo "error: backend '$BACKEND' has no recovery-grade agent-state classifier, so $recovery_flag cannot prove the previous agent exited; refusing rather than risking two agents" >&2
     exit 1
   }
   RELAUNCH_STATE=$(fm_backend_agent_state "$BACKEND" "$RELAUNCH_TARGET")
-  [ "$RELAUNCH_STATE" = dead ] || {
-    echo "error: task $ID's endpoint reads '$RELAUNCH_STATE'; a relaunch requires a positively agent-free endpoint (stop the agent first with bin/fm-control.sh $ID exit)" >&2
-    exit 1
-  }
+  if [ "$RELAUNCH" -eq 1 ]; then
+    [ "$RELAUNCH_STATE" = dead ] || {
+      echo "error: task $ID's endpoint reads '$RELAUNCH_STATE'; a relaunch requires a positively agent-free endpoint (stop the agent first with bin/fm-control.sh $ID exit)" >&2
+      exit 1
+    }
+  else
+    # The two recovery modes are deliberately disjoint on this axis. An endpoint
+    # that still exists is relaunch's job, because reusing it keeps one endpoint
+    # per task; reattach exists only for the case relaunch cannot serve, where
+    # the recorded endpoint is authoritatively gone and a replacement must be
+    # created against a copy the record no longer names.
+    [ "$BACKEND" = tmux ] || {
+      echo "error: --reattach-worktree supports the tmux backend only, because it is the only one that can both prove a missing endpoint and create a replacement directly in an existing directory; task $ID records '$BACKEND'" >&2
+      exit 1
+    }
+    [ "$RELAUNCH_STATE" = missing ] || {
+      echo "error: task $ID's recorded endpoint reads '$RELAUNCH_STATE', not missing; an endpoint that still exists is adopted with --relaunch instead" >&2
+      exit 1
+    }
+  fi
   RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
   KIND=$(fm_meta_get "$RELAUNCH_META" kind)
   [ -n "$KIND" ] || KIND=ship
   MODE=$(fm_meta_get "$RELAUNCH_META" mode)
   YOLO=$(fm_meta_get "$RELAUNCH_META" yolo)
-  RELAUNCH_WT=$(fm_meta_get "$RELAUNCH_META" worktree)
-  [ -n "$RELAUNCH_WT" ] && [ -d "$RELAUNCH_WT" ] || {
-    echo "error: task $ID's recorded worktree '${RELAUNCH_WT:-none}' is missing; refusing to relaunch without the local copy its work lives in" >&2
-    exit 1
-  }
+  if [ "$RELAUNCH" -eq 1 ]; then
+    RELAUNCH_WT=$(fm_meta_get "$RELAUNCH_META" worktree)
+    [ -n "$RELAUNCH_WT" ] && [ -d "$RELAUNCH_WT" ] || {
+      echo "error: task $ID's recorded worktree '${RELAUNCH_WT:-none}' is missing; refusing to relaunch without the local copy its work lives in" >&2
+      exit 1
+    }
+  else
+    # Reattach is the one path whose copy is named by the caller rather than by
+    # the record, so it only ever recovers work it can independently attribute
+    # to this task: a ship or scout copy on this task's own branch. A
+    # secondmate's home is not a pooled copy and has no such branch.
+    case "$KIND" in
+      ship|scout) ;;
+      *)
+        echo "error: --reattach-worktree recovers retained ship and scout copies only; task $ID records kind '$KIND'" >&2
+        exit 1
+        ;;
+    esac
+    [ -d "$REATTACH_WT_ARG" ] || {
+      echo "error: retained copy '$REATTACH_WT_ARG' is missing; there is nothing to reattach task $ID to" >&2
+      exit 1
+    }
+    WT=$(cd "$REATTACH_WT_ARG" 2>/dev/null && pwd -P) || {
+      echo "error: retained copy '$REATTACH_WT_ARG' cannot be resolved; refusing to reattach task $ID to a path it cannot inspect" >&2
+      exit 1
+    }
+    RELAUNCH_WT=$WT
+  fi
   if [ "$KIND" = secondmate ]; then
     FIRSTMATE_HOME=$(fm_meta_get "$RELAUNCH_META" home)
     [ -n "$FIRSTMATE_HOME" ] || FIRSTMATE_HOME=$RELAUNCH_WT
@@ -1069,9 +1265,19 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # resolves that decision, including a secondmate's durable pin).
   ARG3=${HARNESS_ARG:-$RELAUNCH_PRIOR_HARNESS}
   [ -n "$ARG3" ] || {
-    echo "error: task $ID has no recorded harness; pass --harness to relaunch it" >&2
+    echo "error: task $ID has no recorded harness; pass --harness to $recovery_flag it" >&2
     exit 1
   }
+  # A relaunch keeps whatever profile axes the launch template resolves for the
+  # harness it is given. A reattach recreates the endpoint from nothing, so the
+  # axes the task was last launched with have to be adopted explicitly or the
+  # replacement would silently come back on the harness defaults.
+  if [ "$REATTACH" -eq 1 ]; then
+    [ "$MODEL_SET" -eq 1 ] || MODEL=$(fm_meta_get "$RELAUNCH_META" model)
+    [ "$EFFORT_SET" -eq 1 ] || EFFORT=$(fm_meta_get "$RELAUNCH_META" effort)
+    : "${MODEL:=default}"
+    : "${EFFORT:=default}"
+  fi
 elif [ "$KIND" = secondmate ]; then
   case "${POS[1]:-}" in
     ''|claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse)
@@ -1676,7 +1882,8 @@ if [ "$KIND" = secondmate ]; then
   fi
 else
   PROJ_ABS="$(cd "$(resolve_project_dir_arg "$PROJ")" && pwd)"
-  WT=""
+  # A reattach already resolved WT to the retained copy it must prove and bind.
+  [ "$REATTACH" -eq 1 ] || WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
@@ -1732,7 +1939,7 @@ PROJ_ABS_REAL=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P) || PROJ_ABS_REAL="$PROJ_AB
 SPAWN_WORKTREE_ALLOCATION=
 WORKTREE_INVENTORY=
 WORKTREE_INVENTORY_VALID=0
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+if [ "$RECOVERY" -eq 0 ] && [ "$KIND" != secondmate ]; then
   if WORKTREE_INVENTORY=$(git -C "$PROJ_ABS" worktree list --porcelain 2>/dev/null) \
     && printf '%s\n' "$WORKTREE_INVENTORY" | grep -Eq '^worktree /' \
     && ! printf '%s\n' "$WORKTREE_INVENTORY" | grep -Eq '^worktree "'; then
@@ -1787,6 +1994,112 @@ validate_spawn_worktree() {  # <source> <inspect-target>
     echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
     exit 1
   fi
+}
+
+# --- retained-copy recovery proofs ------------------------------------------
+#
+# These are the whole safety case for --reattach-worktree. The path exists to
+# rescue work, so it may only ever ADD an endpoint: every proof below refuses
+# rather than repairing, and nothing here fetches, resets, checks out, cleans,
+# or returns the copy. Each one is positive - an unreadable answer is a refusal,
+# never an assumed pass - and each is re-run after the replacement endpoint
+# exists, because the fact that has to hold is "unowned at publication", not
+# "unowned when we looked".
+
+# The retained copy must be an isolated worktree root holding this exact task's
+# branch. That branch is what attributes the work to the task, so a caller
+# cannot point the recovery at an arbitrary directory.
+reattach_verify_copy_identity() {  # <phase>
+  local phase=$1 branch
+  validate_spawn_worktree "retained-copy reattach ($phase)" "$WT"
+  branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=
+  [ -n "$branch" ] || {
+    echo "error: retained copy '$WT' is not on a named branch, so nothing there can be attributed to task $ID; expected 'fm/$ID'" >&2
+    return 1
+  }
+  [ "$branch" = "fm/$ID" ] || {
+    echo "error: retained copy '$WT' holds branch '$branch'; expected 'fm/$ID', so it does not hold task $ID's work" >&2
+    return 1
+  }
+  # Read-only, and deliberately not a cleanliness gate: uncommitted work is the
+  # single most important thing this path preserves. What must hold is only that
+  # the copy is inspectable at all.
+  git -C "$WT" status --porcelain >/dev/null 2>&1 || {
+    echo "error: retained copy '$WT' cannot be inspected with git status; refusing to bind task $ID to a copy whose contents cannot be read" >&2
+    return 1
+  }
+}
+
+# Is <pid> this spawn's own replacement pane or one of its children? Walks the
+# parent chain; an unreadable link is not ours, so a process this spawn cannot
+# claim always counts against it.
+reattach_pid_is_ours() {  # <pid>
+  local pid=$1 depth=0 parent
+  [ -n "$REATTACH_PANE_PID" ] || return 1
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  while [ "$depth" -lt 32 ]; do
+    [ "$pid" != "$REATTACH_PANE_PID" ] || return 0
+    case "$pid" in ''|0|1) return 1 ;; esac
+    parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ') || return 1
+    case "$parent" in ''|*[!0-9]*) return 1 ;; esac
+    pid=$parent
+    depth=$((depth + 1))
+  done
+  return 1
+}
+
+# Treehouse's own inventory is the ownership authority: it reports every process
+# whose working directory is inside a pooled copy, which is exactly how a
+# surviving agent, shell, or build would show up. The copy must appear exactly
+# once, carry no lease, and list no process this spawn cannot claim as its own.
+# Parsed with node rather than jq, because jq is not a required tool for the
+# tmux backend this path runs on and a missing parser must not read as a clean
+# inventory.
+reattach_verify_owner_free() {  # <phase>
+  local phase=$1 inventory verdict pid
+  inventory=$(cd "$PROJ_ABS" && treehouse status --json 2>/dev/null) || {
+    echo "error: treehouse could not report the pool holding '$WT' ($phase); refusing to guess whether task $ID's retained copy is in use" >&2
+    return 1
+  }
+  verdict=$(FM_REATTACH_INVENTORY="$inventory" node - "$WT" <<'NODE'
+const target = process.argv[2]
+let parsed
+try { parsed = JSON.parse(process.env.FM_REATTACH_INVENTORY || '') } catch { parsed = null }
+if (!Array.isArray(parsed)) { process.stdout.write('unreadable\n'); process.exit(0) }
+const found = parsed.filter(entry => entry && entry.path === target)
+if (found.length !== 1) { process.stdout.write('ambiguous\n'); process.exit(0) }
+const entry = found[0]
+if (typeof entry.lease_id !== 'string') { process.stdout.write('unreadable\n'); process.exit(0) }
+if (entry.lease_id !== '') { process.stdout.write('leased\n'); process.exit(0) }
+if (!Array.isArray(entry.processes)) { process.stdout.write('unreadable\n'); process.exit(0) }
+const pids = entry.processes.map(item =>
+  item && Number.isInteger(item.pid) && item.pid > 0 ? String(item.pid) : 'unreadable')
+process.stdout.write(['free', ...pids].join('\n') + '\n')
+NODE
+  ) || verdict=unreadable
+  case "${verdict%%$'\n'*}" in
+    free) ;;
+    leased)
+      echo "error: retained copy '$WT' is leased to another holder ($phase); refusing to take task $ID's recovery through a copy someone else reserved" >&2
+      return 1
+      ;;
+    ambiguous)
+      echo "error: the pool inventory does not name retained copy '$WT' exactly once ($phase); refusing to guess which copy holds task $ID's work" >&2
+      return 1
+      ;;
+    *)
+      echo "error: the pool inventory for '$WT' could not be read ($phase); refusing to guess whether task $ID's retained copy is in use" >&2
+      return 1
+      ;;
+  esac
+  while IFS= read -r pid; do
+    [ -n "$pid" ] && [ "$pid" != free ] || continue
+    reattach_pid_is_ours "$pid" && continue
+    echo "error: retained copy '$WT' has a live process ($pid) that is not part of this recovery ($phase); refusing to put a second agent on task $ID's work" >&2
+    return 1
+  done <<EOF
+$verdict
+EOF
 }
 
 freshen_spawn_worktree_base() {  # <worktree>
@@ -1923,6 +2236,13 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
   esac
 }
 
+# Everything a reattach can prove without touching anything is proved here,
+# before a replacement endpoint exists, so an unproved fact costs nothing.
+if [ "$REATTACH" -eq 1 ]; then
+  reattach_verify_copy_identity "before creating the replacement endpoint" || exit 1
+  reattach_verify_owner_free "before creating the replacement endpoint" || exit 1
+fi
+
 W="fm-$ID"
 if [ "$RELAUNCH" -eq 1 ]; then
   # Adopt the recorded endpoint instead of creating one. This is what keeps a
@@ -1946,8 +2266,28 @@ case "$BACKEND" in
     # treehouse cd's into the worktree. WT_TARGET carries that stable id for the
     # rename-critical worktree-detection steps below; the persisted window= handle
     # stays $T (the name form), which is safe now that rename is disabled.
-    WID=$(fm_backend_tmux_create_task "$SES" "$W" "$PROJ_ABS") || exit 1
+    # A fresh spawn opens in the project and lets `treehouse get` move the pane
+    # into a pooled copy. A reattach has its copy already and must never run
+    # that acquisition, so the replacement pane opens directly in the retained
+    # copy. From here the two paths converge.
+    REATTACH_ENDPOINT_CWD=$PROJ_ABS
+    [ "$REATTACH" -eq 0 ] || REATTACH_ENDPOINT_CWD=$WT
+    WID=$(fm_backend_tmux_create_task "$SES" "$W" "$REATTACH_ENDPOINT_CWD") || exit 1
     WT_TARGET="$WID"
+    if [ "$REATTACH" -eq 1 ]; then
+      REATTACH_ABORT_ENDPOINT=1
+      # The replacement pane's own process is what makes the retained copy read
+      # as in-use from here on, so the ownership recheck can only tell "ours"
+      # from "someone else's" if this id is known. Without it every later read
+      # would be indistinguishable from a foreign owner, so refuse now, while
+      # the message can still name the real reason.
+      REATTACH_PANE_PID=$(tmux display-message -p -t "$WID" '#{pane_pid}' 2>/dev/null | tr -d ' ') || REATTACH_PANE_PID=
+      case "$REATTACH_PANE_PID" in ''|*[!0-9]*) REATTACH_PANE_PID= ;; esac
+      [ -n "$REATTACH_PANE_PID" ] || {
+        echo "error: the replacement endpoint for task $ID did not report its own process id, so this recovery cannot tell its own pane from another owner of '$WT'; refusing rather than risking a second agent" >&2
+        exit 1
+      }
+    fi
     ;;
   herdr)
     # fm_backend_herdr_workspace_label resolves the target workspace from
@@ -2406,6 +2746,26 @@ if [ "$RELAUNCH" -eq 1 ]; then
     exit 1
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
+elif [ "$REATTACH" -eq 1 ]; then
+  # Also no acquisition: the replacement pane was opened directly in the
+  # retained copy, so what must be proven is that it landed there and that the
+  # copy is still the one that was proved. Re-running both proofs closes the
+  # window between the first read and this endpoint existing - a copy that
+  # gained an owner, changed branch, or left the pool in between is caught here,
+  # while nothing durable has been published yet.
+  reattach_wt_real=$(real_path_or_raw "$WT")
+  reattach_seen=
+  for _ in $(seq 1 10); do
+    reattach_seen=$(spawn_current_path "$WT_TARGET" || true)
+    [ -z "$reattach_seen" ] || [ "$(real_path_or_raw "$reattach_seen")" != "$reattach_wt_real" ] || break
+    sleep 0.5
+  done
+  if [ -z "$reattach_seen" ] || [ "$(real_path_or_raw "$reattach_seen")" != "$reattach_wt_real" ]; then
+    echo "error: the replacement endpoint for task $ID opened in '${reattach_seen:-unknown}', not retained copy '$WT'; refusing to bind a record to a copy the pane is not in" >&2
+    exit 1
+  fi
+  reattach_verify_copy_identity "with the replacement endpoint open" || exit 1
+  reattach_verify_owner_free "with the replacement endpoint open" || exit 1
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   spawn_send_text_line "$WT_TARGET" 'treehouse get'
 
@@ -2456,12 +2816,24 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   confirm_spawn_shell_cwd "$T"
   validate_spawn_worktree "treehouse get" "$T"
 fi
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+# The base refresh resets the copy to origin's default branch. That is right for
+# a freshly allocated pooled copy and catastrophic for a retained one, which is
+# recovered precisely because it holds work that is not on origin.
+if [ "$RECOVERY" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
 fi
-if [ "$RELAUNCH" -eq 1 ]; then
+if [ "$RECOVERY" -eq 1 ]; then
   SPAWNED_AT=$(fm_meta_get "$RELAUNCH_META" spawned_at)
-  SPAWN_WORKTREE_ALLOCATION=$(fm_meta_get "$RELAUNCH_META" worktree_allocation)
+  if [ "$REATTACH" -eq 1 ]; then
+    # A retained copy is by definition one the pool already created and this
+    # task already used, so it is recorded as reused. No ledger event is
+    # written: the allocation ledger measures pool allocation, and a recovery
+    # allocates nothing - which also keeps a rolled-back reattach from leaving
+    # a durable trace behind. Teardown still releases this identity.
+    SPAWN_WORKTREE_ALLOCATION=reused
+  else
+    SPAWN_WORKTREE_ALLOCATION=$(fm_meta_get "$RELAUNCH_META" worktree_allocation)
+  fi
 elif [ "$KIND" != secondmate ]; then
   SPAWNED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   if [ "$BACKEND" = orca ]; then
@@ -2514,6 +2886,18 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RELAUNCH_REPLACEMENT_HARNESS=$HARNESS
   RELAUNCH_REPLACEMENT_STATE=$STATE_REAL
   RELAUNCH_REPLACEMENT_WT=$WT
+elif [ "$REATTACH" -eq 1 ]; then
+  # A reattach arms wiring on the same per-task paths the previous incarnation
+  # may already own, and a rollback has to put those back rather than simply
+  # deleting what this attempt armed. Snapshot first, then arm.
+  snapshot_reattach_harness_wiring || {
+    echo "error: could not preserve task $ID's existing harness wiring; refusing to arm the replacement" >&2
+    exit 1
+  }
+  RELAUNCH_REPLACEMENT_PENDING=1
+  RELAUNCH_REPLACEMENT_HARNESS=$HARNESS
+  RELAUNCH_REPLACEMENT_STATE=$STATE_REAL
+  RELAUNCH_REPLACEMENT_WT=$WT
 fi
 if [ "$KIND" != secondmate ]; then
   # Arm the semantic busy-state contract (bin/fm-busy-lib.sh) for every
@@ -2538,7 +2922,7 @@ if [ "$KIND" != secondmate ]; then
         echo "error: failed to arm the busy-state contract for $ID" >&2
         exit 1
       }
-      [ "$RELAUNCH" -ne 1 ] || RELAUNCH_REPLACEMENT_BUSY_GEN=$BUSY_GEN
+      [ "$RECOVERY" -ne 1 ] || RELAUNCH_REPLACEMENT_BUSY_GEN=$BUSY_GEN
       ;;
     kimi*)
       # Standalone Kimi stays unknown until fm_busy_kimi_verified opens on a
@@ -2860,11 +3244,22 @@ META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
 SPAWN_GEN="s$(date +%s).${BASHPID:-$$}.$RANDOM"
 SPAWN_META_PATH="$STATE/$ID.meta"
-if [ "$RELAUNCH" -eq 1 ]; then
+if [ "$RECOVERY" -eq 1 ]; then
   SPAWN_META_LOCK=$(fm_meta_lock_path "$STATE/$ID.meta") || exit 1
   fm_lock_acquire_wait "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=1
-  SPAWN_META_TMP="$STATE/.$ID.meta.relaunch.${BASHPID:-$$}"
+  if [ "$REATTACH" -eq 1 ]; then
+    SPAWN_META_TMP="$STATE/.$ID.meta.reattach.${BASHPID:-$$}"
+    # The prior record is the rollback target. Copied, not moved, so the task
+    # never has a moment with no record at all.
+    REATTACH_META_PRIOR="$STATE/.$ID.meta.reattach-prior.${BASHPID:-$$}"
+    cp -p -- "$RELAUNCH_META" "$REATTACH_META_PRIOR" || {
+      echo "error: could not preserve task $ID's existing record; refusing to republish a binding that could not be undone" >&2
+      exit 1
+    }
+  else
+    SPAWN_META_TMP="$STATE/.$ID.meta.relaunch.${BASHPID:-$$}"
+  fi
   SPAWN_META_PATH=$SPAWN_META_TMP
 fi
 preserve_relaunch_meta() {
@@ -2921,21 +3316,35 @@ preserve_relaunch_meta() {
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
-  if [ "$RELAUNCH" -eq 1 ]; then
+  if [ "$RECOVERY" -eq 1 ]; then
     preserve_relaunch_meta
   fi
   if [ "$SPAWN_CONTROL_PARENT" = 1 ] && [ -n "${FM_CONTROL_RELAUNCH_TX:-}" ]; then
     echo "control_relaunch_tx=$FM_CONTROL_RELAUNCH_TX"
   fi
 } > "$SPAWN_META_PATH"
-if [ "$RELAUNCH" -eq 1 ]; then
+publish_recovery_meta() {
   SPAWN_META_PUBLISH_STARTED=1
   mv -f "$SPAWN_META_TMP" "$STATE/$ID.meta"
-  RELAUNCH_REPLACEMENT_PENDING=0
+  if [ "$REATTACH" -eq 1 ]; then
+    # Still undoable: the abort path restores REATTACH_META_PRIOR. It only
+    # becomes final once the replacement agent has been activated.
+    REATTACH_META_PUBLISHED=1
+  else
+    RELAUNCH_REPLACEMENT_PENDING=0
+  fi
   SPAWN_META_PUBLISH_STARTED=0
   SPAWN_META_TMP=
   fm_lock_release "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=0
+}
+# A relaunch publishes here, as it always has: its endpoint and copy already
+# belong to the task, so the record is true the moment it is written. A reattach
+# holds its record back until the replacement launch is staged in the pane,
+# because until then the binding it describes has no agent behind it - see the
+# activation gate below.
+if [ "$RELAUNCH" -eq 1 ]; then
+  publish_recovery_meta
 fi
 if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
   # The record is published, so this task is now part of the set a teardown
@@ -3001,12 +3410,32 @@ if [ "$KIND" = secondmate ]; then
   # injected carrier and this on/off snapshot are guaranteed to agree.
   LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_PUBLIC_FOLLOWUP_PRIMARY_HOME=$sq_primary_home FM_HOME=$sq_home FM_TRACE_CONTEXT=$SPAWN_TRACE_EFFECTIVE FM_SUPERVISION_MODEL=$supervision_model $LAUNCH"
 fi
-if [ -z "$SPAWN_TRACEPARENT" ] && [ "$RELAUNCH" -eq 1 ]; then
+if [ -z "$SPAWN_TRACEPARENT" ] && [ "$RECOVERY" -eq 1 ]; then
   LAUNCH="unset TRACEPARENT; $LAUNCH"
+fi
+if [ "$REATTACH" -eq 1 ]; then
+  # Activation gate. The staged command blocks until this exact incarnation's
+  # record is the published one, so the replacement agent cannot start against a
+  # binding that was never committed - including if the pane submits the line on
+  # its own. Once publication happens the loop clears immediately; if the
+  # operation instead rolls back, the pane is killed with the agent never
+  # started.
+  reattach_gate_meta=$(shell_quote "$STATE/$ID.meta")
+  reattach_gate_gen=$(shell_quote "spawn_gen=$SPAWN_GEN")
+  LAUNCH="while ! grep -qxF -- $reattach_gate_gen $reattach_gate_meta 2>/dev/null; do sleep 0.05; done; exec $LAUNCH"
 fi
 
 spawn_record_traceparent() {
   local meta="$STATE/$ID.meta" tmp status=0
+  # A reattach has not published its record yet and is already holding the
+  # record lock across staging, so the carrier goes into the staged record
+  # rather than into the live one. Writing to the live record here would both
+  # re-enter the lock and mutate the very record the rollback restores, and the
+  # value would then be overwritten by the staged record at publication.
+  if [ "$REATTACH" -eq 1 ] && [ -n "$SPAWN_META_TMP" ]; then
+    printf 'traceparent=%s\n' "$SPAWN_TRACEPARENT" >> "$SPAWN_META_TMP" || return 1
+    return 0
+  fi
   SPAWN_META_LOCK=$(fm_meta_lock_path "$meta") || return 1
   fm_lock_acquire_wait "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=1
@@ -3053,13 +3482,36 @@ if [ "$KIND" != secondmate ]; then
     || echo "fm-spawn: warning: could not capture codeburn baseline for $ID" >&2
 fi
 sleep 0.3
-spawn_send_literal "$T" "$LAUNCH"
+if [ "$REATTACH" -eq 1 ]; then
+  # Staging is the last thing that can fail without a published binding, so its
+  # transport status is enforced here rather than being best-effort.
+  spawn_send_literal "$T" "$LAUNCH" || {
+    echo "error: could not stage the replacement launch for task $ID in the new endpoint; leaving the task on its previous record" >&2
+    exit 1
+  }
+else
+  spawn_send_literal "$T" "$LAUNCH"
+fi
 sleep 0.3
 if [ "${HERDR_PROJECTED:-0}" -eq 1 ] || [ "${HERDR_COCKPIT:-0}" -eq 1 ]; then
   HERDR_PROJECTION_ABORT_CLEANUP=0
   spawn_herdr_presentation_order_lock_release
 fi
-spawn_send_key "$T" Enter
+if [ "$REATTACH" -eq 1 ]; then
+  # Commit point. The launch is staged behind the gate, so publishing the record
+  # is what releases it; everything before this line is still undoable.
+  retire_reattach_harness_wiring || {
+    echo "error: could not retire task $ID's superseded harness wiring; leaving the task on its previous record" >&2
+    exit 1
+  }
+  publish_recovery_meta
+  spawn_send_key "$T" Enter || {
+    echo "error: could not activate the replacement agent for task $ID after publishing its record; leaving the task on its previous record" >&2
+    exit 1
+  }
+else
+  spawn_send_key "$T" Enter
+fi
 if [ "$HARNESS" = kimi ]; then
   if ! kimi_wait_for_ready; then
     kimi_spawn_fail "kimi did not show a verified ready signal before brief delivery"
@@ -3092,6 +3544,18 @@ if [ "$KIND" = secondmate ] && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then
       echo "CONFIG_REREAD: secondmate $ID: cleanup failed; pre-relaunch generations were force-cleared where possible (destination=$PROJ_ABS source=$FM_HOME)" >&2
     fi
   fi
+fi
+
+if [ "$REATTACH" -eq 1 ]; then
+  # The replacement agent is running against the published binding, so the
+  # operation is complete and its undo material is retired.
+  REATTACH_ABORT_ENDPOINT=0
+  REATTACH_META_PUBLISHED=0
+  RELAUNCH_REPLACEMENT_PENDING=0
+  rm -f -- "$REATTACH_META_PRIOR"
+  REATTACH_META_PRIOR=
+  rm -rf -- "$REATTACH_WIRING_BACKUP"
+  REATTACH_WIRING_BACKUP=
 fi
 
 SPAWN_DELIVERY=
