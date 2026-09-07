@@ -15,6 +15,13 @@ mkdir -p "$PANE_HOME"
 cat > "$FAKEBIN/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
+# Where the probe actually placed this call, recorded so a test can observe the
+# directory its children run in rather than the one it claims to use. A deleted
+# directory has no readable name and is recorded as such.
+if [ -n "${FM_TEST_CWD_LOG:-}" ]; then
+  pwd -P >> "$FM_TEST_CWD_LOG" 2>/dev/null \
+    || printf 'unreadable\n' >> "$FM_TEST_CWD_LOG"
+fi
 # The real server is told which pane to answer about; it does not read the
 # caller's environment. This fixture does the same, so a probe bound entirely on
 # its command line is answered exactly as the server would answer it.
@@ -60,8 +67,13 @@ esac
 SH
 chmod +x "$FAKEBIN/herdr"
 
+# Set to a path to have the server fixture record the directory each call was
+# placed from; empty leaves the fixture silent, which is every other case here.
+CWD_LOG=
+
 run_probe() {
   PATH="$FAKEBIN:$PATH" HERDR_SESSION=geometry-test HERDR_PANE_ID=w1:p2 \
+    FM_TEST_CWD_LOG="$CWD_LOG" \
     FM_TEST_PANE_CWD="$1" FM_TEST_LAYOUT_STATE="${2:-live}" \
     FM_TEST_PANE_STATE="${3:-live}" "$PROBE"
 }
@@ -90,6 +102,54 @@ test_missing_cwd_is_permanent() {
   run_probe "$TMP_ROOT/deleted-home" >/dev/null 2>&1 || rc=$?
   expect_code 64 "$rc" "a missing authoritative foreground cwd must be permanent"
   pass "a missing authoritative foreground cwd is classified as permanent"
+}
+
+# This probe runs as a child of the fleet painter, so for as long as it works it
+# is part of the pane's foreground process group and its directory is what Herdr
+# reports as that pane's foreground_cwd. bin/backends/herdr.sh proves painter
+# ownership from exactly that value, so a probe that moved to the tracked code
+# root for every server call made its own pane read as a painter belonging to
+# another home for the whole window it was open, and any liveness read landing
+# in that window reported a healthy cockpit frame as not live.
+test_server_calls_stay_in_the_callers_directory() {
+  local log="$TMP_ROOT/call-cwd.log" expected line seen=0
+  expected=$(cd "$PANE_HOME" && pwd -P)
+  rm -f "$log"
+  CWD_LOG=$log
+  (cd "$PANE_HOME" && run_probe "$PANE_HOME") >/dev/null \
+    || fail "the probe did not report geometry from a live caller directory"
+  CWD_LOG=
+  [ -s "$log" ] || fail "the probe made no server call to observe"
+  while IFS= read -r line; do
+    seen=$((seen + 1))
+    [ "$line" = "$expected" ] \
+      || fail "a server call ran in [$line] instead of the caller's own directory [$expected]"
+  done < "$log"
+  [ "$seen" -ge 2 ] || fail "the probe made fewer server calls than expected: $seen"
+  pass "every server call runs in the caller's own directory"
+}
+
+# The move to the tracked code root exists for the home deleted under a running
+# painter, where the caller's directory no longer has a usable name at all.
+# Making that move conditional must not cost the probe that fallback, so a call
+# placed from a deleted directory still has to land in a readable one.
+test_deleted_caller_directory_falls_back_to_the_code_root() {
+  local doomed="$TMP_ROOT/doomed-home" log="$TMP_ROOT/doomed-cwd.log" expected line seen=0
+  expected=$(cd "$ROOT" && pwd -P)
+  rm -rf "$doomed"
+  mkdir -p "$doomed"
+  rm -f "$log"
+  CWD_LOG=$log
+  (cd "$doomed" && rm -rf "$doomed" && run_probe "$PANE_HOME") >/dev/null 2>&1 || true
+  CWD_LOG=
+  [ -s "$log" ] || fail "the probe placed no server call from the deleted directory"
+  while IFS= read -r line; do
+    seen=$((seen + 1))
+    [ "$line" = "$expected" ] \
+      || fail "a server call from a deleted directory ran in [$line] instead of the tracked code root [$expected]"
+  done < "$log"
+  [ "$seen" -ge 1 ] || fail "no server call was recorded from the deleted directory"
+  pass "a deleted caller directory falls back to the tracked code root"
 }
 
 test_healthy_pane_layout_failure_is_transient() {
@@ -225,6 +285,8 @@ test_unknown_argument_is_refused() {
 
 test_live_pane_reports_geometry
 test_missing_cwd_is_permanent
+test_server_calls_stay_in_the_callers_directory
+test_deleted_caller_directory_falls_back_to_the_code_root
 test_healthy_pane_layout_failure_is_transient
 test_successful_layout_omitting_exact_pane_is_permanent
 test_malformed_layout_is_transient

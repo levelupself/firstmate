@@ -99,9 +99,21 @@ else
   fi
 fi
 
+# The caller's own directory is kept unless it is unusable, because this probe
+# runs as a child of the fleet painter and is therefore part of the pane's
+# foreground process group while it works. Herdr reports one foreground_cwd for
+# a pane, and bin/backends/herdr.sh proves painter ownership from exactly that
+# value, so moving off the pane's directory for every call made the pane read as
+# a painter running from another home for the whole window this probe was open -
+# and any liveness read that landed in that window reported a healthy frame as
+# not live. The move exists only for the deleted-home case, where a child cannot
+# be started from the caller's directory at all, so it is made only there: the
+# tracked code root is a directory this probe always has.
 herdr_call() {
   (
-    cd "$SCRIPT_DIR/.." || exit 75
+    if ! pwd -P >/dev/null 2>&1; then
+      cd "$SCRIPT_DIR/.." || exit 75
+    fi
     if [ -n "${FM_HERDR_LAB_HELPER:-}" ]; then
       [ -n "${FM_HERDR_LAB_SESSION:-}" ] || exit 75
       "$FM_HERDR_LAB_HELPER" run "$FM_HERDR_LAB_SESSION" "$@"
