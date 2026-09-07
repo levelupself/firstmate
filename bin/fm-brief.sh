@@ -85,6 +85,13 @@
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
+# Ship briefs carry a commit section that gives the working repository's own
+# commit co-author rule precedence over the worker's launch instructions,
+# harness configuration, and any co-author trailer they inject automatically.
+# The section points at that repository's rule rather than restating one, and
+# frames the prohibition as agent identity rather than one literal trailer
+# string, so it survives the harness rewording the trailer; a trailer
+# crediting a human co-author is unaffected.
 # Refuses to overwrite an existing brief.
 set -eu
 
