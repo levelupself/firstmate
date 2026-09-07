@@ -208,16 +208,47 @@ test_changed_dependency_selection_and_unmapped_failure() {
   pass "changed selection covers dependents and fails closed for unmapped source"
 }
 
-test_empty_selection_emits_summary() {
-  local tmp repo out json
+test_no_selector_refuses_and_runs_nothing() {
+  local tmp rc
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-noselector.XXXXXX")
+  # A no-op invocation must never be indistinguishable from a green suite.
+  set +e
+  "$RUNNER" >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "no selector must exit non-zero, got $rc"; }
+  grep -Fq 'select with --all' "$tmp/err" \
+    || { rm -rf "$tmp"; fail "no-selector refusal is not actionable: $(cat "$tmp/err")"; }
+  grep -q '^FM_TEST_SUMMARY ' "$tmp/out" \
+    && { rm -rf "$tmp"; fail "no-selector invocation must not print a run summary"; }
+  # --list without a selector is the same no-op and must refuse identically.
+  set +e
+  "$RUNNER" --list >"$tmp/out2" 2>"$tmp/err2"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "--list without a selector must exit non-zero, got $rc"; }
+  rm -rf "$tmp"
+  pass "no selector refuses instead of reporting an empty success"
+}
+
+test_empty_selection_is_an_error() {
+  local tmp repo rc json
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-empty.XXXXXX")
   repo="$tmp/repo"
   init_changed_fixture_repo "$repo"
   printf 'documentation only\n' >"$repo/README.md"
-  out=$(cd "$repo" && bin/fm-test-run.sh --changed --base HEAD --json "$tmp/artifacts/timing.json" 2>"$tmp/err") \
-    || fail "empty valid changed selection must pass"
-  [ "$out" = "FM_TEST_SUMMARY total=0 failed=0 skipped_gate=0 duration_ms=0" ] \
-    || fail "empty selection summary is missing or non-deterministic: $out"
+  set +e
+  (cd "$repo" && bin/fm-test-run.sh --changed --base HEAD --json "$tmp/artifacts/timing.json") \
+    >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] \
+    || { rm -rf "$tmp"; fail "a selection that matches no test must exit 2, got $rc"; }
+  grep -Fq 'no test script was selected' "$tmp/err" \
+    || { rm -rf "$tmp"; fail "empty-selection refusal is not actionable: $(cat "$tmp/err")"; }
+  grep -q '^FM_TEST_SUMMARY ' "$tmp/out" \
+    && { rm -rf "$tmp"; fail "empty selection must not print a run summary"; }
+  # The timing artifact stays deterministic so a CI lane still uploads one.
   json="$tmp/artifacts/timing.json"
   python3 -c '
 import json, sys
@@ -227,7 +258,24 @@ assert doc["scripts"] == []
 assert doc["families"] == []
 ' "$json" || { rm -rf "$tmp"; fail "empty selection JSON summary is wrong"; }
   rm -rf "$tmp"
-  pass "empty changed selection emits deterministic text and JSON summaries"
+  pass "empty changed selection is an error, not an empty pass"
+}
+
+test_exclusion_emptied_selection_is_an_error() {
+  local tmp rc
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-excluded.XXXXXX")
+  # Excluding every selected script leaves nothing to run: same empty pass.
+  set +e
+  "$RUNNER" --family pure-contract-unit --exclude-family pure-contract-unit \
+    >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] \
+    || { rm -rf "$tmp"; fail "exclusion-emptied selection must exit 2, got $rc"; }
+  grep -Fq 'no test script was selected' "$tmp/err" \
+    || { rm -rf "$tmp"; fail "exclusion-emptied refusal is not actionable: $(cat "$tmp/err")"; }
+  rm -rf "$tmp"
+  pass "exclusion that empties a selection is an error, not an empty pass"
 }
 
 test_timing_markers_and_json() {
@@ -253,7 +301,7 @@ SH
   grep -Eq '^FM_TEST_END .+ exit=0 duration_ms=[0-9]+ gate_skip=false$' "$out" \
     || fail "END line missing exit/duration/gate_skip: $(grep '^FM_TEST_END' "$out")"
   summary=$(grep '^FM_TEST_SUMMARY ' "$out" || true)
-  assert_contains "$summary" "total=1" "summary total"
+  assert_contains "$summary" "ran=1" "summary states how many test files ran"
   assert_contains "$summary" "failed=0" "summary failed"
   assert_contains "$summary" "skipped_gate=0" "summary skipped_gate"
   grep -q '^FM_TEST_SLOWEST rank=1 ' "$out" \
@@ -342,7 +390,7 @@ SH
   }
   printf 'release\n' >"$release"
   wait "$producer_pid" 2>/dev/null || true
-  grep -q 'FM_TEST_SUMMARY total=1 failed=0' "$tmp/out" \
+  grep -q 'FM_TEST_SUMMARY ran=1 failed=0' "$tmp/out" \
     || { rm -rf "$tmp"; fail "stdin-isolated fixture was not recorded as passing"; }
   rm -rf "$tmp"
   pass "test scripts receive dedicated EOF while a short inherited producer remains open"
@@ -369,8 +417,8 @@ SH
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "aggregate exit must be non-zero when any script fails"
-  grep -q 'FM_TEST_SUMMARY total=2 failed=1' "$tmp/out.txt" \
-    || fail "summary should report total=2 failed=1: $(grep FM_TEST_SUMMARY "$tmp/out.txt")"
+  grep -q 'FM_TEST_SUMMARY ran=2 failed=1' "$tmp/out.txt" \
+    || fail "summary should report ran=2 failed=1: $(grep FM_TEST_SUMMARY "$tmp/out.txt")"
   # All-green stays 0.
   set +e
   "$RUNNER" "$pass_f" >"$tmp/out2.txt" 2>"$tmp/err2.txt"
@@ -402,7 +450,7 @@ SH
     || fail "BEGIN must record the existing pure-contract-unit no-skip declaration"
   grep -Eq '^FM_TEST_END .+ exit=1 duration_ms=[0-9]+ gate_skip=true$' "$out" \
     || fail "END must retain gate_skip=true and report exit=1: $(grep '^FM_TEST_END' "$out")"
-  grep -q 'FM_TEST_SUMMARY total=1 failed=1 skipped_gate=1' "$out" \
+  grep -q 'FM_TEST_SUMMARY ran=1 failed=1 skipped_gate=1' "$out" \
     || fail "summary must count the undeclared gate skip as failed: $(grep FM_TEST_SUMMARY "$out")"
   grep -Fq "undeclared gate skip in $skip_f: family pure-contract-unit declares expected_gate_skip=none; reason: skip: herdr not found" "$tmp/err.txt" \
     || fail "runner must explain the undeclared gate skip and preserve its reason: $(cat "$tmp/err.txt")"
@@ -437,7 +485,7 @@ SH
     || fail "BEGIN must record the declared optional-binary skip class"
   grep -Eq '^FM_TEST_END .+ exit=0 duration_ms=[0-9]+ gate_skip=true$' "$out" \
     || fail "declared gate skip must remain successful: $(grep '^FM_TEST_END' "$out")"
-  grep -q 'FM_TEST_SUMMARY total=1 failed=0 skipped_gate=1' "$out" \
+  grep -q 'FM_TEST_SUMMARY ran=1 failed=0 skipped_gate=1' "$out" \
     || fail "summary must retain a successful declared gate skip: $(grep FM_TEST_SUMMARY "$out")"
   python3 -c '
 import json, sys
@@ -469,7 +517,7 @@ SH
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "fail-on-gate-skip must make herdr-not-found a hard failure"
-  grep -q 'FM_TEST_SUMMARY total=1 failed=1' "$out" \
+  grep -q 'FM_TEST_SUMMARY ran=1 failed=1' "$out" \
     || fail "summary must report failed=1 under fail-on-gate-skip: $(grep FM_TEST_SUMMARY "$out")"
   grep -q 'required gate skip token' "$tmp/err.txt" \
     || fail "runner must log the required gate skip token"
@@ -728,7 +776,7 @@ SH
   end_n=$(grep -c '^FM_TEST_END ' "$tmp/out" || true)
   [ "$begin_n" -eq 3 ] || fail "expected 3 BEGIN markers, got $begin_n"
   [ "$end_n" -eq 3 ] || fail "expected 3 END markers, got $end_n"
-  grep -q 'FM_TEST_SUMMARY total=3 failed=0' "$tmp/out" \
+  grep -q 'FM_TEST_SUMMARY ran=3 failed=0' "$tmp/out" \
     || fail "summary missing for jobs run: $(grep FM_TEST_SUMMARY "$tmp/out")"
   python3 -c '
 import json,sys
@@ -763,7 +811,7 @@ SH
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "jobs aggregate must be non-zero when a proven worker fails"; }
-  grep -q 'FM_TEST_SUMMARY total=2 failed=1' "$tmp/out4" \
+  grep -q 'FM_TEST_SUMMARY ran=2 failed=1' "$tmp/out4" \
     || { rm -rf "$tmp"; fail "jobs failure summary wrong: $(grep FM_TEST_SUMMARY "$tmp/out4")"; }
 
   cat >"$repo/$d" <<'SH'
@@ -777,7 +825,7 @@ SH
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "parallel stderr gate skip must hard-fail"; }
-  grep -q 'FM_TEST_SUMMARY total=1 failed=1' "$tmp/out5" \
+  grep -q 'FM_TEST_SUMMARY ran=1 failed=1' "$tmp/out5" \
     || { rm -rf "$tmp"; fail "parallel stderr hard-fail summary wrong: $(grep FM_TEST_SUMMARY "$tmp/out5")"; }
 
   set +e
@@ -788,7 +836,7 @@ SH
     || { rm -rf "$tmp"; fail "parallel undeclared gate skip must fail"; }
   grep -Eq '^FM_TEST_END .+ exit=1 duration_ms=[0-9]+ gate_skip=true$' "$tmp/out6" \
     || { rm -rf "$tmp"; fail "parallel stderr gate skip was not recorded"; }
-  grep -q 'FM_TEST_SUMMARY total=1 failed=1 skipped_gate=1' "$tmp/out6" \
+  grep -q 'FM_TEST_SUMMARY ran=1 failed=1 skipped_gate=1' "$tmp/out6" \
     || { rm -rf "$tmp"; fail "parallel stderr skip summary wrong: $(grep FM_TEST_SUMMARY "$tmp/out6")"; }
   grep -Fq 'undeclared gate skip' "$tmp/err6" \
     || { rm -rf "$tmp"; fail "parallel undeclared gate skip explanation missing"; }
@@ -881,7 +929,9 @@ test_optional_gate_family_declarations
 test_single_script_selection
 test_changed_file_selection_is_conservative
 test_changed_dependency_selection_and_unmapped_failure
-test_empty_selection_emits_summary
+test_no_selector_refuses_and_runs_nothing
+test_empty_selection_is_an_error
+test_exclusion_emptied_selection_is_an_error
 test_timing_markers_and_json
 test_scripts_receive_dedicated_eof_instead_of_runner_stdin
 test_aggregate_exit_behavior

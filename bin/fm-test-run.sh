@@ -49,7 +49,10 @@
 #   FM_TEST_END <iso8601> <script> exit=<code> duration_ms=<n> gate_skip=<true|false>
 #
 # After all scripts (stdout):
-#   FM_TEST_SUMMARY total=<n> failed=<n> skipped_gate=<n> duration_ms=<n>
+#   FM_TEST_SUMMARY ran=<n> failed=<n> skipped_gate=<n> duration_ms=<n>
+#     ran is how many test scripts actually executed, so a tail reader can
+#     see the number is not zero. The JSON artifact carries it as
+#     summary.total, which --aggregate-json sums across lanes.
 #   FM_TEST_SUMMARY_FAMILY family=<name> count=<n> duration_ms=<n> failed=<n>
 #   FM_TEST_SLOWEST rank=<k> script=<path> duration_ms=<n>
 #
@@ -59,6 +62,13 @@
 # Exit status is non-zero if any selected script exits non-zero, a configured
 # --fail-on-gate-skip token appears, or a family declaring expected_gate_skip=none
 # gate-skips. Declared gate skips remain successful and count as skipped_gate.
+#
+# A run that executes no test never reports success: no selection mode, and a
+# selection mode that resolves to zero scripts (an empty --changed set, or an
+# --exclude-family that removes everything), both exit 2. An empty run would
+# otherwise be indistinguishable from a green suite by exit status alone.
+# Inspection modes (--list, --list-families, --list-lanes) do not run tests and
+# keep their own exit contract.
 #
 # Family labels, the changed-file map, and production portable-shard composition
 # live in this script only (one owner). The proven-isolated candidate set remains
@@ -1441,8 +1451,8 @@ if [ "$LIST_ONLY" -eq 1 ]; then
 fi
 
 if [ "${#SCRIPTS[@]}" -eq 0 ]; then
-  log "nothing to run"
-  printf 'FM_TEST_SUMMARY total=0 failed=0 skipped_gate=0 duration_ms=0\n'
+  # Still emit the deterministic empty artifact so a lane that asked for one
+  # uploads it, then refuse: a run that executed nothing is not a green suite.
   if [ -n "$JSON_PATH" ]; then
     empty_rec=$(mktemp)
     empty_fam=$(mktemp)
@@ -1453,7 +1463,7 @@ if [ "${#SCRIPTS[@]}" -eq 0 ]; then
     write_json_artifact "$JSON_PATH" "$started" "$started" "empty" 0 0 0 0 "$SELECTION_DESC" "$empty_rec" "$empty_fam"
     rm -f "$empty_rec" "$empty_fam"
   fi
-  exit 0
+  die "no test script was selected for $SELECTION_DESC, so nothing ran; widen the selection or use --all (an empty run is not a pass)"
 fi
 
 # Verify selected scripts exist before starting.
@@ -1711,7 +1721,7 @@ if [ "$RUN_DURATION" -lt 0 ]; then
   RUN_DURATION=0
 fi
 
-printf 'FM_TEST_SUMMARY total=%s failed=%s skipped_gate=%s duration_ms=%s\n' \
+printf 'FM_TEST_SUMMARY ran=%s failed=%s skipped_gate=%s duration_ms=%s\n' \
   "$TOTAL" "$FAILED" "$SKIPPED_GATE" "$RUN_DURATION"
 
 if [ -s "$FAMILIES_TSV" ]; then
