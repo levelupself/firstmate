@@ -249,20 +249,33 @@ EOF
     "kind=ship" \
     "mode=no-mistakes"
   PIPELINE_OWNED_FAKEBIN=$(make_fakebin "$home")
+  # The shape `no-mistakes axi status` actually publishes: `branch_sync:` is a
+  # sibling of `run:` at indent 0, emitted after the step tables, with the
+  # run's own head abbreviated and `pr_state:`/`local.head:` neighbouring the
+  # keys the owner binding reads.
   FM_FAKE_AXI_STATUS=$(cat <<EOF
 run:
   id: "01PIPELINE"
   branch: fm/pipeline-owned
   status: fixing
-  head: "4444444444444444444444444444444444444444"
-  branch_sync:
-    state: pipeline_owned
-    pipeline:
-      submitted_head: "$head"
-      current_head: "4444444444444444444444444444444444444444"
-  steps[2]{step,status,findings,duration_ms}:
-    intent,completed,0,0
-    review,fixing,1,0
+  head: 4dca364b
+  pr: ""
+steps[2]{step,status,findings,duration_ms}:
+  intent,completed,0,0
+  review,fixing,1,0
+active_steps[1]{step,status}:
+  review,fixing
+branch_sync:
+  pr_state: none
+  safety: safe
+  state: pipeline_owned
+  local:
+    head: $head
+    clean: true
+  pipeline:
+    submitted_head: $head
+    current_head: 4dca364b
+  next_action: none
 EOF
 )
   export FM_FAKE_AXI_STATUS

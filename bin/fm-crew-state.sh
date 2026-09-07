@@ -347,8 +347,9 @@ nm_runs_status_for_branch() {  # <branch>
     rest=$(trim "$rest")
     sha=${rest%% *}
     if [ "$br" = "$branch" ]; then
-      # Same code-identity rule as axi status: skip a same-branch row whose
-      # short-sha does not match this worktree (rewritten or advanced tip).
+      # Skip a same-branch row whose short-sha does not match this worktree
+      # under the legacy head rule in fm_nm_head_matches_worktree, which is all
+      # a runs-list row can be decided by (see nm_coarse_head_matches_worktree).
       if ! nm_coarse_head_matches_worktree "$sha"; then
         continue
       fi

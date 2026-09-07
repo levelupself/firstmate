@@ -226,6 +226,40 @@ run:
 EOF
 }
 
+# The shape `no-mistakes axi status` actually publishes: `branch_sync:` is a
+# SIBLING of `run:` at indent 0, emitted after the step tables, with `state:`
+# and `pipeline:` at +2 and `submitted_head:` at +4. `pr_state:` and
+# `local.head:` are the real neighbours that shadow the keys being read, and the
+# run's own head is abbreviated. Owner binding must hold against this shape, not
+# only against the run-nested fixtures above.
+run_pipeline_owned_published_shape() {  # <branch> <submitted-head> <current-head>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: fixing
+  head: $3
+  pr: ""
+  findings: none
+steps[2]{step,status,findings,duration_ms}:
+  intent,completed,0,0
+  review,fixing,1,0
+active_steps[1]{step,status}:
+  review,fixing
+branch_sync:
+  pr_state: none
+  safety: safe
+  state: pipeline_owned
+  local:
+    head: $2
+    clean: true
+  pipeline:
+    submitted_head: $2
+    current_head: $3
+  next_action: none
+EOF
+}
+
 run_top_level_ci() {  # <branch>
   cat <<EOF
 run:
@@ -1380,6 +1414,45 @@ test_pipeline_owned_unavailable_current_head_uses_submitted_head() {
 # The published relationship is a text contract from another process, so an
 # incidental trailing space on the owner key must not silently unbind the run
 # and strand the crew on the coarse-fallback-suppressed unknown row.
+test_pipeline_owned_binds_in_the_published_status_shape() {
+  reset_fakes
+  local d submitted_head out
+  d=$(new_case pipeline-owned-published-shape)
+  make_repo_on_branch "$d/wt" fm/feat-published
+  submitted_head=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/published.meta" "window=fm:fm-published" "worktree=$d/wt" "kind=ship" "harness=codex"
+  FM_FAKE_AXI_STATUS=$(run_pipeline_owned_published_shape fm/feat-published "$submitted_head" 6c69c409)
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  out=$(run_crew_state "$d" published)
+  assert_contains "$out" "source: run-step" "the published top-level branch_sync shape must bind the run"
+  assert_contains "$out" "state: working" "a pipeline-owned fixing run remains working in the published shape"
+  assert_contains "$out" "validating (fixing)" "the exact validation step must be rendered from the published shape"
+  pass "pipeline ownership binds in the shape axi status actually publishes"
+}
+
+test_pipeline_owned_published_shape_rejects_a_foreign_submitted_head() {
+  reset_fakes
+  local d short out
+  d=$(new_case pipeline-owned-published-mismatch)
+  make_repo_on_branch "$d/wt" fm/feat-published-mismatch
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/published-mismatch.meta" "window=fm:fm-published-mismatch" "worktree=$d/wt" "kind=ship" "harness=codex"
+  FM_FAKE_AXI_STATUS=$(run_pipeline_owned_published_shape fm/feat-published-mismatch \
+    7777777777777777777777777777777777777777 6c69c409)
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/feat-published-mismatch ${short}  2026-08-10 09:00
+EOF
+)"
+  out=$(run_crew_state "$d" published-mismatch)
+  assert_not_contains "$out" "source: run-step" "a foreign submitted head must be rejected in the published shape too"
+  assert_not_contains "$out" "background run" "the rejection must not be resurrected by the coarse runs list"
+  assert_contains "$out" "state: unknown" "the rejected relationship leaves Codex unknown"
+  pass "the published shape rejects a run bound to other code"
+}
+
 test_pipeline_owned_binds_despite_trailing_whitespace() {
   reset_fakes
   local d submitted_head out
@@ -1578,6 +1651,8 @@ test_historical_same_branch_rewritten_head_not_current
 test_active_run_descendant_fix_head_remains_current
 test_pipeline_owned_unavailable_current_head_uses_submitted_head
 test_pipeline_owned_binds_despite_trailing_whitespace
+test_pipeline_owned_binds_in_the_published_status_shape
+test_pipeline_owned_published_shape_rejects_a_foreign_submitted_head
 test_pipeline_owned_invalid_relationship_is_rejected
 test_pipeline_owned_different_branch_is_rejected
 test_pipeline_owned_submitted_head_behind_local_work_is_rejected
