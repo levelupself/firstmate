@@ -2268,10 +2268,25 @@ fm_backend_herdr_cockpit_binding_live() {  # <state-dir> <home> [<session>]
 # had.
 #
 # Strict painter ownership proves both identities from live process properties:
-# the exact tracked fleet-view executable in argv and the pane's authoritative
-# foreground cwd resolved against the operational home. The cwd is durable
-# across the env launcher that Herdr uses even though FM_HOME itself is not
-# retained in the foreground process argv.
+# the exact tracked fleet-view executable in argv and THAT PROCESS'S OWN cwd
+# resolved against the operational home. The cwd is durable across the env
+# launcher that Herdr uses even though FM_HOME itself is not retained in the
+# foreground process argv.
+#
+# The home is read from the painter process's own entry in foreground_processes,
+# never from the pane-level foreground_cwd. That field is a single sample of
+# whichever process happens to be foreground at that instant, and a watching
+# painter forks short-lived children on every redraw - the snapshot, then one
+# crew read per crew - each of which resolves its own script directory before
+# doing anything else. So the pane's foreground cwd flaps to the code root (and
+# can read back empty) while the painter itself has never moved, and a live
+# region reported no-fleet-process at random. Every caller that gates on the
+# binding then refused for a frame that was fine: cockpit placement returned
+# "could not place <id> in the viewport", and a painter checking its own binding
+# declared itself unbound and degraded its own panel. Measured against Herdr
+# 0.8.0, the pane-level field disagreed with the painter's own cwd on 2 of 150
+# samples of an idle single-pane home, while the painter's own entry was exact
+# on every sample. A painter never chdirs, so its own entry is the stable proof.
 # The painter must also carry the pane identity it was launched with, matching
 # both this session and THIS pane. That identity is what the geometry binding
 # resolves a rectangle from, and it is checkable from outside the process while
@@ -2294,8 +2309,9 @@ fm_backend_herdr_cockpit_binding_live() {  # <state-dir> <home> [<session>]
 # up painting 2026-08-13 frames on 2026-08-29. A pane that cannot size itself to
 # the drawn rectangle is not live.
 fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane> [<home>] [<sections>] [<identity>]
-  local session=$1 pane=$2 home=${3:-} sections=${4:-} identity=${5:-compatible} info pane_info
-  local process_home exact_home exact_process_home strict_state
+  local session=$1 pane=$2 home=${3:-} sections=${4:-} identity=${5:-compatible} info
+  local process_pid process_home exact_home exact_process_home strict_state
+  local home_pids home_json
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || {
     printf 'no-process-info'
     return 0
@@ -2313,29 +2329,33 @@ fm_backend_herdr_cockpit_fleet_state() {  # <session> <pane> [<home>] [<sections
       printf 'no-fleet-process'
       return 0
     }
-    pane_info=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null) || {
-      printf 'no-fleet-process'
-      return 0
-    }
-    process_home=$(printf '%s' "$pane_info" | jq -r --arg pane "$pane" '
-      select(.result.pane.pane_id == $pane)
-      | .result.pane.foreground_cwd // empty
-    ' 2>/dev/null) || process_home=
-    exact_process_home=$(fm_backend_herdr_cockpit_home_identity "$process_home") || {
-      printf 'no-fleet-process'
-      return 0
-    }
-    if [ "$exact_process_home" != "$exact_home" ]; then
-      printf 'no-fleet-process'
-      return 0
-    fi
+    # The pids of the pane's own foreground processes that are running FROM this
+    # home. A process reporting no cwd, or one this shell cannot resolve to a
+    # real directory, proves nothing and is simply not counted.
+    home_pids=""
+    while IFS=$'\t' read -r process_pid process_home; do
+      [ -n "$process_pid" ] || continue
+      exact_process_home=$(fm_backend_herdr_cockpit_home_identity "$process_home") \
+        || continue
+      [ "$exact_process_home" = "$exact_home" ] || continue
+      home_pids="${home_pids}${home_pids:+,}$process_pid"
+    done <<EOF
+$(printf '%s' "$info" | jq -r '
+  .result.process_info.foreground_processes[]?
+  | select((.pid // null) != null and (.cwd // "") != "")
+  | "\(.pid)\t\(.cwd)"' 2>/dev/null)
+EOF
+    home_json=$(printf '%s' "$home_pids" \
+      | jq -R -c 'split(",") | map(select(length > 0))' 2>/dev/null) || home_json='[]'
     strict_state=$(printf '%s' "$info" | jq -r \
       --arg script "$FM_BACKEND_HERDR_ROOT/bin/fm-fleet-view.sh" \
       --arg geometry "$FM_BACKEND_HERDR_COCKPIT_GEOMETRY_SCRIPT" \
       --arg session "$session" --arg pane "$pane" \
-      --arg sections "$sections" '
+      --arg sections "$sections" \
+      --argjson home "$home_json" '
       def words: (.argv // (if (.argv0 // "") == "" then [] else [.argv0] end));
       [.result.process_info.foreground_processes[]?
+       | select(((.pid // "") | tostring) | IN($home[]))
        | select((words | index($script)) != null
                 and (words | index("--watch")) != null)] as $painters
       | [$painters[]

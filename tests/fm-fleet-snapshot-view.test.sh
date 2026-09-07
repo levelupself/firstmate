@@ -1596,10 +1596,14 @@ if [ "${1:-}" = pane ] && [ "${2:-}" = layout ]; then
     '{result:{layout:{panes:[{pane_id:$pane,rect:{x:0,y:0,width:45,height:20}}]}}}'
   exit 0
 fi
+painter_cwd=$PAINTER_HOME
+[ "$mode" != home ] || painter_cwd=/wrong/home
 if [ "${1:-}" = pane ] && [ "${2:-}" = get ]; then
   tab=$(cat "$PAINTER_HOME/reported-tab" 2>/dev/null || printf 'w9:t1')
-  cwd=$PAINTER_HOME
-  [ "$mode" != home ] || cwd=/wrong/home
+  # Herdr samples ONE foreground process for this pane-level field, so it reads
+  # back as a forked child's cwd whenever a child is foreground. The knob models
+  # exactly that: the painter has not moved, the sample landed on its child.
+  cwd=${PAINTER_FOREGROUND_CWD:-$painter_cwd}
   jq -cn --arg pane "${3:-${HERDR_PANE_ID:?}}" --arg tab "$tab" --arg cwd "$cwd" \
     '{result:{pane:{pane_id:$pane,workspace_id:"w9",tab_id:$tab,foreground_cwd:$cwd}}}'
   exit 0
@@ -1623,8 +1627,10 @@ else
      "--herdr-session",$session,"--herdr-pane",$pane,"--watch","0.1"]
     + (if $sections == "" then [] else ["--section",$sections] end)')
 fi
-jq -cn --arg pane "${asked_pane:?}" --argjson argv "$argv" '
-  {result:{type:"pane_process_info",process_info:{pane_id:$pane,foreground_processes:[{argv:$argv}]}}}'
+jq -cn --arg pane "${asked_pane:?}" --argjson argv "$argv" --arg cwd "$painter_cwd" '
+  {result:{type:"pane_process_info",
+    process_info:{pane_id:$pane,shell_pid:101,foreground_process_group_id:101,
+      foreground_processes:[{pid:101,cwd:$cwd,argv:$argv}]}}}'
 SH
   chmod +x "$fakebin/herdr"
   printf '%s\n' "$ROOT/bin"
@@ -2162,6 +2168,38 @@ test_watch_refuses_a_recorded_pane_with_wrong_process_identity() {
   pass "a recorded pane paints only with the authoritative process identity"
 }
 
+# The home half of that identity is the PAINTER PROCESS's own cwd, not the
+# pane-level foreground_cwd. Herdr samples that field from whichever process is
+# foreground at the instant of the read, and this painter forks short-lived
+# children on every redraw - the snapshot, then one crew read per crew - each of
+# which resolves its own script directory before doing anything else. So the
+# sample lands on the code root while the painter has not moved, and reading it
+# retired a correctly bound painter mid-run for a frame that was fine.
+test_a_forked_childs_cwd_never_unbinds_a_recorded_painter() {
+  local home dir pid rc
+  home=$(make_home painter-child-cwd)
+  dir=$(painter_bin "$home")
+  write_cockpit_record "$home" 'w9:p2' 'waiting'
+  PAINTER_FOREGROUND_CWD="$ROOT/bin" \
+    FM_HOME="$home" COLUMNS=45 LINES=20 \
+    HERDR_SESSION=lab-session HERDR_PANE_ID=w9:p2 HERDR_TAB_ID=w9:t1 \
+    PAINTER_VIEW="$ROOT/bin/fm-fleet-view.sh" PAINTER_HOME="$home" \
+    PAINTER_REPORTED_SECTIONS=waiting PATH="$home/fakebin:$PATH" \
+    "$dir/fm-fleet-view.sh" --watch 0.1 --section waiting \
+    > "$home/child-cwd.out" 2>&1 &
+  pid=$!
+  rc=0
+  wait_for_paint "$home/child-cwd.out" 'YOUR DECISIONS' || rc=1
+  [ "$rc" = 0 ] && [ -e "$home/state/.fleet-painter-w9:p2.lock" ] || rc=1
+  kill -0 "$pid" 2>/dev/null || rc=1
+  reap_painter "$pid"
+  [ "$rc" = 0 ] \
+    || fail "a bound painter was retired because its own child was foreground: $(cat "$home/child-cwd.out")"
+  assert_not_contains "$(cat "$home/child-cwd.out")" 'not this frame' \
+    "a forked child's cwd was still read as the painter's own home"
+  pass "a painter's forked child being foreground never unbinds its recorded pane"
+}
+
 # --- ready membership follows the authoritative live-task records ------------
 #
 # Dispatch writes state/<id>.meta immediately; the backlog document is edited
@@ -2471,4 +2509,5 @@ test_geometry_probe_names_its_exact_permanent_cause
 test_pane_identity_splits_painters_sharing_one_frame
 test_transient_geometry_evidence_is_reported_not_interleaved
 test_watch_refuses_a_recorded_pane_with_wrong_process_identity
+test_a_forked_childs_cwd_never_unbinds_a_recorded_painter
 test_non_watch_outputs_remain_byte_exact
