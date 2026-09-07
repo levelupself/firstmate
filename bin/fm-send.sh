@@ -57,7 +57,10 @@
 # direction). A send without the flag never closes anything: a routine steer,
 # working:, or done: event still cannot clear a captain decision. The flag is
 # refused with --key, with an explicit backend target (no task ledger in this
-# home), and with an empty message.
+# home), with an empty message, and with a key in a reserved decision namespace
+# (fm_decision_key_is_reserved, bin/fm-classify-lib.sh): a reserved key such as
+# pending-reply-<id> is only ever closed by the library that owns it, so
+# answerer-closes does not apply and fm-send refuses before sending.
 #
 # After a successful text submit fm-send pauses FM_SEND_SETTLE seconds (default 1,
 # 0 disables) before returning: submit confirmation only proves the text was
@@ -367,6 +370,10 @@ if [ -n "$RESOLVE_KEYS" ]; then
   RESOLVE_STATUS_FILE="$STATE/$RESOLVE_TASK_ID.status"
   resolve_open_set=$(status_open_decisions "$RESOLVE_STATUS_FILE")
   for k in $RESOLVE_KEYS; do
+    if fm_decision_key_is_reserved "$k"; then
+      echo "error: --resolve-key '$k' is reserved to pending-reply decisions owned by bin/fm-pending-reply-lib.sh (closed through fm_pending_reply_close_escalation), so the advertised answerer-closes path does not apply; nothing was sent." >&2
+      exit 1
+    fi
     case "$resolve_open_set" in
       "$k"$'\t'*|*$'\n'"$k"$'\t'*) ;;
       *)

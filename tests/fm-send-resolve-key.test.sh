@@ -267,6 +267,37 @@ test_not_open_key_refuses_before_send() {
   pass "fm-send --resolve-key: a key that is not open refuses loudly before anything is sent"
 }
 
+test_reserved_pending_reply_key_refuses_explicit_path() {
+  local dir fb log home err rc out corr key
+  dir="$TMP_ROOT/reserved-path"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
+  home=$(setup_home reserved-path)
+  fm_write_meta "$home/state/prm.meta" "window=sess:fm-prm" "kind=ship"
+  corr=abcdef0123456789
+  key="pending-reply-$corr"
+  printf 'blocked [key=%s]: pending-reply-missed: task=ship task-id=%s request=ship it\n' "$key" "$corr" > "$home/state/prm.status"
+
+  : > "$log"
+  env PATH="$fb:$PATH" \
+    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" prm --resolve-key "$key" "manual close attempt" >/dev/null 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "a reserved pending-reply key should refuse --resolve-key"
+  assert_contains "$(cat "$err")" "--resolve-key '$key' is reserved to pending-reply decisions owned by bin/fm-pending-reply-lib.sh" "the refusal should name the owning library"
+  assert_contains "$(cat "$err")" "fm_pending_reply_close_escalation" "the refusal should name the real close path"
+  assert_contains "$(cat "$err")" "nothing was sent" "the refusal should prove no mutation happened"
+  if grep -F 'resolved ' "$home/state/prm.status" >/dev/null; then
+    fail "a reserved-key refusal should not close the decision: $(cat "$home/state/prm.status")"
+  fi
+  [ ! -s "$log" ] || fail "a reserved-key refusal should not type any message: $(cat "$log")"
+
+  out=$(drain_out "$home")
+  printf '%s' "$out" | grep -F "[key=$key]" >/dev/null || fail "the pending-reply decision should remain visible: $out"
+  if printf '%s' "$out" | grep -F "close one by answering it: bin/fm-send.sh <task> --resolve-key <key>" >/dev/null; then
+    fail "the advertised resolve path was not corrected for a reserved-key-only open decision: $out"
+  fi
+  pass "fm-send --resolve-key: a reserved pending-reply key must refuse with the owning library and close path"
+}
+
 test_failed_send_does_not_close() {
   local dir fb log home rc out
   dir="$TMP_ROOT/send-fail"; mkdir -p "$dir"
@@ -502,6 +533,7 @@ test_colon_first_key_position_is_answerable
 test_answer_starts_work_never_orphans
 test_routine_steer_never_closes
 test_not_open_key_refuses_before_send
+test_reserved_pending_reply_key_refuses_explicit_path
 test_failed_send_does_not_close
 test_multiple_keys_close_together
 test_local_secondmate_answer_marked_and_closed

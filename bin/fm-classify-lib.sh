@@ -359,20 +359,30 @@ EOF
 # writer-side rejection would.
 FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT='pending-reply-'
 
-# 0 when <key> is not reserved, or is reserved and <note> speaks its vocabulary.
-_fm_decision_key_transition_allowed() {  # <key> <note>
-  local key=$1 note=$2 prefix
+# 0 when <key> lies in a reserved namespace, setting FM_CLASSIFY_RESERVED_PREFIX
+# to the namespace prefix it matched. Sole owner of the reserved-key test: every
+# consumer that needs the namespace rule (this fold, the unread surface, and the
+# CLIs that refuse or re-hint a reserved key) calls this rather than re-deriving
+# the prefix scan, so the rule cannot drift between them.
+fm_decision_key_is_reserved() {  # <key>
+  local key=$1 prefix
+  FM_CLASSIFY_RESERVED_PREFIX=
   for prefix in ${FM_CLASSIFY_RESERVED_KEY_PREFIXES:-$FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT}; do
     case "$key" in
-      "$prefix"*)
-        case "$note" in
-          "$prefix"*:*) return 0 ;;
-          *) return 1 ;;
-        esac
-        ;;
+      "$prefix"*) FM_CLASSIFY_RESERVED_PREFIX=$prefix; return 0 ;;
     esac
   done
-  return 0
+  return 1
+}
+
+# 0 when <key> is not reserved, or is reserved and <note> speaks its vocabulary.
+_fm_decision_key_transition_allowed() {  # <key> <note>
+  local key=$1 note=$2
+  fm_decision_key_is_reserved "$key" || return 0
+  case "$note" in
+    "$FM_CLASSIFY_RESERVED_PREFIX"*:*) return 0 ;;
+  esac
+  return 1
 }
 
 _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb>
@@ -1009,7 +1019,7 @@ status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
 # pending-reply resolution. Those lines never fold into OPEN DECISIONS, so the
 # drain's unread-status surface is their only guaranteed presentation.
 status_line_is_unread_surface() {  # <status-line>
-  local line=$1 verb key note resolve held prefix
+  local line=$1 verb key note resolve held
   [ -n "$line" ] || return 1
   verb=$(status_line_verb "$line")
   [ "$verb" = note ] && return 0
@@ -1021,15 +1031,8 @@ status_line_is_unread_surface() {  # <status-line>
   esac
   key=$(_fm_decision_key "$line") || return 1
   note=$(status_line_note "$line")
-  for prefix in ${FM_CLASSIFY_RESERVED_KEY_PREFIXES:-$FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT}; do
-    case "$key" in
-      "$prefix"*)
-        _fm_decision_key_transition_allowed "$key" "$note"
-        return
-        ;;
-    esac
-  done
-  return 1
+  fm_decision_key_is_reserved "$key" || return 1
+  _fm_decision_key_transition_allowed "$key" "$note"
 }
 
 # Fleet-wide unread informational lines: one "<task>\t<status-line>" row per
