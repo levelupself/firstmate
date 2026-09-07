@@ -1956,7 +1956,7 @@ real_path_or_raw() {  # <path>
   fi
 }
 
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+if [ "$RECOVERY" -eq 0 ] && [ "$KIND" != secondmate ]; then
   ALLOCATION_BOUNDARY_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   ALLOCATION_BOUNDARY_STATUS=incomplete
   ALLOCATION_BOUNDARY_WORKTREES=()
@@ -3422,7 +3422,7 @@ if [ "$REATTACH" -eq 1 ]; then
   # started.
   reattach_gate_meta=$(shell_quote "$STATE/$ID.meta")
   reattach_gate_gen=$(shell_quote "spawn_gen=$SPAWN_GEN")
-  LAUNCH="while ! grep -qxF -- $reattach_gate_gen $reattach_gate_meta 2>/dev/null; do sleep 0.05; done; exec $LAUNCH"
+  LAUNCH="while ! grep -qxF -- $reattach_gate_gen $reattach_gate_meta 2>/dev/null; do sleep 0.05; done; $LAUNCH"
 fi
 
 spawn_record_traceparent() {

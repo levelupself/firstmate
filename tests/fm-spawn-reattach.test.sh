@@ -223,6 +223,11 @@ assert_nothing_changed() {  # <case-dir> <id> <retained>
     "a refused reattach must never acquire a pooled copy"
   [ "$(cat "$retained/committed.txt" 2>/dev/null)" = 'landed work' ] \
     || fail "a refused reattach changed the retained copy's committed content"
+  # The allocation ledger measures pool allocation, and a recovery allocates
+  # nothing. A refusal that seeded it would leave a permanent artifact behind an
+  # operation that is supposed to change nothing.
+  [ -z "$(find "$dir/home/data/worktree-allocations" -type f 2>/dev/null)" ] \
+    || fail "a refused reattach left a worktree-allocation ledger behind"
 }
 
 # --- 1. refusals before anything changes ------------------------------------
@@ -379,6 +384,48 @@ test_uncommitted_content_survives_reattach() {
   pass "fm-spawn reattach: uncommitted work survives and the retained binding is published"
 }
 
+# The staged launch line is a shell command LIST, not a bare command word: the
+# gate loop precedes it and a recovery may prepend `unset TRACEPARENT;` ahead of
+# the real launch. The other cases only ever record that literal, so a line that
+# is well-formed as text but broken as a command would pass them. This one runs
+# it for real, in the DEFAULT trace-context-off configuration where the recovery
+# does prepend that unset.
+test_staged_launch_line_actually_runs_the_agent() {
+  local dir id=rt-exec retained out rc line stub ran seen_traceparent
+  dir=$(new_case exec "$id")
+  retained="$dir/pool/7/proj"
+  out=$(run_reattach "$dir" "$id" --reattach-worktree "$retained"); rc=$?
+  expect_code 0 "$rc" "the reattach should succeed"$'\n'"$out"
+
+  line=$(grep -F "spawn_gen=" "$dir/fake/literal" | tail -1)
+  [ -n "$line" ] || fail "no gated launch line was staged in the replacement pane"
+
+  stub="$dir/execbin"
+  mkdir -p "$stub"
+  cat > "$stub/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${TRACEPARENT-<unset>}" > "$FM_EXEC_PROBE/traceparent"
+: > "$FM_EXEC_PROBE/ran"
+exit 0
+SH
+  chmod +x "$stub/claude"
+  mkdir -p "$dir/probe"
+
+  ran=$(cd "$retained" && env PATH="$stub:$PATH" FM_EXEC_PROBE="$dir/probe" \
+    TRACEPARENT=00-11111111111111111111111111111111-2222222222222222-01 \
+    bash -c "$line" 2>&1)
+
+  [ -f "$dir/probe/ran" ] \
+    || fail "the staged launch line never started the agent:"$'\n'"$ran"
+  case "$ran" in
+    *'not found'*) fail "the staged launch line produced a shell diagnostic:"$'\n'"$ran" ;;
+  esac
+  seen_traceparent=$(cat "$dir/probe/traceparent")
+  [ "$seen_traceparent" = '<unset>' ] \
+    || fail "a trace-context-off recovery left TRACEPARENT set for the agent (got '$seen_traceparent')"
+  pass "fm-spawn reattach: the staged launch line runs the agent with no inherited trace carrier"
+}
+
 test_success_gates_the_agent_behind_the_published_record() {
   local dir id=rt-gate retained out rc gen
   dir=$(new_case gate "$id")
@@ -466,6 +513,7 @@ test_unreadable_ownership_refuses
 test_delivery_axes_cannot_be_overridden
 test_unidentifiable_replacement_pane_refuses
 test_uncommitted_content_survives_reattach
+test_staged_launch_line_actually_runs_the_agent
 test_success_gates_the_agent_behind_the_published_record
 test_recorded_trace_carrier_survives_reattach
 test_launch_failure_restores_everything
