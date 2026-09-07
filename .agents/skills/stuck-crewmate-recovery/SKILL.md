@@ -35,7 +35,7 @@ Before relaunch, prove that no live agent still owns the recorded task and that 
 Preserve its uncommitted changes and commits, keep the same task identity, and resume or relaunch the recorded harness in that existing worktree with the same brief plus a concise progress note.
 Do not use a fresh generic spawn while the recorded worktree is unaccounted for, because allocating another worktree can split one task across two copies.
 
-When the recorded worktree is not the one holding the work - a later spawn overwrote the record, so relaunch would adopt the wrong copy - recover the copy that does with `FM_HOME=<this-firstmate-home> bin/fm-spawn.sh <task-id> --reattach-worktree <retained-copy>`.
+When the recorded endpoint is gone and the recorded worktree is not the one holding the work - a later spawn overwrote the record, so relaunch has no endpoint to adopt and the record names the wrong copy - recover the copy that does hold the work with `FM_HOME=<this-firstmate-home> bin/fm-spawn.sh <task-id> --reattach-worktree <retained-copy>`.
 It creates a replacement endpoint inside that copy and republishes the binding as one all-or-nothing operation, and its own header and `--help` own the identity, ownership, and preservation checks it makes plus its current backend limit.
 Find the candidate copy with `treehouse status`, which lists every pooled copy and what is running in it; the one that holds the task's work is on branch `fm/<task-id>`.
 Never restore an old record by hand or create an endpoint outside this path, and never take a fresh copy at the same commit: that recovers only what was already pushed and silently abandons uncommitted work.
