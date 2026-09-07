@@ -83,8 +83,9 @@
 # same rule holds one layer up: --aggregate-json exits 2 rather than summing a
 # lane artifact whose summary.total is 0, because an aggregate that absorbs an
 # empty lane is the same false green as an exit code of zero. --require-ci-lanes
-# extends that rule to the lane set itself: an aggregation handed no lane, or a
-# lane set smaller than the one CI ran, is refused rather than summed.
+# extends that rule to the lane set itself: an input set that is not exactly the
+# CI lane inventory - none of it, part of it, an artifact it does not list, or
+# one lane supplied twice - is refused rather than summed.
 # Inspection modes (--list, --list-families, --list-lanes,
 # --list-ci-timing-artifacts) do not run tests and keep their own exit contract.
 #
