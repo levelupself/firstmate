@@ -138,6 +138,7 @@ if [ "${FM_COCKPIT_SIZING_ONLY:-0}" = 1 ]; then
     out=$(lab tab create --workspace "$WORKSPACE" --cwd "$HOME_DIR" --no-focus) || fail 'could not create sizing tab'
     shape_tab=$(printf '%s' "$out" | jq -er '.result.tab.tab_id') || fail 'missing sizing tab'
     shape_head=$(printf '%s' "$out" | jq -er '.result.root_pane.pane_id') || fail 'missing sizing head'
+    # shellcheck disable=SC2016 # Positional arguments expand in the inner shell.
     created=$(cockpit_env bash -c '
       . "$1/bin/backends/herdr.sh"
       fm_backend_herdr_cockpit_create_fleet_panes "$2" "$3" "$4" "$5" "$6"
@@ -145,7 +146,7 @@ if [ "${FM_COCKPIT_SIZING_ONLY:-0}" = 1 ]; then
     ids=${created%%$'\n'*}
     layout=$(lab pane layout --pane "$shape_head") || fail 'could not measure drawn rectangles'
     printf '%s\n' "$layout" > "$TMP_ROOT/$shape.layout.json"
-    python3 - "$TMP_ROOT/$shape.layout.json" "$ids" "$ratios" "$shape" <<'PY'
+    if ! python3 - "$TMP_ROOT/$shape.layout.json" "$ids" "$ratios" "$shape" <<'PY'
 import json, math, sys
 layout = json.load(open(sys.argv[1]))['result']['layout']
 ids = sys.argv[2].split(',')
@@ -174,7 +175,9 @@ if sys.argv[4] == 'empty':
     assert rects[0]['width'] >= math.floor(width * .16) > 0
 print(sys.argv[4] + ': ' + json.dumps(rects, sort_keys=True))
 PY
-    [ "$?" = 0 ] || fail "$shape drawn geometry disagrees with the split plan"
+    then
+      fail "$shape drawn geometry disagrees with the split plan"
+    fi
     # A legacy equal layout uses the historical wire sequence independently.
     if [ "$shape" = equal ]; then
       out=$(lab tab create --workspace "$WORKSPACE" --cwd "$HOME_DIR" --no-focus) || fail 'could not create legacy tab'
@@ -189,7 +192,7 @@ PY
         legacy_ids="$legacy_ids,$previous"
       done
       lab pane layout --pane "$legacy_head" > "$TMP_ROOT/legacy.layout.json" || fail 'legacy layout unavailable'
-      python3 - "$TMP_ROOT/equal.layout.json" "$ids" "$TMP_ROOT/legacy.layout.json" "$legacy_ids" <<'PY'
+      if ! python3 - "$TMP_ROOT/equal.layout.json" "$ids" "$TMP_ROOT/legacy.layout.json" "$legacy_ids" <<'PY'
 import json, sys
 def rectangles(path, ids):
     panes = {p['pane_id']: p['rect'] for p in json.load(open(path))['result']['layout']['panes']}
@@ -197,7 +200,9 @@ def rectangles(path, ids):
 assert rectangles(*sys.argv[1:3]) == rectangles(*sys.argv[3:5]), 'equal layout differs from legacy rectangles'
 print('equal: drawn rectangles exactly match legacy layout')
 PY
-      [ "$?" = 0 ] || fail 'equal layout changed historical geometry'
+      then
+        fail 'equal layout changed historical geometry'
+      fi
     fi
     # Changing measured membership never changes the already constructed band.
     printf '## In flight\n\n## Queued\n\n## Done\n' > "$HOME_DIR/data/backlog.md"
