@@ -626,7 +626,7 @@ function independenceCommand(argv) {
       const hash = createHash('sha256').update(readFileSync(f.path)).digest('hex');
       files.set(f.rel, { hash, mtime_ms: Math.round(f.mtime_ms) });
     }
-    arms.push({ name, dir, files, matches: [], copied_by: new Set(), void: false });
+    arms.push({ name, dir, unavailable: existsSync(`${dir}.unavailable`), files, matches: [], copied_by: new Set(), void: false });
   }
   const pairs = [];
   for (let i = 0; i < arms.length; i += 1) {
@@ -662,7 +662,7 @@ function independenceCommand(argv) {
     out.arms[a.name] = {
       dir: a.dir,
       files: a.files.size,
-      verdict: a.void ? 'void' : 'independent',
+      verdict: a.void ? 'void' : arms.some((arm) => arm.unavailable) ? 'unchecked' : 'independent',
       copied_by: [...a.copied_by].sort(),
       matches: a.matches,
     };
@@ -747,11 +747,14 @@ function renderCommand(argv) {
     if (!confirmed) notes.push(`${a.arm}: model not confirmed - ${s ? s.model_reason : 'no session analysis'}${s && s.models.length > 1 ? ` (${s.models.join(', ')})` : ''}; numbers withheld`);
     else if (s.models[0] !== a.model) notes.push(`${a.arm}: ran ${s.models[0]}, not the requested ${a.model}; numbers belong to the confirmed model`);
     if (s && (s.sidechain_models || []).length > 0) notes.push(`${a.arm}: subagent requests on ${s.sidechain_models.join(', ')} are included in its tokens`);
-    const withhold = !confirmed || isVoid;
+    const unchecked = !a.independence || a.independence.verdict === 'unchecked';
+    if (unchecked) notes.push(`${a.arm}: independence evidence unavailable; numbers withheld`);
+    const withhold = !confirmed || isVoid || unchecked;
     const active = withhold || !s ? '-' : fmtDuration(s.active_ms) + (s.open_turns > 0 ? ` (+${fmtDuration(s.open_turn_ms)} open)` : '');
     const tokens = withhold || !s || !s.usage ? '-' : `${fmtInt(s.usage.total)} (${fmtInt(s.usage.input)}/${fmtInt(s.usage.cached_input)}/${fmtInt(s.usage.output)})`;
     let indep;
     if (isVoid) indep = `VOID (identical to ${[...new Set(a.independence.matches.map((m) => m.other))].join(',')})`;
+    else if (unchecked) indep = 'UNCHECKED';
     else if (a.independence && a.independence.copied_by.length > 0) indep = `independent (copied by ${a.independence.copied_by.join(',')})`;
     else if (a.independence) indep = a.independence.verdict;
     else indep = 'unchecked';
@@ -760,7 +763,7 @@ function renderCommand(argv) {
   lines.push(table(rows));
   lines.push('');
   for (const a of report.arms) {
-    lines.push(`${a.arm}: branch ${a.branch} in ${a.source_git}${a.worktree ? ` (worktree ${a.worktree})` : ''}${a.milestone ? `; completed ${a.milestone}` : ''}${a.state_line ? `; last status: ${a.state_line}` : ''}`);
+    lines.push(`${a.arm}: branch ${a.branch} in ${a.source_git}${a.worktree ? ` (worktree ${a.worktree})` : ''}${a.milestone ? `; completed ${a.milestone}` : ''}${a.parked_at ? `; parked ${a.parked} at ${a.parked_at}` : ''}${a.state_line ? `; last status: ${a.state_line}` : ''}`);
   }
   for (const n of notes) lines.push(`note: ${n}`);
   for (const v of report.void_arms || []) {

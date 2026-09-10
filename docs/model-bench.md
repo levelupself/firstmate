@@ -32,11 +32,12 @@ Read them as a defect list.
    The hand-run arms were pooled worktrees of one repository, so the moment one arm committed, its branch was visible to the others, and one arm took another's implementation wholesale and committed it as its own.
 2. **Pre-authorise every new copy before launch.**
    A brand-new repository root triggers a first-run directory trust prompt that can silently consume the launch instructions, leaving the worker at an idle prompt with no task.
-   The tool writes the arm's clone root into the harness's own trust store before launch and reads the entry back: `[projects."<abs path>"] trust_level = "trusted"` in codex's `config.toml`, and `projects.<abs path>.hasTrustDialogAccepted = true` in claude's `.claude.json`.
+   The tool writes the arm's clone root into the harness's own trust store before launch and reads the entry back, refusing a differing recorded trust decision: `[projects."<abs path>"] trust_level = "trusted"` in codex's `config.toml`, and `projects.<abs path>.hasTrustDialogAccepted = true` in claude's `.claude.json`.
    Both harnesses key trust on the main repository root and extend it to linked worktrees, which is why the clone root rather than the pooled worktree is the key; the live guard below is what proves that shape still holds.
 3. **Carry required environment through explicitly.**
    Isolation strips the ambient variables an ordinary pooled copy happens to inherit; the hand-run arms stopped because `MTG_ORACLE_ROOT` was unset.
    Every `--env KEY=VALUE` is written once to `data/<run-id>/env` and exported into every arm's shell by `bin/fm-spawn.sh --env-file`, mechanically and identically, before the harness starts.
+   Harness-home overrides are refused so setup and launch agree on the trust store and session records; the script header lists the reserved names.
 4. **Prove the briefs are identical.**
    One task body is generated, and every arm's instructions must be byte-identical once the arm's own task id is replaced by `{ARM}`; any difference refuses the launch and names the differing arm and line.
 5. **Verify each arm's actual model before trusting any number it produces.**
@@ -46,17 +47,19 @@ Read them as a defect list.
    The tool cannot judge feasibility, so `--feasible` is mandatory and the statement is recorded verbatim in the output.
    A task that turns out to be impossible measures refusal, not capability.
 7. **Any mid-run message goes to every arm identically and at once, or not at all.**
-   `send` is the only steering command; it refuses to start unless every arm is still live, records every delivery, and a partial delivery is reported by `report` as a warning that voids the like-for-like claim.
+   `send` is the only steering command; it refuses to start unless every arm is still live, starts deliveries concurrently, records every outcome, and a partial delivery is reported by `report` as a warning that voids the like-for-like claim.
 8. **Measure active working time, not wall clock.**
    Active time is the sum of the arm's own turn brackets from its session record (codex `task_started` to `task_complete` or `turn_aborted`; claude `turn_duration` records), so operator pauses, restarts, and machine outages between turns do not penalise an arm.
    The hand run had a two-hour machine outage in the middle.
 9. **Measure consumption from the session record**, sliced at the completion milestone.
    The worker is never asked to self-report usage: one runtime exposes counters, another does not, and a worker asked for them wastes time hunting.
    Codex's cumulative `total_token_usage` is read at the close of the turn that produced the terminal status line; claude's per-request `usage` is summed once per `requestId` up to the same point.
+   Parked states are recorded separately and never set the completion slice; only `done` and `failed` establish it.
    A claude subagent transcript stored beside the session counts as the arm's spend and its model is listed separately in a note; it never decides the running model.
 10. **Run an independence check before reporting anything, and fail the arm if it trips.**
     Every file each arm added or modified is byte-compared against the same file from every other arm.
     Identical files across two arms means one copied the other: the later arm's result is void, printed as `VOID` in the table and again in a banner, and never merged into the comparison.
+    Missing source or base evidence produces `UNCHECKED` with numbers withheld because independence cannot be established.
     This check caught the copying in the hand run, and it runs on every report even when isolation is believed sound.
     Choose a task whose correct output is not a single obvious line, because two independent arms that legitimately produce identical bytes are indistinguishable from a copy.
 

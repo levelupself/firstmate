@@ -434,6 +434,103 @@ test_report_withholds_numbers_for_an_unconfirmed_model() {
   pass "report refuses to present numbers for an arm whose running model is not confirmed"
 }
 
+test_review_setup_regressions() {
+  local base out key args=() store clone
+  base=$(make_bench_home review-setup)
+  mapfile -t args < <(dry_run_args "$base")
+  out=$(bench "$base" "${args[@]}" --task-file /missing) && fail "exclusive task inputs accepted"
+  out=$(bench "$base" run "$base/project" --arm codex:a --arm claude:b \
+    --task 'Preserve literal \n and \t and C:\new\test.' --feasible yes --run-id mb-test --dry-run) || fail "$out"
+  assert_grep 'Preserve literal \n and \t and C:\new\test.' "$base/home/data/mb-test-a1/brief.md" "generated brief preserves literal task bytes"
+  printf '\n' >> "$base/home/data/mb-test-a2/brief.md"
+  out=$(bench "$base" verify mb-test) && fail "trailing newline difference accepted"
+  assert_contains "$out" 'briefs differ' "newline mismatch refusal"
+  store="$base/claude-home/.claude.json"
+  clone="$base/home/data/mb-test/arms/a2/project"
+  jq --arg p "$clone" '.projects[$p].hasTrustDialogAccepted = false' "$store" > "$store.new"
+  mv "$store.new" "$store"
+  out=$(bench "$base" verify mb-test) && fail "explicit false trust accepted"
+  assert_contains "$out" 'refusing to overwrite recorded trust' "trust refusal"
+  [ "$(jq -r --arg p "$clone" '.projects[$p].hasTrustDialogAccepted' "$store")" = false ] || fail "trust denial changed"
+  for key in HOME CODEX_HOME CLAUDE_CONFIG_DIR; do
+    out=$(bench "$base" "${args[@]}" --env "$key=/elsewhere") && fail "$key override accepted"
+    assert_contains "$out" "--env may not set $key" "home refusal"
+  done
+  pass "trust denials, literal tasks, newline differences, and harness homes"
+}
+
+test_review_report_regressions() {
+  local base out json rec status arm wt name
+  base=$(make_bench_home review-report)
+  out=$(bench "$base" run "$base/project" --arm codex:gpt-5.6-luna --arm claude:claude-opus-5 \
+    --task x --feasible yes --run-id mb-test --dry-run) || fail "$out"
+  simulate_launched_arm "$base" a1 codex first.txt first '2026-09-09T10:02:00Z' codex-gap.jsonl
+  simulate_launched_arm "$base" a2 claude second.txt second '2026-09-09T10:00:24Z' claude-gap.jsonl
+  rec="$base/home/data/mb-test/arms/a1/arm"
+  status="$base/home/state/mb-test-a1.status"
+  printf 'blocked: missing input\n' > "$status"
+  json=$(bench "$base" report mb-test --json) || fail "$json"
+  [ "$(json_field "$json" '.arms[0].milestone')" = null ] || fail "parked milestone persisted"
+  [ "$(json_field "$json" '.arms[0].parked')" = blocked ] || fail "parking not recorded"
+  [ -n "$(json_field "$json" '.arms[0].parked_at')" ] || fail "parking time absent"
+  printf 'milestone=2026-09-09T10:00:00Z\nterminal=blocked\n' >> "$rec"
+  printf 'done: complete\n' >> "$status"
+  json=$(bench "$base" report mb-test --json) || fail "$json"
+  [ "$(json_field "$json" '.arms[0].session.usage.total')" = 5500 ] || fail "completion retained blocked slice"
+  name=$'renamed\tfile\n.txt'
+  for arm in a1 a2; do
+    wt="$base/pool/$arm/project"
+    git -C "$wt" mv README.md "$name"
+    printf 'same addition\n' >> "$wt/$name"
+    git -C "$wt" add -- "$name"
+    GIT_AUTHOR_DATE='2026-09-09T13:00:00Z' GIT_COMMITTER_DATE='2026-09-09T13:00:00Z' \
+      git -C "$wt" -c user.name=test -c user.email=test@example.invalid commit -qm rename
+  done
+  json=$(bench "$base" report mb-test --json) || fail "$json"
+  [ "$(json_field "$json" '.void_arms | length')" = 2 ] || fail "renamed identical files escaped comparison"
+  [ "$(printf '%s' "$json" | jq -r --arg p "$name" '.identical_pairs | any(.path == $p)')" = true ] || fail "unusual filename lost"
+  git -C "$base/home/data/mb-test/arms/a1/source.git" update-ref -d refs/heads/fm/mb-test-a1
+  rm -rf "$base/pool/a1"
+  out=$(bench "$base" report mb-test) || fail "$out"
+  assert_contains "$out" UNCHECKED "missing comparison source"
+  assert_not_contains "$out" '5,500' "unchecked numbers withheld"
+  json=$(bench "$base" report mb-test --json) || fail "$json"
+  [ "$(json_field "$json" '.arms[0].independence.verdict')" = unchecked ] || fail "missing evidence labeled independent"
+  printf 'base_sha=0000000000000000000000000000000000000000\n' >> "$base/home/data/mb-test/run"
+  json=$(bench "$base" report mb-test --json) || fail "$json"
+  [ "$(json_field "$json" '.arms[1].independence.verdict')" = unchecked ] || fail "missing base labeled independent"
+  pass "parking, completion reslicing, rename inventory, and unavailable evidence"
+}
+
+test_review_broadcast_concurrency() {
+  local base out args=() arm
+  base=$(make_bench_home review-send)
+  mapfile -t args < <(dry_run_args "$base")
+  out=$(bench "$base" "${args[@]}") || fail "$out"
+  for arm in a1 a2; do
+    printf 'worktree=unused\n' > "$base/home/state/mb-test-$arm.meta"
+  done
+  cat > "$base/fakebin/send" <<'SH'
+#!/usr/bin/env bash
+set -eu
+printf '%s' "$2" > "$FM_HOME/$1.message"
+i=0
+while [ ! -f "$FM_HOME/mb-test-a1.message" ] || [ ! -f "$FM_HOME/mb-test-a2.message" ]; do
+  i=$((i + 1))
+  [ "$i" -lt 50 ] || exit 1
+  sleep .1
+done
+[ ! -f "$FM_HOME/fail" ] || [ "$1" != mb-test-a2 ]
+SH
+  chmod +x "$base/fakebin/send"
+  out=$(FM_MODEL_BENCH_SEND_BIN="$base/fakebin/send" bench "$base" send mb-test 'literal \n correction') || fail "broadcast failed concurrency barrier: $out"
+  cmp -s "$base/home/mb-test-a1.message" "$base/home/mb-test-a2.message" || fail "messages differ"
+  touch "$base/home/fail"
+  out=$(FM_MODEL_BENCH_SEND_BIN="$base/fakebin/send" bench "$base" send mb-test correction) && fail "partial delivery succeeded"
+  [ "$(tail -1 "$base/home/data/mb-test/broadcasts.log" | jq -r '.failed | join(",")')" = a2 ] || fail "partial delivery not logged"
+  pass "concurrent broadcasts preserve identical messages and partial failures"
+}
+
 # --- run -----------------------------------------------------------------
 
 test_codex_gap_sums_turn_brackets_not_wall_clock
@@ -455,3 +552,7 @@ test_dry_run_catches_an_unconfirmable_model
 test_run_refuses_firstmate_owned_env_and_missing_feasibility
 test_report_confirms_models_measures_from_records_and_voids_a_copy
 test_report_withholds_numbers_for_an_unconfirmed_model
+
+test_review_setup_regressions
+test_review_report_regressions
+test_review_broadcast_concurrency

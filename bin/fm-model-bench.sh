@@ -45,6 +45,8 @@
 #   environment every --env KEY=VALUE is written once to data/<run-id>/env
 #               and exported into every arm's shell identically by fm-spawn
 #               --env-file; the names are also listed in the brief.
+#               HOME, CODEX_HOME, and CLAUDE_CONFIG_DIR are refused so trust
+#               and session records use the same harness home as the launcher.
 #   brief       one task body (data/<run-id>/task.md) is filled into the
 #               local-only ship scaffold from bin/fm-brief.sh, with the
 #               no-push rule and the definition of done retargeted at the
@@ -266,11 +268,13 @@ pretrust_codex() {  # <path>
 }
 
 pretrust_claude() {  # <path>
-  local path=$1 store tmp
+  local path=$1 store tmp trust
   store=$(harness_trust_store claude)
   [ -f "$store" ] || die "claude trust store $store does not exist; claude has never completed onboarding on this machine, so a launch would stop at a dialog"
   require_tool jq "claude's trust store is JSON"
-  if [ "$(jq -r --arg p "$path" '.projects[$p].hasTrustDialogAccepted // false' "$store")" != true ]; then
+  trust=$(jq -r --arg p "$path" '.projects[$p].hasTrustDialogAccepted' "$store") || die "could not read claude trust store $store"
+  case "$trust" in true|null) ;; *) die "claude trust store $store records hasTrustDialogAccepted=$trust for $path; refusing to overwrite recorded trust" ;; esac
+  if [ "$trust" = null ]; then
     tmp="$store.fm-model-bench.$$"
     jq --arg p "$path" '.projects = (.projects // {}) | .projects[$p] = ((.projects[$p] // {}) + {hasTrustDialogAccepted: true})' "$store" > "$tmp" \
       || { rm -f -- "$tmp"; die "could not rewrite claude trust store $store"; }
@@ -393,21 +397,19 @@ verify_trust() {  # <arm>
 # Every arm's brief, with its own task id replaced by {ARM}, must hash the
 # same. The first differing arm is named with the first differing line.
 verify_briefs() {
-  local arm first_arm='' first_norm='' norm id tmp_a tmp_b
+  local arm first_arm='' id tmp_a tmp_b
   tmp_a=$(mktemp "${TMPDIR:-/tmp}/fm-model-bench-brief.XXXXXX")
   tmp_b=$(mktemp "${TMPDIR:-/tmp}/fm-model-bench-brief.XXXXXX")
   for arm in $(list_arms); do
     id=$(rec_get "$(arm_rec "$arm")" task_id)
     [ -f "$DATA/$id/brief.md" ] || { rm -f "$tmp_a" "$tmp_b"; die "$arm: brief $DATA/$id/brief.md is missing"; }
-    norm=$(sed "s|$id|{ARM}|g" "$DATA/$id/brief.md")
+    sed "s|$id|{ARM}|g" "$DATA/$id/brief.md" > "$tmp_b"
     if [ -z "$first_arm" ]; then
       first_arm=$arm
-      first_norm=$norm
+      cp "$tmp_b" "$tmp_a"
       continue
     fi
-    if [ "$norm" != "$first_norm" ]; then
-      printf '%s\n' "$first_norm" > "$tmp_a"
-      printf '%s\n' "$norm" > "$tmp_b"
+    if ! cmp -s "$tmp_a" "$tmp_b"; then
       note "briefs differ between $first_arm and $arm (arm id normalised to {ARM}):"
       diff -u --label "$first_arm" --label "$arm" "$tmp_a" "$tmp_b" | head -20 >&2 || true
       rm -f "$tmp_a" "$tmp_b"
@@ -508,11 +510,9 @@ These environment variables are exported in your shell before launch and are req
 
 # brief_replace_anchor <file> <anchor-line-or-token> <replacement>: replace
 # exactly one occurrence, refusing zero or several. The replacement may span
-# lines. Implemented with awk over whole lines for the anchors and a token
-# substitution for {TASK}, never with sed patterns, so backticks, slashes,
-# and brackets in either side are literal.
+# lines.
 brief_replace_anchor() {  # <file> <anchor> <replacement>
-  local file=$1 anchor=$2 replacement=$3 count tmp
+  local file=$1 anchor=$2 replacement=$3 count tmp line
   if [ "$anchor" = '{TASK}' ]; then
     count=$(grep -Fxc -- '{TASK}' "$file" || true)
   else
@@ -520,10 +520,13 @@ brief_replace_anchor() {  # <file> <anchor> <replacement>
   fi
   [ "$count" = 1 ] || die "brief scaffold anchor matched $count times in $file (expected exactly once); the bin/fm-brief.sh scaffold has changed and this tool must be updated before any arm launches: $anchor"
   tmp="$file.fm-model-bench.$$"
-  awk -v anchor="$anchor" -v replacement="$replacement" '
-    $0 == anchor { print replacement; next }
-    { print }
-  ' "$file" > "$tmp" && mv -f "$tmp" "$file"
+  line=$(grep -Fxn -- "$anchor" "$file")
+  line=${line%%:*}
+  {
+    head -n "$((line - 1))" "$file"
+    printf '%s\n' "$replacement"
+    tail -n "+$((line + 1))" "$file"
+  } > "$tmp" && mv -f "$tmp" "$file"
 }
 
 setup_arm() {  # <arm> <harness> <model>
@@ -638,9 +641,18 @@ record_milestone() {  # <arm>
   id=$(rec_get "$rec" task_id)
   verb=$(arm_status_verb "$id")
   verb_is_terminal "$verb" || return 1
-  [ -z "$(rec_get "$rec" milestone || true)" ] || return 0
-  rec_set "$rec" terminal "$verb"
-  rec_set "$rec" milestone "$(file_mtime_iso "$STATE/$id.status")"
+  case "$verb" in
+    done|failed)
+      rec_set "$rec" terminal "$verb"
+      rec_set "$rec" milestone "$(file_mtime_iso "$STATE/$id.status")"
+      ;;
+    *)
+      rec_set "$rec" parked "$verb"
+      rec_set "$rec" parked_at "$(file_mtime_iso "$STATE/$id.status")"
+      rec_set "$rec" terminal ""
+      rec_set "$rec" milestone ""
+      ;;
+  esac
 }
 
 watch_run() {  # <timeout-seconds> <poll-seconds>
@@ -710,13 +722,14 @@ settle_run() {  # <max-seconds>
 # branch (or the file's own mtime when uncommitted), so the independence
 # check can order two identical copies.
 materialize_changes() {  # <arm> <out-dir>
-  local arm=$1 out=$2 rec wt bare base branch src ref path blob first commit
+  local arm=$1 out=$2 rec wt bare base branch src ref path blob first commit inventory parent
   rec=$(arm_rec "$arm")
   wt=$(rec_get "$rec" worktree || true)
   bare=$(rec_get "$rec" source_git)
   branch=$(rec_get "$rec" branch)
   base=$(rec_get "$(run_rec)" base_sha)
   rm -rf "$out"
+  rm -f "$out.unavailable"
   mkdir -p "$out"
   if [ -n "$wt" ] && [ -d "$wt/.git" ] || [ -n "$wt" ] && [ -f "$wt/.git" ]; then
     src=$wt
@@ -725,23 +738,31 @@ materialize_changes() {  # <arm> <out-dir>
     src=$bare
     ref="refs/heads/$branch"
   else
+    printf 'comparison source unavailable\n' > "$out.unavailable"
     return 0
   fi
-  git -C "$src" rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1 || return 0
-  {
-    git -C "$src" diff --name-only --diff-filter=AM "$base" "$ref" 2>/dev/null || true
-    if [ "$src" = "$wt" ]; then
-      git -C "$wt" diff --name-only --diff-filter=AM "$base" 2>/dev/null || true
-      git -C "$wt" ls-files --others --exclude-standard 2>/dev/null || true
+  git -C "$src" rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1 || {
+    printf 'comparison base unavailable\n' > "$out.unavailable"
+    return 0
+  }
+  inventory="$out.paths"
+  if ! git -C "$src" diff --no-renames --name-only -z --diff-filter=AM "$base" "$ref" > "$inventory"; then
+    printf 'comparison inventory unavailable\n' > "$out.unavailable"
+  elif [ "$src" = "$wt" ]; then
+    if ! git -C "$wt" diff --no-renames --name-only -z --diff-filter=AM "$base" >> "$inventory" ||
+       ! git -C "$wt" ls-files -z --others --exclude-standard >> "$inventory"; then
+      printf 'comparison inventory unavailable\n' > "$out.unavailable"
     fi
-  } | LC_ALL=C sort -u | while IFS= read -r path; do
+  fi
+  while IFS= read -r -d '' path; do
     [ -n "$path" ] || continue
-    mkdir -p "$out/$(dirname "$path")"
+    parent=${path%/*}
+    [ "$parent" = "$path" ] || mkdir -p "$out/$parent"
     if [ "$src" = "$wt" ] && [ -f "$wt/$path" ]; then
       cp -p -- "$wt/$path" "$out/$path"
       blob=$(git -C "$wt" hash-object -- "$wt/$path")
     else
-      git -C "$src" show "$ref:$path" > "$out/$path" 2>/dev/null || { rm -f "$out/$path"; continue; }
+      git -C "$src" show "$ref:$path" > "$out/$path" 2>/dev/null || { rm -f "$out/$path"; printf 'comparison file unavailable\n' > "$out.unavailable"; continue; }
       blob=$(git -C "$src" rev-parse --verify --quiet "$ref:$path")
     fi
     first=''
@@ -752,7 +773,8 @@ materialize_changes() {  # <arm> <out-dir>
       fi
     done
     [ -z "$first" ] || touch_at_epoch "$out/$path" "$first"
-  done
+  done < "$inventory"
+  rm -f "$inventory"
 }
 
 report_run() {  # [--json]
@@ -785,16 +807,17 @@ report_run() {  # [--json]
       [ -n "$launched" ] || warn_json=$(printf '%s' "$warn_json" | jq --arg w "$arm: never launched" '. + [$w]')
     fi
     materialize_changes "$arm" "$(arm_dir "$arm")/changed"
-    changed=$(find "$(arm_dir "$arm")/changed" -type f 2>/dev/null | wc -l | tr -d ' ')
+    changed=$(find "$(arm_dir "$arm")/changed" -type f -exec printf . \; 2>/dev/null | wc -c | tr -d ' ')
     indep_args+=("$arm=$(arm_dir "$arm")/changed")
     arms_json=$(printf '%s' "$arms_json" | jq \
       --arg arm "$arm" --arg id "$id" --arg harness "$harness" --arg model "$model" \
       --arg wt "$wt" --arg branch "$(rec_get "$rec" branch)" --arg bare "$(rec_get "$rec" source_git)" \
+      --arg parked "$(rec_get "$rec" parked || true)" --arg parked_at "$(rec_get "$rec" parked_at || true)" \
       --arg launched "$launched" --arg milestone "$milestone" --arg verb "$verb" --arg line "$line" \
       --argjson session "$session" --argjson changed "$changed" \
       '. + [{arm: $arm, task_id: $id, harness: $harness, model: $model, worktree: $wt, branch: $branch,
              source_git: $bare, launched_at: (if $launched == "" then null else $launched end),
-             milestone: (if $milestone == "" then null else $milestone end), state: $verb, state_line: $line,
+             parked: $parked, parked_at: $parked_at, milestone: (if $milestone == "" then null else $milestone end), state: $verb, state_line: $line,
              session: $session, changed_files: $changed}]')
   done
   indep=$("$ANALYZE" independence "${indep_args[@]}") || die "independence check failed"
@@ -878,6 +901,7 @@ cmd_run() {
     esac
     case "${a%%=*}" in
       *[!A-Za-z0-9_]*) die "--env KEY must match [A-Za-z_][A-Za-z0-9_]*, got '${a%%=*}'" ;;
+      HOME|CODEX_HOME|CLAUDE_CONFIG_DIR) die "--env may not set ${a%%=*}: trust and session records are read from the launcher's harness home; every arm must use that same home" ;;
       GOTMPDIR|TRACEPARENT|FM_*) die "--env may not set ${a%%=*}: firstmate owns that variable in every arm" ;;
     esac
     case "$a" in *$'\n'*) die "--env values are single lines" ;; esac
@@ -974,7 +998,7 @@ cmd_send() {
   run_id_valid "$RUN_ID" || die "invalid run id"
   RUN_DIR=$(run_dir)
   [ -d "$RUN_DIR" ] || die "run $RUN_ID not found at $RUN_DIR"
-  local text="$*" arm id verb delivered='[]' failed='[]' out
+  local text="$*" arm id verb delivered='[]' failed='[]' results pid pids=()
   [ -n "$text" ] || die "send needs a message"
   fm_refuse_if_gate_agent
   for arm in $(list_arms); do
@@ -985,15 +1009,28 @@ cmd_send() {
       done|failed) die "$arm ($id) already reported $verb; refusing to send to some arms but not others" ;;
     esac
   done
+  results=$(mktemp -d "$RUN_DIR/broadcast.XXXXXX")
   for arm in $(list_arms); do
     id=$(rec_get "$(arm_rec "$arm")" task_id)
-    if out=$(FM_HOME="$FM_HOME" "$SEND_BIN" "$id" "$text" 2>&1); then
+    (
+      if FM_HOME="$FM_HOME" "$SEND_BIN" "$id" "$text" > "$results/$arm.out" 2>&1; then
+        printf 'ok\n' > "$results/$arm.result"
+      else
+        printf 'failed\n' > "$results/$arm.result"
+      fi
+    ) &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do wait "$pid" || true; done
+  for arm in $(list_arms); do
+    if [ "$(cat "$results/$arm.result" 2>/dev/null)" = ok ]; then
       delivered=$(printf '%s' "$delivered" | jq --arg a "$arm" '. + [$a]')
     else
-      printf '%s\n' "$out" >&2
+      cat "$results/$arm.out" >&2
       failed=$(printf '%s' "$failed" | jq --arg a "$arm" '. + [$a]')
     fi
   done
+  rm -rf "$results"
   jq -cn --arg at "$(now_iso)" --arg text "$text" --argjson d "$delivered" --argjson f "$failed" \
     '{at: $at, text: $text, delivered: $d, failed: $f}' >> "$RUN_DIR/broadcasts.log"
   if [ "$(printf '%s' "$failed" | jq 'length')" != 0 ]; then
