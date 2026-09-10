@@ -106,8 +106,9 @@ preserve_store_mode() {
 }
 
 cleanup() {
-  local arm id wt pool tmp
-  for arm in a1 a2; do
+  local arm id wt pool tmp index
+  for ((index = 1; index <= ${#ARMS[@]}; index++)); do
+    arm="a$index"
     id="$RUN_ID-$arm"
     wt=$(sed -n 's/^worktree=//p' "$LAB/home/state/$id.meta" 2>/dev/null | tail -1)
     remember_pool "$wt"
