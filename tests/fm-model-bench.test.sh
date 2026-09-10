@@ -628,6 +628,35 @@ test_type_changed_files_are_compared() {
   pass "working-tree and committed type changes compare resulting file bytes"
 }
 
+test_worktree_inventory_excludes_deleted_and_reverted_files() {
+  local base out json arm wt changed
+  base=$(make_bench_home current-inventory)
+  out=$(bench "$base" run "$base/project" --arm codex:gpt-5.6-luna --arm claude:claude-opus-5 \
+    --task x --feasible yes --run-id mb-test --dry-run) || fail "$out"
+  simulate_launched_arm "$base" a1 codex obsolete.txt identical '2026-09-09T10:02:00Z' codex-gap.jsonl
+  simulate_launched_arm "$base" a2 claude obsolete.txt identical '2026-09-09T10:03:00Z' claude-gap.jsonl
+  for arm in a1 a2; do
+    wt="$base/pool/$arm/project"
+    printf 'committed modification\n' >> "$wt/README.md"
+    git -C "$wt" add README.md
+    git -C "$wt" -c user.name=test -c user.email=test@example.invalid commit -qm 'Modify existing file'
+    rm "$wt/obsolete.txt"
+    cp "$base/project/README.md" "$wt/README.md"
+    printf '%s\n' "$arm" > "$wt/current.txt"
+  done
+  json=$(bench "$base" report mb-test --json) || fail "$json"
+  [ "$(json_field "$json" '.void_arms | length')" = 0 ] || fail "stale committed files caused a void verdict"
+  for arm in a1 a2; do
+    changed="$base/home/data/mb-test/arms/$arm/changed"
+    assert_absent "$changed/obsolete.txt" "deleted file reappeared in inventory"
+    assert_absent "$changed/README.md" "reverted modification remained in inventory"
+    cmp -s "$base/pool/$arm/project/current.txt" "$changed/current.txt" || fail "current untracked file missing"
+    [ "$(printf '%s' "$json" | jq -r --arg arm "$arm" '.arms[] | select(.arm == $arm) | .changed_files')" = 1 ] || fail "inventory includes noncurrent changes"
+    [ "$(printf '%s' "$json" | jq -r --arg arm "$arm" '.arms[] | select(.arm == $arm) | .independence.verdict')" = independent ] || fail "current files not independent"
+  done
+  pass "worktree inventory excludes deleted additions and reverted modifications"
+}
+
 # --- run -----------------------------------------------------------------
 
 test_codex_gap_sums_turn_brackets_not_wall_clock
@@ -659,3 +688,5 @@ test_milestone_excludes_later_restarted_turns
 test_isolation_ref_rules_follow_launch_state
 
 test_type_changed_files_are_compared
+
+test_worktree_inventory_excludes_deleted_and_reverted_files

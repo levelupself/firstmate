@@ -773,19 +773,20 @@ materialize_changes() {  # <arm> <out-dir>
     return 0
   }
   inventory="$out.paths"
-  if ! git -C "$src" diff --no-renames --name-only -z --diff-filter=AMT "$base" "$ref" > "$inventory"; then
-    printf 'comparison inventory unavailable\n' > "$out.unavailable"
-  elif [ "$src" = "$wt" ]; then
-    if ! git -C "$wt" diff --no-renames --name-only -z --diff-filter=AMT "$base" >> "$inventory" ||
+  if [ "$src" = "$wt" ]; then
+    if ! git -C "$wt" diff --no-renames --name-only -z --diff-filter=AMT "$base" > "$inventory" ||
        ! git -C "$wt" ls-files -z --others --exclude-standard >> "$inventory"; then
       printf 'comparison inventory unavailable\n' > "$out.unavailable"
     fi
+  elif ! git -C "$src" diff --no-renames --name-only -z --diff-filter=AMT "$base" "$ref" > "$inventory"; then
+    printf 'comparison inventory unavailable\n' > "$out.unavailable"
   fi
   while IFS= read -r -d '' path; do
     [ -n "$path" ] || continue
     parent=${path%/*}
     [ "$parent" = "$path" ] || mkdir -p "$out/$parent"
-    if [ "$src" = "$wt" ] && [ -f "$wt/$path" ]; then
+    if [ "$src" = "$wt" ]; then
+      [ -f "$wt/$path" ] || { printf 'comparison file unavailable\n' > "$out.unavailable"; continue; }
       cp -p -- "$wt/$path" "$out/$path"
       blob=$(git -C "$wt" hash-object -- "$wt/$path")
     else
