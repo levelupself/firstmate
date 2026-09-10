@@ -144,14 +144,21 @@ now_iso() {
 
 # Portable file mtime as ISO-8601 UTC (macOS stat -f, Linux stat -c).
 file_mtime_iso() {  # <path>
-  local epoch
+  local stamp epoch
   if [ "$(uname)" = Darwin ]; then
+    stamp=$(stat -f %Fm "$1" 2>/dev/null) || stamp=''
+    if [ -n "$stamp" ] && node -e 'const n = Number(process.argv[1]); if (!Number.isFinite(n)) process.exit(1); console.log(new Date(n * 1000).toISOString())' "$stamp"; then
+      return 0
+    fi
     epoch=$(stat -f %m "$1" 2>/dev/null) || return 1
-    date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ
   else
+    stamp=$(stat -c %y "$1" 2>/dev/null) || stamp=''
+    if [ -n "$stamp" ] && node -e 'const n = Date.parse(process.argv[1]); if (!Number.isFinite(n)) process.exit(1); console.log(new Date(n).toISOString())' "$stamp"; then
+      return 0
+    fi
     epoch=$(stat -c %Y "$1" 2>/dev/null) || return 1
-    date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ
   fi
+  node -e 'console.log(new Date(Number(process.argv[1]) * 1000).toISOString())' "$epoch"
 }
 
 physical_path() {  # <path>
@@ -346,13 +353,28 @@ list_arms() {  # prints arm names in order
 # and the clone exactly its checkout of it. After launch the arm's own branch
 # (fm/<task-id>, created in the pooled worktree and pushed to origin) is the
 # only addition allowed on either side; anything else is a leak.
+verify_origin_refs() {
+  local arm=$1 repo=$2 rec branch sha own='' lsr filtered expected
+  rec=$(arm_rec "$arm")
+  branch=$(rec_get "$(run_rec)" base_branch)
+  sha=$(rec_get "$(run_rec)" base_sha)
+  if [ -n "$(rec_get "$rec" launched_at || true)" ]; then
+    own="refs/heads/fm/$(rec_get "$rec" task_id)"
+  fi
+  lsr=$(git -C "$repo" ls-remote --refs origin) || die "$arm: could not list origin refs"
+  filtered=$(printf '%s\n' "$lsr" | awk -F '\t' -v own="$own" '$2 != own')
+  expected=$(printf '%s\trefs/heads/%s' "$sha" "$branch")
+  [ "$filtered" = "$expected" ] || die "$arm: private source repository $(rec_get "$rec" source_git) must hold exactly one ref (refs/heads/$branch at $sha) before launch; after launch only the exact arm branch is also allowed; it holds:
+$lsr"
+}
+
 verify_isolation() {  # <arm>
-  local arm=$1 rec bare clone branch sha remotes lsr refs expected wt own
+  local arm=$1 rec bare clone branch remotes refs expected wt own launched
   rec=$(arm_rec "$arm")
   bare=$(rec_get "$rec" source_git)
   clone=$(rec_get "$rec" clone)
   branch=$(rec_get "$(run_rec)" base_branch)
-  sha=$(rec_get "$(run_rec)" base_sha)
+  launched=$(rec_get "$rec" launched_at || true)
   own="fm/$(rec_get "$rec" task_id)"
   [ -d "$bare" ] || die "$arm: private source repository $bare is missing"
   [ -d "$clone" ] || die "$arm: clone $clone is missing"
@@ -360,11 +382,12 @@ verify_isolation() {  # <arm>
   [ "$remotes" = origin ] || die "$arm: clone $clone must have exactly one remote named origin, found: ${remotes:-none}"
   [ "$(physical_path "$(git -C "$clone" remote get-url origin)")" = "$(physical_path "$bare")" ] \
     || die "$arm: origin of $clone is '$(git -C "$clone" remote get-url origin)', not the arm's private source repository $bare"
-  lsr=$(git -C "$clone" ls-remote --refs origin | grep -v "	refs/heads/$own\$" || true) || die "$arm: could not list refs of $bare"
-  expected=$(printf '%s\trefs/heads/%s' "$sha" "$branch")
-  [ "$lsr" = "$expected" ] || die "$arm: private source repository $bare must hold exactly one ref (refs/heads/$branch at $sha) plus at most the arm's own $own; it holds:
-$(git -C "$clone" ls-remote --refs origin)"
-  refs=$(git -C "$clone" for-each-ref --format='%(refname)' | grep -v "^refs/\(heads\|remotes/origin\)/$own\$" | sort)
+  verify_origin_refs "$arm" "$clone"
+  refs=$(git -C "$clone" for-each-ref --format='%(refname)') || die "$arm: could not list clone refs"
+  if [ -n "$launched" ]; then
+    refs=$(printf '%s\n' "$refs" | awk -v head="refs/heads/$own" -v remote="refs/remotes/origin/$own" '$0 != head && $0 != remote')
+  fi
+  refs=$(printf '%s\n' "$refs" | sort)
   expected=$(printf 'refs/heads/%s\nrefs/remotes/origin/HEAD\nrefs/remotes/origin/%s' "$branch" "$branch" | sort)
   [ "$refs" = "$expected" ] || die "$arm: clone $clone holds refs beyond the starting branch and the arm's own $own:
 $(git -C "$clone" for-each-ref --format='%(refname)')"
@@ -378,7 +401,7 @@ $(git -C "$clone" for-each-ref --format='%(refname)')"
 # (its git common dir lives under that clone) and must still see only the one
 # origin ref.
 verify_worktree_binding() {  # <arm> <worktree>
-  local arm=$1 wt=$2 rec clone common lsr
+  local arm=$1 wt=$2 rec clone common
   rec=$(arm_rec "$arm")
   clone=$(rec_get "$rec" clone)
   common=$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null) || die "$arm: worktree $wt is not a git worktree"
@@ -387,8 +410,7 @@ verify_worktree_binding() {  # <arm> <worktree>
   [ "$common" = "$(physical_path "$clone")/.git" ] \
     || die "$arm: worktree $wt belongs to '$common', not the pre-trusted clone $clone; its launch may have been consumed by a trust dialog"
   [ "$(git -C "$wt" remote)" = origin ] || die "$arm: worktree $wt must see exactly one remote"
-  lsr=$(git -C "$wt" ls-remote --refs origin | grep -vc "refs/heads/fm/" || true)
-  [ "$lsr" -le 1 ] || die "$arm: worktree $wt sees more than the starting ref on origin"
+  verify_origin_refs "$arm" "$wt"
 }
 
 verify_trust() {  # <arm>

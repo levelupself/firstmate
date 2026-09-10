@@ -325,6 +325,32 @@ test_dry_run_catches_a_source_repository_with_an_extra_ref() {
   pass "dry run catches a source repository holding more than the starting ref"
 }
 
+test_isolation_ref_rules_follow_launch_state() {
+  local base out args=() bare clone sha
+  base=$(make_bench_home phase-refs)
+  mapfile -t args < <(dry_run_args "$base")
+  out=$(bench "$base" "${args[@]}") || fail "$out"
+  bare="$base/home/data/mb-test/arms/a1/source.git"
+  clone="$base/home/data/mb-test/arms/a1/project"
+  sha=$(git -C "$base/project" rev-parse HEAD)
+  git -C "$bare" update-ref refs/heads/fm/mb-test-a1 "$sha"
+  out=$(bench "$base" "${args[@]}") && fail "prelaunch arm source ref accepted"
+  assert_contains "$out" 'must hold exactly one ref' "prelaunch source refusal"
+  git -C "$bare" update-ref -d refs/heads/fm/mb-test-a1
+  git -C "$clone" update-ref refs/heads/fm/mb-test-a1 "$sha"
+  out=$(bench "$base" verify mb-test) && fail "prelaunch clone arm ref accepted"
+  git -C "$clone" update-ref -d refs/heads/fm/mb-test-a1
+  simulate_launched_arm "$base" a1 codex unique.txt one '2026-09-09T10:02:00Z' codex-gap.jsonl
+  out=$(bench "$base" verify mb-test) || fail "launched arm refs refused: $out"
+  git -C "$bare" update-ref refs/heads/fm/other "$sha"
+  out=$(bench "$base" verify mb-test) && fail "foreign postlaunch source ref accepted"
+  assert_contains "$out" refs/heads/fm/other "foreign source ref named"
+  git -C "$bare" update-ref -d refs/heads/fm/other
+  git -C "$clone" update-ref refs/remotes/origin/fm/other "$sha"
+  out=$(bench "$base" verify mb-test) && fail "foreign postlaunch clone ref accepted"
+  pass "isolation allows only phase-appropriate exact arm refs"
+}
+
 test_dry_run_catches_a_non_identical_brief() {
   local base out rc args=()
   base=$(make_bench_home dry-brief)
@@ -500,14 +526,17 @@ test_review_report_regressions() {
   rec="$base/home/data/mb-test/arms/a1/arm"
   status="$base/home/state/mb-test-a1.status"
   printf 'blocked: missing input\n' > "$status"
+  node -e 'require("fs").utimesSync(process.argv[1], 1788948000.875, 1788948000.875)' "$status"
   json=$(bench "$base" report mb-test --json) || fail "$json"
   [ "$(json_field "$json" '.arms[0].milestone')" = null ] || fail "parked milestone persisted"
   [ "$(json_field "$json" '.arms[0].parked')" = blocked ] || fail "parking not recorded"
-  [ -n "$(json_field "$json" '.arms[0].parked_at')" ] || fail "parking time absent"
+  [ "$(json_field "$json" '.arms[0].parked_at')" = 2026-09-09T10:00:00.875Z ] || fail "parking timestamp lost milliseconds"
   printf 'milestone=2026-09-09T10:00:00Z\nterminal=blocked\n' >> "$rec"
   printf 'done: complete\n' >> "$status"
+  node -e 'require("fs").utimesSync(process.argv[1], 1788955890.875, 1788955890.875)' "$status"
   json=$(bench "$base" report mb-test --json) || fail "$json"
   [ "$(json_field "$json" '.arms[0].session.usage.total')" = 5500 ] || fail "completion retained blocked slice"
+  [ "$(json_field "$json" '.arms[0].milestone')" = 2026-09-09T12:11:30.875Z ] || fail "completion timestamp lost milliseconds"
   name=$'renamed\tfile\n.txt'
   for arm in a1 a2; do
     wt="$base/pool/$arm/project"
@@ -590,3 +619,5 @@ test_review_report_regressions
 test_review_broadcast_concurrency
 
 test_milestone_excludes_later_restarted_turns
+
+test_isolation_ref_rules_follow_launch_state
