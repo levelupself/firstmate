@@ -773,10 +773,10 @@ materialize_changes() {  # <arm> <out-dir>
     return 0
   }
   inventory="$out.paths"
-  if ! git -C "$src" diff --no-renames --name-only -z --diff-filter=AM "$base" "$ref" > "$inventory"; then
+  if ! git -C "$src" diff --no-renames --name-only -z --diff-filter=AMT "$base" "$ref" > "$inventory"; then
     printf 'comparison inventory unavailable\n' > "$out.unavailable"
   elif [ "$src" = "$wt" ]; then
-    if ! git -C "$wt" diff --no-renames --name-only -z --diff-filter=AM "$base" >> "$inventory" ||
+    if ! git -C "$wt" diff --no-renames --name-only -z --diff-filter=AMT "$base" >> "$inventory" ||
        ! git -C "$wt" ls-files -z --others --exclude-standard >> "$inventory"; then
       printf 'comparison inventory unavailable\n' > "$out.unavailable"
     fi

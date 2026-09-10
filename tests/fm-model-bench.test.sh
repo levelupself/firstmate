@@ -592,6 +592,42 @@ SH
   pass "concurrent broadcasts preserve identical messages and partial failures"
 }
 
+test_type_changed_files_are_compared() {
+  local base out json arm wt epoch when
+  base=$(make_bench_home type-changes)
+  ln -s README.md "$base/project/solver.txt"
+  git -C "$base/project" add solver.txt
+  git -C "$base/project" -c user.name=test -c user.email=test@example.invalid commit -qm 'Add starting symlink'
+  out=$(bench "$base" run "$base/project" --arm codex:gpt-5.6-luna --arm claude:claude-opus-5 \
+    --task x --feasible yes --run-id mb-test --dry-run) || fail "$out"
+  simulate_launched_arm "$base" a1 codex first.txt first '2026-09-09T10:02:00Z' codex-gap.jsonl
+  simulate_launched_arm "$base" a2 claude second.txt second '2026-09-09T10:03:00Z' claude-gap.jsonl
+  for arm in a1 a2; do
+    wt="$base/pool/$arm/project"
+    rm "$wt/solver.txt"
+    printf 'hand-written implementation\n' > "$wt/solver.txt"
+    case "$arm" in a1) epoch=1788955800 ;; a2) epoch=1788955890 ;; esac
+    node -e 'require("fs").utimesSync(process.argv[1], Number(process.argv[2]), Number(process.argv[2]))' "$wt/solver.txt" "$epoch"
+  done
+  json=$(bench "$base" report mb-test --json) || fail "$json"
+  [ "$(json_field "$json" '.void_arms | join(",")')" = a2 ] || fail "working-tree type changes escaped comparison"
+  for arm in a1 a2; do
+    wt="$base/pool/$arm/project"
+    cmp -s "$wt/solver.txt" "$base/home/data/mb-test/arms/$arm/changed/solver.txt" || fail "resulting file bytes not materialized"
+    git -C "$wt" add solver.txt
+    case "$arm" in a1) when='2026-09-09T12:10:00Z' ;; a2) when='2026-09-09T12:11:30Z' ;; esac
+    GIT_AUTHOR_DATE="$when" GIT_COMMITTER_DATE="$when" \
+      git -C "$wt" -c user.name=test -c user.email=test@example.invalid commit -qm 'Replace symlink with implementation'
+    git -C "$wt" push --quiet origin "fm/mb-test-$arm"
+    git -C "$base/home/data/mb-test/arms/$arm/project" worktree remove "$wt"
+  done
+  json=$(bench "$base" report mb-test --json) || fail "$json"
+  [ "$(json_field "$json" '.void_arms | join(",")')" = a2 ] || fail "committed type changes escaped comparison"
+  [ "$(json_field "$json" '.identical_pairs[0].path')" = solver.txt ] || fail "type-change destination absent"
+  assert_withheld_session "$json" a2 "independence void"
+  pass "working-tree and committed type changes compare resulting file bytes"
+}
+
 # --- run -----------------------------------------------------------------
 
 test_codex_gap_sums_turn_brackets_not_wall_clock
@@ -621,3 +657,5 @@ test_review_broadcast_concurrency
 test_milestone_excludes_later_restarted_turns
 
 test_isolation_ref_rules_follow_launch_state
+
+test_type_changed_files_are_compared
