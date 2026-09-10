@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # fm-model-bench.sh - run one task on several models at once, in genuine
-# isolation, and report which arm finished fastest and cheapest. It reports;
+# isolation, and report active working time and token consumption. It reports;
 # the reader concludes. docs/model-bench.md owns why every step exists.
 #
 # Usage:
@@ -66,7 +66,9 @@
 # fm-spawn command each arm would receive, and launches nothing. Re-running it
 # with the same --run-id re-verifies the existing run directory, so a change
 # made to any arm since (an extra ref in its source repository, an edited
-# brief) is caught before anything launches. verify <run-id> is the same
+# brief) is caught before anything launches. A saved dry run cannot be
+# launched: omit --run-id or supply a fresh id when dropping --dry-run.
+# verify <run-id> is the same
 # re-verification without the argument list.
 #
 # Launch: each arm is spawned as an ordinary ship task (mode local-only, yolo
@@ -398,8 +400,8 @@ $(git -C "$clone" for-each-ref --format='%(refname)')"
 }
 
 # After launch the arm's pooled worktree must belong to the pre-trusted clone
-# (its git common dir lives under that clone) and must still see only the one
-# origin ref.
+# (its git common dir lives under that clone); origin may hold the starting
+# ref and, after launch, only that arm's own result branch.
 verify_worktree_binding() {  # <arm> <worktree>
   local arm=$1 wt=$2 rec clone common
   rec=$(arm_rec "$arm")

@@ -58,9 +58,12 @@
 //     caller sets to the content's first-appearance time) is void, the earlier
 //     one keeps its result and records who copied it, and a tie voids both
 //     because nothing orders them. Output: {arms:{<arm>:{files, verdict:
-//     "independent"|"void", copied_by:[...], matches:[{path, other, this_at,
+//     "independent"|"void"|"unchecked", copied_by:[...], matches:[{path, other, this_at,
 //     other_at}]}}, pairs:[...], void_arms:[...]}. Verdicts are data: the exit
 //     status is 0 whenever the comparison ran, 2 on a usage error.
+//     A sibling <dir>.unavailable marker means comparison evidence is missing;
+//     every otherwise non-void arm is then unchecked, with numbers withheld
+//     by the report.
 //
 //   fm-model-bench-analyze.mjs newest-record --harness <codex|claude> --sessions-root <dir>
 //

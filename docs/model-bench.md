@@ -1,6 +1,6 @@
 # Model gut-check
 
-`bin/fm-model-bench.sh` runs one task on several models at once, each in genuine isolation, and reports which arm finished fastest and cheapest.
+`bin/fm-model-bench.sh` runs one task on several models at once, each in genuine isolation, and reports active working time and token consumption for each arm.
 It reports; the reader concludes.
 It is one command that sets up, launches, watches, and reports, plus one broadcast command; it is not a scheduler, a queue, a policy layer, or an experiment framework.
 The script header owns the exact flags and record layout, and `bin/fm-model-bench-analyze.mjs` owns the arithmetic; this page owns why each step exists.
@@ -16,8 +16,10 @@ bin/fm-model-bench.sh run projects/<name> \
   --dry-run
 ```
 
-Drop `--dry-run` to launch.
-The command then watches every arm's status file until each reaches a terminal line (or `--timeout`), and prints the comparison.
+Dry run creates the private repositories, briefs, environment file, and harness trust entries, but launches no workers.
+Repeat a dry run with the same run id to re-verify its saved setup; to launch, drop `--dry-run` and use a new run id (omitting `--run-id` generates one).
+The command then watches every arm's status file until each finishes or parks (or the watch times out), waits for completion turns to close, and prints the comparison.
+The script header owns the watch and settle limits; a standalone report never waits, and an open turn is shown separately without contributing active time.
 `--no-wait` returns right after launch; `report <run-id>` renders the comparison at any later time, and `data/<run-id>/report.json` holds the same data.
 `send <run-id> <text>` delivers one message to every arm identically; there is deliberately no way to steer a single arm.
 Each arm is an ordinary ship task named `<run-id>-a<n>` on branch `fm/<run-id>-a<n>`, so firstmate's watcher, status protocol, and `bin/fm-teardown.sh` apply to it unchanged.
@@ -28,11 +30,12 @@ Every requirement below comes from a hand-run comparison on 2026-09-09 that got 
 Read them as a defect list.
 
 1. **Isolate each arm completely.**
-   Each arm gets its own clone and its own private bare source repository holding only the starting branch, and the tool verifies per arm that the arm's only remote holds exactly one ref.
+   Each arm gets its own clone and its own private bare source repository holding only the starting branch, and the tool verifies per arm that the arm's only remote holds exactly one ref before launch.
+   After launch, verification also permits that arm's own result branch, so pushing completed work does not count as a leak.
    The hand-run arms were pooled worktrees of one repository, so the moment one arm committed, its branch was visible to the others, and one arm took another's implementation wholesale and committed it as its own.
 2. **Pre-authorise every new copy before launch.**
    A brand-new repository root triggers a first-run directory trust prompt that can silently consume the launch instructions, leaving the worker at an idle prompt with no task.
-   The tool writes the arm's clone root into the harness's own trust store before launch and reads the entry back, refusing a differing recorded trust decision: `[projects."<abs path>"] trust_level = "trusted"` in codex's `config.toml`, and `projects.<abs path>.hasTrustDialogAccepted = true` in claude's `.claude.json`.
+   The tool writes the arm's clone root into the harness's own trust store before launch and reads the entry back, refusing a differing recorded trust decision; the script header owns the per-harness store paths and entry shapes.
    Both harnesses key trust on the main repository root and extend it to linked worktrees, which is why the clone root rather than the pooled worktree is the key; the live guard below is what proves that shape still holds.
 3. **Carry required environment through explicitly.**
    Isolation strips the ambient variables an ordinary pooled copy happens to inherit; the hand-run arms stopped because `MTG_ORACLE_ROOT` was unset.
@@ -58,7 +61,9 @@ Read them as a defect list.
    A claude subagent transcript stored beside the session counts as the arm's spend and its model is listed separately in a note; it never decides the running model.
 10. **Run an independence check before reporting anything, and fail the arm if it trips.**
     Every file each arm added or modified is byte-compared against the same file from every other arm.
-    Identical files across two arms means one copied the other: the later arm's result is void, printed as `VOID` in the table and again in a banner, and never merged into the comparison.
+    Identical files across two arms are treated as copying: the later arm's result is void, printed as `VOID` in the table and again in a banner, and never merged into the comparison.
+    Ordering uses the first commit that introduced the current content, or file modification time for uncommitted content; a tie voids both arms.
+    The earlier arm retains its result and names the arm that copied it.
     Missing source or base evidence produces `UNCHECKED` with numbers withheld because independence cannot be established.
     This check caught the copying in the hand run, and it runs on every report even when isolation is believed sound.
     Choose a task whose correct output is not a single obvious line, because two independent arms that legitimately produce identical bytes are indistinguishable from a copy.
@@ -66,6 +71,7 @@ Read them as a defect list.
 ## Reading the table
 
 One row per arm: arm, harness, requested model, confirmed running model (with `MISMATCH` when it differs from the request), active time, tokens as total with input, cached input, and output, completion state, independence verdict, and branch.
+The report contains no monetary cost calculation or price ranking; token totals alone do not establish which model is cheapest.
 Token counts are normalised per harness: codex input already includes cached input; claude input is fresh input plus cache creation plus cache reads; total is input plus output for both.
 Below the table each arm's branch, private source repository, worktree, completion time, and last status line are listed so the work itself can be inspected.
 `docs/task-usage.md` describes the separate codeburn-based accounting firstmate keeps for every task; this tool does not use it, because a model comparison needs the arm's own record sliced at its own completion.
