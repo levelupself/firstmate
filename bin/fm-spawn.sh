@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
-#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--env-file <path>]
+#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--env-file <path>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
@@ -75,6 +75,20 @@
 #   axes chosen by firstmate at intake. They are only threaded into harnesses whose
 #   installed CLIs were verified to support that axis; unsupported axes are omitted
 #   from that harness's launch rather than guessed.
+#   --env-file <path> exports every KEY=VALUE line of <path> into the task's
+#   pane shell before the launch command, through the same channel that ships
+#   GOTMPDIR, so the agent and every child process inherit it identically. An
+#   isolated copy does not inherit the ambient variables an ordinary pooled
+#   copy happens to see, and a like-for-like comparison needs every arm to get
+#   the same environment mechanically rather than by a line in its brief. Blank
+#   lines and # comments are ignored; any other line must be KEY=VALUE with KEY
+#   matching [A-Za-z_][A-Za-z0-9_]*, values are single lines and are
+#   shell-quoted on export, and GOTMPDIR, TRACEPARENT, and every FM_* name are
+#   refused because firstmate owns them in every pane. The file is validated
+#   before any endpoint exists, its absolute path is recorded as env_file= in
+#   state/<id>.meta, and both recovery paths re-export it from that record
+#   (refusing when the recorded file is gone) rather than accepting the flag
+#   again. Ship and scout spawns only; a secondmate home is not a task pane.
 #   --backend <name> is the explicit runtime session-provider backend for this
 #   exact task only (docs/configuration.md "Runtime backend" owns when that flag
 #   is authorized). Without it, the script resolves FM_BACKEND, then
@@ -281,6 +295,30 @@ resolve_directory_input() {
   printf '%s\n' "$resolved"
 }
 
+# validate_env_file <path>: the --env-file contract (see the header). Refuses
+# before any endpoint exists; the same check runs again on a recovery so a
+# record whose file was edited into an invalid shape cannot relaunch a worker
+# with a partial environment.
+validate_env_file() {
+  local path=$1 line key n=0
+  [ -f "$path" ] && [ -r "$path" ] || { echo "error: --env-file '$path' is not a readable file" >&2; return 1; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    case "$line" in ''|'#'*) continue ;; esac
+    case "$line" in
+      *$'\r'*) echo "error: env file '$path' line $n carries a carriage return" >&2; return 1 ;;
+    esac
+    case "$line" in
+      *=*) key=${line%%=*} ;;
+      *) echo "error: env file '$path' line $n is not KEY=VALUE: $line" >&2; return 1 ;;
+    esac
+    case "$key" in
+      ''|[0-9]*|*[!A-Za-z0-9_]*) echo "error: env file '$path' line $n has an invalid variable name '$key'" >&2; return 1 ;;
+      GOTMPDIR|TRACEPARENT|FM_*) echo "error: env file '$path' line $n sets $key, which firstmate owns in every pane" >&2; return 1 ;;
+    esac
+  done < "$path"
+}
+
 FM_HOME=$(resolve_directory_input FM_HOME "$FM_HOME") || exit 1
 if [ -n "${FM_STATE_OVERRIDE:-}" ]; then
   FM_STATE_OVERRIDE=$(resolve_directory_input FM_STATE_OVERRIDE "$FM_STATE_OVERRIDE") || exit 1
@@ -334,6 +372,8 @@ BACKEND_ARG=
 MODE=
 YOLO=
 TRACEPARENT_ARG=
+ENV_FILE=
+ENV_FILE_SET=0
 HARNESS_SET=0
 MODEL_SET=0
 EFFORT_SET=0
@@ -360,6 +400,7 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
+      env-file) ENV_FILE=$a; ENV_FILE_SET=1 ;;
       reattach-worktree) REATTACH_WT_ARG=$a; REATTACH_WT_SET=1; REATTACH=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
@@ -386,6 +427,8 @@ for a in "$@"; do
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
     --traceparent) want_value=traceparent ;;
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
+    --env-file) want_value=env-file ;;
+    --env-file=*) ENV_FILE=${a#--env-file=}; ENV_FILE_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -398,6 +441,7 @@ done
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
 [ "$REATTACH_WT_SET" -eq 0 ] || [ -n "$REATTACH_WT_ARG" ] || { echo "error: --reattach-worktree requires a non-empty value" >&2; exit 1; }
+[ "$ENV_FILE_SET" -eq 0 ] || [ -n "$ENV_FILE" ] || { echo "error: --env-file requires a non-empty value" >&2; exit 1; }
 [ $((RELAUNCH + REATTACH)) -le 1 ] || { echo "error: --relaunch and --reattach-worktree are different recovery paths; pass exactly one" >&2; exit 1; }
 # RECOVERY is the shared "this task already exists" predicate. Both recovery
 # modes re-launch a task whose record is authoritative, so every axis a fresh
@@ -418,6 +462,24 @@ if [ "$TRACEPARENT_SET" -eq 1 ]; then
     echo "error: --traceparent is not a valid W3C traceparent" >&2
     exit 1
   }
+fi
+# An env file is a fresh ship/scout axis. A recovery re-exports the file its
+# record names, so passing the flag again is refused like the other recorded
+# identity axes.
+if [ "$ENV_FILE_SET" -eq 1 ]; then
+  [ "$RECOVERY" -eq 0 ] || {
+    echo "error: --env-file is refused on a recovery spawn; the task's own record carries env_file= and it is re-exported from there" >&2
+    exit 1
+  }
+  [ "$KIND" != secondmate ] || {
+    echo "error: --env-file applies to ship and scout spawns only; a secondmate home is not a task pane" >&2
+    exit 1
+  }
+  case "$ENV_FILE" in
+    /*) ;;
+    *) ENV_FILE="$(pwd -P)/$ENV_FILE" ;;
+  esac
+  validate_env_file "$ENV_FILE" || exit 1
 fi
 case "$EFFORT" in
   ''|low|medium|high|xhigh|max) ;;
@@ -1241,6 +1303,13 @@ if [ "$RECOVERY" -eq 1 ]; then
   [ -n "$KIND" ] || KIND=ship
   MODE=$(fm_meta_get "$RELAUNCH_META" mode)
   YOLO=$(fm_meta_get "$RELAUNCH_META" yolo)
+  ENV_FILE=$(fm_meta_get "$RELAUNCH_META" env_file)
+  if [ -n "$ENV_FILE" ]; then
+    validate_env_file "$ENV_FILE" || {
+      echo "error: task $ID's recorded env file cannot be re-exported; refusing to recover a worker without the environment it was launched with" >&2
+      exit 1
+    }
+  fi
   if [ "$RELAUNCH" -eq 1 ]; then
     RELAUNCH_WT=$(fm_meta_get "$RELAUNCH_META" worktree)
     [ -n "$RELAUNCH_WT" ] && [ -d "$RELAUNCH_WT" ] || {
@@ -3296,7 +3365,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree worktree_allocation allocation_project project harness kind mode yolo tasktmp spawned_at model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree worktree_allocation allocation_project project harness kind mode yolo tasktmp spawned_at model effort env_file busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -3317,6 +3386,7 @@ preserve_relaunch_meta() {
   echo "spawned_at=$SPAWNED_AT"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
+  [ -z "$ENV_FILE" ] || echo "env_file=$ENV_FILE"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   echo "spawn_gen=$SPAWN_GEN"
   # Default-off writes no traceparent= line.
@@ -3491,6 +3561,17 @@ if [ "$KIND" != secondmate ]; then
   "$FM_ROOT/bin/fm-backlog-integrity.sh" start "$ID" || exit 1
 fi
 spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
+# The caller's --env-file (or a recovery's recorded env_file=) rides the same
+# channel as GOTMPDIR, one export per variable, shell-quoted, before launch.
+if [ -n "$ENV_FILE" ]; then
+  while IFS= read -r env_line || [ -n "$env_line" ]; do
+    case "$env_line" in ''|'#'*) continue ;; esac
+    spawn_send_text_line "$T" "export ${env_line%%=*}=$(shell_quote "${env_line#*=}")" || {
+      echo "error: could not export ${env_line%%=*} into $W; refusing to launch with a partial environment" >&2
+      exit 1
+    }
+  done < "$ENV_FILE"
+fi
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped
 # entirely when trace context is off.

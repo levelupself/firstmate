@@ -105,6 +105,10 @@
     {
       "source": "docs/trace-context.md",
       "target": "docs/verification/trace-context.md"
+    },
+    {
+      "source": "docs/model-bench.md",
+      "target": "docs/verification/model-bench.md"
     }
   ],
   "surfaces": [
@@ -333,6 +337,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/model-bench.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/herdr-backend.md",
       "audience": "operator-current"
     },
@@ -418,6 +426,10 @@
     },
     {
       "path": "docs/verification/fleet-panel.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/verification/model-bench.md",
       "audience": "maintainer-verification"
     },
     {

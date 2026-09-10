@@ -201,6 +201,7 @@ A captain instruction to merge is explicit authority; `yolo` is the only standin
 A teardown refusal for uncommitted or unlanded work is a stop-and-investigate result, never an obstacle to bypass.
 Never force teardown without explicit discard authority.
 A report may recommend implementation but does not authorize it.
+When the captain asks to compare models on one task, run `bin/fm-model-bench.sh`; `docs/model-bench.md` owns the procedure, its arms are ordinary tasks under the usual supervision and teardown rules, and it reports without choosing a winner.
 
 ## 8. Supervision protocol
 
