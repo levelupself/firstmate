@@ -268,17 +268,22 @@ pretrust_codex() {  # <path>
 }
 
 pretrust_claude() {  # <path>
-  local path=$1 store tmp trust
+  local path=$1 store tmp trust mode
   store=$(harness_trust_store claude)
   [ -f "$store" ] || die "claude trust store $store does not exist; claude has never completed onboarding on this machine, so a launch would stop at a dialog"
   require_tool jq "claude's trust store is JSON"
   trust=$(jq -r --arg p "$path" '.projects[$p].hasTrustDialogAccepted' "$store") || die "could not read claude trust store $store"
   case "$trust" in true|null) ;; *) die "claude trust store $store records hasTrustDialogAccepted=$trust for $path; refusing to overwrite recorded trust" ;; esac
   if [ "$trust" = null ]; then
-    tmp="$store.fm-model-bench.$$"
+    tmp=$(umask 077; mktemp "$store.fm-model-bench.XXXXXX") || die "could not create private trust-store temporary file"
     jq --arg p "$path" '.projects = (.projects // {}) | .projects[$p] = ((.projects[$p] // {}) + {hasTrustDialogAccepted: true})' "$store" > "$tmp" \
       || { rm -f -- "$tmp"; die "could not rewrite claude trust store $store"; }
-    chmod --reference="$store" "$tmp" 2>/dev/null || true
+    if [ "$(uname)" = Darwin ]; then
+      mode=$(stat -f %Lp "$store") || { rm -f -- "$tmp"; die "could not read trust-store permissions"; }
+    else
+      mode=$(stat -c %a "$store") || { rm -f -- "$tmp"; die "could not read trust-store permissions"; }
+    fi
+    chmod "$mode" "$tmp" || { rm -f -- "$tmp"; die "could not preserve trust-store permissions"; }
     mv -f -- "$tmp" "$store"
   fi
   [ "$(jq -r --arg p "$path" '.projects[$p].hasTrustDialogAccepted // false' "$store")" = true ] \
@@ -838,7 +843,15 @@ report_run() {  # [--json]
      base_sha: $sha, base_branch: $branch, feasibility: $feasible, effort: (if $effort == "" then null else $effort end),
      env: ($env | split("\n") | map(select(length > 0) | capture("^(?<k>[^=]+)=(?<v>.*)$")) | map({(.k): .v}) | add // {}),
      task: $task, created_at: $created, reported_at: $now, broadcasts: $broadcasts, warnings: $warnings,
-     arms: ($arms | map(. as $a | . + {independence: ($indep.arms[$a.arm] // {verdict: "unchecked", copied_by: [], matches: []})})),
+     arms: ($arms | map(. as $a | . + {independence: ($indep.arms[$a.arm] // {verdict: "unchecked", copied_by: [], matches: []})}
+       | .withheld_reason = ([
+           (if .session.model_confirmed != true then "model unconfirmed" else empty end),
+           (if .independence.verdict == "unchecked" then "independence unchecked" else empty end),
+           (if .independence.verdict == "void" then "independence void" else empty end)
+         ] | if length > 0 then join("; ") else null end)
+       | if .withheld_reason != null and .session != null then
+           .session.active_ms = null | .session.open_turn_ms = null | .session.turns = null | .session.usage = null
+         else . end)),
      void_arms: $indep.void_arms, identical_pairs: $indep.pairs}' > "$report"
   if [ "$want_json" = --json ]; then
     cat "$report"

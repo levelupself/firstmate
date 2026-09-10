@@ -95,8 +95,18 @@ remember_pool() {
   esac
 }
 
+preserve_store_mode() {
+  local mode
+  if [ "$(uname)" = Darwin ]; then
+    mode=$(stat -f %Lp "$1") || return 1
+  else
+    mode=$(stat -c %a "$1") || return 1
+  fi
+  chmod "$mode" "$2"
+}
+
 cleanup() {
-  local arm id wt pool
+  local arm id wt pool tmp
   for arm in a1 a2; do
     id="$RUN_ID-$arm"
     wt=$(sed -n 's/^worktree=//p' "$LAB/home/state/$id.meta" 2>/dev/null | tail -1)
@@ -115,18 +125,21 @@ cleanup() {
   # the operator's stores so a guard run leaves no litter behind.
   codex_store="${CODEX_HOME:-$HOME/.codex}/config.toml"
   if [ -f "$codex_store" ]; then
+    tmp=$(umask 077; mktemp "$codex_store.fm-model-bench-live.XXXXXX") || return 1
     awk -v lab="$LAB" '
       /^\[projects\."/ { skip = index($0, lab) > 0 }
       /^\[/ && !/^\[projects\."/ { skip = 0 }
       !skip
-    ' "$codex_store" > "$codex_store.fm-model-bench-live" && mv -f "$codex_store.fm-model-bench-live" "$codex_store"
+    ' "$codex_store" > "$tmp" && preserve_store_mode "$codex_store" "$tmp" && mv -f "$tmp" "$codex_store"
+    rm -f "$tmp"
   fi
   claude_store="${CLAUDE_CONFIG_DIR:+$CLAUDE_CONFIG_DIR/.claude.json}"
   [ -n "$claude_store" ] || claude_store="$HOME/.claude.json"
   if [ -f "$claude_store" ] && command -v jq >/dev/null 2>&1; then
+    tmp=$(umask 077; mktemp "$claude_store.fm-model-bench-live.XXXXXX") || return 1
     jq --arg lab "$LAB" '.projects |= with_entries(select(.key | startswith($lab) | not))' "$claude_store" \
-      > "$claude_store.fm-model-bench-live" && chmod --reference="$claude_store" "$claude_store.fm-model-bench-live" 2>/dev/null; \
-      mv -f "$claude_store.fm-model-bench-live" "$claude_store"
+      > "$tmp" && preserve_store_mode "$claude_store" "$tmp" && mv -f "$tmp" "$claude_store"
+    rm -f "$tmp"
   fi
   rm -rf "$LAB"
 }

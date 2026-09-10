@@ -489,15 +489,22 @@ function sessionCommand(argv) {
   let sliceNote = null;
   if (milestoneMs !== null) {
     let close = null;
+    let open = false;
     for (const s of sessions) {
       for (const t of s.turns) {
-        if (t.closed_at_ms === undefined || t.closed_at_ms === null) continue;
+        if (t.started_ms > milestoneMs) continue;
+        if (t.closed_at_ms === undefined || t.closed_at_ms === null) {
+          open = true;
+          continue;
+        }
         if (t.closed_at_ms >= milestoneMs && (close === null || t.closed_at_ms < close)) close = t.closed_at_ms;
       }
     }
     if (close === null) {
       sliceMs = milestoneMs;
-      sliceNote = 'no turn closed at or after the milestone; sliced at the milestone itself';
+      sliceNote = open
+        ? 'turn containing the milestone is still open; sliced at the milestone itself'
+        : 'no turn contains the milestone; sliced at the milestone itself';
     } else {
       sliceMs = close;
     }
@@ -749,7 +756,7 @@ function renderCommand(argv) {
     if (s && (s.sidechain_models || []).length > 0) notes.push(`${a.arm}: subagent requests on ${s.sidechain_models.join(', ')} are included in its tokens`);
     const unchecked = !a.independence || a.independence.verdict === 'unchecked';
     if (unchecked) notes.push(`${a.arm}: independence evidence unavailable; numbers withheld`);
-    const withhold = !confirmed || isVoid || unchecked;
+    const withhold = Boolean(a.withheld_reason) || !confirmed || isVoid || unchecked;
     const active = withhold || !s ? '-' : fmtDuration(s.active_ms) + (s.open_turns > 0 ? ` (+${fmtDuration(s.open_turn_ms)} open)` : '');
     const tokens = withhold || !s || !s.usage ? '-' : `${fmtInt(s.usage.total)} (${fmtInt(s.usage.input)}/${fmtInt(s.usage.cached_input)}/${fmtInt(s.usage.output)})`;
     let indep;

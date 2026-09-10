@@ -65,6 +65,33 @@ test_codex_milestone_slices_at_the_closing_turn() {
   pass "codex: consumption and active time are sliced at the completion milestone"
 }
 
+test_milestone_excludes_later_restarted_turns() {
+  local out
+  out=$("$ANALYZE" session --harness codex --workspace /work/arm \
+    --record "$FIXTURES/codex-restart-open.jsonl" --milestone 2026-09-09T10:01:30Z) || fail "$out"
+  [ "$(json_field "$out" '.slice_at')" = 2026-09-09T10:01:30.000Z ] || fail "later turn absorbed into slice"
+  [ "$(json_field "$out" '.active_ms')" = 0 ] || fail "restarted work counted"
+  [ "$(json_field "$out" '.open_turns')" = 1 ] || fail "unfinished turn lost"
+  [ "$(json_field "$out" '.usage.total')" = 1100 ] || fail "restarted usage counted"
+  [ "$(json_field "$out" '.models | join(",")')" = gpt-5.6-luna ] || fail "restarted model counted"
+  assert_contains "$(json_field "$out" '.slice_note')" 'still open' "open milestone reason"
+  out=$("$ANALYZE" session --harness codex --workspace /work/arm \
+    --record "$FIXTURES/codex-gap.jsonl" --milestone 2026-09-09T11:00:00Z) || fail "$out"
+  [ "$(json_field "$out" '.usage.total')" = 1100 ] || fail "gap milestone absorbed later usage"
+  assert_contains "$(json_field "$out" '.slice_note')" 'no turn contains' "gap milestone reason"
+  pass "milestone excludes later restarted turns and gaps"
+}
+
+assert_withheld_session() {
+  local json=$1 arm=$2 reason=$3
+  printf '%s' "$json" | jq -e --arg arm "$arm" --arg reason "$reason" '
+    .arms[] | select(.arm == $arm) |
+    (.withheld_reason | contains($reason)) and
+    (.session.active_ms == null and .session.open_turn_ms == null and .session.turns == null and .session.usage == null) and
+    (.session.models | length > 0) and (.session.records | length > 0)
+  ' >/dev/null || fail "$arm numbers not withheld with diagnostic evidence"
+}
+
 test_codex_explicit_slice_uses_last_cumulative_at_or_before() {
   local out
   out=$("$ANALYZE" session --harness codex --workspace /work/arm \
@@ -220,6 +247,7 @@ make_bench_home() {  # <name>
   mkdir -p "$base/claude-home/projects/$enc"
   cp "$FIXTURES/claude-gap.jsonl" "$base/claude-home/projects/$enc/seed.jsonl"
   printf '{"projects":{}}\n' > "$base/claude-home/.claude.json"
+  chmod 600 "$base/claude-home/.claude.json"
   fm_git_init_commit "$base/project"
   printf '%s\n' "$base"
 }
@@ -276,6 +304,7 @@ test_dry_run_sets_up_verifies_and_launches_nothing() {
   assert_grep "git push -u origin fm/mb-test-a1" "$base/home/data/mb-test-a1/brief.md" "brief tells the arm to push to its private origin"
   assert_no_grep "gpt-test-model" "$base/home/data/mb-test-a1/brief.md" "brief must not mention the model"
   assert_grep "Delivery contract: mode=local-only" "$base/home/data/mb-test-a1/brief.md" "brief keeps the delivery contract line"
+  [ "$(node -e 'console.log((require("fs").statSync(process.argv[1]).mode & 0o777).toString(8))' "$base/claude-home/.claude.json")" = 600 ] || fail "trust store permissions changed"
   pass "dry run performs setup and verification for every arm and launches nothing"
 }
 
@@ -414,6 +443,7 @@ test_report_confirms_models_measures_from_records_and_voids_a_copy() {
   [ "$(json_field "$json" '.arms[0].state')" = 'done' ] || fail "a1 state is done"
   [ "$(json_field "$json" '.arms[1].session.usage.output')" = 280 ] || fail "a2 output tokens from its transcript"
   [ "$(json_field "$json" '.arms[2].independence.verdict')" = void ] || fail "a3 void in json"
+  assert_withheld_session "$json" a3 "independence void"
   [ "$(json_field "$json" '.arms[0].independence.copied_by | join(",")')" = a3 ] || fail "a1 records who copied it"
   pass "report confirms each arm's model from its own record, measures from the record, and voids the copying arm"
 }
@@ -431,6 +461,7 @@ test_report_withholds_numbers_for_an_unconfirmed_model() {
   assert_not_contains "$out" "3,300" "the unconfirmed arm's token total must not appear"
   json=$(bench "$base" report mb-test --json) || fail "json report failed"
   [ "$(json_field "$json" '.arms[0].session.model_confirmed')" = false ] || fail "a1 unconfirmed in json"
+  assert_withheld_session "$json" a1 "model unconfirmed"
   pass "report refuses to present numbers for an arm whose running model is not confirmed"
 }
 
@@ -496,6 +527,7 @@ test_review_report_regressions() {
   assert_not_contains "$out" '5,500' "unchecked numbers withheld"
   json=$(bench "$base" report mb-test --json) || fail "$json"
   [ "$(json_field "$json" '.arms[0].independence.verdict')" = unchecked ] || fail "missing evidence labeled independent"
+  assert_withheld_session "$json" a1 "independence unchecked"
   printf 'base_sha=0000000000000000000000000000000000000000\n' >> "$base/home/data/mb-test/run"
   json=$(bench "$base" report mb-test --json) || fail "$json"
   [ "$(json_field "$json" '.arms[1].independence.verdict')" = unchecked ] || fail "missing base labeled independent"
@@ -556,3 +588,5 @@ test_report_withholds_numbers_for_an_unconfirmed_model
 test_review_setup_regressions
 test_review_report_regressions
 test_review_broadcast_concurrency
+
+test_milestone_excludes_later_restarted_turns
