@@ -7,8 +7,8 @@
 # fm_prune_build_output <worktree> [dry-run|delete] prints path and allocated KiB.
 # Symlink roots, nested repositories, tracked paths (including index-hidden
 # paths), non-ignored files, and unreadable Git inventories are never deleted.
-# Callers own exclusive access: teardown retains task ownership until return;
-# the sweep holds Treehouse's pool lock and excludes every task reference.
+# Callers own exclusive access: returned-copy pruning holds the pool lock;
+# the sweep holds the same lock and excludes every task reference.
 
 fm_build_output_rules() {
   printf '%s\n' 'Cargo.toml target'
@@ -40,3 +40,30 @@ fm_prune_build_output() {
     esac
   done < <(fm_build_output_rules)
 }
+
+fm_prune_returned_build_output() (
+  local wt=$1 pool marker output candidate=0
+  while read -r marker output; do
+    if [ -f "$wt/$marker" ] && [ -d "$wt/$output" ]; then candidate=1; fi
+  done < <(fm_build_output_rules)
+  [ "$candidate" -eq 1 ] || return 0
+  pool=$(dirname "$(dirname "$wt")")
+  [ -f "$pool/treehouse-state.lock" ] && [ ! -L "$pool/treehouse-state.lock" ] || {
+    echo "error: unrecognized Treehouse pool lock: $pool" >&2
+    return 1
+  }
+  exec 9<"$pool/treehouse-state.lock" || return 1
+  flock -x 9 || return 1
+  node - "$pool/treehouse-state.json" "$wt" <<'JS' || return 1
+const fs = require('fs');
+const [file, wt] = process.argv.slice(2);
+const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+if (!Array.isArray(state.worktrees)) throw Error('unreadable pool state');
+const entries = state.worktrees.filter(e => e.path === wt);
+if (entries.length !== 1) throw Error('ambiguous pool entry');
+const e = entries[0];
+if (e.leased || e.lease_id || e.destroying || e.owner_pid)
+  throw Error('returned copy is no longer idle; preserving build output');
+JS
+  fm_prune_build_output "$wt"
+)

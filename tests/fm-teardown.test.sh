@@ -593,7 +593,7 @@ make_path_without_lsof() {  # <case-dir>
 
 test_build_output_pruning() {
   local case_dir flavor rc
-  for flavor in rust non-rust refused; do
+  for flavor in rust non-rust refused reacquired; do
     case_dir=$(make_case "build-$flavor")
     write_meta "$case_dir" local-only ship
     printf 'target/\n' > "$case_dir/wt/.gitignore"
@@ -603,6 +603,10 @@ test_build_output_pruning() {
     if [ "$flavor" != refused ]; then add_fork_with_pushed_branch "$case_dir"; fi
     mkdir "$case_dir/wt/target"
     echo binary > "$case_dir/wt/target/test-binary"
+    touch "$TMP_ROOT/treehouse-state.lock"
+    printf '{"worktrees":[{"path":"%s","leased":%s}]}\n' \
+      "$case_dir/wt" "$([ "$flavor" = reacquired ] && echo true || echo false)" \
+      > "$TMP_ROOT/treehouse-state.json"
     rc=0
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
     case "$flavor" in
@@ -614,7 +618,7 @@ test_build_output_pruning() {
         expect_code 0 "$rc" 'non-Rust teardown succeeds'
         [ -f "$case_dir/wt/target/test-binary" ] || fail 'non-Rust target was deleted'
         ;;
-      refused)
+      refused|reacquired)
         [ "$rc" -ne 0 ] || fail 'unlanded work was accepted'
         [ -f "$case_dir/wt/target/test-binary" ] || fail 'refused teardown pruned output'
         ;;
@@ -1449,6 +1453,12 @@ test_stale_index_lock_cleanup_rechecks_dirty_worktree() {
   local case_dir rc lock
   case_dir=$(make_case stale-lock-dirty-recheck)
   write_meta "$case_dir" no-mistakes ship
+  printf 'target/\n' > "$case_dir/wt/.gitignore"
+  touch "$case_dir/wt/Cargo.toml"
+  git -C "$case_dir/wt" add .gitignore Cargo.toml
+  git -C "$case_dir/wt" commit -qm 'Rust project'
+  mkdir "$case_dir/wt/target"
+  echo binary > "$case_dir/wt/target/test-binary"
   wt_commit_file "$case_dir" feature.txt landed "landed work"
   git -C "$case_dir/wt" push -q origin fm/task-x1
   git -C "$case_dir/project" fetch -q origin
@@ -1470,6 +1480,8 @@ test_stale_index_lock_cleanup_rechecks_dirty_worktree() {
   set -e
 
   expect_code 1 "$rc" "stale-lock-dirty-recheck: teardown should refuse dirty work after clearing the stale lock"
+  [ -f "$case_dir/wt/target/test-binary" ] \
+    || fail "stale-lock-dirty-recheck: refused teardown pruned Rust output"
   assert_grep "removed provably-stale git lock" "$case_dir/stderr" \
     "stale-lock-dirty-recheck: teardown did not report clearing the stale lock"
   assert_grep "uncommitted changes present" "$case_dir/stderr" \
@@ -1589,6 +1601,12 @@ test_persistent_index_lock_exhausts_retries_and_refuses_loudly() {
   local case_dir rc lock
   case_dir=$(make_case persistent-index-lock)
   write_meta "$case_dir" no-mistakes ship
+  printf 'target/\n' > "$case_dir/wt/.gitignore"
+  touch "$case_dir/wt/Cargo.toml"
+  git -C "$case_dir/wt" add .gitignore Cargo.toml
+  git -C "$case_dir/wt" commit -qm 'Rust project'
+  mkdir "$case_dir/wt/target"
+  echo binary > "$case_dir/wt/target/test-binary"
   wt_commit "$case_dir" "shippable work"
   git -C "$case_dir/wt" push -q origin fm/task-x1
   git -C "$case_dir/project" fetch -q origin
@@ -1620,6 +1638,8 @@ test_persistent_index_lock_exhausts_retries_and_refuses_loudly() {
   [ -e "$lock" ] || fail "persistent-index-lock: lock file was removed"
   [ -f "$case_dir/state/task-x1.meta" ] \
     || fail "persistent-index-lock: teardown completed despite persistent lock"
+  [ -f "$case_dir/wt/target/test-binary" ] \
+    || fail "persistent-index-lock: refused return pruned Rust output"
   pass "persistent index.lock exhausts retries and refuses without force-removing the lock"
 }
 
