@@ -591,6 +591,55 @@ make_path_without_lsof() {  # <case-dir>
   printf '%s\n' "$path_dir"
 }
 
+test_build_output_pruning() {
+  local case_dir flavor rc
+  for flavor in rust non-rust refused reacquired; do
+    case_dir=$(make_case "build-$flavor")
+    write_meta "$case_dir" local-only ship
+    printf 'target/\n' > "$case_dir/wt/.gitignore"
+    [ "$flavor" = non-rust ] || touch "$case_dir/wt/Cargo.toml"
+    git -C "$case_dir/wt" add .
+    git -C "$case_dir/wt" commit -qm 'project manifest'
+    if [ "$flavor" != refused ]; then add_fork_with_pushed_branch "$case_dir"; fi
+    mkdir "$case_dir/wt/target"
+    echo binary > "$case_dir/wt/target/test-binary"
+    if [ "$flavor" = reacquired ]; then
+      cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = return ]; then
+  wt=${@: -1}
+  [ ! -e "$wt/target" ] || exit 91
+  mkdir "$wt/target"
+  printf 'new-owner-output\n' > "$wt/target/new-owner"
+fi
+SH
+    fi
+    rc=0
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    case "$flavor" in
+      rust)
+        expect_code 0 "$rc" 'Rust teardown succeeds'
+        [ ! -e "$case_dir/wt/target" ] || fail 'returned Rust copy retains target'
+        ;;
+      non-rust)
+        expect_code 0 "$rc" 'non-Rust teardown succeeds'
+        [ -f "$case_dir/wt/target/test-binary" ] || fail 'non-Rust target was deleted'
+        ;;
+      reacquired)
+        expect_code 0 "$rc" 'acquisition after return does not interrupt teardown'
+        [ ! -e "$case_dir/state/task-x1.meta" ] || fail 'old task metadata survives return'
+        [ "$(cat "$case_dir/wt/target/new-owner")" = new-owner-output ] \
+          || fail 'new owner output changed after return'
+        ;;
+      refused)
+        [ "$rc" -ne 0 ] || fail 'unlanded work was accepted'
+        [ -f "$case_dir/wt/target/test-binary" ] || fail 'refused teardown pruned output'
+        ;;
+    esac
+    pass "build output: $flavor"
+  done
+}
+
 test_local_only_fork_remote_allows() {
   local case_dir rc
   case_dir=$(make_case fork-allow)
@@ -1416,6 +1465,12 @@ test_stale_index_lock_cleanup_rechecks_dirty_worktree() {
   local case_dir rc lock
   case_dir=$(make_case stale-lock-dirty-recheck)
   write_meta "$case_dir" no-mistakes ship
+  printf 'target/\n' > "$case_dir/wt/.gitignore"
+  touch "$case_dir/wt/Cargo.toml"
+  git -C "$case_dir/wt" add .gitignore Cargo.toml
+  git -C "$case_dir/wt" commit -qm 'Rust project'
+  mkdir "$case_dir/wt/target"
+  echo binary > "$case_dir/wt/target/test-binary"
   wt_commit_file "$case_dir" feature.txt landed "landed work"
   git -C "$case_dir/wt" push -q origin fm/task-x1
   git -C "$case_dir/project" fetch -q origin
@@ -1437,6 +1492,8 @@ test_stale_index_lock_cleanup_rechecks_dirty_worktree() {
   set -e
 
   expect_code 1 "$rc" "stale-lock-dirty-recheck: teardown should refuse dirty work after clearing the stale lock"
+  [ -f "$case_dir/wt/target/test-binary" ] \
+    || fail "stale-lock-dirty-recheck: refused teardown pruned Rust output"
   assert_grep "removed provably-stale git lock" "$case_dir/stderr" \
     "stale-lock-dirty-recheck: teardown did not report clearing the stale lock"
   assert_grep "uncommitted changes present" "$case_dir/stderr" \
@@ -1556,6 +1613,12 @@ test_persistent_index_lock_exhausts_retries_and_refuses_loudly() {
   local case_dir rc lock
   case_dir=$(make_case persistent-index-lock)
   write_meta "$case_dir" no-mistakes ship
+  printf 'target/\n' > "$case_dir/wt/.gitignore"
+  touch "$case_dir/wt/Cargo.toml"
+  git -C "$case_dir/wt" add .gitignore Cargo.toml
+  git -C "$case_dir/wt" commit -qm 'Rust project'
+  mkdir "$case_dir/wt/target"
+  echo binary > "$case_dir/wt/target/test-binary"
   wt_commit "$case_dir" "shippable work"
   git -C "$case_dir/wt" push -q origin fm/task-x1
   git -C "$case_dir/project" fetch -q origin
@@ -1587,6 +1650,8 @@ test_persistent_index_lock_exhausts_retries_and_refuses_loudly() {
   [ -e "$lock" ] || fail "persistent-index-lock: lock file was removed"
   [ -f "$case_dir/state/task-x1.meta" ] \
     || fail "persistent-index-lock: teardown completed despite persistent lock"
+  [ -f "$case_dir/wt/target/test-binary" ] \
+    || fail "persistent-index-lock: refused return pruned Rust output"
   pass "persistent index.lock exhausts retries and refuses without force-removing the lock"
 }
 
@@ -3331,6 +3396,14 @@ EOF
     "abort-then-reap-then-remove-order: the leaked process was not yet reaped when the worktree return ran"
   pass "the run abort and the leaked-process reap both complete before the destructive worktree return"
 }
+
+if [ "${1:-}" = --build-output ]; then
+  test_build_output_pruning
+  test_stale_index_lock_cleanup_rechecks_dirty_worktree
+  test_persistent_index_lock_exhausts_retries_and_refuses_loudly
+  exit 0
+fi
+test_build_output_pruning
 
 test_local_only_fork_remote_allows
 test_teardown_preserves_open_pr_poll_when_compatible

@@ -679,6 +679,8 @@ else
   section "SESSION START - $FM_HOME"
 fi
 # --- 1. lock -----------------------------------------------------------
+"$SCRIPT_DIR/fm-resources.sh"
+
 stage lock
 subsection "LOCK"
 LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" 2>&1)

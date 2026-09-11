@@ -140,6 +140,9 @@ test_control_lock_contention_refuses_before_mutation() {
 test_metadata_lock_serializes_destructive_cleanup() {
   local dir id=metadata-locked-task lock ready release holder teardown_pid i=0 rc
   dir=$(make_case metadata-lock)
+  rm "$dir/worktree/sentinel"
+  fm_git_worktree "$dir/project" "$dir/worktree" metadata-lock
+  : > "$dir/worktree/sentinel"
   fm_write_meta "$dir/home/state/$id.meta" \
     "window=isolated:fm-$id" "endpoint_task_id=$id" \
     "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
@@ -183,8 +186,9 @@ test_metadata_lock_serializes_destructive_cleanup() {
 
   : > "$release"
   wait "$holder" || fail "metadata lock holder failed"
-  wait "$teardown_pid"; rc=$?
-  expect_code 0 "$rc" "teardown should complete after the metadata writer releases"
+  rc=0
+  wait "$teardown_pid" || rc=$?
+  expect_code 0 "$rc" "teardown should complete after the metadata writer releases: $(cat "$dir/stderr")"
   assert_absent "$dir/home/state/$id.meta" \
     "serialized teardown left a task record that a completed writer could resurrect"
   pass "fm-teardown: destructive cleanup serializes with metadata writers"
