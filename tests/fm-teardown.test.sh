@@ -603,10 +603,17 @@ test_build_output_pruning() {
     if [ "$flavor" != refused ]; then add_fork_with_pushed_branch "$case_dir"; fi
     mkdir "$case_dir/wt/target"
     echo binary > "$case_dir/wt/target/test-binary"
-    touch "$TMP_ROOT/treehouse-state.lock"
-    printf '{"worktrees":[{"path":"%s","leased":%s}]}\n' \
-      "$case_dir/wt" "$([ "$flavor" = reacquired ] && echo true || echo false)" \
-      > "$TMP_ROOT/treehouse-state.json"
+    if [ "$flavor" = reacquired ]; then
+      cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = return ]; then
+  wt=${@: -1}
+  [ ! -e "$wt/target" ] || exit 91
+  mkdir "$wt/target"
+  printf 'new-owner-output\n' > "$wt/target/new-owner"
+fi
+SH
+    fi
     rc=0
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
     case "$flavor" in
@@ -618,7 +625,13 @@ test_build_output_pruning() {
         expect_code 0 "$rc" 'non-Rust teardown succeeds'
         [ -f "$case_dir/wt/target/test-binary" ] || fail 'non-Rust target was deleted'
         ;;
-      refused|reacquired)
+      reacquired)
+        expect_code 0 "$rc" 'acquisition after return does not interrupt teardown'
+        [ ! -e "$case_dir/state/task-x1.meta" ] || fail 'old task metadata survives return'
+        [ "$(cat "$case_dir/wt/target/new-owner")" = new-owner-output ] \
+          || fail 'new owner output changed after return'
+        ;;
+      refused)
         [ "$rc" -ne 0 ] || fail 'unlanded work was accepted'
         [ -f "$case_dir/wt/target/test-binary" ] || fail 'refused teardown pruned output'
         ;;
@@ -626,7 +639,6 @@ test_build_output_pruning() {
     pass "build output: $flavor"
   done
 }
-test_build_output_pruning
 
 test_local_only_fork_remote_allows() {
   local case_dir rc
@@ -3384,6 +3396,14 @@ EOF
     "abort-then-reap-then-remove-order: the leaked process was not yet reaped when the worktree return ran"
   pass "the run abort and the leaked-process reap both complete before the destructive worktree return"
 }
+
+if [ "${1:-}" = --build-output ]; then
+  test_build_output_pruning
+  test_stale_index_lock_cleanup_rechecks_dirty_worktree
+  test_persistent_index_lock_exhausts_retries_and_refuses_loudly
+  exit 0
+fi
+test_build_output_pruning
 
 test_local_only_fork_remote_allows
 test_teardown_preserves_open_pr_poll_when_compatible
