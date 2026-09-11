@@ -591,6 +591,39 @@ make_path_without_lsof() {  # <case-dir>
   printf '%s\n' "$path_dir"
 }
 
+test_build_output_pruning() {
+  local case_dir flavor rc
+  for flavor in rust non-rust refused; do
+    case_dir=$(make_case "build-$flavor")
+    write_meta "$case_dir" local-only ship
+    printf 'target/\n' > "$case_dir/wt/.gitignore"
+    [ "$flavor" = non-rust ] || touch "$case_dir/wt/Cargo.toml"
+    git -C "$case_dir/wt" add .
+    git -C "$case_dir/wt" commit -qm 'project manifest'
+    if [ "$flavor" != refused ]; then add_fork_with_pushed_branch "$case_dir"; fi
+    mkdir "$case_dir/wt/target"
+    echo binary > "$case_dir/wt/target/test-binary"
+    rc=0
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    case "$flavor" in
+      rust)
+        expect_code 0 "$rc" 'Rust teardown succeeds'
+        [ ! -e "$case_dir/wt/target" ] || fail 'returned Rust copy retains target'
+        ;;
+      non-rust)
+        expect_code 0 "$rc" 'non-Rust teardown succeeds'
+        [ -f "$case_dir/wt/target/test-binary" ] || fail 'non-Rust target was deleted'
+        ;;
+      refused)
+        [ "$rc" -ne 0 ] || fail 'unlanded work was accepted'
+        [ -f "$case_dir/wt/target/test-binary" ] || fail 'refused teardown pruned output'
+        ;;
+    esac
+    pass "build output: $flavor"
+  done
+}
+test_build_output_pruning
+
 test_local_only_fork_remote_allows() {
   local case_dir rc
   case_dir=$(make_case fork-allow)

@@ -61,6 +61,8 @@ Preserve durable structured identifiers, dependencies, and completion artifact l
 
 ## Dispatch and supervision handoff
 
+Before releasing another task, read the advisory capacity line from `bin/fm-resources.sh`; its header owns the metrics and fallback behavior, and the report never gates spawn.
+
 Spawn only through `bin/fm-spawn.sh` after the profile and backend checks in `AGENTS.md` section 4.
 The spawn must resolve a genuine isolated task worktree distinct from the primary checkout; a failed isolation assertion stops the task.
 After spawning, confirm the worker is processing the brief, handle any trust dialog through `harness-adapters`, and record ship or scout work as under way.

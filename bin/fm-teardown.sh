@@ -2652,6 +2652,10 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   if [ "$FORCE" != "--force" ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ]; then
     post_lock_cleanup_check=validate_worktree_teardown_safety
   fi
+  # Only reproducible ignored output qualifies; landed work was checked above.
+  # shellcheck source=bin/fm-build-output-lib.sh
+  . "$SCRIPT_DIR/fm-build-output-lib.sh"
+  fm_prune_build_output "$WT" || exit 1
   teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" || {
     echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
     exit 1
