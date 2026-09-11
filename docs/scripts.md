@@ -129,6 +129,9 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-endpoint-bind-migrate.sh` | Explicitly prove and bind one legacy Herdr cleanup endpoint                    |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode |
 | `fm-teardown.sh`         | Fail-closed teardown: return landed ship worktrees, require completed scout deliverables, retire secondmate homes |
+| [`fm-pool-prune.sh`](../bin/fm-pool-prune.sh) | Prune eligible build output from idle copies in this home's Treehouse pools |
+| [`fm-build-output-lib.sh`](../bin/fm-build-output-lib.sh) | Shared build-output pruning rules and deletion safety boundary |
+| [`fm-resources.sh`](../bin/fm-resources.sh) | Print an advisory capacity snapshot for task release review |
 | `fm-harness.sh`          | Detect the running harness and resolve crew or secondmate harness, model, and effort |
 | `fm-lock.sh`             | Per-home firstmate session lock                                                      |
 | `fm-x-lib.sh`            | Shared Relay config, relay, and reply-threading helpers                              |
