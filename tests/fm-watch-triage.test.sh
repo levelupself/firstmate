@@ -920,6 +920,96 @@ test_declared_pause_is_bounded_whether_or_not_the_agent_exited() {
 # parked pane keeps repainting its idle footer, so each new hash re-entered the
 # stale path as a first sighting and spent another supervision turn. Liveness is
 # what makes an idle park credible, not what invalidates it.
+# --- a parked codex task whose dead process left an open turn bracket ------
+# The 2026-09-11 host-reboot regression, driven through the REAL
+# bin/fm-crew-state.sh rather than a canned verdict: every codex worker died
+# mid-turn, so each rollout ended on an open task_started with no close, and
+# the pane was a bare shell. Firstmate parked each task with a paused: line, yet
+# the stale open bracket still read busy, so the busy-turn-age path ran the
+# wedge timer and escalated a possible wedge every threshold, hundreds of times.
+# A busy reading with no live owner must neither outrank the declared park nor
+# feed the wedge timer, across repeated triage passes.
+test_parked_codex_open_turn_from_dead_process_never_wedge_escalates() {
+  local dir state fakebin out capture_file statusf window key pane_hash sig pid round wakes sessions day
+  dir=$(make_case parked-codex-dead-turn); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/parked.status"
+  window="test:fm-parked"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+
+  # The real helper reads a git worktree, a no-mistakes run lookup, and the
+  # tmux pane; serve the last two from fakes that describe an agent-free pane.
+  mkdir -p "$dir/wt"
+  git -C "$dir/wt" init -q
+  fm_git_identity fmtest fmtest@example.invalid
+  git -C "$dir/wt" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -q --allow-empty -m init
+  git -C "$dir/wt" checkout -q -b fm/parked
+  cat > "$fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/no-mistakes"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  list-windows) printf '%s\n' "${FM_FAKE_TMUX_WINDOW#*:}"; exit 0 ;;
+  capture-pane) cat "$FM_FAKE_TMUX_CAPTURE"; exit 0 ;;
+  display-message)
+    case "$*" in
+      *pane_current_command*) printf 'zsh\n'; exit 0 ;;
+      *pane_tty*) exit 1 ;;
+      *) printf '%%1\n'; exit 0 ;;
+    esac ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/tmux"
+
+  printf 'idle bare shell after the host reboot\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=codex\nbackend=tmux\nworktree=%s\n' "$window" "$dir/wt" \
+    > "$state/parked.meta"
+  sessions="$dir/codex-sessions"
+  day="$sessions/2026/09/10"
+  mkdir -p "$day"
+  {
+    printf '{"type":"session_meta","payload":{"cwd":"%s","originator":"codex-tui","source":"cli"}}\n' "$dir/wt"
+    printf '{"type":"event_msg","payload":{"type":"task_started"}}\n'
+  } > "$day/rollout-2026-09-10T23-04-22-s-parked.jsonl"
+  printf 'sessions_root=%s\nworkspace_root=%s\n' "$sessions" "$dir/wt" > "$state/parked.codex-session"
+  printf 'paused: parked by firstmate after the 2026-09-11 host reboot; no agent is running\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-parked_status"
+  pane_hash=$(hash_text "idle bare shell after the host reboot")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # No completed turn was ever recorded, so the busy-turn bound ages the spawn
+  # record; a stale busy reading would cross it on the first poll.
+  touch -t 200001010000 "$state/parked.meta"
+
+  round=1
+  while [ "$round" -le 4 ]; do
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$ROOT/bin/fm-crew-state.sh" \
+      FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=1 FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
+    pid=$!
+    if wait_live "$pid" 25; then reap "$pid"; else wait "$pid" || fail "parked codex watcher round $round failed: $(cat "$out")"; fi
+    round=$((round + 1))
+  done
+  grep -F "possible wedge" "$out" >/dev/null \
+    && fail "a parked codex task with a dead process was wedge-escalated: $(cat "$out")"
+  if [ -e "$state/.wake-queue" ]; then
+    grep -F "possible wedge" "$state/.wake-queue" >/dev/null \
+      && fail "a parked codex task with a dead process queued a wedge escalation"
+  fi
+  [ ! -e "$state/.wedge-escalations-$key" ] \
+    || fail "a parked codex task with a dead process accumulated wedge escalations ($(cat "$state/.wedge-escalations-$key"))"
+  [ ! -e "$state/.stale-since-$key" ] || fail "a parked codex task with a dead process kept a wedge timer running"
+  [ -e "$state/.paused-$key" ] || fail "the parked codex task was not absorbed onto the pause cadence"
+  wakes=$(count_window_stale_wakes "$state" "$window")
+  [ "$wakes" -eq 0 ] || fail "a fresh parked codex task cost $wakes stale wakes across four quiet rounds"
+  pass "a parked codex task whose dead process left an open turn bracket is absorbed as paused and never wedge-escalated"
+}
+
 test_live_captain_held_park_stays_quiet_across_cycles() {
   local dir state fakebin out capture_file statusf window key sig pid round text wakes
   dir=$(make_case live-captain-held-park); state="$dir/state"; fakebin="$dir/fakebin"
@@ -2092,6 +2182,7 @@ test_busy_pane_default_turn_age_bound_is_3600s
 test_nonterminal_stale_not_working_surfaced
 test_nonterminal_stale_paused_absorbed_then_resurfaced
 test_declared_pause_is_bounded_whether_or_not_the_agent_exited
+test_parked_codex_open_turn_from_dead_process_never_wedge_escalates
 test_live_captain_held_park_stays_quiet_across_cycles
 test_live_captain_held_park_resurfaces_on_the_long_cadence
 test_secondmate_paused_resurfaces_in_normal_mode

@@ -552,10 +552,29 @@ pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACK
 # Only an exact busy verdict reports working here, and only an exact idle
 # verdict permits the status-log fallback below. Missing, malformed, stale, or
 # unverified semantic state remains unknown.
+#
+# Precedence between a busy verdict and a DECLARED pause (paused:, the
+# fm-classify-lib.sh pause verb): the busy verdict outranks the declaration -
+# a crew that appended paused: and then started a turn is working - unless the
+# backend's recovery-grade agent classifier (fm_backend_agent_alive) confirms
+# that no agent owns the pane. A busy reading left behind by a process that
+# died mid-turn is then stale evidence, the declared pause stands, and this is
+# the one read the watcher's pause triage relies on to keep such a park off the
+# wedge timer. An unverifiable owner (ambiguous, unreadable, or a backend with
+# no classifier) leaves the busy verdict in force, so an unreadable backend can
+# never hide a genuinely running turn behind an old declaration.
+busy_owner_confirmed_gone() {  # <target>
+  [ "$(fm_backend_agent_alive "$TASK_BACKEND" "$1" 2>/dev/null)" = dead ]
+}
 if [ "$KIND" != secondmate ]; then
   BUSY_VERDICT=$(crew_busy_verdict "$BACKEND_TARGET")
   case "${BUSY_VERDICT%% *}" in
-    busy) emit working pane "harness busy (${BUSY_VERDICT#* })" ;;
+    busy)
+      if status_is_paused "$LOG_LINE" && busy_owner_confirmed_gone "$BACKEND_TARGET"; then
+        emit paused status-log "$(status_line_note "$LOG_LINE")${SEP}stale busy reading (${BUSY_VERDICT#* }) has no live agent"
+      fi
+      emit working pane "harness busy (${BUSY_VERDICT#* })"
+      ;;
     idle) ;;
     *) emit unknown pane "harness state unavailable ($BUSY_VERDICT)" ;;
   esac

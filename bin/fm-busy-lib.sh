@@ -40,7 +40,8 @@
 #   fm-recovery      a documented recovery reset after relaunch
 # Classifier-only sources (never written into a record):
 #   endpoint-gone, herdr-native, grok-regex, muse-session-log,
-#   cursor-transcript, codex-rollout, missing, malformed, gen-mismatch,
+#   cursor-transcript, codex-rollout, codex-owner-gone,
+#   codex-owner-unverified, missing, malformed, gen-mismatch,
 #   source-mismatch, kimi-unverified, capture-failed, no-target
 #
 # Classification (fm_busy_classify): busy | idle | unknown | dead, always
@@ -48,7 +49,8 @@
 #   1. dead endpoint (fm_busy_classify_live only) -> dead endpoint-gone
 #   2. standalone Kimi before verification       -> unknown kimi-unverified
 #   3. Codex, and cursor, before any verified push source exists: the
-#      adapter's own durable log, folded on demand
+#      adapter's own durable log, folded on demand; a codex open bracket is
+#      additionally bound to a live owner (see the codex pull source below)
 #   4. a valid, gen-matching, source-trusted record -> its state and source
 #   5. no record at all: herdr's native busy verdict is trusted as busy
 #      (generation state is sufficient for busy, not for idle), then the
@@ -82,7 +84,17 @@
 # reason: neither codex push surface is usable on the installed binary, but
 # codex writes its own durable per-session rollout log, which brackets each
 # turn with a task_started open and a task_complete or turn_aborted close. See
-# fm_busy_codex_turn_state for the fold.
+# fm_busy_codex_turn_state for the fold. Unlike the other two, an open codex
+# bracket is busy only while a live agent can own it: the rollout is append-only
+# and records no pid, so a worker that dies mid-turn (a host reboot, a killed
+# process) leaves task_started open forever with nothing to close it. The
+# classifier therefore binds an open bracket to the backend's recovery-grade
+# agent-liveness verdict (bin/fm-backend.sh fm_backend_agent_alive): alive is
+# busy codex-rollout, a confirmed-gone owner is an orphaned turn and folds to
+# idle codex-owner-gone, and an unverifiable owner - an ambiguous or unreadable
+# pane, or a backend with no liveness classifier - is unknown
+# codex-owner-unverified, never busy. A closed bracket needs no owner. See
+# fm_busy_codex_open_turn_verdict.
 #
 # Codex negotiation (fm_busy_codex_appserver_observable,
 # fm_busy_codex_hooks_verified): the approved contract prefers Codex's
@@ -972,6 +984,30 @@ fm_busy_codex_turn_state() {  # <rollout>
   '
 }
 
+# fm_busy_codex_open_turn_verdict: the liveness binding for an OPEN bracket.
+# Prints the full "<verdict> <source>" for a rollout whose last turn has no
+# close, from the backend's recovery-grade agent verdict for this pane:
+#   alive    -> busy codex-rollout          a live agent owns the turn
+#   dead     -> idle codex-owner-gone       the pane confidently has no agent
+#                                           (or the endpoint is authoritatively
+#                                           absent): the turn is orphaned
+#   unknown  -> unknown codex-owner-unverified  ambiguous, unreadable, or a
+#                                           backend with no liveness classifier
+# The verdict comes from fm_backend_agent_alive (bin/fm-backend.sh); when that
+# function is not loaded nothing can vouch for the owner, so the answer is
+# unknown rather than a guess. A closed bracket never reaches this function.
+fm_busy_codex_open_turn_verdict() {  # <backend> <target>
+  local owner=unknown
+  if command -v fm_backend_agent_alive >/dev/null 2>&1; then
+    owner=$(fm_backend_agent_alive "$1" "$2" 2>/dev/null) || owner=unknown
+  fi
+  case "$owner" in
+    alive) printf 'busy codex-rollout' ;;
+    dead) printf 'idle codex-owner-gone' ;;
+    *) printf 'unknown codex-owner-unverified' ;;
+  esac
+}
+
 # fm_busy_grok_tail_busy: the Grok-only temporary rendered-tail fallback.
 # Consumes the tail on stdin; 0 when Grok's verified busy signature matches.
 # FM_BUSY_REGEX still globally overrides the signature, mirroring the
@@ -984,7 +1020,9 @@ fm_busy_grok_tail_busy() {
 # fm_busy_classify: semantic classification for a task whose endpoint the
 # caller has already established as present. Prints "<verdict> <source>":
 # busy|idle|unknown plus the producing source (see header). Never probes
-# process state. <tail40> is optional pre-captured plain output used only by
+# process state itself; the one liveness read is the codex open-bracket
+# binding, which asks the backend's agent classifier rather than the process
+# table. <tail40> is optional pre-captured plain output used only by
 # the Grok arm; when absent the Grok arm captures through fm_backend_capture
 # if available, else reports unknown capture-failed.
 fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
@@ -999,10 +1037,12 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
       ;;
     codex*)
       # Semantic, on demand: fold this task's bound rollout log. A turn open
-      # past its last close is positive proof of a turn in flight, and a
-      # trailing task_complete or turn_aborted is a finished turn. Every other
-      # outcome - no sidecar, no resolvable rollout, an unreadable or
-      # record-free file, or no jq to read it with - is unknown, never idle.
+      # past its last close is proof of a turn in flight only while a live
+      # agent owns it (fm_busy_codex_open_turn_verdict binds the bracket to
+      # the backend's liveness verdict), and a trailing task_complete or
+      # turn_aborted is a finished turn. Every other outcome - no sidecar, no
+      # resolvable rollout, an unreadable or record-free file, or no jq to
+      # read it with - is unknown, never idle.
       # Codex's rendered footer is deliberately NOT consulted here.
       # A future verified PUSH source opens fm_busy_codex_semantic_source and
       # takes precedence, so this arm steps aside once one exists.
@@ -1012,7 +1052,7 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
           return 0
         fi
         case "$(fm_busy_codex_turn_state "$log" 2>/dev/null)" in
-          busy) printf 'busy codex-rollout' ;;
+          busy) fm_busy_codex_open_turn_verdict "$backend" "$target" ;;
           settled) printf 'idle codex-rollout' ;;
           *) printf 'unknown codex-rollout' ;;
         esac

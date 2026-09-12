@@ -242,6 +242,35 @@ Both metadata fields must agree to identify the interactive session: `originator
 One incidental fact observed in the same runs and NOT acted on here: a single `Escape` did not interrupt a running turn in that headless pane while `Ctrl+C` did, and Codex reported `Conversation interrupted`.
 [`bin/fm-control-lib.sh`](../../bin/fm-control-lib.sh) still records `Escape` as Codex's interrupt key; reconciling that belongs with the control-mechanics matrix, not with this source.
 
+#### Open bracket owner binding, 2026-09-12
+
+The rollout is append-only and records no pid, so a worker that dies mid-turn leaves its `task_started` open with nothing to close it.
+After the 2026-09-11 host reboot every codex worker died that way; `bin/fm-crew-state.sh` read each parked pane as `working · harness busy (codex-rollout)` although the pane was a bare shell and the task carried a `paused:` line, and the watcher's busy-turn bound wedge-escalated those panes every threshold (per-pane escalation counters reached 285 to 389).
+The fold now binds an open bracket to the backend's recovery-grade agent-liveness verdict (`fm_backend_agent_alive`, the same classifier `bin/fm-control.sh exit` relies on): alive stays `busy codex-rollout`, a confirmed-gone owner folds to `idle codex-owner-gone`, and an unattributable owner is `unknown codex-owner-unverified`.
+A closed bracket needs no owner, so the interrupt path above is unchanged.
+
+Verified on 2026-09-12 against codex-cli 0.153.4 rollouts and tmux 3.4 on Linux, reading one real parked task through the public helper (the rollout still ends on an open `task_started`, the Herdr pane's `agent get` answers `agent_not_found`):
+
+```sh
+$ bin/fm-crew-state.sh mtg-bench-spec-r1-a1        # before the binding
+state: working · source: pane · harness busy (codex-rollout)
+$ bin/fm-crew-state.sh mtg-bench-spec-r1-a1        # with the binding
+state: paused · source: status-log · parked by firstmate under the captain's 8-worker cap after the 2026-09-11 host reboot; work is committed in the worktree and no agent is running; relaunch when a slot frees
+$ fm_busy_classify_meta state/mtg-bench-spec-r1-a1.meta mtg-bench-spec-r1-a1 state
+idle codex-owner-gone
+```
+
+The same binding is pinned by a real process in a real tmux server on a private socket, with a harness-named foreground process that is then killed so the pane drops to a plain shell:
+
+```sh
+$ tests/fm-codex-busy-owner.test.sh
+ok - codex owner binding: an open bracket with a live agent process classifies busy
+ok - codex owner binding: the same open bracket folds to not-busy once its process is gone
+ok - codex owner binding: a turn_aborted close still settles the turn from the rollout alone
+```
+
+`tests/fm-codex-harness.test.sh` pins the hermetic verdict matrix, `tests/fm-crew-state.test.sh` pins that a declared `paused:` line outranks a busy reading whose owner the backend confirms gone (and only then), and `tests/fm-watch-triage.test.sh` drives the real helper through four watcher passes over a parked task with an orphaned open bracket and asserts no wedge escalation.
+
 Deterministic entry points:
 
 ```sh
