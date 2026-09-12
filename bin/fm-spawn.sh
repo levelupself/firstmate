@@ -1443,7 +1443,9 @@ if [ "$RECOVERY" -eq 1 ]; then
       exit 1
     }
   fi
-  if [ "$BACKEND" = herdr ]; then
+  # Only endpoint adoption loads the recorded identity. Reacquisition must
+  # preserve the actual launcher environment for fresh endpoint placement.
+  if [ "$BACKEND" = herdr ] && [ "$RELAUNCH" -eq 1 ]; then
     HERDR_SES=$(fm_meta_get "$RELAUNCH_META" herdr_session)
     HERDR_WORKSPACE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_workspace_id)
     HERDR_TAB_ID=$(fm_meta_get "$RELAUNCH_META" herdr_tab_id)

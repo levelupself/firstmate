@@ -349,6 +349,157 @@ test_reacquire_failure_after_endpoint_rolls_back() {
   pass "fm-spawn reacquire: a failure after the replacement endpoint exists restores the prior record and detaches the fresh copy"
 }
 
+make_herdr_statefake() {  # <dir> -> echoes fakebin dir; seeds an empty state file
+  local dir=$1 fb="$1/fakebin"
+  mkdir -p "$fb"
+  printf '{"next":1,"workspaces":[],"tabs":[],"agent_status":{}}\n' > "$dir/state.json"
+  cat > "$fb/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+LOG="${FM_HERDR_LOG:?}"
+STATE="${FM_FAKE_HERDR_STATE:?}"
+{
+  printf 'HERDR_SESSION=%s' "${HERDR_SESSION:-}"
+  for a in "$@"; do printf '\x1f%s' "$a"; done
+  printf '\n'
+} >> "$LOG"
+
+jq_state() { jq "$@" "$STATE"; }
+save() { local tmp="$STATE.tmp.$$"; cat > "$tmp" && mv "$tmp" "$STATE"; }
+
+cmd=${1:-}; sub=${2:-}
+ws=""; label=""
+args=("$@")
+for ((i=0; i<${#args[@]}; i++)); do
+  case "${args[$i]}" in
+    --workspace) ws=${args[$((i+1))]:-} ;;
+    --label) label=${args[$((i+1))]:-} ;;
+  esac
+done
+
+case "$cmd $sub" in
+  "status --json")
+    printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n'
+    ;;
+  "session list")
+    jq -n --arg socket "$FM_FAKE_DIR/herdr.sock" '{sessions:[{name:"fmtest",running:true,socket_path:$socket}]}'
+    ;;
+  "workspace list")
+    jq_state '{result:{workspaces:.workspaces}}'
+    ;;
+  "workspace create")
+    n=$(jq_state -r '.next'); wsid="w$n"; dn=$((n + 1))
+    jq_state --arg wsid "$wsid" --arg wlabel "$label" \
+      --arg tabid "$wsid:t$dn" --arg paneid "$wsid:p$dn" \
+      '.workspaces += [{workspace_id:$wsid, label:$wlabel}]
+       | .tabs += [{tab_id:$tabid, label:"1", workspace_id:$wsid, pane_id:$paneid}]
+       | .next = (.next + 2)' | save
+    printf '{"result":{"workspace":{"workspace_id":"%s","label":"%s"},"tab":{"tab_id":"%s"},"root_pane":{"pane_id":"%s"}}}\n' \
+      "$wsid" "$label" "$wsid:t$dn" "$wsid:p$dn"
+    ;;
+  "tab list")
+    jq_state --arg w "$ws" '{result:{tabs:[.tabs[]|select(.workspace_id==$w)]}}'
+    ;;
+  "tab create")
+    n=$(jq_state -r '.next'); tabid="$ws:t$n"; paneid="$ws:p$n"
+    jq_state --arg w "$ws" --arg wlabel "$label" --arg tabid "$tabid" --arg paneid "$paneid" \
+      '.tabs += [{tab_id:$tabid, label:$wlabel, workspace_id:$w, pane_id:$paneid}]
+       | .next = (.next + 1)' | save
+    printf '{"result":{"tab":{"tab_id":"%s"},"root_pane":{"pane_id":"%s"}}}\n' "$tabid" "$paneid"
+    ;;
+  "pane get")
+    p=${3:-}
+    if jq_state -e --arg p "$p" '.tabs[] | select(.pane_id == $p)' >/dev/null; then
+      jq_state --arg p "$p" --arg cwd "$(cat "$FM_FAKE_DIR/cwd")" '{result:{pane:([.tabs[]|select(.pane_id==$p)][0] + {foreground_cwd:$cwd})}}'
+    else
+      echo '{"error":{"code":"pane_not_found"}}'
+    fi
+    ;;
+  "pane run")
+    text=${4:-}
+    printf '%s\n' "$text" >> "$FM_FAKE_DIR/keys"
+    case "$text" in
+      'treehouse get') cat "$FM_FAKE_DIR/pool-get" > "$FM_FAKE_DIR/cwd"; git -C "$(cat "$FM_FAKE_DIR/cwd")" checkout -q --detach origin/main ;;
+      'treehouse enter '*) name=${text#treehouse enter }; awk -F '\t' -v n="$name" '$1==n {print $2}' "$FM_FAKE_DIR/pool-slots" > "$FM_FAKE_DIR/cwd" ;;
+      'pwd -P > '*) (cd "$(cat "$FM_FAKE_DIR/cwd")" && eval "$text") ;;
+    esac
+    ;;
+  "pane send-text")
+    [ -z "${FM_FAKE_LAUNCH_FAIL:-}" ] || case "${4:-}" in *codex*) exit 1 ;; esac
+    printf '%s\n' "${4:-}" >> "$FM_FAKE_DIR/literal" ;;
+  "pane list")
+    jq_state --arg w "$ws" '{result:{panes:[.tabs[]|select(.workspace_id==$w)|{pane_id:.pane_id, tab_id:.tab_id}]}}'
+    ;;
+  "pane close")
+    pane=${3:-}
+    jq_state --arg p "$pane" '.tabs |= [.[]|select(.pane_id != $p)]' | save
+    ;;
+  "tab close")
+    tab=${3:-}
+    jq_state --arg t "$tab" '.tabs |= [.[]|select(.tab_id != $t)]' | save
+    ;;
+  "agent get")
+    pane=${3:-}
+    status=$(jq_state -r --arg p "$pane" '.agent_status[$p] // empty')
+    if [ -n "$status" ]; then
+      printf '{"result":{"agent":{"agent_status":"%s"}}}\n' "$status"
+    else
+      printf '{"error":{"code":"agent_not_found","message":"agent target %s not found"}}\n' "$pane"
+    fi
+    ;;
+  *) : ;;
+esac
+exit 0
+SH
+  chmod +x "$fb/herdr"
+  printf '%s\n' "$fb"
+}
+
+test_herdr_reacquire() {
+  local state=$1 launch_fail=${2:-} dir id="rq-herdr-$1${2:-}" holder="rq-owner-$1${2:-}"
+  local taken free head holder_head out rc
+  dir=$(new_case herdr "$id" "$holder")
+  taken="$dir/pool/9/proj"
+  free="$dir/pool/12/proj"
+  head=$(git -C "$dir/proj" rev-parse "fm/$id")
+  holder_head=$(git -C "$taken" rev-parse HEAD)
+  cp "$dir/home/state/$holder.meta" "$dir/holder.meta.before"
+  make_herdr_statefake "$dir" >/dev/null
+  if [ "$state" = agent-free ]; then
+    printf '%s\n' '{"next":1,"workspaces":[{"workspace_id":"w0","label":"firstmate"}],"tabs":[{"workspace_id":"w0","tab_id":"w0:t0","pane_id":"w0:p0","label":"old-task"}],"agent_status":{}}' > "$dir/state.json"
+  fi
+  printf '%s\n' "$dir/proj" > "$dir/fake/cwd"
+  printf 'off\n' > "$dir/home/config/herdr-presentation"
+  sed -i.bak "s|window=firstmate:fm-$id|window=fmtest:w0:p0|" "$dir/home/state/$id.meta"
+  printf 'backend=herdr\nherdr_session=fmtest\nherdr_workspace_id=w0\nherdr_tab_id=w0:t0\nherdr_pane_id=w0:p0\n' >> "$dir/home/state/$id.meta"
+  cp "$dir/home/state/$id.meta" "$dir/meta.before"
+  out=$(unset HERDR_PANE_ID HERDR_SOCKET_PATH HERDR_WORKSPACE_ID HERDR_TAB_ID
+    export FM_HERDR_LOG="$dir/herdr.log" FM_FAKE_HERDR_STATE="$dir/state.json" HERDR_SESSION=fmtest FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0
+    FM_FAKE_LAUNCH_FAIL=$launch_fail run_spawn "$dir" "$id" --reacquire-worktree); rc=$?
+  if [ -n "$launch_fail" ]; then
+    [ "$rc" -ne 0 ] || fail "Herdr launch failure unexpectedly succeeded"
+    assert_contains "$out" 'leaving the task on its previous record' "Herdr rollback was not reached: $out"
+    cmp -s "$dir/meta.before" "$dir/home/state/$id.meta" || fail "Herdr rollback changed the prior record"
+    git -C "$free" symbolic-ref --quiet HEAD >/dev/null 2>&1 && fail "Herdr rollback left branch checked out"
+    jq -e '[.tabs[] | select(.label == "fm-'"$id"'")] | length == 0' "$dir/state.json" >/dev/null || fail "replacement endpoint survived rollback"
+  else
+    expect_code 0 "$rc" "Herdr $state recovery failed: $out"
+    assert_grep "worktree=$free" "$dir/home/state/$id.meta" "Herdr recovery did not rebind"
+    assert_no_grep 'herdr_pane_id=w0:p0' "$dir/home/state/$id.meta" "Herdr recovery retained stale endpoint"
+    [ "$(git -C "$free" rev-parse HEAD)" = "$head" ] || fail "Herdr recovery changed branch head"
+    assert_grep codex "$dir/fake/literal" "Herdr replacement launch missing"
+  fi
+  if [ "$state" = agent-free ]; then
+    jq -e '[.tabs[] | select(.pane_id == "w0:p0")] | length == 0' "$dir/state.json" >/dev/null || fail "old shell endpoint survived"
+  fi
+  assert_holder_untouched "$dir" "$holder" "$taken" "$holder_head"
+  pass "Herdr reacquire: $state endpoint, launch failure=${launch_fail:-no}"
+}
+
+test_herdr_reacquire missing
+test_herdr_reacquire agent-free
+test_herdr_reacquire agent-free 1
+
 test_reacquire_rebinds_to_fresh_copy_at_branch_head
 test_reacquire_avoids_bound_handout_and_closes_agent_free_endpoint
 test_reacquire_refuses_copy_that_still_holds_the_branch
