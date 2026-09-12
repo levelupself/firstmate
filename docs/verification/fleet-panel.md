@@ -130,6 +130,7 @@ ok - config/cockpit-sections chooses how many fleet panes there are and what eac
 ```
 
 Observed on 2026-08-13: both assertions printed exactly as shown and the command exited with status 0.
+The equal-pane wording records that fixture's result; current sizing verification is owned by [`cockpit-fleet-layout.md`](cockpit-fleet-layout.md) "Proportional drawn rectangles".
 
 ## Pane measurement and the head-preserving fit
 
