@@ -279,6 +279,17 @@ test_bound_by_live_record_with_no_free_copy_refuses() {
     "a refused spawn must not enter any copy"
   assert_bound_copy_untouched "$bound" "$other" "$before"
   assert_absent "$dir/home/state/$id.meta" "a refused spawn must publish no record"
+  assert_no_grep '^new-window ' "$dir/fake/tmux.log" \
+    "pool preflight refusal must happen before endpoint creation"
+  [ ! -s "$dir/fake/windows" ] || fail "pool refusal left an endpoint behind"
+  assert_absent "$dir/home/state/$id.meta" "a refused spawn must publish no record"
+  printf '[%s,%s]\n' "$(pool_entry 3 "$dir/pool/3/proj" available)" \
+    "$(pool_entry 7 "$bound" available)" > "$dir/fake/status.json"
+  out=$(run_spawn "$dir" "$id" "$dir/proj" --mode no-mistakes --yolo off); rc=$?
+  expect_code 0 "$rc" "the same task must retry after pool availability is restored"$'\n'"$out"
+  assert_grep "worktree=$dir/pool/3/proj" "$dir/home/state/$id.meta" \
+    "the retry must bind the restored free copy"
+  assert_bound_copy_untouched "$bound" "$other" "$before"
   pass "fm-spawn: with no unbound free copy the spawn stops and names the owning task"
 }
 
@@ -293,6 +304,17 @@ test_unreadable_inventory_with_bound_copies_refuses() {
   assert_contains "$out" "$other" "the refusal must name the task whose copy could not be protected"
   assert_no_grep 'treehouse get' "$dir/fake/keys" \
     "a spawn that cannot read the inventory must not gamble on treehouse get"
+  assert_bound_copy_untouched "$bound" "$other" "$before"
+  assert_no_grep '^new-window ' "$dir/fake/tmux.log" \
+    "pool preflight refusal must happen before endpoint creation"
+  [ ! -s "$dir/fake/windows" ] || fail "pool refusal left an endpoint behind"
+  assert_absent "$dir/home/state/$id.meta" "a refused spawn must publish no record"
+  printf '[%s,%s]\n' "$(pool_entry 3 "$dir/pool/3/proj" available)" \
+    "$(pool_entry 7 "$bound" available)" > "$dir/fake/status.json"
+  out=$(run_spawn "$dir" "$id" "$dir/proj" --mode no-mistakes --yolo off); rc=$?
+  expect_code 0 "$rc" "the same task must retry after pool availability is restored"$'\n'"$out"
+  assert_grep "worktree=$dir/pool/3/proj" "$dir/home/state/$id.meta" \
+    "the retry must bind the restored free copy"
   assert_bound_copy_untouched "$bound" "$other" "$before"
   pass "fm-spawn: an unreadable pool inventory refuses rather than guessing while a bound copy exists"
 }

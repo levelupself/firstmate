@@ -2655,6 +2655,11 @@ if [ "$REACQUIRE" -eq 1 ] && [ -n "$REACQUIRE_RETIRE_ENDPOINT" ]; then
   echo "notice: closed task $ID's agent-free endpoint $REACQUIRE_RETIRE_ENDPOINT before creating its replacement" >&2
 fi
 
+if { [ "$RECOVERY" -eq 0 ] || [ "$REACQUIRE" -eq 1 ]; } \
+   && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+  spawn_plan_pool_acquisition || exit 1
+fi
+
 W="fm-$ID"
 if [ "$RELAUNCH" -eq 1 ]; then
   # Adopt the recorded endpoint instead of creating one. This is what keeps a
@@ -3182,7 +3187,6 @@ elif [ "$REATTACH" -eq 1 ] && [ "$REACQUIRE" -eq 0 ]; then
   reattach_verify_copy_identity "with the replacement endpoint open" || exit 1
   reattach_verify_owner_free "with the replacement endpoint open" || exit 1
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_plan_pool_acquisition || exit 1
   spawn_send_text_line "$WT_TARGET" "$SPAWN_POOL_ACQUIRE"
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
