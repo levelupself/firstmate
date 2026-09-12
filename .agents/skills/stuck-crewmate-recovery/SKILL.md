@@ -41,6 +41,11 @@ Find the candidate copy with `treehouse status`, which lists every pooled copy a
 Never restore an old record by hand or create an endpoint outside this path, and never take a fresh copy at the same commit: that recovers only what was already pushed and silently abandons uncommitted work.
 If the retained copy, its branch, the task identity, or ownership cannot be reconciled safely, leave all state intact and report the task failed or blocked with the conflicting evidence.
 
+When the recorded copy itself was taken by another task - `treehouse status` shows no copy on branch `fm/<task-id>`, the recorded path now holds another task's branch under that task's live record, and `git -C <project> branch --list fm/<task-id>` still shows the branch - there is no retained copy to reattach, so recover with `FM_HOME=<this-firstmate-home> bin/fm-spawn.sh <task-id> --reacquire-worktree` instead.
+It acquires a fresh pooled copy on the task's recorded backend (tmux or herdr), checks the branch out there at its current head, closes an agent-free recorded endpoint first, and republishes the binding as one all-or-nothing operation; the other task's copy and record are never touched, and its header and `--help` own every proof it makes.
+This recovers committed work only, because a copy taken by the pool was clean when it was taken; a copy that still holds the branch is `--relaunch` or `--reattach-worktree`'s job, and `fm-spawn.sh` refuses to reacquire around it.
+Every fresh spawn now refuses a pooled copy another live record still binds, so this case arises only from records made before that guard or from a record that fell out of the home; treat a second occurrence as a bug to report.
+
 ## Live-endpoint escalation
 
 Escalate in order:

@@ -101,7 +101,8 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 - `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free and its shell is sitting in the recorded worktree, so a replacement can never join a live agent or start outside the copy holding the work.
 - The case relaunch cannot serve - a recorded endpoint that is authoritatively gone AND a record naming a different copy than the one holding the work - belongs to `fm-spawn --reattach-worktree`, which is a recovery path rather than a control verb and is not reachable through this plane.
   The two are disjoint by construction: relaunch requires an existing agent-free endpoint, reattach requires a missing one.
-  That script's header owns its identity, ownership, preservation, and rollback contract.
+  A record whose copy was taken by another task, with no retained copy holding the work but the task's branch alive in the shared repository, belongs to `fm-spawn --reacquire-worktree`, the third recovery path, which acquires a fresh copy on the branch and accepts a missing or agent-free endpoint because it closes an agent-free one first.
+  That script's header owns each path's identity, ownership, preservation, and rollback contract.
 
 ## Capability matrix
 
