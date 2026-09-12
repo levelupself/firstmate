@@ -83,9 +83,18 @@ SH
 #!/usr/bin/env bash
 set -u
 case "${1:-}" in
+  list-windows)
+    # The agent-liveness classifier (bin/backends/tmux.sh) trusts a window's
+    # foreground command only after the session inventory names it.
+    [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
+    [ -z "${FM_FAKE_TMUX_WINDOWS:-}" ] || printf '%s\n' "$FM_FAKE_TMUX_WINDOWS" ;;
   display-message)
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
-    printf '%%1\n' ;;
+    case "$*" in
+      *pane_current_command*) printf '%s\n' "${FM_FAKE_TMUX_CURRENT_COMMAND:-zsh}" ;;
+      *pane_tty*) exit 1 ;;
+      *) printf '%%1\n' ;;
+    esac ;;
   capture-pane)
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
     if [ "${FM_FAKE_BUSY:-0}" = 1 ]; then printf 'work in progress\n%s\n' "${FM_FAKE_BUSY_TEXT:-esc to interrupt}"
@@ -170,8 +179,11 @@ reset_fakes() {
   FM_FAKE_HERDR_MISSING=0
   FM_FAKE_HERDR_AGENT_STATUS=""
   FM_FAKE_CI_LOGS=""
+  FM_FAKE_TMUX_WINDOWS=""
+  FM_FAKE_TMUX_CURRENT_COMMAND=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
+  export FM_FAKE_TMUX_WINDOWS FM_FAKE_TMUX_CURRENT_COMMAND
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -877,6 +889,9 @@ test_no_run_codex_rollout_reads_working() {
   FM_FAKE_AXI_STATUS=""
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_BUSY=1
+  # The open turn is owned by a live codex process in the recorded window.
+  FM_FAKE_TMUX_WINDOWS=fm-feat-cx
+  FM_FAKE_TMUX_CURRENT_COMMAND=codex
   sessions="$d/codex-sessions"
   day="$sessions/2026/08/29"
   mkdir -p "$day"
@@ -1095,6 +1110,84 @@ test_no_run_idle_pane_paused() {
   assert_contains "$out" "source: status-log" "idle pause -> status-log source"
   assert_contains "$out" "holding for the upstream tool release" "the pause reason is carried in the detail"
   pass "no run + idle pane on a paused: status reports state: paused with its reason"
+}
+
+# (g'') a DECLARED pause outranks a harness-busy reading whose owner is gone.
+# The 2026-09-11 host-reboot case: firstmate parked every worker with a paused:
+# line, no agent was running, and a stale busy reading left behind by the dead
+# process kept the task reading working. A busy reading overrides a declared
+# pause only while the backend confirms a live agent owns it; with the agent
+# confirmed gone the pause stands, and an unverifiable owner leaves the busy
+# reading in force so an unreadable backend never hides a genuinely running turn.
+test_no_run_declared_pause_outranks_busy_reading_from_a_dead_agent() {
+  reset_fakes
+  local d out gen
+  d=$(new_case paused-dead-busy)
+  make_repo_on_branch "$d/wt" fm/feat-pause-dead
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-pd.meta" "window=fm:fm-feat-pd" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'paused: parked after the host reboot; no agent is running\n' > "$d/state/feat-pd.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-pd)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" feat-pd busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+
+  # The recorded window exists but its foreground is a bare shell: the agent
+  # that wrote the busy record is confidently gone.
+  FM_FAKE_TMUX_WINDOWS=fm-feat-pd
+  FM_FAKE_TMUX_CURRENT_COMMAND=zsh
+  out=$(run_crew_state "$d" feat-pd)
+  assert_contains "$out" "state: paused" "a declared pause must stand over a busy reading with no live agent"
+  assert_contains "$out" "source: status-log" "the standing pause is read from the status log"
+  assert_contains "$out" "no agent is running" "the pause reason is carried in the detail"
+  assert_not_contains "$out" "state: working" "a dead agent's busy reading must not override a declared pause"
+
+  # The same reading with the agent alive is a resumed turn and outranks the pause.
+  FM_FAKE_TMUX_CURRENT_COMMAND=claude
+  out=$(run_crew_state "$d" feat-pd)
+  assert_contains "$out" "state: working" "a live agent's busy reading outranks a declared pause"
+  assert_contains "$out" "source: pane" "the live busy reading is attributed to the pane"
+
+  # An unverifiable owner (a foreground the classifier cannot attribute) keeps
+  # the busy reading in force rather than silently promoting the pause.
+  FM_FAKE_TMUX_CURRENT_COMMAND=node
+  out=$(run_crew_state "$d" feat-pd)
+  assert_contains "$out" "state: working" "an unverifiable owner leaves the busy reading in force"
+  pass "a declared pause outranks a busy reading only when the backend confirms its agent gone"
+}
+
+# The codex shape of the same regression, read through the real helper: the
+# parked task's rollout still holds an open turn bracket, the pane is a bare
+# shell, and the paused: line must be what the supervisor sees.
+test_no_run_codex_open_turn_from_dead_process_reads_paused() {
+  reset_fakes
+  local d out sessions day
+  d=$(new_case codex-parked)
+  make_repo_on_branch "$d/wt" fm/feat-cx-parked
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cxp.meta" "window=fm:fm-feat-cxp" "worktree=$d/wt" \
+    "kind=ship" "harness=codex"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_TMUX_WINDOWS=fm-feat-cxp
+  FM_FAKE_TMUX_CURRENT_COMMAND=zsh
+  sessions="$d/codex-sessions"
+  day="$sessions/2026/09/10"
+  mkdir -p "$day"
+  {
+    printf '{"type":"session_meta","payload":{"cwd":"%s","originator":"codex-tui","source":"cli"}}\n' "$d/wt"
+    printf '{"type":"event_msg","payload":{"type":"task_started"}}\n'
+  } > "$day/rollout-2026-09-10T23-04-22-s-parked.jsonl"
+  printf 'sessions_root=%s\nworkspace_root=%s\n' "$sessions" "$d/wt" \
+    > "$d/state/feat-cxp.codex-session"
+  printf 'paused: parked by firstmate after the 2026-09-11 host reboot; no agent is running\n' \
+    > "$d/state/feat-cxp.status"
+  out=$(run_crew_state "$d" feat-cxp)
+  assert_contains "$out" "state: paused" "a parked codex task with an orphaned open turn must read paused"
+  assert_contains "$out" "source: status-log" "the declared pause is read from the status log"
+  assert_not_contains "$out" "harness busy" "an open turn with no live process must not read as harness busy"
+  pass "a parked codex task whose dead process left an open turn bracket reads paused, not working"
 }
 
 test_no_run_idle_pane_custom_paused_verb() {
@@ -1635,6 +1728,8 @@ test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle
 test_no_run_idle_pane_uses_log
 test_no_run_idle_pane_uses_keyed_log
 test_no_run_idle_pane_paused
+test_no_run_declared_pause_outranks_busy_reading_from_a_dead_agent
+test_no_run_codex_open_turn_from_dead_process_reads_paused
 test_no_run_idle_pane_custom_paused_verb
 test_no_run_idle_secondmate_resolved_event_not_state
 test_dead_window_ignores_stale_status_log

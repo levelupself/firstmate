@@ -383,8 +383,8 @@ clear_pause_tracking() {  # <window>
 # surfaced through the status-signal path (an idle park is not provably working,
 # so scan_signals surfaces it), handle_paused_stale re-surfaces it on the
 # status-file-age cadence, and any later non-park status line clears the tracking.
-# Only authoritative crew state showing an actively running pipeline outranks the
-# declaration.
+# bin/fm-crew-state.sh owns reconciliation of declared pauses with run-step and
+# harness-busy evidence; consume its verdict here without reinterpreting liveness.
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class
   key=${win//:/_}

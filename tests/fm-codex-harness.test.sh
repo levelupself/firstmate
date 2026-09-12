@@ -22,6 +22,16 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-codex-harness)
 
+# An open turn is busy only while a live agent can own it: the fold binds the
+# bracket to the backend's agent-liveness verdict (bin/fm-backend.sh's
+# fm_backend_agent_alive, alive|dead|unknown). These fixtures have no pane, so
+# that verdict is served from FM_TEST_CODEX_OWNER; the real-process proof of the
+# same binding is tests/fm-codex-busy-owner.test.sh.
+FM_TEST_CODEX_OWNER=alive
+fm_backend_agent_alive() {  # <backend> <target>
+  printf '%s' "$FM_TEST_CODEX_OWNER"
+}
+
 # Build a bound codex workspace: a sessions tree holding one rollout whose
 # session_meta names this worktree, plus the per-task sidecar fm-spawn writes.
 make_codex_binding() {  # <case> <rollout-body> [<originator>] [<source>] -> echoes <state-dir>
@@ -254,6 +264,51 @@ Ctrl+c:cancel')
   pass "codex classifies only from its rollout fold, never rendered text or a stored record"
 }
 
+# The 2026-09-11 host-reboot regression: every codex worker died mid-turn, so
+# each rollout ended on an open task_started with no close, and the fold kept
+# reporting busy for panes that were bare shells. An open bracket is proof of a
+# turn only while the backend can attribute a live agent to the pane; with the
+# owner confirmed gone it is an orphaned turn, and with the owner unverifiable it
+# proves nothing either way.
+test_open_turn_requires_a_live_owner() {
+  local state out
+  state=$(make_codex_binding owner-bound "$(turn_event task_started)")
+
+  FM_TEST_CODEX_OWNER=alive
+  out=$(fm_busy_classify tmux none codex task "$state")
+  [ "$out" = "busy codex-rollout" ] \
+    || fail "an open turn with a live owner must stay busy, got '$out'"
+
+  FM_TEST_CODEX_OWNER=dead
+  out=$(fm_busy_classify tmux none codex task "$state")
+  [ "$out" = "idle codex-owner-gone" ] \
+    || fail "an open turn whose owner is confirmed gone must fold to not-busy, got '$out'"
+  fm_busy_is_busy tmux none codex task "$state" \
+    && fail "fm_busy_is_busy must not report an orphaned open turn as busy"
+
+  FM_TEST_CODEX_OWNER=unknown
+  out=$(fm_busy_classify tmux none codex task "$state")
+  [ "$out" = "unknown codex-owner-unverified" ] \
+    || fail "an open turn with an unverifiable owner must be unknown, never busy, got '$out'"
+
+  # A settled turn needs no owner at all: idle is idle whoever is left.
+  state=$(make_codex_binding owner-settled "$(turn_event task_started)
+$(turn_event turn_aborted)")
+  FM_TEST_CODEX_OWNER=dead
+  out=$(fm_busy_classify tmux none codex task "$state")
+  [ "$out" = "idle codex-rollout" ] \
+    || fail "a closed turn must read idle from the rollout alone, got '$out'"
+
+  # With no liveness classifier loaded at all, the open bracket cannot be
+  # bound, so it is unknown with the reason rather than a guess.
+  state=$(make_codex_binding owner-unbound "$(turn_event task_started)")
+  out=$(unset -f fm_backend_agent_alive; fm_busy_classify tmux none codex task "$state")
+  [ "$out" = "unknown codex-owner-unverified" ] \
+    || fail "without a liveness classifier an open turn must be unknown, got '$out'"
+  FM_TEST_CODEX_OWNER=alive
+  pass "a codex open turn is busy only with a live owner: gone folds to not-busy, unverifiable stays unknown"
+}
+
 test_rollout_fold_needs_jq_and_fails_closed_without_it() {
   local state out no_jq_bin
   state=$(make_codex_binding needs-jq "$(turn_event task_started)")
@@ -278,4 +333,5 @@ test_day_bound_excludes_rollouts_older_than_the_pane
 test_codex_binding_is_scoped_to_its_own_worktree
 test_rollout_session_requires_both_interactive_identity_fields
 test_codex_never_classifies_from_rendered_text_or_native_state
+test_open_turn_requires_a_live_owner
 test_rollout_fold_needs_jq_and_fails_closed_without_it
