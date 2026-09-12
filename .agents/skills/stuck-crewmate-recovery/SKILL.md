@@ -38,13 +38,12 @@ Do not use a fresh generic spawn while the recorded worktree is unaccounted for,
 When the recorded endpoint is gone and the recorded worktree is not the one holding the work - a later spawn overwrote the record, so relaunch has no endpoint to adopt and the record names the wrong copy - recover the copy that does hold the work with `FM_HOME=<this-firstmate-home> bin/fm-spawn.sh <task-id> --reattach-worktree <retained-copy>`.
 It creates a replacement endpoint inside that copy and republishes the binding as one all-or-nothing operation, and its own header and `--help` own the identity, ownership, and preservation checks it makes plus its current backend limit.
 Find the candidate copy with `treehouse status`, which lists every pooled copy and what is running in it; the one that holds the task's work is on branch `fm/<task-id>`.
-Never restore an old record by hand or create an endpoint outside this path, and never take a fresh copy at the same commit: that recovers only what was already pushed and silently abandons uncommitted work.
+Never restore an old record by hand or create an endpoint outside this path, and never substitute a fresh copy for a retained copy holding work: doing so abandons its uncommitted changes.
 If the retained copy, its branch, the task identity, or ownership cannot be reconciled safely, leave all state intact and report the task failed or blocked with the conflicting evidence.
 
-When the recorded copy itself was taken by another task - `treehouse status` shows no copy on branch `fm/<task-id>`, the recorded path now holds another task's branch under that task's live record, and `git -C <project> branch --list fm/<task-id>` still shows the branch - there is no retained copy to reattach, so recover with `FM_HOME=<this-firstmate-home> bin/fm-spawn.sh <task-id> --reacquire-worktree` instead.
-It acquires a fresh pooled copy on the task's recorded backend (tmux or herdr), checks the branch out there at its current head, closes an agent-free recorded endpoint first, and republishes the binding as one all-or-nothing operation; the other task's copy and record are never touched, and its header and `--help` own every proof it makes.
-This recovers committed work only, because a copy taken by the pool was clean when it was taken; a copy that still holds the branch is `--relaunch` or `--reattach-worktree`'s job, and `fm-spawn.sh` refuses to reacquire around it.
-Every fresh spawn now refuses a pooled copy another live record still binds, so this case arises only from records made before that guard or from a record that fell out of the home; treat a second occurrence as a bug to report.
+When the recorded copy is absent or no longer holds the task's branch, no other worktree holds that branch, and the branch still exists in the shared repository, use `--reacquire-worktree` through [`bin/fm-spawn.sh`](../../../bin/fm-spawn.sh) to recover committed work instead of attempting a retained-copy reattach.
+That script's header owns the command, backend limits, endpoint proofs, and rollback; the [Runtime backend contract](../../../docs/configuration.md) owns pool binding protection.
+Preserve any retained copy holding uncommitted work rather than substituting this committed-work recovery, and report a collision despite the pool guard with the conflicting ownership evidence.
 
 ## Live-endpoint escalation
 
