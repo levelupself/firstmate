@@ -92,7 +92,7 @@
 # agent-liveness verdict (bin/fm-backend.sh fm_backend_agent_alive): alive is
 # busy codex-rollout, a confirmed-gone owner is an orphaned turn and folds to
 # idle codex-owner-gone, and an unverifiable owner - an ambiguous or unreadable
-# pane, or a backend with no liveness classifier - is unknown
+# pane, a backend with no liveness classifier, or that function not loaded - is unknown
 # codex-owner-unverified, never busy. A closed bracket needs no owner. See
 # fm_busy_codex_open_turn_verdict.
 #
@@ -985,17 +985,10 @@ fm_busy_codex_turn_state() {  # <rollout>
 }
 
 # fm_busy_codex_open_turn_verdict: the liveness binding for an OPEN bracket.
-# Prints the full "<verdict> <source>" for a rollout whose last turn has no
-# close, from the backend's recovery-grade agent verdict for this pane:
-#   alive    -> busy codex-rollout          a live agent owns the turn
-#   dead     -> idle codex-owner-gone       the pane confidently has no agent
-#                                           (or the endpoint is authoritatively
-#                                           absent): the turn is orphaned
-#   unknown  -> unknown codex-owner-unverified  ambiguous, unreadable, or a
-#                                           backend with no liveness classifier
-# The verdict comes from fm_backend_agent_alive (bin/fm-backend.sh); when that
-# function is not loaded nothing can vouch for the owner, so the answer is
-# unknown rather than a guess. A closed bracket never reaches this function.
+# Prints "<verdict> <source>" under the codex pull-source contract in the header.
+# A consumer sourcing only this library has no classifier loaded and therefore
+# cannot vouch for the owner; command -v keeps that case unknown without error.
+# A closed bracket never reaches this function.
 fm_busy_codex_open_turn_verdict() {  # <backend> <target>
   local owner=unknown
   if command -v fm_backend_agent_alive >/dev/null 2>&1; then

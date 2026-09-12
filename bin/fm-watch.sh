@@ -383,11 +383,8 @@ clear_pause_tracking() {  # <window>
 # surfaced through the status-signal path (an idle park is not provably working,
 # so scan_signals surfaces it), handle_paused_stale re-surfaces it on the
 # status-file-age cadence, and any later non-park status line clears the tracking.
-# Only authoritative crew state showing an actively running pipeline, or a busy
-# pane whose agent the backend confirms alive, outranks the declaration;
-# bin/fm-crew-state.sh owns that precedence, so a busy reading left behind by a
-# process that died mid-turn (a codex rollout's open bracket after a host reboot)
-# reads paused there and keeps the park on this bounded cadence.
+# bin/fm-crew-state.sh owns reconciliation of declared pauses with run-step and
+# harness-busy evidence; consume its verdict here without reinterpreting liveness.
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class
   key=${win//:/_}

@@ -214,7 +214,7 @@ $ jq -r 'select(.type=="event_msg")|select(.payload.type|test("task_"))|"\(.time
 2026-08-29T15:02:19.565Z task_complete
 ```
 
-Mid-turn the log held `task_started` with no matching close, which is the positive busy proof the fold needs.
+Mid-turn the log held `task_started` with no matching close; the current classification contract is owned by [bin/fm-busy-lib.sh](../../bin/fm-busy-lib.sh), with owner-binding evidence [below](#open-bracket-owner-binding-2026-09-12).
 The interrupt path was then driven on a long turn still streaming its output:
 
 ```sh
@@ -244,10 +244,7 @@ One incidental fact observed in the same runs and NOT acted on here: a single `E
 
 #### Open bracket owner binding, 2026-09-12
 
-The rollout is append-only and records no pid, so a worker that dies mid-turn leaves its `task_started` open with nothing to close it.
-After the 2026-09-11 host reboot every codex worker died that way; `bin/fm-crew-state.sh` read each parked pane as `working · harness busy (codex-rollout)` although the pane was a bare shell and the task carried a `paused:` line, and the watcher's busy-turn bound wedge-escalated those panes every threshold (per-pane escalation counters reached 285 to 389).
-The fold now binds an open bracket to the backend's recovery-grade agent-liveness verdict (`fm_backend_agent_alive`, the same classifier `bin/fm-control.sh exit` relies on): alive stays `busy codex-rollout`, a confirmed-gone owner folds to `idle codex-owner-gone`, and an unattributable owner is `unknown codex-owner-unverified`.
-A closed bracket needs no owner, so the interrupt path above is unchanged.
+[bin/fm-busy-lib.sh](../../bin/fm-busy-lib.sh) owns the open-bracket owner-binding contract, and [bin/fm-crew-state.sh](../../bin/fm-crew-state.sh) owns declared-pause precedence.
 
 Verified on 2026-09-12 against codex-cli 0.153.4 rollouts and tmux 3.4 on Linux, reading one real parked task through the public helper (the rollout still ends on an open `task_started`, the Herdr pane's `agent get` answers `agent_not_found`):
 
