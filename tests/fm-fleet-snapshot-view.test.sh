@@ -1246,6 +1246,39 @@ test_read_paths_do_not_mutate_fleet_state() {
   pass "snapshot, fleet view, and bearings leave data/ and state/ byte-for-byte and metadata-identical"
 }
 
+# Wait for complete terminal frames, not a machine-dependent rendering budget.
+watch_until_two_frames() {  # <output-file> <command> [args...]
+  perl -e '
+    use POSIX qw(WNOHANG);
+    my $output = shift @ARGV;
+    my $pid = fork();
+    defined $pid or die "fork: $!\n";
+    exec @ARGV unless $pid;
+    $SIG{ALRM} = sub {
+      kill "KILL", $pid;
+      waitpid $pid, 0;
+      die "watch timed out waiting for two complete frames or clean exit\n";
+    };
+    alarm 30;
+    while (1) {
+      open my $fh, "<", $output or die "open: $!\n";
+      my $s = do { local $/; <$fh> } // "";
+      close $fh;
+      my $frames = () = $s =~ /\e\[J\e\[\?2026l/g;
+      last if $frames >= 2;
+      if (waitpid($pid, WNOHANG) == $pid) {
+        die "watch exited before two complete frames (status $?)\n";
+      }
+      select undef, undef, undef, 0.01;
+    }
+    kill "INT", $pid;
+    waitpid $pid, 0;
+    my $status = $?;
+    alarm 0;
+    exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
+  ' "$@"
+}
+
 test_watch_redraws_and_exits_cleanly() {
   local home fakebin watch_bin output rc redraws
   home=$(make_home watch)
@@ -1256,20 +1289,15 @@ test_watch_redraws_and_exits_cleanly() {
   ln -s "$ROOT/bin/fm-terminal-frame-lib.sh" "$watch_bin/fm-terminal-frame-lib.sh"
   cat > "$watch_bin/fm-fleet-snapshot.sh" <<'SH'
 #!/usr/bin/env bash
+# Rendering may take longer than the former fixed Ctrl-C delay on CI.
+sleep 0.4
 printf '%s\n' '{"tasks":[],"backlog":{"records":[]},"secondmates":[]}'
 SH
   chmod +x "$watch_bin/fm-fleet-snapshot.sh"
   output="$home/watch.out"
+  # shellcheck disable=SC2094 # The parent observes frames written by the child.
   PATH="$fakebin:$PATH" FM_HOME="$home" COLUMNS=45 \
-    perl -e '
-      my $pid = fork();
-      defined $pid or die "fork: $!\n";
-      exec @ARGV unless $pid;
-      select undef, undef, undef, 0.35;
-      kill "INT", $pid;
-      waitpid $pid, 0;
-      exit($? >> 8);
-    ' "$watch_bin/fm-fleet-view.sh" --watch 0.1 > "$output"
+    watch_until_two_frames "$output" "$watch_bin/fm-fleet-view.sh" --watch 0.1 > "$output"
   rc=$?
   expect_code 0 "$rc" "watch mode should exit cleanly on Ctrl-C"
   redraws=$(LC_ALL=C grep -ao $'\033\[?2026h\033\[H' "$output" | wc -l | tr -d ' ')
@@ -1309,16 +1337,9 @@ printf 'RENDERED\n' >&3
 SH
   chmod +x "$watch_bin/fm-fleet-snapshot.sh" "$fakebin/jq"
   output="$home/watch.out"
+  # shellcheck disable=SC2094 # The parent observes frames written by the child.
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_TEST_JQ_COUNT="$home/jq-count" \
-    perl -e '
-      my $pid = fork();
-      defined $pid or die "fork: $!\n";
-      exec @ARGV unless $pid;
-      select undef, undef, undef, 0.25;
-      kill "INT", $pid;
-      waitpid $pid, 0;
-      exit($? >> 8);
-    ' "$watch_bin/fm-fleet-view.sh" --section ready --watch 0.05 > "$output" 3>&1
+    watch_until_two_frames "$output" "$watch_bin/fm-fleet-view.sh" --section ready --watch 0.05 > "$output" 3>&1
   rc=$?
   expect_code 0 "$rc" "ordered watch fixture should exit cleanly"
   perl -0777 -e '

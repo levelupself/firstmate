@@ -252,6 +252,9 @@ test_home_defaults_preserve_absolute_or_resolve_relative_paths() {
 
   linked_home="$CASE_DIR/home-link"
   ln -s "$HOME_DIR" "$linked_home"
+  # The same copy is reused only once its first task is torn down: a live
+  # record still binding it would refuse the second spawn.
+  echo 'teardown_at=2026-09-11T00:00:00Z' >> "$HOME_DIR/state/$relative_id.meta"
   : > "$LAUNCH_LOG"
   out=$(
     FM_ROOT_OVERRIDE='' FM_HOME="$linked_home" \
@@ -749,12 +752,61 @@ test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
 }
 
 test_batch_forwards_shared_profile_flags() {
-  local rec id1 id2 out status
+  local rec id1 id2 out status wt2
   id1=profile-batch-a-z9
   id2=profile-batch-b-z10
   rec=$(make_spawn_case profile-batch claude "$id1" "$id2")
   read_case_record "$rec"
   enable_dispatch_profile "$HOME_DIR"
+  # Two live tasks of one project never share a pooled copy (a spawn refuses a
+  # copy another live record binds), so the second pair's window gets its own
+  # copy: this fake keys the pane's directory on the window it was created for.
+  wt2="$CASE_DIR/wt2"
+  git -C "$PROJ_DIR" worktree add --quiet --detach "$wt2"
+  cat > "$FAKEBIN_DIR/tmux" <<SH
+#!/usr/bin/env bash
+set -u
+pane_path() {
+  if [ "\$(cat '$CASE_DIR/current-window' 2>/dev/null)" = "fm-$id2" ]; then printf '%s' '$wt2'; else printf '%s' "\${FM_FAKE_PANE_PATH:-}"; fi
+}
+case "\$*" in
+  *"#{pane_current_path}"*) pane_path; printf '\\n'; exit 0 ;;
+esac
+case "\${1:-}" in
+  display-message) printf 'firstmate\\n'; exit 0 ;;
+  list-windows) exit 0 ;;
+  new-window)
+    prev=
+    for a in "\$@"; do
+      [ "\$prev" != -n ] || printf '%s' "\$a" > '$CASE_DIR/current-window'
+      prev=\$a
+    done
+    exit 0
+    ;;
+  has-session|new-session|kill-window) exit 0 ;;
+  send-keys)
+    prev=
+    for a in "\$@"; do
+      if [ "\$prev" = "-l" ] && [ -n "\${FM_FAKE_LAUNCH_LOG:-}" ]; then
+        printf '%s\\n' "\$a" >> "\$FM_FAKE_LAUNCH_LOG"
+      fi
+      case "\$a" in 'pwd -P > '*) ( cd "\$(pane_path)" && eval "\$a" ) || true ;; esac
+      prev=\$a
+    done
+    exit 0
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$FAKEBIN_DIR/tmux"
+  # The pool inventory the second pair's spawn reads before acquiring: the
+  # first pair's copy is in use, the second copy is free.
+  cat > "$FAKEBIN_DIR/treehouse" <<SH
+#!/usr/bin/env bash
+[ "\${1:-}" = status ] || exit 0
+printf '%s\\n' '[{"name":"1","path":"$WT_DIR","status":"in-use","lease_id":"","lease_holder":"","leased_at":null,"processes":[{"pid":4242,"name":"bash"}]},{"name":"2","path":"$wt2","status":"available","lease_id":"","lease_holder":"","leased_at":null,"processes":[]}]'
+SH
+  chmod +x "$FAKEBIN_DIR/treehouse"
 
   out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
     "$id1=$PROJ_DIR" "$id2=$PROJ_DIR" --harness codex --model gpt-5 --effort high)
@@ -764,6 +816,8 @@ test_batch_forwards_shared_profile_flags() {
   assert_contains "$out" "spawned $id2 harness=codex" "second batch task did not use shared harness"
   assert_meta_profile "$HOME_DIR/state/$id1.meta" codex gpt-5 high
   assert_meta_profile "$HOME_DIR/state/$id2.meta" codex gpt-5 high
+  assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id1.meta" "first batch task did not record its own copy"
+  assert_grep "worktree=$wt2" "$HOME_DIR/state/$id2.meta" "second batch task did not record its own copy"
   pass "batch dispatch forwards shared --harness, --model, and --effort to every pair"
 }
 

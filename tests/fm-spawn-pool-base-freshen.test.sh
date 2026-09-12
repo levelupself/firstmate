@@ -106,6 +106,9 @@ test_stale_pool_base_refreshes_before_branching() {
       "$branch_head" "$current" "$(cat "$POOL_DIR/advanced-main.txt")"
   fi
 
+  # The copy is reused only once its first task is torn down: a live record
+  # still binding it would refuse the second spawn (fm-spawn-pool-slot-binding).
+  echo 'teardown_at=2026-09-11T00:00:00Z' >> "$HOME_DIR/state/$id.meta"
   id='pool-current-base-repeat-r1'
   mkdir -p "$HOME_DIR/data/$id"
   printf 'brief for %s\n' "$id" > "$HOME_DIR/data/$id/brief.md"

@@ -69,6 +69,48 @@
 #   a notice instead.
 #   tmux only, because it is the sole backend that can both prove a missing
 #   endpoint and create a replacement directly in an existing directory.
+#        fm-spawn.sh <task-id> --reacquire-worktree [--harness <name>] [--model <name>] [--effort <level>]
+#   --reacquire-worktree is the recovery for the case --reattach-worktree
+#   cannot serve: the task's recorded copy was TAKEN - handed to another task
+#   by the pool and refreshed, so no retained copy holds the work - while the
+#   task's branch fm/<task-id> survived in the shared repository with its
+#   commits. It acquires a fresh pooled copy through the ordinary fresh-spawn
+#   endpoint path on the task's recorded backend (tmux or herdr, the backends
+#   with a recovery-grade agent-state classifier), refreshes that copy exactly
+#   as a fresh spawn would, checks fm/<task-id> out there at its current head,
+#   and republishes the endpoint plus worktree binding atomically with the
+#   same staged record, activation gate, and rollback as --reattach-worktree.
+#   It recovers committed work only: a copy the pool took was clean when it
+#   was taken. Before creating anything it requires: the record validates and
+#   carries this task's identity, its kind is ship or scout, the recorded
+#   endpoint is positively missing or positively agent-free (an agent-free
+#   endpoint is closed first, since it holds nothing but a shell, and the task
+#   then reads as missing, the state this same path retries from), the
+#   recorded copy is absent or no longer on fm/<task-id> (a copy that still
+#   holds the branch is --relaunch or --reattach-worktree's job), the branch
+#   exists, and `git worktree list` shows it checked out nowhere. The copy the
+#   record named before is never touched: it now belongs to whichever record
+#   binds it and is named in a notice. A failure after the replacement
+#   endpoint exists removes it, restores the prior record byte-for-byte, and
+#   detaches the fresh copy from the branch again. The fresh acquisition
+#   records an ordinary allocation-ledger acquire at the time it happened.
+#   Fresh ship and scout spawns never take a pooled copy another task record
+#   in this home still binds. `treehouse get` hands out any clean copy with no
+#   process inside it and no durable lease, and checks it out at origin's
+#   default branch as it does so; the pool remembers an interactive
+#   acquisition only by the acquiring shell's pid, so after that shell exits
+#   or the host reboots a parked task's committed, clean copy reads as
+#   available again while state/<id>.meta still binds it. A record binds its
+#   worktree= until bin/fm-teardown.sh stamps teardown_at= into it (only after
+#   its landed-work test) or removes it. Before the pane runs `treehouse get`,
+#   this script reads `treehouse status --json` for the project whenever any
+#   other live record of the same project binds a copy: if the pool would
+#   hand out a bound copy, the pane runs `treehouse enter <name>` into an
+#   unbound available copy instead (then detaches it so the base refresh
+#   moves no branch), and when no unbound copy is available the spawn stops
+#   naming the owning task. An unreadable inventory while bound copies exist
+#   is a refusal, not a guess. Whatever copy the pane lands in is checked
+#   again against every live record before anything is launched or recorded.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -251,7 +293,7 @@
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
 # success line and state/<id>.meta omit them.
-# Every fresh spawn, relaunch, or retained-copy reattach records a new spawn_gen= incarnation token so durable
+# Every fresh spawn, relaunch, retained-copy reattach, or fresh-copy reacquire records a new spawn_gen= incarnation token so durable
 # consumers can distinguish a replacement worker that reuses the same task id.
 # When the home session's frozen trace-context decision is enabled (see
 # docs/configuration.md and bin/fm-trace-context-lib.sh), the meta also records
@@ -383,6 +425,7 @@ YOLO_SET=0
 TRACEPARENT_SET=0
 RELAUNCH=0
 REATTACH=0
+REACQUIRE=0
 REATTACH_WT_ARG=
 REATTACH_WT_SET=0
 POS=()
@@ -411,6 +454,7 @@ for a in "$@"; do
     --scout) KIND=scout; KIND_SET=1 ;;
     --secondmate) KIND=secondmate; KIND_SET=1 ;;
     --relaunch) RELAUNCH=1 ;;
+    --reacquire-worktree) REACQUIRE=1 ;;
     --reattach-worktree) want_value=reattach-worktree ;;
     --reattach-worktree=*) REATTACH_WT_ARG=${a#--reattach-worktree=}; REATTACH_WT_SET=1; REATTACH=1 ;;
     --harness) want_value=harness ;;
@@ -442,13 +486,18 @@ done
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
 [ "$REATTACH_WT_SET" -eq 0 ] || [ -n "$REATTACH_WT_ARG" ] || { echo "error: --reattach-worktree requires a non-empty value" >&2; exit 1; }
 [ "$ENV_FILE_SET" -eq 0 ] || [ -n "$ENV_FILE" ] || { echo "error: --env-file requires a non-empty value" >&2; exit 1; }
-[ $((RELAUNCH + REATTACH)) -le 1 ] || { echo "error: --relaunch and --reattach-worktree are different recovery paths; pass exactly one" >&2; exit 1; }
-# RECOVERY is the shared "this task already exists" predicate. Both recovery
-# modes re-launch a task whose record is authoritative, so every axis a fresh
+[ $((RELAUNCH + REATTACH + REACQUIRE)) -le 1 ] || { echo "error: --relaunch, --reattach-worktree, and --reacquire-worktree are different recovery paths; pass exactly one" >&2; exit 1; }
+# RECOVERY is the shared "this task already exists" predicate. Every recovery
+# mode re-launches a task whose record is authoritative, so every axis a fresh
 # spawn resolves is instead adopted from that record. They differ only in what
 # they reuse: --relaunch reuses the recorded endpoint AND the recorded copy,
-# while --reattach-worktree creates a replacement endpoint bound to a retained
-# copy the record no longer names.
+# --reattach-worktree creates a replacement endpoint bound to a retained copy
+# the record no longer names, and --reacquire-worktree creates a replacement
+# endpoint bound to a freshly acquired copy holding the task's branch.
+# REATTACH is the shared "replace the endpoint and republish the binding
+# atomically" predicate the last two have in common (staged record, activation
+# gate, rollback); REACQUIRE distinguishes where the copy comes from.
+[ "$REACQUIRE" -eq 0 ] || REATTACH=1
 RECOVERY=$((RELAUNCH + REATTACH))
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
@@ -491,9 +540,11 @@ esac
 # fresh spawn instead comes from that task's own durable record below.
 # Contradicting it on the command line is a refusal rather than a
 # silently-ignored flag.
+recovery_flag=
 if [ "$RECOVERY" -eq 1 ]; then
   recovery_flag=--relaunch
   [ "$REATTACH" -eq 0 ] || recovery_flag=--reattach-worktree
+  [ "$REACQUIRE" -eq 0 ] || recovery_flag=--reacquire-worktree
   [ "$BACKEND_SET" -eq 0 ] || { echo "error: $recovery_flag reuses the task's recorded backend; --backend cannot override it" >&2; exit 1; }
   [ "$KIND_SET" -eq 0 ] || { echo "error: $recovery_flag reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2; exit 1; }
   [ "$MODE_SET" -eq 0 ] || { echo "error: $recovery_flag reuses the task's recorded delivery mode; --mode cannot override it" >&2; exit 1; }
@@ -815,6 +866,9 @@ REATTACH_META_PUBLISHED=0
 REATTACH_WIRING_BACKUP=
 REATTACH_PANE_PID=
 REATTACH_DISPLACED_WT=
+REACQUIRE_RETIRE_ENDPOINT=
+REACQUIRE_BRANCH_HEAD=
+REACQUIRE_CHECKED_OUT_WT=
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
 
@@ -846,13 +900,25 @@ spawn_abort_cleanup() {
     REATTACH_ABORT_ENDPOINT=0
     if [ -n "${T:-}" ]; then
       fm_backend_kill "$BACKEND" "$T" 2>/dev/null || true
-      reattach_windows=$(tmux list-windows -t "=${T%%:*}" -F '#{window_name}' 2>/dev/null) \
-        || reattach_windows=__unreadable__
-      if [ "$reattach_windows" = __unreadable__ ] \
-         || printf '%s\n' "$reattach_windows" | grep -qxF "${T#*:}"; then
-        echo "warning: could not prove the replacement endpoint $T was removed after the failed reattach of $ID; close it before retrying so the retained copy reads as unowned" >&2
+      if [ "$BACKEND" = tmux ]; then
+        reattach_windows=$(tmux list-windows -t "=${T%%:*}" -F '#{window_name}' 2>/dev/null) \
+          || reattach_windows=__unreadable__
+        if [ "$reattach_windows" = __unreadable__ ] \
+           || printf '%s\n' "$reattach_windows" | grep -qxF "${T#*:}"; then
+          echo "warning: could not prove the replacement endpoint $T was removed after the failed $recovery_flag of $ID; close it before retrying so the copy reads as unowned" >&2
+        fi
       fi
     fi
+  fi
+  # A reacquire that checked the task's branch out in its fresh copy and then
+  # failed puts that copy back on a detached HEAD, so the branch is checked
+  # out nowhere and the next attempt (or a reattach to a retained copy) can
+  # take it. Nothing is reset or discarded: the branch ref and the copy's
+  # content stay exactly as they are.
+  if [ -n "$REACQUIRE_CHECKED_OUT_WT" ]; then
+    git -C "$REACQUIRE_CHECKED_OUT_WT" checkout --detach --quiet 2>/dev/null \
+      || echo "warning: could not detach '$REACQUIRE_CHECKED_OUT_WT' from fm/$ID after the failed reacquire; detach it by hand before retrying" >&2
+    REACQUIRE_CHECKED_OUT_WT=
   fi
   if [ "$REATTACH_META_PUBLISHED" = 1 ] && [ -f "$REATTACH_META_PRIOR" ]; then
     if mv -f -- "$REATTACH_META_PRIOR" "$STATE/$ID.meta"; then
@@ -1169,7 +1235,7 @@ if [ "$RECOVERY" -eq 1 ]; then
     exit 1
   fi
 fi
-if [ "$RECOVERY" -eq 0 ]; then
+if [ "$RECOVERY" -eq 0 ] || [ "$REACQUIRE" -eq 1 ]; then
   mkdir -p "$STATE" || {
     echo "error: could not create parent state directory" >&2
     exit 1
@@ -1185,7 +1251,9 @@ if [ "$RECOVERY" -eq 0 ]; then
   #
   # A relaunch is exempt: it republishes a task that already exists, so it is
   # already covered by that task's control lock, which the teardown preflight
-  # tests.
+  # tests. So is a reattach, which allocates nothing. A reacquire takes the
+  # lock too: it selects a pooled copy against the other records' bindings,
+  # and that selection must not interleave with another allocation.
   #
   # Refusing rather than waiting is the fail-closed direction: the home may be
   # moments from removal, so there is nothing worth waiting for.
@@ -1289,14 +1357,32 @@ if [ "$RECOVERY" -eq 1 ]; then
     # per task; reattach exists only for the case relaunch cannot serve, where
     # the recorded endpoint is authoritatively gone and a replacement must be
     # created against a copy the record no longer names.
-    [ "$BACKEND" = tmux ] || {
-      echo "error: --reattach-worktree supports the tmux backend only, because it is the only one that can both prove a missing endpoint and create a replacement directly in an existing directory; task $ID records '$BACKEND'" >&2
-      exit 1
-    }
-    [ "$RELAUNCH_STATE" = missing ] || {
-      echo "error: task $ID's recorded endpoint reads '$RELAUNCH_STATE', not missing; an endpoint that still exists is adopted with --relaunch instead" >&2
-      exit 1
-    }
+    if [ "$REACQUIRE" -eq 0 ]; then
+      [ "$BACKEND" = tmux ] || {
+        echo "error: --reattach-worktree supports the tmux backend only, because it is the only one that can both prove a missing endpoint and create a replacement directly in an existing directory; task $ID records '$BACKEND'" >&2
+        exit 1
+      }
+      [ "$RELAUNCH_STATE" = missing ] || {
+        echo "error: task $ID's recorded endpoint reads '$RELAUNCH_STATE', not missing; an endpoint that still exists is adopted with --relaunch instead" >&2
+        exit 1
+      }
+    else
+      # A reacquire creates its replacement through the ordinary fresh-spawn
+      # endpoint path, which every recovery-grade backend supports, so it is
+      # not limited to tmux. The recorded endpoint must be positively gone or
+      # positively agent-free: an agent-free endpoint holds nothing but a
+      # shell, so it is closed before the replacement is created (a tmux
+      # window name and a herdr task pane label are per task) and the task
+      # passes through the missing state this same path can retry from.
+      case "$RELAUNCH_STATE" in
+        missing) REACQUIRE_RETIRE_ENDPOINT= ;;
+        dead) REACQUIRE_RETIRE_ENDPOINT=$RELAUNCH_TARGET ;;
+        *)
+          echo "error: task $ID's recorded endpoint reads '$RELAUNCH_STATE'; --reacquire-worktree needs a positively missing or agent-free endpoint (stop the agent first with bin/fm-control.sh $ID exit)" >&2
+          exit 1
+          ;;
+      esac
+    fi
   fi
   RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
   KIND=$(fm_meta_get "$RELAUNCH_META" kind)
@@ -1331,15 +1417,21 @@ if [ "$RECOVERY" -eq 1 ]; then
     # The copy the record names today. A reattach rebinds the task away from it,
     # and deliberately does NOT reclaim it: see the success notice below.
     REATTACH_DISPLACED_WT=$(fm_meta_get "$RELAUNCH_META" worktree)
-    [ -d "$REATTACH_WT_ARG" ] || {
-      echo "error: retained copy '$REATTACH_WT_ARG' is missing; there is nothing to reattach task $ID to" >&2
-      exit 1
-    }
-    WT=$(cd "$REATTACH_WT_ARG" 2>/dev/null && pwd -P) || {
-      echo "error: retained copy '$REATTACH_WT_ARG' cannot be resolved; refusing to reattach task $ID to a path it cannot inspect" >&2
-      exit 1
-    }
-    RELAUNCH_WT=$WT
+    if [ "$REACQUIRE" -eq 1 ]; then
+      # The copy is acquired from the pool below, once the project is known;
+      # the branch and displacement proofs run there too.
+      RELAUNCH_WT=
+    else
+      [ -d "$REATTACH_WT_ARG" ] || {
+        echo "error: retained copy '$REATTACH_WT_ARG' is missing; there is nothing to reattach task $ID to" >&2
+        exit 1
+      }
+      WT=$(cd "$REATTACH_WT_ARG" 2>/dev/null && pwd -P) || {
+        echo "error: retained copy '$REATTACH_WT_ARG' cannot be resolved; refusing to reattach task $ID to a path it cannot inspect" >&2
+        exit 1
+      }
+      RELAUNCH_WT=$WT
+    fi
   fi
   if [ "$KIND" = secondmate ]; then
     FIRSTMATE_HOME=$(fm_meta_get "$RELAUNCH_META" home)
@@ -1351,7 +1443,9 @@ if [ "$RECOVERY" -eq 1 ]; then
       exit 1
     }
   fi
-  if [ "$BACKEND" = herdr ]; then
+  # Only endpoint adoption loads the recorded identity. Reacquisition must
+  # preserve the actual launcher environment for fresh endpoint placement.
+  if [ "$BACKEND" = herdr ] && [ "$RELAUNCH" -eq 1 ]; then
     HERDR_SES=$(fm_meta_get "$RELAUNCH_META" herdr_session)
     HERDR_WORKSPACE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_workspace_id)
     HERDR_TAB_ID=$(fm_meta_get "$RELAUNCH_META" herdr_tab_id)
@@ -2039,7 +2133,7 @@ PROJ_ABS_REAL=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P) || PROJ_ABS_REAL="$PROJ_AB
 SPAWN_WORKTREE_ALLOCATION=
 WORKTREE_INVENTORY=
 WORKTREE_INVENTORY_VALID=0
-if [ "$RECOVERY" -eq 0 ] && [ "$KIND" != secondmate ]; then
+if { [ "$RECOVERY" -eq 0 ] || [ "$REACQUIRE" -eq 1 ]; } && [ "$KIND" != secondmate ]; then
   if WORKTREE_INVENTORY=$(git -C "$PROJ_ABS" worktree list --porcelain 2>/dev/null) \
     && printf '%s\n' "$WORKTREE_INVENTORY" | grep -Eq '^worktree /' \
     && ! printf '%s\n' "$WORKTREE_INVENTORY" | grep -Eq '^worktree "'; then
@@ -2056,7 +2150,206 @@ real_path_or_raw() {  # <path>
   fi
 }
 
-if [ "$RECOVERY" -eq 0 ] && [ "$KIND" != secondmate ]; then
+# --- pooled-copy ownership cross-check ---------------------------------------
+#
+# `treehouse get` hands out any clean copy that has no process inside it and no
+# durable lease, and checks it out at origin's default branch as it does so. The
+# pool remembers an interactive acquisition only by the acquiring shell's pid,
+# so a host reboot (or any exit of that shell) turns a parked task's clean,
+# committed copy back into an available one while this home's state/<id>.meta
+# still binds it - and the pool cannot be told to skip a copy. The cross-check
+# therefore runs BEFORE the acquisition: every copy another task record still
+# binds is identified, and if the pool would hand any of them out, the pane is
+# steered into an unbound free copy with `treehouse enter <name>` instead of
+# letting `get` choose. A record binds its copy until teardown stamps
+# teardown_at= into it (bin/fm-teardown.sh does so only after its landed-work
+# test) or removes it; a status log or report alone binds nothing.
+
+# spawn_bound_worktrees [<project-real-path>]: every "<owner><TAB><real path>"
+# pair another live record in this home binds, one per line. With a project
+# given, only records of that project (or with no recorded project) are listed,
+# because a pool belongs to one project checkout and another project's copies
+# can never be handed out from it. Regular record files only; a symlinked or
+# otherwise irregular record is refused by the validators that read it.
+spawn_bound_worktrees() {  # [<project-real-path>]
+  local project=${1:-} meta bound_id bound_wt bound_project
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+    bound_id=$(basename "$meta" .meta)
+    [ "$bound_id" != "$ID" ] || continue
+    bound_wt=$(fm_meta_get "$meta" worktree)
+    [ -n "$bound_wt" ] || continue
+    grep -q '^teardown_at=' "$meta" 2>/dev/null && continue
+    if [ -n "$project" ]; then
+      bound_project=$(fm_meta_get "$meta" project)
+      [ -z "$bound_project" ] || [ "$(real_path_or_raw "$bound_project")" = "$project" ] || continue
+    fi
+    printf '%s\t%s\n' "$bound_id" "$(real_path_or_raw "$bound_wt")"
+  done
+}
+
+# spawn_worktree_binding_owner <path>: prints the id of the other task record
+# in this home that still binds <path>, or nothing.
+spawn_worktree_binding_owner() {  # <path>
+  local path=$1
+  spawn_bound_worktrees | awk -F '\t' -v p="$(real_path_or_raw "$path")" '$2 == p { print $1; exit }'
+}
+
+# spawn_pool_inventory_rows: the pool's own inventory for this project as
+# "<name><TAB><path><TAB><status><TAB><lease-id or -><TAB><process-count>" rows
+# (an empty lease prints as - so `read` never collapses the field), or failure
+# when it cannot be read or is malformed. Parsed with node for the same
+# reason the reattach proofs are: jq is not a required tool on every backend,
+# and a missing parser must never read as an empty pool.
+spawn_pool_inventory_rows() {
+  local inventory
+  inventory=$(cd "$PROJ_ABS" && treehouse status --json 2>/dev/null) || return 1
+  FM_SPAWN_POOL_INVENTORY="$inventory" node - <<'NODE'
+let parsed
+try { parsed = JSON.parse(process.env.FM_SPAWN_POOL_INVENTORY || '') } catch { process.exit(1) }
+if (!Array.isArray(parsed)) process.exit(1)
+const seen = new Set()
+const clean = value => typeof value === 'string' && !/[\t\r\n]/.test(value)
+for (const e of parsed) {
+  if (!e || !clean(e.name) || !clean(e.path) || !e.path.startsWith('/') || seen.has(e.path)
+      || !clean(e.status) || !clean(e.lease_id) || !Array.isArray(e.processes)) process.exit(1)
+  seen.add(e.path)
+  process.stdout.write([e.name, e.path, e.status, e.lease_id === '' ? '-' : e.lease_id, String(e.processes.length)].join('\t') + '\n')
+}
+NODE
+}
+
+# spawn_plan_pool_acquisition: decides how the pane acquires its copy. Sets
+# SPAWN_POOL_ACQUIRE to the exact pane command and, for a steered acquisition,
+# SPAWN_POOL_ENTER_PATH to the copy it must land in. With no bound copies the
+# pool is not even consulted and the ordinary `treehouse get` runs unchanged.
+SPAWN_POOL_ACQUIRE='treehouse get'
+SPAWN_POOL_ENTER_PATH=
+spawn_plan_pool_acquisition() {
+  local bound rows owner path name status lease procs hazard='' hazard_owner='' candidate='' candidate_name='' free=''
+  bound=$(spawn_bound_worktrees "$PROJ_ABS_REAL")
+  [ -n "$bound" ] || return 0
+  if ! rows=$(spawn_pool_inventory_rows) || [ -z "$rows" ]; then
+    owner=$(printf '%s\n' "$bound" | head -n 1 | cut -f1)
+    echo "error: the pool inventory for '$PROJ_ABS' could not be read, so this spawn cannot prove the pool will not hand out a copy that task $owner (and possibly others) still binds; refusing to run treehouse get rather than refresh a bound copy. Run 'treehouse status --json' in the project to see why" >&2
+    return 1
+  fi
+  while IFS=$'\t' read -r name path status lease procs; do
+    [ -n "$path" ] || continue
+    owner=$(printf '%s\n' "$bound" | awk -F '\t' -v p="$(real_path_or_raw "$path")" '$2 == p { print $1; exit }')
+    if [ -n "$owner" ]; then
+      # Only a copy the pool would hand out is a hazard: one with a process,
+      # a lease, or uncommitted changes is skipped by the pool itself. Any
+      # status this script does not recognize is treated as a hazard.
+      case "$status" in
+        in-use|leased|dirty) ;;
+        *) [ -n "$hazard" ] || { hazard=$path; hazard_owner=$owner; } ;;
+      esac
+      continue
+    fi
+    if [ -z "$candidate" ] && [ "$status" = available ] && [ "$lease" = - ] && [ "$procs" = 0 ]; then
+      candidate=$path
+      candidate_name=$name
+    fi
+  done <<ROWS
+$rows
+ROWS
+  [ -n "$hazard" ] || return 0
+  if [ -z "$candidate" ]; then
+    free=$(printf '%s\n' "$rows" | awk -F '\t' '$3 == "available" { n++ } END { print n + 0 }')
+    echo "error: the pool would hand out '$hazard', which task $hazard_owner still binds (its record names that copy and it has not been torn down), and no other free copy is available ($free available, all bound); refusing to spawn $ID rather than refresh $hazard_owner's copy. Free a copy (finish or tear down a task) or recover $hazard_owner with 'bin/fm-spawn.sh $hazard_owner --reacquire-worktree' once one is free" >&2
+    return 1
+  fi
+  echo "notice: the pool would hand out '$hazard', which task $hazard_owner still binds; steering $ID into free copy $candidate_name ('$candidate') instead and leaving $hazard_owner's copy untouched" >&2
+  SPAWN_POOL_ACQUIRE="treehouse enter $candidate_name"
+  SPAWN_POOL_ENTER_PATH=$candidate
+}
+
+# spawn_refuse_bound_worktree <path> <source>: the post-acquisition half of the
+# same guard. Whatever copy the pane actually landed in must not be bound by
+# another live record, and a steered acquisition must have landed in the copy
+# it was steered to.
+spawn_refuse_bound_worktree() {  # <path> <source>
+  local path=$1 source=$2 owner
+  owner=$(spawn_worktree_binding_owner "$path")
+  [ -z "$owner" ] || {
+    echo "error: $source landed in '$path', which task $owner's record still binds; refusing to launch $ID there or record it. Inspect task $owner's copy before reusing it" >&2
+    return 1
+  }
+  if [ -n "$SPAWN_POOL_ENTER_PATH" ] \
+     && [ "$(real_path_or_raw "$path")" != "$(real_path_or_raw "$SPAWN_POOL_ENTER_PATH")" ]; then
+    echo "error: $source landed in '$path', not the free copy '$SPAWN_POOL_ENTER_PATH' it was steered to; refusing to launch $ID in a copy this spawn did not choose" >&2
+    return 1
+  fi
+}
+
+# spawn_detach_entered_copy <path>: `treehouse enter` leaves a copy exactly as
+# it was, where `treehouse get` would have checked it out at the default branch.
+# An entered copy is free and unbound by construction, so detaching it (no
+# branch ref moves, nothing discarded) restores the get-equivalent shape the
+# base refresh below expects: a detached HEAD it can move without moving any
+# branch. With no remote, the default branch tip is the base the refresh keeps.
+spawn_detach_entered_copy() {  # <path>
+  local path=$1 default status
+  status=$(git -C "$path" status --porcelain 2>/dev/null) || {
+    echo "error: could not inspect entered copy '$path' before detaching it" >&2
+    return 1
+  }
+  [ -z "$status" ] || {
+    echo "error: entered copy '$path' is not clean; refusing to use it" >&2
+    return 1
+  }
+  if [ -z "$(git -C "$path" remote 2>/dev/null)" ]; then
+    default=$(default_branch "$path") || {
+      echo "error: could not resolve the default branch for entered copy '$path'; refusing to launch from an unknown base" >&2
+      return 1
+    }
+    git -C "$path" checkout --detach --quiet "$default" || {
+      echo "error: could not detach entered copy '$path' at '$default'" >&2
+      return 1
+    }
+    return 0
+  fi
+  git -C "$path" checkout --detach --quiet || {
+    echo "error: could not detach entered copy '$path'" >&2
+    return 1
+  }
+}
+
+# --- reacquire proofs ---------------------------------------------------------
+#
+# A reacquire can only ever ADD a copy: it never touches the copy the record
+# names today, which another task may now own. What it needs is the task's
+# branch, alive in the shared repository and checked out nowhere, and positive
+# proof that the recorded copy no longer holds it (otherwise --relaunch or
+# --reattach-worktree is the path that adopts the intact copy).
+if [ "$REACQUIRE" -eq 1 ]; then
+  reacquire_branch="fm/$ID"
+  if [ -d "$REATTACH_DISPLACED_WT" ]; then
+    reacquire_recorded_branch=$(git -C "$REATTACH_DISPLACED_WT" symbolic-ref --quiet --short HEAD 2>/dev/null) || reacquire_recorded_branch=
+    [ "$reacquire_recorded_branch" != "$reacquire_branch" ] || {
+      echo "error: task $ID's recorded copy '$REATTACH_DISPLACED_WT' still holds $reacquire_branch, so nothing was displaced; adopt it with --relaunch (agent-free endpoint) or --reattach-worktree (missing endpoint) instead of acquiring a second copy" >&2
+      exit 1
+    }
+  fi
+  REACQUIRE_BRANCH_HEAD=$(git -C "$PROJ_ABS" rev-parse --verify --quiet "refs/heads/$reacquire_branch^{commit}" 2>/dev/null) || {
+    echo "error: branch $reacquire_branch does not exist in '$PROJ_ABS'; there is no recorded head to reacquire task $ID from" >&2
+    exit 1
+  }
+  [ "$WORKTREE_INVENTORY_VALID" -eq 1 ] || {
+    echo "error: could not list the worktrees of '$PROJ_ABS', so this recovery cannot prove $reacquire_branch is checked out nowhere; refusing to reacquire task $ID" >&2
+    exit 1
+  }
+  reacquire_holder=$(printf '%s\n' "$WORKTREE_INVENTORY" | awk -v b="branch refs/heads/$reacquire_branch" '/^worktree / { wt = substr($0, 10) } $0 == b { print wt; exit }')
+  [ -z "$reacquire_holder" ] || {
+    echo "error: $reacquire_branch is checked out at '$reacquire_holder'; refusing to acquire a second copy of task $ID's branch. Inspect that copy: if it holds the work, --reattach-worktree adopts it" >&2
+    exit 1
+  }
+  reacquire_displaced_owner=
+  [ -z "$REATTACH_DISPLACED_WT" ] || reacquire_displaced_owner=$(spawn_worktree_binding_owner "$REATTACH_DISPLACED_WT")
+fi
+
+if { [ "$RECOVERY" -eq 0 ] || [ "$REACQUIRE" -eq 1 ]; } && [ "$KIND" != secondmate ]; then
   ALLOCATION_BOUNDARY_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   ALLOCATION_BOUNDARY_STATUS=incomplete
   ALLOCATION_BOUNDARY_WORKTREES=()
@@ -2338,9 +2631,35 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
 
 # Everything a reattach can prove without touching anything is proved here,
 # before a replacement endpoint exists, so an unproved fact costs nothing.
-if [ "$REATTACH" -eq 1 ]; then
+if [ "$REATTACH" -eq 1 ] && [ "$REACQUIRE" -eq 0 ]; then
   reattach_verify_copy_identity "before creating the replacement endpoint" || exit 1
   reattach_verify_owner_free "before creating the replacement endpoint" || exit 1
+fi
+# A reacquire whose recorded endpoint still exists agent-free closes it now:
+# the replacement is created under the same per-task name, and the only thing
+# an agent-free endpoint can hold is a shell. From here the task reads as
+# missing, which is the state this same path retries from.
+if [ "$REACQUIRE" -eq 1 ] && [ -n "$REACQUIRE_RETIRE_ENDPOINT" ]; then
+  reacquire_state=$(fm_backend_agent_state "$BACKEND" "$REACQUIRE_RETIRE_ENDPOINT")
+  [ "$reacquire_state" = dead ] || {
+    echo "error: task $ID's recorded endpoint now reads '$reacquire_state', not agent-free; refusing to close it" >&2
+    exit 1
+  }
+  fm_backend_kill "$BACKEND" "$REACQUIRE_RETIRE_ENDPOINT" || {
+    echo "error: could not close task $ID's agent-free endpoint $REACQUIRE_RETIRE_ENDPOINT; refusing to create a replacement beside it" >&2
+    exit 1
+  }
+  reacquire_state=$(fm_backend_agent_state "$BACKEND" "$REACQUIRE_RETIRE_ENDPOINT")
+  [ "$reacquire_state" = missing ] || {
+    echo "error: task $ID's recorded endpoint still reads '$reacquire_state' after being closed; refusing to create a replacement beside it" >&2
+    exit 1
+  }
+  echo "notice: closed task $ID's agent-free endpoint $REACQUIRE_RETIRE_ENDPOINT before creating its replacement" >&2
+fi
+
+if { [ "$RECOVERY" -eq 0 ] || [ "$REACQUIRE" -eq 1 ]; } \
+   && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+  spawn_plan_pool_acquisition || exit 1
 fi
 
 W="fm-$ID"
@@ -2371,10 +2690,10 @@ case "$BACKEND" in
     # that acquisition, so the replacement pane opens directly in the retained
     # copy. From here the two paths converge.
     REATTACH_ENDPOINT_CWD=$PROJ_ABS
-    [ "$REATTACH" -eq 0 ] || REATTACH_ENDPOINT_CWD=$WT
+    [ "$REATTACH" -eq 0 ] || [ "$REACQUIRE" -eq 1 ] || REATTACH_ENDPOINT_CWD=$WT
     WID=$(fm_backend_tmux_create_task "$SES" "$W" "$REATTACH_ENDPOINT_CWD") || exit 1
     WT_TARGET="$WID"
-    if [ "$REATTACH" -eq 1 ]; then
+    if [ "$REATTACH" -eq 1 ] && [ "$REACQUIRE" -eq 0 ]; then
       REATTACH_ABORT_ENDPOINT=1
       # The replacement pane's own process is what makes the retained copy read
       # as in-use from here on, so the ownership recheck can only tell "ours"
@@ -2637,6 +2956,9 @@ EOF
     ;;
 esac
 fi
+# A reacquire that got as far as an endpoint leaves nothing behind on failure,
+# on every backend: see spawn_abort_cleanup.
+[ "$REACQUIRE" -eq 0 ] || REATTACH_ABORT_ENDPOINT=1
 if [ "$KIND" = secondmate ]; then
   FM_INHERITABLE_CONFIG=trace-context \
     propagate_inheritable_config "$CONFIG" "$PROJ_ABS/config" \
@@ -2846,7 +3168,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     exit 1
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
-elif [ "$REATTACH" -eq 1 ]; then
+elif [ "$REATTACH" -eq 1 ] && [ "$REACQUIRE" -eq 0 ]; then
   # Also no acquisition: the replacement pane was opened directly in the
   # retained copy, so what must be proven is that it landed there and that the
   # copy is still the one that was proved. Re-running both proofs closes the
@@ -2867,7 +3189,7 @@ elif [ "$REATTACH" -eq 1 ]; then
   reattach_verify_copy_identity "with the replacement endpoint open" || exit 1
   reattach_verify_owner_free "with the replacement endpoint open" || exit 1
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
+  spawn_send_text_line "$WT_TARGET" "$SPAWN_POOL_ACQUIRE"
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
   # Target the stable window id, not the name: if the name is ever lost (e.g. an
@@ -2909,22 +3231,54 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     sleep 1
   done
   if [ -z "$WT" ]; then
-    echo "error: treehouse get did not enter a worktree within 60s; inspect window $T" >&2
+    echo "error: $SPAWN_POOL_ACQUIRE did not enter a worktree within 60s; inspect window $T" >&2
     exit 1
   fi
 
   confirm_spawn_shell_cwd "$T"
-  validate_spawn_worktree "treehouse get" "$T"
+  validate_spawn_worktree "$SPAWN_POOL_ACQUIRE" "$T"
+  spawn_refuse_bound_worktree "$WT" "$SPAWN_POOL_ACQUIRE" || exit 1
+  [ -z "$SPAWN_POOL_ENTER_PATH" ] || spawn_detach_entered_copy "$WT" || exit 1
 fi
 # The base refresh resets the copy to origin's default branch. That is right for
 # a freshly allocated pooled copy and catastrophic for a retained one, which is
 # recovered precisely because it holds work that is not on origin.
-if [ "$RECOVERY" -eq 0 ] && [ "$KIND" != secondmate ]; then
+if { [ "$RECOVERY" -eq 0 ] || [ "$REACQUIRE" -eq 1 ]; } && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
+fi
+if [ "$REACQUIRE" -eq 1 ]; then
+  # The fresh copy is refreshed like any other, then moved onto the task's own
+  # branch at the head proved above. The branch is checked out nowhere else
+  # (proved above), so git creates no second checkout; the abort path detaches
+  # this copy again if anything later fails.
+  REACQUIRE_CHECKED_OUT_WT=$WT
+  git -C "$WT" checkout --quiet "fm/$ID" || {
+    echo "error: could not check out fm/$ID in the fresh copy '$WT'; refusing to bind task $ID to a copy that does not hold its branch" >&2
+    exit 1
+  }
+  reacquire_head=$(git -C "$WT" rev-parse --verify --quiet HEAD 2>/dev/null || true)
+  [ "$reacquire_head" = "$REACQUIRE_BRANCH_HEAD" ] || {
+    echo "error: the fresh copy '$WT' is at '${reacquire_head:-unknown}', not fm/$ID's recorded head '$REACQUIRE_BRANCH_HEAD'; refusing to bind task $ID to it" >&2
+    exit 1
+  }
 fi
 if [ "$RECOVERY" -eq 1 ]; then
   SPAWNED_AT=$(fm_meta_get "$RELAUNCH_META" spawned_at)
-  if [ "$REATTACH" -eq 1 ]; then
+  if [ "$REACQUIRE" -eq 1 ]; then
+    # A reacquire is a real pool allocation for an existing task, so it is
+    # recorded like a fresh acquisition, at the time it happened rather than
+    # the task's original spawn time (the ledger keys duplicates on that pair).
+    # Teardown releases whichever copy the record names then.
+    REACQUIRE_ACQUIRED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    if [ "$WORKTREE_INVENTORY_VALID" -eq 1 ] \
+      && ! printf '%s\n' "$WORKTREE_INVENTORY" | sed -n 's/^worktree //p' | grep -Fx -- "$(real_path_or_raw "$WT")" >/dev/null; then
+      SPAWN_WORKTREE_ALLOCATION=fresh
+    else
+      SPAWN_WORKTREE_ALLOCATION=reused
+    fi
+    SPAWN_WORKTREE_ALLOCATION=$("$SCRIPT_DIR/fm-worktree-allocation.sh" acquire \
+      "$ID" "$PROJ_ABS_REAL" "$WT" "$REACQUIRE_ACQUIRED_AT" "$SPAWN_WORKTREE_ALLOCATION") || SPAWN_WORKTREE_ALLOCATION=unknown
+  elif [ "$REATTACH" -eq 1 ]; then
     # A retained copy is by definition one the pool already created and this
     # task already used, so it is recorded as reused. No ledger event is
     # written: the allocation ledger measures pool allocation, and a recovery
@@ -3677,7 +4031,15 @@ if [ "$REATTACH" -eq 1 ]; then
   # it either, because none happened - the unpaired acquire correctly says the
   # copy is still allocated. Returning it is a separate, deliberate decision, so
   # name it here and leave it alone.
-  if [ -n "$REATTACH_DISPLACED_WT" ] \
+  if [ "$REACQUIRE" -eq 1 ]; then
+    REACQUIRE_CHECKED_OUT_WT=
+    if [ -n "$reacquire_displaced_owner" ]; then
+      echo "notice: task $ID was bound to '$REATTACH_DISPLACED_WT' before this recovery; that copy now belongs to task $reacquire_displaced_owner's record and was left untouched." >&2
+    elif [ -n "$REATTACH_DISPLACED_WT" ] \
+       && [ "$(real_path_or_raw "$REATTACH_DISPLACED_WT")" != "$(real_path_or_raw "$WT")" ]; then
+      echo "notice: task $ID was bound to '$REATTACH_DISPLACED_WT' before this recovery; it is left untouched and no other record binds it. Inspect it and return it to the pool yourself if it holds nothing you need." >&2
+    fi
+  elif [ -n "$REATTACH_DISPLACED_WT" ] \
      && [ "$(real_path_or_raw "$REATTACH_DISPLACED_WT")" != "$(real_path_or_raw "$WT")" ]; then
     echo "notice: task $ID was bound to '$REATTACH_DISPLACED_WT' before this recovery; it is left untouched and still allocated, because its contents are unproven. Inspect it and return it to the pool yourself if it holds nothing you need." >&2
   fi
