@@ -250,3 +250,9 @@ These properties must hold:
 `FM_INJECT_SKIP` (default `heartbeat`) force-self-handles matching kinds,
 overriding classification.
 Use it sparingly.
+
+## Injection marker format
+
+This line was always-loaded in `AGENTS.md` section 8 and now lives here:
+
+- Every current daemon injection uses the `away-supervisor` kind from `bin/fm-operational-input.sh` after `FM_OPERATIONAL_PREFIX` (U+2063 INVISIBLE SEPARATOR followed by `FIRSTMATE_OP: `), while the `/afk` skill owns legacy bare-marker compatibility.
