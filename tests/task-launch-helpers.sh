@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 fm_assert_task_launch() {
   local command=$1 binary=$2 worktree=$3 data=$4 id=$5 store=$6 capture
   shift 6
