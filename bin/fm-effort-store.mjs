@@ -408,7 +408,7 @@ function readTaskUsage(dataDir, taskId, spawnedAt, endedAt, issues) {
     issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-unparsable', detail: file})
     return {status: 'missing', detail: 'durable task usage snapshot is not valid JSON'}
   }
-  if (!['fm-task-usage.v1', 'fm-task-usage.v2'].includes(usage.schema) || usage.id !== taskId) {
+  if (!['fm-task-usage.v1', 'fm-task-usage.v2', 'fm-task-usage.v3'].includes(usage.schema) || usage.id !== taskId) {
     issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-identity', detail: file})
     return {status: 'missing', detail: 'durable task usage snapshot has the wrong schema or task id'}
   }
@@ -428,9 +428,18 @@ function readTaskUsage(dataDir, taskId, spawnedAt, endedAt, issues) {
     && Number.isSafeInteger(usage.correlation?.records)
     && usage.correlation.records > 0
     && /^[0-9a-f]{64}$/.test(usage.correlation?.export_sha256 || '')
-  if (!baselineBounded && !windowBounded) {
+  const stampBounded = usage.correlation?.attribution === 'session-stamp'
+    && Array.isArray(usage.correlation.session_records)
+    && usage.correlation.session_records.length > 0
+    && usage.correlation.session_records.length === usage.sessions
+    && new Set(usage.correlation.session_records.map(record => `${record?.provider}\0${record?.id}`)).size === usage.sessions
+    && usage.correlation.session_records.every(record => typeof record?.id === 'string' && record.id
+      && typeof record.file === 'string' && path.isAbsolute(record.file)
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(record.stamp || '')
+      && ['claude', 'codex'].includes(record.provider))
+  if ((!baselineBounded && !windowBounded && !stampBounded) || (usage.schema === 'fm-task-usage.v3' && !stampBounded)) {
     issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-unbounded-attribution', detail: file})
-    return {status: 'missing', detail: 'durable task usage snapshot lacks a valid launch baseline or timestamp window'}
+    return {status: 'missing', detail: 'durable task usage snapshot lacks a valid session stamp, launch baseline, or timestamp window'}
   }
   const totals = {
     tokens_in: finiteNonnegative(usage.tokens?.input),
@@ -461,8 +470,10 @@ function readTaskUsage(dataDir, taskId, spawnedAt, endedAt, issues) {
     const identity = `${provider}${KEY_SEPARATOR}${normalizedName}`
     const modelTotals = [model?.calls, model?.input_tokens, model?.output_tokens,
       model?.cache_read_tokens, model?.cache_write_tokens, model?.cost_usd]
+    const unknownModelTotals = usage.schema === 'fm-task-usage.v3' && stampBounded
+      && modelTotals.every(value => value === null)
     if (!normalizedName || normalizedName === '<synthetic>'
-        || modelTotals.some(value => typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+        || (!unknownModelTotals && modelTotals.some(value => typeof value !== 'number' || !Number.isFinite(value) || value < 0))) {
       issues.push({source: 'codeburn', task_id: taskId, kind: 'usage-model-shape', detail: file})
       return {status: 'missing', detail: 'durable task usage snapshot has a malformed model entry'}
     }

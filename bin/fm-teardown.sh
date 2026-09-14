@@ -2592,11 +2592,8 @@ if [ "$BACKEND" = herdr ]; then
   TEARDOWN_HERDR_PANE=$FM_BACKEND_HERDR_PANE
 fi
 
-# Snapshot codeburn usage before the worktree is released back to the pool or
-# removed: fm-task-usage.sh resolves the worktree to codeburn's reported project
-# key and subtracts its pre-launch baseline, so a concurrent spawn that reclaims
-# this worktree after release could otherwise have its early activity counted in
-# this task's final usage.json.
+# Capture while task metadata and local session sources are still available.
+# Session stamps keep later occupants of the returned copy out of this snapshot.
 if [ "$KIND" != secondmate ]; then
   "$FM_ROOT/bin/fm-task-usage.sh" "$ID" --snapshot \
     || echo "teardown: warning: could not snapshot codeburn usage for $ID" >&2

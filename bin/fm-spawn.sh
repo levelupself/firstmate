@@ -1549,7 +1549,7 @@ launch_template() {
     # alone disables the feature; keep both so a managed override of one still
     # leaves the other in force. Both are per-launch, scoped to this invocation only,
     # and never touch the captain's global ~/.claude/settings.json.
-    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '\''{"feedbackDrafts":"off"}'\'' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude __SESSIONFLAG__--dangerously-skip-permissions --settings '\''{"feedbackDrafts":"off"}'\'' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     codex)
       if [ "$kind" = secondmate ]; then
         printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
@@ -3818,6 +3818,16 @@ sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
 sq_worktree=$(shell_quote "$WT")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT")
+STAMP_TASK=0
+if [ "$KIND" != secondmate ] && { [ "$RECOVERY" -eq 0 ] || [ -f "$DATA/$ID/sessions/identity.json" ]; }; then
+  STAMP_TASK=1
+fi
+SESSIONFLAG=
+if [ "$STAMP_TASK" -eq 1 ] && [ "$HARNESS" = claude ]; then
+  # shellcheck disable=SC2016 # expanded in the activated launch shell
+  SESSIONFLAG='--session-id "$FM_TASK_SESSION_STAMP" '
+fi
+LAUNCH=${LAUNCH//__SESSIONFLAG__/$SESSIONFLAG}
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
 LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
 LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
@@ -3845,6 +3855,30 @@ esac
 # an unset value is the single-store default and needs no prefix.
 if [ "$HARNESS" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
   LAUNCH="CLAUDE_CONFIG_DIR=$(shell_quote "$CLAUDE_CONFIG_DIR") $LAUNCH"
+fi
+# Preserve the effective Codex store through long-lived terminal daemons too.
+if [ "$HARNESS" = codex ] && [ -n "${CODEX_HOME:-}" ]; then
+  LAUNCH="CODEX_HOME=$(shell_quote "$CODEX_HOME") $LAUNCH"
+fi
+if [ "$STAMP_TASK" -eq 1 ]; then
+  if [ "$RECOVERY" -eq 0 ]; then
+    node "$FM_ROOT/bin/fm-task-session.mjs" init "$ID" "$SPAWNED_AT" || exit 1
+  fi
+  # Execute registration only once activation releases the launch. Failed staging
+  # leaves no receipt and cannot move the attribution boundary of the old agent.
+  stamp_register="FM_HOME=$(shell_quote "$FM_HOME") FM_DATA_OVERRIDE=$(shell_quote "$DATA") node $(shell_quote "$FM_ROOT/bin/fm-task-session.mjs") register $(shell_quote "$ID") $(shell_quote "$HARNESS") $(shell_quote "$WT")"
+  if [ "$HARNESS" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    stamp_register="CLAUDE_CONFIG_DIR=$(shell_quote "$CLAUDE_CONFIG_DIR") $stamp_register"
+  fi
+  if [ "$HARNESS" = codex ] && [ -n "${CODEX_HOME:-}" ]; then
+    stamp_register="CODEX_HOME=$(shell_quote "$CODEX_HOME") $stamp_register"
+  fi
+  if [ "$HARNESS" = codex ]; then
+    # shellcheck disable=SC2016 # expanded in the activated launch shell
+    LAUNCH='CODEX_INTERNAL_ORIGINATOR_OVERRIDE="$FM_TASK_SESSION_STAMP" '"$LAUNCH"
+  fi
+  # shellcheck disable=SC2016 # registration runs in the activated launch shell
+  LAUNCH='FM_TASK_SESSION_STAMP=$('"$stamp_register"') && '"$LAUNCH"
 fi
 if [ "$KIND" = secondmate ]; then
   sq_home=$(shell_quote "$PROJ_ABS")
@@ -3942,10 +3976,6 @@ if [ -n "$SPAWN_TRACEPARENT" ]; then
     fi
     LAUNCH="unset TRACEPARENT; $LAUNCH"
   fi
-fi
-if [ "$KIND" != secondmate ]; then
-  "$FM_ROOT/bin/fm-task-usage.sh" "$ID" --baseline \
-    || echo "fm-spawn: warning: could not capture codeburn baseline for $ID" >&2
 fi
 sleep 0.3
 if [ "$REATTACH" -eq 1 ]; then

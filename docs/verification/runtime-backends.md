@@ -986,3 +986,17 @@ Refresh this harness-dependent proof before accepting a cursor upgrade:
 ```sh
 FM_HARNESS_LIVENESS_DRIFT=1 bin/fm-test-run.sh tests/fm-harness-liveness-drift-live-e2e.test.sh
 ```
+
+## Task session stamp creation
+
+The real CLI guard `FM_TASK_SESSION_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-task-session-live-e2e.test.sh` verifies creation metadata using empty isolated runtime homes.
+It deliberately uses no working credentials; the model calls fail, and the test inspects the session records that were already persisted.
+This proves stamp recording at creation, not successful billing, descendant inheritance, or live dispatch capture.
+Observed on 2026-09-14:
+
+```text
+ok - 2.1.270 (Claude Code) persisted exact stamp and directory before the unauthenticated call failed
+ok - codex-cli 0.153.4 persisted exact stamp and directory before the unauthenticated call failed
+```
+
+`docs/task-usage.md` owns the unsupported Codex override disclosure and the unproven descendant and live reused-copy cases.

@@ -19,7 +19,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-fleet-snapshot.sh`   | Print the read-only structured fleet snapshot JSON (schema `fm-fleet-snapshot.v1`)   |
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a narrow prioritized panel, optionally in watch mode   |
 | `fm-bearings-snapshot.sh` | Project the fleet snapshot to the compact TOON bearings view; local-only unless `--include-prs` |
-| `fm-task-usage.sh`       | Baseline, snapshot, or report live codeburn usage for one crewmate/scout cycle (docs/task-usage.md) |
+| `fm-task-usage.sh`       | Snapshot or report session-stamped codeburn usage for one crewmate/scout cycle (docs/task-usage.md) |
 | `fm-effort-store.sh`     | Capture, rebuild, report, annotate, and fingerprint the derived per-task effort store (docs/effort-store.md) |
 | `fm-model-bench.sh`      | Run one task on several models at once in isolated arms, watch them, and report confirmed model, active time, tokens, and independence per arm (docs/model-bench.md) |
 | `fm-model-bench-analyze.mjs` | Session-record arithmetic, independence byte-comparison, and table rendering behind `fm-model-bench.sh` |
