@@ -44,6 +44,14 @@ export function identity(id) {
 export function init(id, spawnedAt) {
   if(!Number.isFinite(Date.parse(spawnedAt))) throw new Error('missing measured task creation time')
   const dir=path.join(taskDir(id),'sessions')
+  let existing=false
+  try { fs.lstatSync(path.join(dir,'identity.json'));existing=true }
+  catch(e) { if(e.code!=='ENOENT') throw e }
+  if(existing) {
+    identity(id)
+    read(path.join(dir,'launches.jsonl'))
+    return
+  }
   fs.mkdirSync(dir,{recursive:true})
   fs.writeFileSync(path.join(dir,'launches.jsonl'),'',{flag:'wx',mode:0o600})
   writeOnce(path.join(dir,'identity.json'),{schema:'fm-task-sessions.v1',id,spawned_at:spawnedAt})

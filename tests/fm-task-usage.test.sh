@@ -40,7 +40,20 @@ pass 'exact stamp and directory containment exclude sequential owner and outside
 json=$("$USAGE" b --json) || exit 1
 node -e 'if(JSON.parse(process.argv[1]).cost_usd!==7)process.exit(1)' "$json" || fail 'task b attribution'
 pass 'second task reports only its own spend'
+cp "$FM_HOME/data/a/sessions/identity.json" "$TMP_ROOT/original-identity.json"
+cp "$FM_HOME/data/a/sessions/launches.jsonl" "$TMP_ROOT/original-launches.jsonl"
+"$USAGE" a --snapshot >/dev/null || exit 1
+cp "$FM_HOME/data/a/usage.json" "$TMP_ROOT/original-usage.json"
+node "$SESSION" init a 2026-09-14T00:00:00Z || fail 'repeat initialization preserves task identity'
+cmp "$FM_HOME/data/a/sessions/identity.json" "$TMP_ROOT/original-identity.json" || fail 'retry changed identity'
+cmp "$FM_HOME/data/a/sessions/launches.jsonl" "$TMP_ROOT/original-launches.jsonl" || fail 'retry changed receipts before activation'
+cmp "$FM_HOME/data/a/usage.json" "$TMP_ROOT/original-usage.json" || fail 'retry changed measured spend'
 relaunch=$(node "$SESSION" register a codex "$TMP_ROOT/pool") || exit 1
+node - "$FM_HOME/data/a/sessions/launches.jsonl" "$stamp_a" "$relaunch" <<'JS' || fail 'two incarnations retain original receipt'
+const fs=require('fs');const [file,original,next]=process.argv.slice(2)
+const rows=fs.readFileSync(file,'utf8').trim().split('\n').map(JSON.parse)
+if(rows.length!==2||rows[0].stamp!==original||rows[1].stamp!==next||original===next)process.exit(1)
+JS
 node - "$CODEX_HOME/sessions/relaunch.jsonl" "$TMP_ROOT/pool" "$relaunch" "$FM_USAGE_FIXTURE" <<'JS'
 const fs=require('fs');const [file,cwd,stamp,out]=process.argv.slice(2)
 fs.writeFileSync(file,JSON.stringify({type:'session_meta',payload:{id:'relaunch',cwd,originator:stamp}})+'\n')
@@ -49,6 +62,7 @@ JS
 json=$("$USAGE" a --json) || exit 1
 node -e 'const x=JSON.parse(process.argv[1]);if(x.cost_usd!==3.004||x.sessions!==2)process.exit(1)' "$json" || fail 'relaunch whole spend'
 pass 'same-runtime relaunch includes both incarnations'
+node "$SESSION" init a 2026-09-15T00:00:00Z || fail 'runtime switch preserves task identity'
 stamp_a2=$(node "$SESSION" register a claude "$TMP_ROOT/pool") || exit 1
 export stamp_a2
 node - "$CLAUDE_CONFIG_DIR/projects/opaque" "$TMP_ROOT/pool" "$FM_USAGE_FIXTURE" <<'JS'
@@ -86,3 +100,13 @@ fi
 fm_write_meta "$FM_HOME/state/legacy.meta" "worktree=$TMP_ROOT/pool" 'harness=codex' 'spawned_at=2026-09-13T00:00:00Z'
 if "$USAGE" legacy --json >"$TMP_ROOT/out" 2>"$TMP_ROOT/err"; then fail 'legacy attribution refused'; else pass 'unmeasured task has no inferred backfill'; fi
 pass 'unreadable stores and lost measured sessions refuse by name'
+for missing in identity.json launches.jsonl; do
+  node "$SESSION" init damaged 2026-09-13T00:00:00Z || exit 1
+  mv "$FM_HOME/data/damaged/sessions/$missing" "$TMP_ROOT/$missing"
+  if node "$SESSION" init damaged 2026-09-14T00:00:00Z >"$TMP_ROOT/out" 2>"$TMP_ROOT/err"; then
+    fail "retry accepted missing $missing"
+  fi
+  [ ! -e "$FM_HOME/data/damaged/sessions/$missing" ] || fail "retry recreated missing $missing"
+  mv "$TMP_ROOT/$missing" "$FM_HOME/data/damaged/sessions/$missing"
+done
+pass 'retry refuses incomplete coverage without recreating missing files'
