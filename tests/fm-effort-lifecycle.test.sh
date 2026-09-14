@@ -122,11 +122,35 @@ run_pr_check() {
     "$PR_CHECK" pr-task https://github.com/example/repo/pull/9
 }
 
+# Hold the real derived-store lock while both lifecycle edges complete.
+# A deadline kills only this fixture's command if it regresses to waiting.
+# shellcheck source=bin/fm-wake-lib.sh
+. "$ROOT/bin/fm-wake-lib.sh"
+STATE="$HOME_DIR/state"
+fm_lock_try_acquire "$STATE/.effort-store.lock" || fail 'could not stall rebuild'
+if ! timeout 12 env FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
+  "$PR_MERGE" pr-task https://github.com/example/repo/pull/9 >"$TMP_ROOT/stalled-merge.out" 2>&1; then
+  fm_lock_release "$STATE/.effort-store.lock"
+  fail 'merge waited on a stalled effort rebuild'
+fi
+if ! timeout 12 env FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
+  "$PR_CHECK" pr-task https://github.com/example/repo/pull/9 >"$TMP_ROOT/stalled-check.out" 2>&1; then
+  fm_lock_release "$STATE/.effort-store.lock"
+  fail 'PR check waited on a stalled effort rebuild'
+fi
+[ -s "$HOME_DIR/data/cost-attribution.tsv" ] || fail 'merge returned without raw evidence'
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report pr-task >"$TMP_ROOT/pending-report"
+grep -q 'pending ingestion' "$TMP_ROOT/pending-report" || fail 'un-ingested task was not reported pending'
+fm_lock_release "$STATE/.effort-store.lock"
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail 'pending merge did not ingest'
+pass 'PR check and merge finish while derived ingestion is stalled'
+
 run_pr_check >"$TMP_ROOT/pr-check.out" 2>"$TMP_ROOT/pr-check.err" \
   || fail "PR check failed: $(tr '\n' ' ' < "$TMP_ROOT/pr-check.err")"
 OPENED_AT=$(sed -n 's/^pr_opened_at=//p' "$HOME_DIR/state/pr-task.meta")
 [ "$OPENED_AT" = 2026-08-29T10:15:00Z ] || fail 'PR check did not preserve forge pr_opened_at'
 DB="$HOME_DIR/data/effort-store.sqlite"
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "effort sync failed"
 ACTIVE_ROW=$(node - "$DB" <<'NODE'
 process.emitWarning = () => {}
 const {DatabaseSync} = require("node:sqlite")
@@ -150,6 +174,7 @@ grep -qx 'merged_at=2026-08-29T10:20:00Z' "$HOME_DIR/state/pr-task.meta" \
   || fail 'PR merge did not stamp the forge merge time'
 grep -qx 'outcome=pr-merged' "$HOME_DIR/state/pr-task.meta" \
   || fail 'PR merge did not stamp its lifecycle outcome'
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "effort sync failed"
 MERGED_ROW=$(node - "$DB" <<'NODE'
 process.emitWarning = () => {}
 const {DatabaseSync} = require('node:sqlite')
@@ -175,6 +200,7 @@ FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
   FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
   "$PR_MERGE" pr-task https://github.com/example/repo/pull/9 >/dev/null \
   || fail 'repeated PR merge with incomplete findings failed'
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "effort sync failed"
 INCOMPLETE_ROW=$(node - "$DB" <<'NODE'
 process.emitWarning = () => {}
 const {DatabaseSync} = require('node:sqlite')
@@ -202,6 +228,7 @@ FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
   FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
   "$PR_MERGE" pr-task https://github.com/example/repo/pull/9 >/dev/null \
   || fail 'repeated PR merge without review rounds failed'
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "effort sync failed"
 NO_REVIEW_ROW=$(node - "$DB" <<'NODE'
 process.emitWarning = () => {}
 const {DatabaseSync} = require('node:sqlite')
@@ -231,6 +258,7 @@ FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
   FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
   "$PR_MERGE" pr-task https://github.com/example/repo/pull/9 >/dev/null \
   || fail 'repeated PR merge with settled pipeline failed'
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "effort sync failed"
 MERGED_ROW=$(node - "$DB" <<'NODE'
 process.emitWarning = () => {}
 const {DatabaseSync} = require('node:sqlite')
@@ -279,6 +307,7 @@ FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
   FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
   "$PR_MERGE" rerun-task https://github.com/example/repo/pull/12 >/dev/null \
   || fail 'rerun task PR merge failed'
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "effort sync failed"
 SETTLED_PROCESS=$(node - "$DB" <<'NODE'
 process.emitWarning = () => {}
 const {DatabaseSync} = require('node:sqlite')
@@ -310,6 +339,7 @@ FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
   FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
   "$PR_MERGE" rerun-task https://github.com/example/repo/pull/12 >/dev/null \
   || fail 'incomplete rerun task PR merge retry failed'
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "effort sync failed"
 RERUN_PROCESS=$(node - "$DB" <<'NODE'
 process.emitWarning = () => {}
 const {DatabaseSync} = require('node:sqlite')
@@ -351,6 +381,7 @@ db.exec('ALTER TABLE unavailable_step_results RENAME TO step_results')
 db.close()
 NODE
 [ "$READ_ERROR_RC" -eq 0 ] || fail 'selected-run read-error PR merge retry failed'
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "effort sync failed"
 READ_ERROR_PROCESS=$(node - "$DB" <<'NODE'
 process.emitWarning = () => {}
 const {DatabaseSync} = require('node:sqlite')
@@ -395,6 +426,7 @@ FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
   FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
   "$PR_MERGE" torn-task https://github.com/example/repo/pull/10 >/dev/null \
   || fail 'torn task PR merge failed'
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "effort sync failed"
 TORN_ROW=$(node - "$DB" <<'NODE'
 process.emitWarning = () => {}
 const {DatabaseSync} = require('node:sqlite')
@@ -454,12 +486,14 @@ FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
   https://github.com/example/repo/pull/74 >/dev/null \
   || fail 'PR #74 lifecycle capture failed'
 
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "effort sync failed"
 MERGED_FINGERPRINT=$(FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" fingerprint)
 rm -f "$NM_DB" "$DB"
 FM_HOME="$HOME_DIR" FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
   "$ROOT/bin/fm-effort-store.sh" rebuild >/dev/null || fail 'merged effort replay failed'
 [ "$(FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" fingerprint)" = "$MERGED_FINGERPRINT" ] \
   || fail 'merged effort replay changed after the pipeline database disappeared'
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "effort sync failed"
 REPLAYED_PROCESS=$(node - "$DB" <<'NODE'
 process.emitWarning = () => {}
 const {DatabaseSync} = require('node:sqlite')
@@ -473,6 +507,7 @@ NODE
 [ "$REPLAYED_PROCESS" = '3|2|1|1' ] \
   || fail "merged effort replay lost process counts: $REPLAYED_PROCESS"
 pass 'delete-and-rebuild replays process cost without the mutable pipeline database'
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "effort sync failed"
 PR74_REPLAY=$(node - "$DB" <<'NODE'
 process.emitWarning = () => {}
 const {DatabaseSync} = require('node:sqlite')
@@ -502,6 +537,7 @@ FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
   FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
   "$PR_MERGE" pr-task https://github.com/example/repo/pull/11 >/dev/null \
   || fail 'reused task PR merge failed'
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "effort sync failed"
 REUSED_PROCESS=$(node - "$DB" <<'NODE'
 process.emitWarning = () => {}
 const {DatabaseSync} = require('node:sqlite')

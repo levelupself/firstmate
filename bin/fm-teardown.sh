@@ -2791,7 +2791,7 @@ if [ "$PRESERVE_PR_POLL" != 1 ]; then
   rm -f "$STATE/$ID.meta" "$STATE/$ID.launch-receipt"
 fi
 if [ "$KIND" != secondmate ]; then
-  "$FM_ROOT/bin/fm-effort-store.sh" rebuild \
+  "$FM_ROOT/bin/fm-effort-store.sh" enqueue \
     || echo "teardown: warning: could not finalize deterministic effort for $ID" >&2
 fi
 fm_lock_release "$META_LOCK"

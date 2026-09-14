@@ -147,6 +147,7 @@ process.stdout.write(rows.map(row =>
 EOF
 
 query() {  # <sql>
+  "$STORE" report --sync >/dev/null || fail "pending ingestion failed"
   node "$QUERY" "$DB" "$1"
 }
 
@@ -362,6 +363,7 @@ write_usage 910-lifecycle 321 45 1.25 6 gpt-5.6-sol 2026-06-01T10:00:00Z
 rm -f "$DB"
 CAPTURE_OUT=$("$STORE" capture 910-lifecycle --outcome pr-merged 2>&1) \
   || fail "lifecycle capture failed: $CAPTURE_OUT"
+"$STORE" report --sync >/dev/null || fail "lifecycle ingestion failed"
 assert_present "$DB" 'a lifecycle capture should create the store automatically'
 LIFECYCLE=$(query "SELECT launch_to_pr_seconds, tokens_in, tokens_out, notional_cost_usd, pr_opened_at, merged_at, teardown_at, outcome FROM task WHERE task_id = '910-lifecycle'")
 [ "$LIFECYCLE" = '900|321|45|1.25|2026-06-01T10:15:00Z|2026-06-01T11:00:00Z|2026-06-01T11:05:00Z|merged' ] \
@@ -763,16 +765,19 @@ REUSED_USAGE=$(query "SELECT tokens_in, tokens_out, notional_cost_usd, (SELECT g
   || fail "a reused task inherited an earlier usage snapshot: $REUSED_USAGE"
 pass 'reused task IDs cannot inherit prior usage snapshots'
 
+"$STORE" report --sync >/dev/null || fail "capture sync failed"
 CAPTURE_FINGERPRINT=$("$STORE" fingerprint)
 CAPTURE_RAW_SIZE=$(wc -c < "$RAW")
 "$STORE" capture 910-lifecycle --outcome pr-merged >/dev/null \
   || fail 'repeating an identical lifecycle capture failed'
+"$STORE" report --sync >/dev/null || fail "capture sync failed"
 [ "$("$STORE" fingerprint)" = "$CAPTURE_FINGERPRINT" ] \
   || fail 'an idempotent lifecycle retry changed the logical store'
 [ "$(wc -c < "$RAW")" -eq "$CAPTURE_RAW_SIZE" ] \
   || fail 'an idempotent lifecycle retry appended a duplicate raw row'
 rm -f "$DB"
 "$STORE" rebuild >/dev/null || fail 'durable-record rebuild after lifecycle capture failed'
+"$STORE" report --sync >/dev/null || fail "capture sync failed"
 [ "$("$STORE" fingerprint)" = "$CAPTURE_FINGERPRINT" ] \
   || fail 'delete-and-rebuild lost lifecycle fields or usage'
 pass 'lifecycle capture is idempotent and delete-and-rebuild reproduces it'
@@ -984,7 +989,7 @@ write_usage 926-complete-project 100 20 0.75 2 gpt-5.6-sol 2026-07-03T12:00:00Z
 "$STORE" capture 926-complete-project --outcome forced >/dev/null \
   || fail 'complete known-row project capture failed'
 
-REPORT=$("$STORE" report 910-lifecycle) || fail 'single-task report failed'
+REPORT=$("$STORE" report 910-lifecycle --sync) || fail 'single-task report failed'
 assert_contains "$REPORT" '910-lifecycle' 'report should identify the task'
 assert_contains "$REPORT" '15m 0s' 'report should surface launch-to-PR duration'
 # shellcheck disable=SC2016 # Literal currency amount, not shell expansion.

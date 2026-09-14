@@ -588,7 +588,23 @@ fi
 
 if [ "$MODE" = --snapshot ]; then
   mkdir -p "$TASK_DATA"
-  cp "$SUMMARY" "$SNAPSHOT"
+  # Publish a complete, flushed snapshot before queuing derived ingestion.
+  if ! node - "$SUMMARY" "$SNAPSHOT" <<'NODE'
+const fs = require('fs')
+const [source, target] = process.argv.slice(2)
+const temporary = `${target}.${process.pid}.tmp`
+const fd = fs.openSync(temporary, 'w', 0o600)
+try {
+  fs.writeFileSync(fd, fs.readFileSync(source))
+  fs.fsyncSync(fd)
+} finally {
+  fs.closeSync(fd)
+}
+fs.renameSync(temporary, target)
+NODE
+  then
+    exit 1
+  fi
   fm_task_effort_capture_best_effort "$FM_ROOT" "$ID"
 fi
 

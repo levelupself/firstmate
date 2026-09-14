@@ -115,6 +115,7 @@ assert_contains "$text" "codex / gpt-5.6-sol" "compact usage should identify har
 assert_contains "$text" '$1.5000 | 3 calls | 2 sessions | elapsed ' \
   "compact usage should surface cost, calls, sessions, and wall-clock duration"
 assert_present "$HOME_DIR/data/task-a/usage.json" "teardown-style snapshot was not saved"
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "usage ingestion failed"
 EFFORT_DB="$HOME_DIR/data/effort-store.sqlite"
 assert_present "$EFFORT_DB" "live usage snapshot did not populate the effort store"
 snapshot_row=$(node - "$EFFORT_DB" <<'NODE'

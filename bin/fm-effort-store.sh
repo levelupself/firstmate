@@ -22,10 +22,11 @@
 # Usage:
 #   fm-effort-store.sh rebuild [--db <path>] [--no-import-graph]
 #   fm-effort-store.sh backfill-codeburn [--replace-existing] <export.json>
-#   fm-effort-store.sh report [<task-id>] [--db <path>]
+#   fm-effort-store.sh report [<task-id>] [--sync] [--db <path>]
 #   fm-effort-store.sh fingerprint [--db <path>]
 #   fm-effort-store.sh annotate <task-id> [annotation options]
 #   fm-effort-store.sh capture <task-id> --outcome <outcome>
+#   fm-effort-store.sh enqueue [--db <path>] [--no-import-graph]
 #   fm-effort-store.sh path [--db <path>]
 #   fm-effort-store.sh --help
 #
@@ -36,10 +37,19 @@
 #   --commit <sha>                  repeatable; the task-to-commit link
 #   --reverted yes|no
 #
-# `capture` is the lifecycle-owned append-and-rebuild path. It reads stamped
+# `capture` is the lifecycle-owned synchronous append-and-enqueue path. It reads stamped
 # task metadata, a prior raw row when volatile metadata is gone, the durable
 # usage snapshot, and matching settled no-mistakes rounds. Operators normally
-# use `report`.
+# use `report`; only `report --sync` waits for deferred ingestion.
+# Capture never acquires the derived-store lock. Usage snapshots are persisted
+# by fm-task-usage before its capture call and survive volatile metadata removal.
+# Enqueue starts a detached job with one runner per database, coalescing pending
+# requests after acquiring the store lock. Failed work remains queued; the next
+# enqueue or report --sync retries it. No separately started daemon is required.
+# state/.effort-queue-<db hash>/ holds requests; .runner.lock guards its worker.
+# state/effort-git-cache/ holds disposable commit-keyed inventories and walks.
+# rebuild refreshes this cache; ordinary deferred ingestion reuses it.
+# The worker log is state/.effort-queue-<db hash>/worker.log.
 #
 # Environment:
 #   FM_HOME                              selects the home whose data/ is used
@@ -54,7 +64,7 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 ENGINE="$SCRIPT_DIR/fm-effort-store.mjs"
 
 usage() {
-  sed -n '2,46s/^# \{0,1\}//p' "$0"
+  sed -n '2,/^set -u/{ /^#/s/^# \{0,1\}//p; }' "$0"
 }
 
 die() {
@@ -65,7 +75,7 @@ die() {
 COMMAND=${1:-}
 case "$COMMAND" in
   -h|--help|help|'') usage; exit 0 ;;
-  rebuild|backfill-codeburn|report|fingerprint|annotate|capture|path) shift ;;
+  rebuild|backfill-codeburn|report|fingerprint|annotate|capture|path|enqueue|worker) shift ;;
   *) usage >&2; exit 2 ;;
 esac
 
@@ -75,10 +85,16 @@ command -v node >/dev/null 2>&1 || die "node not found"
 DB="$DATA/effort-store.sqlite"
 IMPORT_GRAPH=true
 TASK_ID=
+SYNC=false
 ARGS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --sync)
+      [ "$COMMAND" = report ] || die "--sync is only supported by report"
+      SYNC=true
+      shift
+      ;;
     --db)
       [ $# -ge 2 ] || die "--db needs a path"
       DB=$2
@@ -119,8 +135,10 @@ fi
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/fm-effort-store.XXXXXX") || die "could not create a work directory"
 LOCK="$STATE/.effort-store.lock"
 LOCK_HELD=0
+RUNNER_HELD=0
 cleanup() {
   [ "$LOCK_HELD" = 0 ] || fm_lock_release "$LOCK" || true
+  [ "$RUNNER_HELD" = 0 ] || fm_lock_release "$RUNNER_LOCK" || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -128,8 +146,6 @@ trap cleanup EXIT
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 mkdir -p "$STATE"
-fm_lock_acquire_wait "$LOCK" || die "could not acquire the effort-store lock"
-LOCK_HELD=1
 
 # The config is written by node so no shell quoting can corrupt a path, and the
 # annotation arguments travel NUL-separated so a note may contain anything.
@@ -160,4 +176,106 @@ fs.writeFileSync(out, JSON.stringify({
 ' "$CONFIG" "$DB" "$DATA/cost-attribution.tsv" "$DATA/effort-annotations.jsonl" \
   "$DATA" "$STATE" "$IMPORT_GRAPH" "$TASK_ID" || die "could not stage the ingestion config"
 
-node "$ENGINE" "$COMMAND" "$CONFIG" "$ARGV"
+QUEUE_KEY=$(node -e 'process.stdout.write(require("crypto").createHash("sha256").update(require("path").resolve(process.argv[1])).digest("hex"))' "$DB") || die "could not identify queue"
+QUEUE="$STATE/.effort-queue-$QUEUE_KEY"
+RUNNER_LOCK="$QUEUE/.runner.lock"
+
+queue_request() {
+  mkdir -p "$QUEUE" || return 1
+  mktemp "$QUEUE/request.XXXXXXXX" >/dev/null
+}
+
+start_worker() {
+  # Detach with all descriptors closed so command substitutions and lifecycle
+  # tools return immediately. The worker acquires its own process-owned lock.
+  node -e '
+    const {spawn} = require("child_process")
+    const child = spawn(process.argv[1], process.argv.slice(2), {detached:true, stdio:"ignore"})
+    child.on("error", error => { process.stderr.write(error.message + "\n"); process.exitCode = 1 })
+    child.unref()
+  ' "$SCRIPT_DIR/fm-effort-store.sh" worker --db "$DB" "${GRAPH_ARGS[@]}"
+}
+
+GRAPH_ARGS=()
+[ "$IMPORT_GRAPH" = true ] || GRAPH_ARGS+=(--no-import-graph)
+
+run_queue() {
+  mkdir -p "$QUEUE" || return 1
+  if [ "$SYNC" = true ]; then
+    fm_lock_acquire_wait "$RUNNER_LOCK" || return 1
+  else
+    fm_lock_try_acquire "$RUNNER_LOCK" || return 0
+  fi
+  RUNNER_HELD=1
+  if [ "$SYNC" = true ]; then
+    # Recheck publication after the preceding worker exits, avoiding a redundant
+    # rebuild when it published between the initial report and lock acquisition.
+    if ! node "$ENGINE" current "$CONFIG" "$ARGV"; then
+      shopt -s nullglob
+      local pending=("$QUEUE"/request.*)
+      [ "${#pending[@]}" -gt 0 ] || queue_request || return 1
+    fi
+  fi
+  while :; do
+    local requests=()
+    shopt -s nullglob
+    requests=("$QUEUE"/request.*)
+    if [ "${#requests[@]}" -gt 0 ]; then
+      fm_lock_acquire_wait "$LOCK" || return 1
+      LOCK_HELD=1
+      # Include every request queued during the wait, but leave requests that
+      # arrive during ingestion for the next pass. Failure preserves the batch.
+      requests=("$QUEUE"/request.*)
+      if ! node "$ENGINE" ingest "$CONFIG" "$ARGV"; then
+        return 1
+      fi
+      rm -f -- "${requests[@]}"
+      fm_lock_release "$LOCK"
+      LOCK_HELD=0
+      continue
+    fi
+    fm_lock_release "$RUNNER_LOCK"
+    RUNNER_HELD=0
+    # Close the exit/enqueue race: a submitter either starts a new runner after
+    # release, or its request is observed here and this runner reacquires.
+    requests=("$QUEUE"/request.*)
+    [ "${#requests[@]}" -gt 0 ] || return 0
+    fm_lock_try_acquire "$RUNNER_LOCK" || return 0
+    RUNNER_HELD=1
+  done
+}
+
+case "$COMMAND" in
+  capture)
+    # Serialize only this task's previous-row read and append, never ingestion.
+    [[ "$TASK_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "capture needs a safe task id"
+    CAPTURE_LOCK="$STATE/.effort-capture-$TASK_ID.lock"
+    fm_lock_acquire_wait "$CAPTURE_LOCK" || die "could not lock task capture"
+    node "$ENGINE" capture "$CONFIG" "$ARGV"
+    result=$?
+    fm_lock_release "$CAPTURE_LOCK"
+    [ "$result" -eq 0 ] || exit "$result"
+    queue_request || die "could not queue ingestion"
+    start_worker || die "could not start ingestion worker"
+    ;;
+  enqueue)
+    queue_request || die "could not queue ingestion"
+    start_worker || die "could not start ingestion worker"
+    ;;
+  worker)
+    mkdir -p "$QUEUE" || die "could not create queue"
+    run_queue >>"$QUEUE/worker.log" 2>&1
+    ;;
+  report)
+    if [ "$SYNC" = true ]; then
+      run_queue >/dev/null || die "pending ingestion failed; see $QUEUE/worker.log"
+    fi
+    node "$ENGINE" report "$CONFIG" "$ARGV"
+    ;;
+  rebuild|backfill-codeburn)
+    fm_lock_acquire_wait "$LOCK" || die "could not acquire the effort-store lock"
+    LOCK_HELD=1
+    node "$ENGINE" "$COMMAND" "$CONFIG" "$ARGV"
+    ;;
+  *) node "$ENGINE" "$COMMAND" "$CONFIG" "$ARGV" ;;
+esac
