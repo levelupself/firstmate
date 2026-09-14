@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Immutable attribution identities, created only by the task launch path.
-// init <id> <spawned-at>: establish forward-only coverage for a NEW task.
+// init <id> <spawned-at>: establish or reuse coverage; print task creation time.
 // register <id> <harness> <worktree>: create one launch receipt and print its UUID.
 // Registration runs in the launch shell, after environment exports and activation.
 // Receipts contain identity and source locations, never counters or sealed totals.
@@ -48,13 +48,14 @@ export function init(id, spawnedAt) {
   try { fs.lstatSync(path.join(dir,'identity.json'));existing=true }
   catch(e) { if(e.code!=='ENOENT') throw e }
   if(existing) {
-    identity(id)
+    const task=identity(id)
     read(path.join(dir,'launches.jsonl'))
-    return
+    return task.spawned_at
   }
   fs.mkdirSync(dir,{recursive:true})
   fs.writeFileSync(path.join(dir,'launches.jsonl'),'',{flag:'wx',mode:0o600})
   writeOnce(path.join(dir,'identity.json'),{schema:'fm-task-sessions.v1',id,spawned_at:spawnedAt})
+  return spawnedAt
 }
 export function register(id,harness,worktree) {
   identity(id)
@@ -182,7 +183,7 @@ export function index(id) {
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   try {
     const [mode,id,...args]=process.argv.slice(2)
-    if(mode==='init') init(id,...args)
+    if(mode==='init') console.log(init(id,...args))
     else if(mode==='register') console.log(register(id,...args))
     else if(mode==='index') console.log(JSON.stringify(index(id)))
     else throw new Error('usage: fm-task-session.mjs init|register|index <id> [arguments]')

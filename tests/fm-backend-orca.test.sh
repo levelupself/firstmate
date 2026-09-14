@@ -5,6 +5,7 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$ROOT/tests/task-launch-helpers.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-backend-orca-tests)
 
@@ -497,7 +498,7 @@ test_spawn_preserves_orca_metadata_when_pathless_worktree_cleanup_fails() {
 }
 
 test_spawn_writes_orca_metadata_and_launches_harness() {
-  local proj wt data state config id out log
+  local proj wt data state config id out log launch
   id="orcaspawnz1"
   proj="$TMP_ROOT/spawn-project"
   wt="$TMP_ROOT/spawn-wt"
@@ -518,7 +519,7 @@ test_spawn_writes_orca_metadata_and_launches_harness() {
   FM_DATA_OVERRIDE="$data" FM_STATE_OVERRIDE="$state" \
     "$ROOT/bin/fm-worktree-allocation.sh" initialize "$proj" 2026-07-01T00:00:00Z complete "$proj" \
     || fail "Orca allocation history initialization failed"
-  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+  out=$( CLAUDE_CONFIG_DIR="$CASE_DIR/claude" PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
     FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
     FM_PROJECTS_OVERRIDE="$TMP_ROOT/unused-projects" FM_SPAWN_NO_GUARD=1 \
     "$ROOT/bin/fm-spawn.sh" "$id" "$proj" claude --mode no-mistakes --yolo off --backend orca 2>&1 )
@@ -535,8 +536,15 @@ test_spawn_writes_orca_metadata_and_launches_harness() {
     "spawn should reuse the implicit terminal returned by Orca worktree creation"
   assert_contains "$(cat "$log")" $'orca\x1f''terminal'$'\x1f''send'$'\x1f''--terminal'$'\x1f''term-spawn'$'\x1f''--text'$'\x1f''export GOTMPDIR=/tmp/fm-orcaspawnz1/gotmp'$'\x1f''--enter'$'\x1f''--json' \
     "spawn did not export GOTMPDIR through the Orca terminal"
-  assert_contains "$(cat "$log")" "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\"}'" \
-    "spawn did not send the selected harness launch command through Orca"
+  launch=$(node - "$log" <<'NODE'
+const fs=require('fs')
+const rows=fs.readFileSync(process.argv[2],'utf8').split('\n').map(x=>x.split('\x1f'))
+const row=rows.find(x=>x.includes('--text')&&x[x.indexOf('--text')+1].includes('FM_TASK_SESSION_STAMP='))
+if(!row)process.exit(1)
+console.log(row[row.indexOf('--text')+1])
+NODE
+  ) || fail 'Orca did not deliver a stamped launch'
+  fm_assert_claude_launch "$launch" "$FB/claude" "$wt" "$data" "$id" "$CASE_DIR/claude"
   rm -rf "/tmp/fm-$id"
   pass "fm-spawn.sh --backend orca: reuses implicit terminal, records metadata, launches harness"
 }
