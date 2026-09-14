@@ -63,7 +63,7 @@ The cross-task report groups tasks by the lifecycle row's project path, but proj
 Each project shows cost-evidence coverage for its known lifecycle rows and explicitly states that historical population completeness is unproven instead of presenting the known subtotal as a total.
 A future project-total capability requires a durable reporting-period population bound; this store does not infer that bound from the rows it already contains.
 A pooled worktree is only the codeburn correlation key and never becomes the project bucket.
-A dash means the durable source is missing.
+A dash means the durable source is missing or ingestion is pending, as identified by the report.
 It never prints a plausible zero for an absent source.
 
 ## Historical codeburn recovery
@@ -150,7 +150,7 @@ The separate discovery-versus-churn and loud-versus-quiet research annotations r
 
 ## Verification
 
-The suites drive public lifecycle and store entry points and read results back through SQL only.
+The suites drive public lifecycle and store entry points and verify SQL results, report output, and instrumented ingestion and git calls.
 They cover nonblocking lifecycle capture during stalled ingestion, request coalescing, cached history reuse, pending reports, launch-to-PR duration, durable usage and actual models, missing-versus-zero behavior, both recorded-by-hand fields, the durability link across a file rename, one-command reporting, and delete-and-rebuild identity.
 
 ```sh

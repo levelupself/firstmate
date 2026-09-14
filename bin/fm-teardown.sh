@@ -2604,7 +2604,7 @@ fi
 
 # This is the last non-destructive point at which volatile task metadata and
 # the final durable usage snapshot coexist. Stamp once, capture the raw row,
-# and rebuild before returning the worktree or deleting task state.
+# and enqueue ingestion before returning the worktree or deleting task state.
 if [ "$KIND" != secondmate ]; then
   if [ "$FORCE" = --force ]; then
     TEARDOWN_OUTCOME=forced
