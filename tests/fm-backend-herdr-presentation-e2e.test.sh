@@ -486,6 +486,7 @@ normalize_meta() {  # <meta>
     -e 's|^herdr_pane_id=.*$|herdr_pane_id=<herdr-container-id>|' \
     -e 's|^worktree_allocation=.*$|worktree_allocation=<allocation-lifecycle>|' \
     -e 's|^spawned_at=.*$|spawned_at=<spawn-timestamp>|' \
+    -e 's|^incarnation_at=.*$|incarnation_at=<incarnation-timestamp>|' \
     -e 's|^spawn_gen=.*$|spawn_gen=<spawn-incarnation>|' \
     "$1"
 }
