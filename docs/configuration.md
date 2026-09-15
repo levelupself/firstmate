@@ -59,11 +59,22 @@ This preference is local to each Firstmate home and is not part of secondmate in
 ## Cockpit fleet sections (config/cockpit-sections)
 
 How that region is divided into panes comes from the local, gitignored `config/cockpit-sections` in the same directory, and it is read only when the region is built.
-Each non-blank, non-comment line describes one pane as a comma-separated list of `bin/fm-fleet-view.sh` section names - `waiting`, `ready`, `in-flight`, `blocked`, `finished`, `failed` - and whitespace inside a line is ignored.
+Each non-blank, non-comment line describes one pane as a comma-separated list of `bin/fm-fleet-view.sh` section names - `waiting`, `ready`, `in-flight`, `blocked`, `finished`, `failed` - with whitespace in the section list ignored.
 An absent file means the default three panes `waiting`, `ready`, and `in-flight,blocked`, which read in the same priority order the single banner printed top to bottom.
 A section may be listed only once across the whole file, an unknown name is refused, and at most six panes are accepted; every split ratio within that supported limit stays above the ratio Herdr silently clamps.
 Every refusal is actionable and leaves the screen untouched rather than falling back to a shape nobody chose.
-The panes divide the band along the axis it does not already span, so a `stacked` band becomes columns and a `side-by-side` column becomes rows; the resulting panes are equal.
+The panes divide the band along the axis it does not already span, so a `stacked` band becomes columns and a `side-by-side` column becomes rows.
+By default each pane is weighted by the sum of its sections' task-row counts from a single fresh fleet snapshot, using the renderer's own membership rules before terminal clipping; headings, project labels and continuation lines do not count, and finished history counts only its five displayed entries.
+Append `@<weight>` to a line to override that pane's automatic count, for example `waiting @3` and `ready @19`.
+Weights must contain digits with an optional decimal point followed by digits, be positive and no greater than 1000000, and contain no sign, exponent notation, or embedded whitespace.
+Whitespace around the `@` delimiter and at the end of the line is accepted; existing unweighted lines retain their section selection and grouping unchanged.
+The region reserves 16% per pane and divides the remaining space in proportion to the weights, so a 3:19 pair receives approximately 25%:75%, and an empty pane retains its reserved share.
+All-zero counts use equal shares, and equal weights reproduce the former equal-pane splits.
+A single pane fills the region; with two or more panes, no pane can exceed 84% before rounding, and both rounded split ratios and their resulting final band shares are validated before any pane changes.
+Inner ratios rounded to four decimal places must lie within 0.10-0.90, and independently reconstructed final shares must lie within 0.15-0.85; the one-percentage-point margin around the 16% reservation accommodates rounding while staying above Herdr's 0.1 clamp and preventing crowding.
+The applied shares and each weight's source are announced before building the region.
+Sizing is computed only when the region is built: row arrivals, departures and edits to these preferences never resize a live region; rebuilding applies fresh values.
+If automatic counts cannot be read or validated, the build refuses without changing the screen; providing explicit weights for every pane avoids that measurement.
 This preference is local to each Firstmate home and is not part of secondmate inherited configuration.
 [`docs/herdr-backend.md`](herdr-backend.md) "Watching and task containers" owns what the resolved arrangement does to the screen and when a change to it takes effect.
 
