@@ -769,8 +769,10 @@ const nativeClearTimeout = globalThis.clearTimeout;
 const readinessTimer = { unref() {} };
 let fireReadinessTimeout = null;
 globalThis.setTimeout = (callback, delay, ...args) => {
-  if (delay === Number(process.env.FM_PI_ARM_READY_TIMEOUT_MS) && fireReadinessTimeout === null) {
-    fireReadinessTimeout = () => callback(...args);
+  // Only the deliberately hung successor times out; restored readiness is
+  // driven by its output checkpoint, independent of CI process startup speed.
+  if (delay === Number(process.env.FM_PI_ARM_READY_TIMEOUT_MS)) {
+    if (fireReadinessTimeout === null) fireReadinessTimeout = () => callback(...args);
     return readinessTimer;
   }
   return nativeSetTimeout(callback, delay, ...args);

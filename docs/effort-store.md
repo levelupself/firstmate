@@ -34,9 +34,9 @@ Nothing in the derived layer is ever written back to the raw layer.
 | annotation | `data/effort-annotations.jsonl` | the posterior that no artifact records |
 
 Records are keyed by task, so any later source that can name a task contributes with no schema change.
-The codeburn input is the durable task-bounded snapshot written while the task still owns its worktree and baseline.
+The codeburn input is the durable task-bounded usage snapshot.
 Rebuild never re-queries mutable account-wide history.
-The task-usage producer owns project-key matching and baseline subtraction, as documented in [`task-usage.md`](task-usage.md).
+[`task-usage.md`](task-usage.md) owns automatic attribution and its coverage limits.
 
 ## Process cost
 
@@ -56,7 +56,7 @@ The report shows launch-to-PR duration, cost, input and output tokens, actual mo
 The cross-task report groups tasks by the lifecycle row's project path, but project dollar totals remain unavailable because the store has no durable bound for the reporting period's complete historical task population.
 Each project shows cost-evidence coverage for its known lifecycle rows and explicitly states that historical population completeness is unproven instead of presenting the known subtotal as a total.
 A future project-total capability requires a durable reporting-period population bound; this store does not infer that bound from the rows it already contains.
-A pooled worktree is only the codeburn correlation key and never becomes the project bucket.
+A pooled worktree never becomes the project bucket.
 A dash means the durable source is missing.
 It never prints a plausible zero for an absent source.
 

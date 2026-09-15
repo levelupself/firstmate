@@ -1,33 +1,38 @@
 # Task usage
 
-Firstmate records codeburn usage automatically for each crewmate and scout cycle.
-`bin/fm-spawn.sh` records `spawned_at=` and saves a bounded pre-launch baseline in `data/<id>/usage-baseline.json`.
-Codeburn does not publish a new worktree key until that directory records its first call.
-Spawn initializes an append-only project-scoped history under `data/worktree-allocations/` with that canonical project's complete Git boundary inventory of exact normalized working-copy identities, records later allocations, and teardown records releases without deleting prior identities.
-Task metadata retains the canonical allocation-project identity so baseline validation and teardown always address the same project history even when the registered project path uses a symlink.
-An incomplete boundary remains unknown, a boundary or previously recorded path remains reused after cleanup or recreation, and only a positively created identity observed after complete tracking began is a first owner.
-When the key is absent at launch, the baseline producer records an explicit zero only if allocation tracking covers the full report period, the durable allocation record proves first ownership, and the declared lifecycle ledger is present, completely parseable, and shows no contradictory earlier owner whose lifecycle overlaps that period.
-A missing or incomplete ledger and a reused worktree with an overlapping owner remain unavailable until a real bounded baseline exists.
-`bin/fm-task-usage.sh <id>` first lists codeburn's reported project inventory and matches the worktree against those reported paths.
-It uses the uniquely matched reported project name as codeburn's filter key, then subtracts the same filtered baseline to exclude previous occupants of a pooled worktree slot.
-Codeburn can leave the top-level `overview` account-wide even when `--project` filters the project and model rows.
-Task totals therefore come from the exact filtered project row and its model rows, and capture refuses a disagreement between them.
-An absent, ambiguous, or ineffective project match is an attribution error and never becomes a zero-usage report.
-`bin/fm-teardown.sh` saves the final delta as `data/<id>/usage.json` before deleting volatile task metadata.
-The durable snapshot keeps completed-task usage in `fm-fleet-snapshot.v1` after worktree return and pool reuse.
-Writing a v2 snapshot also refreshes the derived effort-store row immediately, so a live task exposes its attributed cost, tokens, calls, sessions, and actual models before teardown.
+New tasks record session identities at launch, and `bin/fm-task-usage.sh <id>` joins those identities to codeburn usage.
+Ownership requires an exact stamp and directory containment; timestamps, parent chains, project slugs, and pooled-copy history do not decide ownership.
+The immutable identity and launch-receipt format is owned by `bin/fm-task-session.mjs`.
+Each activated launch retains its own receipt, including the original runtime store location, so relaunches and runtime switches keep earlier spend without sealing totals or replacing a boundary.
+Registration happens in the launch shell after environment exports and activation, so a failed replacement staging does not create a receipt or mutate the previous launch's identity.
+Tasks that began without a measured identity can still be relaunched, but their usage remains unavailable; no baseline or identity is inferred retrospectively.
+Other supported worker runtimes can still launch, but their receipts report unsupported usage attribution until a stamping adapter exists.
 
-The JSON contract is owned by `bin/fm-task-usage.sh` and identified by `fm-task-usage.v2`.
-It reports the task id, title, kind, project, delivery mode, dispatched harness, configured model, actual model names and per-model totals, tokens, cost, calls, sessions, spawn and capture timestamps, and wall-clock duration.
-The compact text form also surfaces the harness, actual models, tokens, cost, calls, sessions, and elapsed wall-clock time.
-Existing `fm-task-usage.v1` snapshots remain readable and accepted by the fleet snapshot, but they are not rewritten or silently treated as v2 records.
-Usage capture without `spawned_at=`, a uniquely matched reported project, or either a saved reported-project baseline or a proven fresh-worktree zero baseline fails instead of emitting an unbounded or plausible-zero total.
-The effort store treats legacy v1 snapshots and failed or mismatched v2 attribution as missing rather than inventing a backfill.
+Claude receives a generated UUID through `--session-id`.
+Its main transcript carries that stamp, and transcripts structurally contained in its session's `subagents` directory carry the same parent stamp while joining to codeburn through their own transcript IDs.
+Codex receives the launch stamp through `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`, and the reader obtains it from local rollout `session_meta.payload.originator` before joining by session ID.
+This INTERNAL variable is an unsupported, version-dependent surface that can change or disappear without notice; it is not a stable Codex contract.
+Codex descendant inheritance is unproven: descendants lacking a matching stamp are excluded, and complete descendant cost coverage is not claimed.
+A runtime that stops recording the stamp produces an unavailable reading rather than an inferred attribution.
 
-Usage collection is best effort.
-A missing or unreadable codeburn result never blocks spawn or teardown, and the fleet snapshot marks live usage unavailable.
-Each codeburn call is bounded by a timeout (`FM_TASK_USAGE_TIMEOUT`, default 15s) so a hung report never stalls spawn, teardown, or fleet-snapshot generation.
-`bin/fm-fleet-snapshot.sh` queries every live task's usage in parallel, each bounded by the shorter `FM_FLEET_USAGE_TIMEOUT` (default 5s), so total wait stays bounded by the slowest single call instead of the sum across the whole fleet.
-The snapshot read never writes persistent data.
-When `state/usage-cache/<id>.json` already exists, a timed-out or failed live query may serve that reading with `stale:true` instead of blanking to unavailable.
-`bin/fm-teardown.sh` deletes that task's `state/usage-cache/<id>.json` entry alongside its other volatile state, so a torn-down task never leaves an orphaned live-usage cache behind; the durable `data/<id>/usage.json` snapshot is unaffected.
+The reader uses codeburn's precise session totals, which do not expose the Codex originator; the local rollout join is required.
+The session-report shape, session-ID correspondence, and cost fields are version-dependent integrations.
+Codeburn's call export rounds costs to currency precision and is unsuitable for this attribution path.
+For sessions containing multiple models, task totals remain exact but amounts for the affected models are unknown rather than split speculatively.
+The portable attribution tests use fixtures; the real-CLI creation guard is linked from `docs/verification/runtime-backends.md`.
+The query requests the full history; dates do not filter ownership.
+Unreadable stores, missing launch sessions, missing usage rows, and missing or changed previously snapshotted session files produce errors identifying their paths, never zero totals.
+A live read is read-only; a snapshot preserves measured source paths and counters so later capture refuses lost sources and decreasing totals.
+Session files removed before any measurement cannot be reconstructed; launch receipts still require a matching main session, but previously unobserved descendants cannot be proven complete.
+
+The JSON contract is owned by `bin/fm-task-usage.mjs` and identified by `fm-task-usage.v3`.
+It reports task identity, configured runtime and model, actual model totals, tokens, cost, calls, sessions, and duration, with `correlation.attribution` set to `session-stamp` and the measured session sources retained.
+Model names and model totals are emitted from the same ordered collection, including across runtime switches.
+`bin/fm-teardown.sh` saves `data/<id>/usage.json` before deleting volatile task metadata, and snapshot capture refreshes the derived effort-store row.
+Legacy snapshots remain readable without being rewritten or backfilled.
+
+Usage queries are best effort and bounded by `FM_TASK_USAGE_TIMEOUT` (default 60 seconds).
+Full-history session queries can exceed the former 15-second limit on large stores, so final capture allows a longer bounded wait.
+The fleet snapshot uses its shorter `FM_FLEET_USAGE_TIMEOUT` and may serve an existing reading marked `stale:true` when a fresh reading is unavailable.
+Cleanup removes the volatile usage cache while preserving the durable snapshot.
+The live demonstration of two sequential dispatched tasks sharing a reused local copy has not yet been observed, nor has an improved live capture rate; both require dispatches after deployment.

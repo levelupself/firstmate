@@ -1549,7 +1549,7 @@ launch_template() {
     # alone disables the feature; keep both so a managed override of one still
     # leaves the other in force. Both are per-launch, scoped to this invocation only,
     # and never touch the captain's global ~/.claude/settings.json.
-    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '\''{"feedbackDrafts":"off"}'\'' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude __SESSIONFLAG__--dangerously-skip-permissions --settings '\''{"feedbackDrafts":"off"}'\'' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     codex)
       if [ "$kind" = secondmate ]; then
         printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
@@ -3262,6 +3262,7 @@ if [ "$REACQUIRE" -eq 1 ]; then
     exit 1
   }
 fi
+INCARNATION_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 if [ "$RECOVERY" -eq 1 ]; then
   SPAWNED_AT=$(fm_meta_get "$RELAUNCH_META" spawned_at)
   if [ "$REACQUIRE" -eq 1 ]; then
@@ -3289,7 +3290,7 @@ if [ "$RECOVERY" -eq 1 ]; then
     SPAWN_WORKTREE_ALLOCATION=$(fm_meta_get "$RELAUNCH_META" worktree_allocation)
   fi
 elif [ "$KIND" != secondmate ]; then
-  SPAWNED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  SPAWNED_AT=$INCARNATION_AT
   if [ "$BACKEND" = orca ]; then
     SPAWN_WORKTREE_ALLOCATION=fresh
   elif [ "$WORKTREE_INVENTORY_VALID" -eq 1 ] \
@@ -3301,7 +3302,15 @@ elif [ "$KIND" != secondmate ]; then
   SPAWN_WORKTREE_ALLOCATION=$("$SCRIPT_DIR/fm-worktree-allocation.sh" acquire \
     "$ID" "$PROJ_ABS_REAL" "$WT" "$SPAWNED_AT" "$SPAWN_WORKTREE_ALLOCATION") || SPAWN_WORKTREE_ALLOCATION=unknown
 else
-  SPAWNED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  SPAWNED_AT=$INCARNATION_AT
+fi
+
+STAMP_TASK=0
+if [ "$KIND" != secondmate ] && { [ "$RECOVERY" -eq 0 ] || [ -f "$DATA/$ID/sessions/identity.json" ]; }; then
+  STAMP_TASK=1
+fi
+if [ "$STAMP_TASK" -eq 1 ]; then
+  SPAWNED_AT=$(node "$FM_ROOT/bin/fm-task-session.mjs" init "$ID" "$SPAWNED_AT") || exit 1
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
@@ -3719,7 +3728,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree worktree_allocation allocation_project project harness kind mode yolo tasktmp spawned_at model effort env_file busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree worktree_allocation allocation_project project harness kind mode yolo tasktmp spawned_at incarnation_at model effort env_file busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -3738,6 +3747,7 @@ preserve_relaunch_meta() {
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
   echo "tasktmp=$TASK_TMP"
   echo "spawned_at=$SPAWNED_AT"
+  echo "incarnation_at=$INCARNATION_AT"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
   [ -z "$ENV_FILE" ] || echo "env_file=$ENV_FILE"
@@ -3818,6 +3828,12 @@ sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
 sq_worktree=$(shell_quote "$WT")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT")
+SESSIONFLAG=
+if [ "$STAMP_TASK" -eq 1 ] && [ "$HARNESS" = claude ]; then
+  # shellcheck disable=SC2016 # expanded in the activated launch shell
+  SESSIONFLAG='--session-id "$FM_TASK_SESSION_STAMP" '
+fi
+LAUNCH=${LAUNCH//__SESSIONFLAG__/$SESSIONFLAG}
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
 LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
 LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
@@ -3845,6 +3861,27 @@ esac
 # an unset value is the single-store default and needs no prefix.
 if [ "$HARNESS" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
   LAUNCH="CLAUDE_CONFIG_DIR=$(shell_quote "$CLAUDE_CONFIG_DIR") $LAUNCH"
+fi
+# Preserve the effective Codex store through long-lived terminal daemons too.
+if [ "$HARNESS" = codex ] && [ -n "${CODEX_HOME:-}" ]; then
+  LAUNCH="CODEX_HOME=$(shell_quote "$CODEX_HOME") $LAUNCH"
+fi
+if [ "$STAMP_TASK" -eq 1 ]; then
+  # Execute registration only once activation releases the launch. Failed staging
+  # leaves no receipt and cannot move the attribution boundary of the old agent.
+  stamp_register="FM_HOME=$(shell_quote "$FM_HOME") FM_DATA_OVERRIDE=$(shell_quote "$DATA") node $(shell_quote "$FM_ROOT/bin/fm-task-session.mjs") register $(shell_quote "$ID") $(shell_quote "$HARNESS") $(shell_quote "$WT")"
+  if [ "$HARNESS" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    stamp_register="CLAUDE_CONFIG_DIR=$(shell_quote "$CLAUDE_CONFIG_DIR") $stamp_register"
+  fi
+  if [ "$HARNESS" = codex ] && [ -n "${CODEX_HOME:-}" ]; then
+    stamp_register="CODEX_HOME=$(shell_quote "$CODEX_HOME") $stamp_register"
+  fi
+  if [ "$HARNESS" = codex ]; then
+    # shellcheck disable=SC2016 # expanded in the activated launch shell
+    LAUNCH='CODEX_INTERNAL_ORIGINATOR_OVERRIDE="$FM_TASK_SESSION_STAMP" '"$LAUNCH"
+  fi
+  # shellcheck disable=SC2016 # registration runs in the activated launch shell
+  LAUNCH='FM_TASK_SESSION_STAMP=$('"$stamp_register"') && '"$LAUNCH"
 fi
 if [ "$KIND" = secondmate ]; then
   sq_home=$(shell_quote "$PROJ_ABS")
@@ -3942,10 +3979,6 @@ if [ -n "$SPAWN_TRACEPARENT" ]; then
     fi
     LAUNCH="unset TRACEPARENT; $LAUNCH"
   fi
-fi
-if [ "$KIND" != secondmate ]; then
-  "$FM_ROOT/bin/fm-task-usage.sh" "$ID" --baseline \
-    || echo "fm-spawn: warning: could not capture codeburn baseline for $ID" >&2
 fi
 sleep 0.3
 if [ "$REATTACH" -eq 1 ]; then
