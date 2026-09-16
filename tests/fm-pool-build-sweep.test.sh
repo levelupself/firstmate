@@ -62,6 +62,7 @@ assert_present "$TMP_ROOT/pool/size/rust/.oracle-work/keep" 'source-adjacent dat
 pass 'size eviction is oldest first and stops before protected artifacts'
 # A real Cargo lock excludes deletion even when a stale inventory missed it.
 mkdir -p "$TMP_ROOT/pool/size/rust/target/debug"
+# shellcheck disable=SC2016 # Positional arguments expand in the child shell.
 flock "$TMP_ROOT/pool/size/rust/target/debug/.cargo-lock" bash -c '
   "$1" --max-gb 0.000001 > "$2"
 ' _ "$SWEEP" "$TMP_ROOT/locked"
