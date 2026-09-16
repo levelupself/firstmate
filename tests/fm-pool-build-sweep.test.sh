@@ -43,6 +43,24 @@ for (const e of entries) {
 }
 JS
 SWEEP="$ROOT/bin/fm-pool-build-sweep.sh"
+for source in argument environment; do
+  if [ "$source" = argument ]; then
+    command=("$SWEEP" --age-hours 0)
+  else
+    command=(env FM_POOL_BUILD_AGE_HOURS=0 "$SWEEP")
+  fi
+  if "${command[@]}" > "$TMP_ROOT/zero-out" 2> "$TMP_ROOT/zero-error"; then
+    fail "zero age from $source was accepted"
+  fi
+  assert_contains "$(cat "$TMP_ROOT/zero-error")" 'age-hours and max-gb must be positive' 'zero age rejection lacks a clear error'
+  [ ! -s "$TMP_ROOT/zero-out" ] || fail 'zero age reached copy sweeping'
+  for name in age size busy huge; do
+    for hash in 1111111111111111 2222222222222222 3333333333333333; do
+      assert_present "$TMP_ROOT/pool/$name/rust/target/debug/deps/libdemo-$hash.rlib" 'zero age rejection deleted an artifact'
+    done
+  done
+done
+pass 'zero age is rejected from arguments and environment before sweeping'
 "$SWEEP" --dry-run > "$TMP_ROOT/dry" || fail 'build sweep executable must support dry-run'
 assert_present "$TMP_ROOT/pool/age/rust/target/debug/deps/libdemo-1111111111111111.rlib" 'dry-run deleted old output'
 "$SWEEP" > "$TMP_ROOT/age"

@@ -22,8 +22,8 @@ for (let i = 0; i < args.length; i++) {
     default: throw Error(`unknown argument: ${args[i]}`);
   }
 }
-if (!Number.isFinite(age) || age < 0 || !Number.isFinite(maxGB) || maxGB <= 0)
-  throw Error('age must be nonnegative and max-gb must be positive');
+if (!Number.isFinite(age) || age <= 0 || !Number.isFinite(maxGB) || maxGB <= 0)
+  throw Error('age-hours and max-gb must be positive');
 const cap = maxGB * 1e9;
 const exists = p => fs.existsSync(p);
 const run = (cmd, argv, opts = {}) => execFileSync(cmd, argv, {encoding:'utf8', timeout:30000, maxBuffer:32*1024*1024, stdio:['ignore','pipe','pipe'], ...opts}).trim();
