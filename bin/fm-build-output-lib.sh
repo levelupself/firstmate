@@ -7,8 +7,8 @@
 # fm_prune_build_output <worktree> [dry-run|delete] prints path and allocated KiB.
 # Symlink roots, nested repositories, tracked paths (including index-hidden
 # paths), non-ignored files, and unreadable Git inventories are never deleted.
-# Callers own exclusive access: teardown retains task ownership until return;
-# the sweep holds Treehouse's pool lock and excludes every task reference.
+# Callers own concurrency protection: fm-teardown.sh, fm-pool-prune.sh, and
+# fm-pool-build-sweep.sh document their respective process and locking guards.
 
 fm_build_output_rules() {
   printf '%s\n' 'Cargo.toml target'

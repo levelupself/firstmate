@@ -2,6 +2,7 @@
 # Sweep stale Rust artifacts in registered projects' Treehouse inventories.
 # Usage: fm-pool-build-sweep.sh [--dry-run] [--age-hours N] [--max-gb N]
 # Defaults: FM_POOL_BUILD_AGE_HOURS=24, FM_POOL_BUILD_MAX_GB=8 (decimal GB).
+# Both knobs require positive finite values; zero age is not supported.
 # Stale artifacts have superseded Cargo fingerprints, are not referenced by a
 # protected current build unit, and have mtime older than the age threshold.
 # Above the size cap, evict eligible files oldest first regardless of age.
