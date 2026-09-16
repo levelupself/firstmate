@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {execFileSync, spawn} from 'node:child_process';
+import {files} from './fm-build-output-files.mjs';
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const home = process.env.FM_HOME;
 const state = process.env.FM_STATE_OVERRIDE || path.join(home, 'state');
@@ -48,8 +49,34 @@ if (scheduled) {
   if (recent()) process.exit(0);
   fs.writeFileSync(marker, `${new Date().toISOString()}\n`);
 }
+// PATH wins, followed by the user-local and standard system install locations.
+function treehouse(project) {
+  const systemLocations = process.env.FM_TREEHOUSE_SYSTEM_PATH === undefined
+    ? ['/usr/local/bin', '/opt/homebrew/bin']
+    : process.env.FM_TREEHOUSE_SYSTEM_PATH.split(path.delimiter).filter(Boolean);
+  const locations = [...(process.env.PATH || '').split(path.delimiter),
+    ...(process.env.HOME ? [path.join(process.env.HOME, '.local/bin')] : []),
+    ...systemLocations];
+  for (const location of locations) {
+    const candidate = path.resolve(project, location, 'treehouse');
+    try {
+      if (!fs.statSync(candidate).isFile()) continue;
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {}
+  }
+  throw Object.assign(Error('treehouse-not-found'), {code:'FM_TREEHOUSE_NOT_FOUND'});
+}
 function inventory(project) {
-  const entries = JSON.parse(run('treehouse', ['status','--json'], {cwd:project}));
+  const binary = treehouse(project);
+  let output;
+  try { output = run(binary, ['status','--json'], {cwd:project}); }
+  catch (e) {
+    if (e.code === 'ENOENT' && exists(project))
+      throw Object.assign(Error('treehouse-not-found'), {code:'FM_TREEHOUSE_NOT_FOUND'});
+    throw e;
+  }
+  const entries = JSON.parse(output);
   if (!Array.isArray(entries)) throw Error('invalid Treehouse inventory');
   const seen = new Set();
   for (const e of entries) {
@@ -66,18 +93,6 @@ function processReason(entry) {
   }
   return '';
 }
-function files(root) {
-  const result = [];
-  if (!exists(root)) return result;
-  function visit(p) {
-    const s = fs.lstatSync(p);
-    if (s.isSymbolicLink()) throw Error('symlink-output');
-    if (s.isDirectory()) for (const name of fs.readdirSync(p)) visit(path.join(p, name));
-    else if (s.isFile()) result.push({p, size:s.size, time:s.mtimeMs, ino:s.ino, dev:s.dev});
-    else throw Error('special-output');
-  }
-  visit(root); return result;
-}
 const bytes = entries => entries.reduce((sum, f) => sum + f.size, 0);
 const report = (wt, before, after, reason) => console.log(`${wt}\tbytes_before=${before}\tbytes_after=${after}\t${reason}`);
 function boundary(wt) {
@@ -92,6 +107,7 @@ function sameRepo(project, wt) {
 const cargoJSON = text => JSON.parse(text.replace(/([:\[,]\s*)(\d{16,})(?=\s*[,}\]])/g, '$1"$2"'));
 function select(target, all) {
   const nodes = [];
+  const eligible = new Set(all.map(f => f.p));
   for (const f of all) {
     const rel = path.relative(target, f.p).split(path.sep);
     const fp = rel.indexOf('.fingerprint');
@@ -102,7 +118,7 @@ function select(target, all) {
     if (!Array.isArray(json.deps)) throw Error('unknown-fingerprint');
     const unit = rel.at(-1).slice(0,-5);
     const stamp = f.p.slice(0,-5);
-    if (!exists(stamp)) throw Error('incomplete-fingerprint');
+    if (!eligible.has(stamp)) throw Error('incomplete-fingerprint');
     const digest = fs.readFileSync(stamp,'utf8').trim();
     if (!/^[a-f0-9]{16}$/.test(digest)) throw Error('unknown-fingerprint-hash');
     const profile = rel.slice(0,fp).join(path.sep);
@@ -231,7 +247,7 @@ function sweep(project, wt) {
     report(wt,before,dry?before:remaining,`${dry?'dry-run ':''}reclaim_bytes=${removed} planner=${planner}${protectedSize>cap?' protected-over-cap':remaining>cap?' cap-unreachable':''}`);
   } catch (e) {
     report(wt,before,before,`skipped=${String(e.message).split('\n')[0]}`);
-    process.exitCode = 1;
+    if (e.code !== 'FM_TREEHOUSE_NOT_FOUND') process.exitCode = 1;
   }
 }
 function withCargoLocks(project, entry) {
@@ -264,6 +280,9 @@ else {
     const project = path.join(process.env.FM_PROJECTS_OVERRIDE || path.join(home,'projects'),name);
     try {
       for (const entry of inventory(project)) withCargoLocks(project,entry);
-    } catch(e) {console.error(`${project}: sweep failed: ${e.message}`);process.exitCode=1;}
+    } catch(e) {
+      if (e.code === 'FM_TREEHOUSE_NOT_FOUND') report(project,0,0,'skipped=treehouse-not-found');
+      else {console.error(`${project}: sweep failed: ${e.message}`);process.exitCode=1;}
+    }
   }
 }
