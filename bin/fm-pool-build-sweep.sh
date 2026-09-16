@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 # Sweep stale Rust artifacts in registered projects' Treehouse inventories.
-# Usage: fm-pool-build-sweep.sh [--dry-run] [--age-hours N] [--max-gb N]
+# Usage: fm-pool-build-sweep.sh [--dry-run] [--age-hours N] [--max-gb N] [--explain COPY]
 # Defaults: FM_POOL_BUILD_AGE_HOURS=24, FM_POOL_BUILD_MAX_GB=8 (decimal GB).
 # Both knobs require positive finite values; zero age is not supported.
 # Stale artifacts have superseded Cargo fingerprints, are not referenced by a
 # protected current build unit, and have mtime older than the age threshold.
 # Above the size cap, evict eligible files oldest first regardless of age.
-# Current build units and their transitive fingerprint dependencies always win;
-# oversized protected output is reported, never evicted. Unknown artifacts,
-# including incremental caches with no fingerprint mapping, remain protected.
+# A generation key is profile-directory, crate, unit, and compile_kind.
+# Only newest generations and transitive fingerprint dependencies are protected.
+# If that set exceeds the cap, evict custom top-level profile directories by
+# newest contained mtime, oldest first; debug and release remain protected.
+# Unknown artifacts survive except inside those evicted custom profiles.
+# Symlinks and nested repositories always retain the shared walker exclusions.
+# Remaining oversized protected output is reported as protected-over-cap.
+# --explain COPY implies dry-run and prints protected hashes and evictable bytes
+# per generation key for the named registered pool copy.
 # cargo-sweep, when installed, supplies a dry-run --maxsize plan; the engine
 # filters it through the same preservation boundary before deleting anything.
 # fm-build-output-lib.sh owns root eligibility and points to the shared walker
@@ -17,7 +23,8 @@
 # unknown process evidence skips the copy. Existing Cargo profile locks also
 # serialize deletion against a build starting after the inventory snapshot.
 # Treehouse resolves from PATH, ~/.local/bin, /usr/local/bin, or /opt/homebrew/bin.
-# A missing executable reports skipped=treehouse-not-found per project.
+# Executables resolve through realpath; launch failures try bash -lc treehouse.
+# A failed fallback reports skipped=treehouse-not-found per project.
 # One line per copy: path, bytes_before, bytes_after, and reason (including skips).
 # Byte totals count only regular files admitted by the shared walker.
 # --dry-run does not delete or schedule work; reported bytes_after is actual.
