@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {execFileSync, spawn} from 'node:child_process';
-import {files} from './fm-build-output-files.mjs';
+import {files, directories} from './fm-build-output-files.mjs';
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const home = process.env.FM_HOME;
 const state = process.env.FM_STATE_OVERRIDE || path.join(home, 'state');
@@ -229,6 +229,7 @@ function sweep(project, wt) {
     const cutoff = Date.now()-age*3600000;
     const removedPaths = new Set();
     const remove = f => {
+      if (path.basename(f.p) === '.cargo-lock') return;
       const now = fs.lstatSync(f.p);
       if (!now.isFile() || now.ino !== f.ino || now.dev !== f.dev || now.mtimeMs !== f.time || now.size !== f.size)
         throw Error('artifact-changed');
@@ -272,14 +273,9 @@ function sweep(project, wt) {
       if (current.some(e=>processReason(e))) throw Error('live-cargo-or-unknown-process');
       for (const f of profile.files) if (!removedPaths.has(f.p)) remove(f);
       if (!dry) {
-        const prune = p => {
-          for (const name of fs.readdirSync(p)) {
-            const child = path.join(p,name);
-            if (fs.lstatSync(child).isDirectory() && !exists(path.join(child,'.git'))) prune(child);
-          }
+        for (const p of directories(profile.p)) {
           try { fs.rmdirSync(p); } catch (e) { if (!['ENOTEMPTY','EEXIST'].includes(e.code)) throw e; }
-        };
-        if (exists(profile.p)) prune(profile.p);
+        }
       }
     }
     report(wt,before,dry?before:remaining,`${dry?'dry-run ':''}reclaim_bytes=${removed} planner=${planner}${remaining>cap?(protectedSize>cap?' protected-over-cap':' cap-unreachable'):''}`);
