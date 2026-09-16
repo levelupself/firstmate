@@ -40,6 +40,24 @@ PR_MERGE="$ROOT/bin/fm-pr-merge.sh"
 PR_CHECKS="$ROOT/bin/fm-pr-checks.sh"
 TMP_ROOT=$(fm_test_tmproot fm-pr-merge-tests)
 
+# Merge returns before derived ingestion finishes; drain each fixture's queue
+# before removing files that its background worker can still be writing.
+cleanup_merge_cases() {
+  local rc=$? case_dir
+  for case_dir in "$TMP_ROOT"/*; do
+    [ -f "$case_dir/data/cost-attribution.tsv" ] || continue
+    FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$case_dir/state" \
+    FM_DATA_OVERRIDE="$case_dir/data" \
+      "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || rc=1
+  done
+  fm_test_cleanup || rc=1
+  exit "$rc"
+}
+trap cleanup_merge_cases EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # Build a fresh sandbox for one test case: a state dir with a task meta and a
 # fakebin with a gh-axi mock that records how it was invoked. Echoes the case dir.
 make_case() {
