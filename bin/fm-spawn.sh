@@ -109,7 +109,9 @@
 #   unbound available copy instead (then detaches it so the base refresh
 #   moves no branch), and when no unbound copy is available the spawn stops
 #   naming the owning task. An unreadable inventory while bound copies exist
-#   is a refusal, not a guess. Whatever copy the pane lands in is checked
+#   is a refusal, not a guess. A successfully read empty inventory allows
+#   ordinary acquisition of a fresh copy even when records bind lost copies.
+#   Whatever copy the pane lands in is checked
 #   again against every live record before anything is launched or recorded.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
