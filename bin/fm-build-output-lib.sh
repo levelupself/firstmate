@@ -5,8 +5,8 @@
 # qualify, never tracked or non-ignored files. Teardown calls this only after its
 # landed-work checks and process cleanup; a refused teardown never reaches it.
 # fm_prune_build_output <worktree> [dry-run|delete] prints path and allocated KiB.
-# Symlink roots, nested repositories, tracked paths (including index-hidden
-# paths), non-ignored files, and unreadable Git inventories are never deleted.
+# Symlink roots, any tracked paths (including index-hidden paths), non-ignored
+# files, or unreadable Git inventories disqualify the whole output root.
 # Callers own concurrency protection: fm-teardown.sh, fm-pool-prune.sh, and
 # fm-pool-build-sweep.sh document their respective process and locking guards.
 
@@ -16,7 +16,7 @@ fm_build_output_rules() {
 
 # fm_build_output_target prints the sole eligible output root, or nothing.
 # Both live eviction and return-time full pruning use this root boundary.
-# fm-build-output-files.mjs then excludes symlinks and nested repository subtrees.
+# fm-build-output-files.mjs owns the subsequent file-granularity exclusions.
 fm_build_output_target() {
   local wt=$1 marker output protected ignored top
   [ -d "$wt" ] && [ ! -L "$wt" ] || return 0
