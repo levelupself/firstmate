@@ -9,6 +9,7 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$ROOT/tests/task-launch-helpers.sh"
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-dispatch-profile)
@@ -160,8 +161,61 @@ assert_meta_profile() {
     || fail "meta missing UTC spawned_at timestamp"
 }
 
+test_repeated_spawn_preserves_creation_and_joins_spend() {
+  local rec id out launch attempt timestamp
+  id=profile-repeated-identity
+  rec=$(make_spawn_case repeated-identity claude "$id")
+  read_case_record "$rec"
+  cat > "$FAKEBIN_DIR/date" <<'SH'
+#!/usr/bin/env bash
+if [ "$*" = '-u +%Y-%m-%dT%H:%M:%SZ' ]; then
+  printf '%s\n' "$FM_TEST_SPAWN_TIME"
+else
+  exec "$FM_TEST_REAL_DATE" "$@"
+fi
+SH
+  chmod +x "$FAKEBIN_DIR/date"
+  for attempt in 1 2; do
+    timestamp="2026-09-1${attempt}T00:00:00Z"
+    out=$(FM_TEST_REAL_DATE="$(command -v date)" FM_TEST_SPAWN_TIME="$timestamp" \
+      run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR") \
+      || fail "repeated spawn $attempt failed: $out"
+    launch=$(cat "$LAUNCH_LOG")
+    fm_assert_claude_launch "$launch" "$FAKEBIN_DIR/claude" "$WT_DIR" "$HOME_DIR/data" "$id" "$HOME_DIR/claude"
+    node - "$HOME_DIR" "$id" "$timestamp" "$attempt" <<'NODE' || fail 'spawn creation or incarnation metadata changed incorrectly'
+const fs=require('fs'),assert=require('assert/strict')
+const [home,id,time,count]=process.argv.slice(2)
+const meta=Object.fromEntries(fs.readFileSync(home+'/state/'+id+'.meta','utf8').trim().split('\n').map(x=>[x.slice(0,x.indexOf('=')),x.slice(x.indexOf('=')+1)]))
+const dir=home+'/data/'+id+'/sessions/'
+const identity=JSON.parse(fs.readFileSync(dir+'identity.json'))
+assert.equal(identity.spawned_at,'2026-09-11T00:00:00Z')
+assert.equal(meta.spawned_at,identity.spawned_at)
+assert.equal(meta.incarnation_at,time)
+const rows=fs.readFileSync(dir+'launches.jsonl','utf8').trim().split('\n').map(JSON.parse)
+assert.equal(rows.length,Number(count))
+assert.equal(new Set(rows.map(x=>x.stamp)).size,Number(count))
+fs.writeFileSync(home+'/usage-fixture.json',JSON.stringify(rows.map((row,i)=>({sessionId:row.stamp,provider:'claude',models:['fixture'],calls:1,cost:i+2,inputTokens:1,outputTokens:1,cacheReadTokens:0,cacheWriteTokens:0}))))
+NODE
+    cat > "$FAKEBIN_DIR/codeburn" <<'SH'
+#!/usr/bin/env bash
+cat "$FM_HOME/usage-fixture.json"
+SH
+    out=$(FM_HOME="$HOME_DIR" FM_DATA_OVERRIDE="$HOME_DIR/data" FM_STATE_OVERRIDE="$HOME_DIR/state" \
+      FM_CODEBURN_BIN="$FAKEBIN_DIR/codeburn" "$ROOT/bin/fm-task-usage.sh" "$id" --json) \
+      || fail 'usage rejected actual repeated spawn identity'
+    node - "$out" "$attempt" <<'NODE' || fail 'usage omitted an incarnation'
+const assert=require('assert/strict'),u=JSON.parse(process.argv[2]),count=Number(process.argv[3])
+assert.equal(u.sessions,count)
+assert.equal(u.cost_usd,count===1?2:5)
+assert.equal(u.spawned_at,'2026-09-11T00:00:00Z')
+NODE
+    rm -f "$HOME_DIR/state/$id.launch-receipt"
+  done
+  pass 'actual repeated spawns retain one creation identity and combined spend'
+}
+
 test_no_profile_keeps_claude_profile_defaults() {
-  local rec id out status expected launch
+  local rec id out status launch
   id=profile-off-z1
   rec=$(make_spawn_case profile-off claude "$id")
   read_case_record "$rec"
@@ -173,8 +227,7 @@ test_no_profile_keeps_claude_profile_defaults() {
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude default default
 
   launch=$(cat "$LAUNCH_LOG")
-  expected="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\"}' \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/brief.md')\""
-  [ "$launch" = "$expected" ] || fail "no-profile claude launch did not use the canonical launch kind"$'\n'"expected: $expected"$'\n'"actual:   $launch"
+  fm_assert_claude_launch "$launch" "$FAKEBIN_DIR/claude" "$WT_DIR" "$HOME_DIR/data" "$id" "$HOME_DIR/claude"
   pass "no --model/--effort records defaults and types the claude launch instructions"
 }
 
@@ -425,7 +478,7 @@ test_active_dispatch_profile_allows_raw_launch_command() {
   assert_contains "$out" "spawned $id harness=custom-agent" "spawn did not report raw command harness"
   assert_meta_profile "$HOME_DIR/state/$id.meta" custom-agent default default
   launch=$(cat "$LAUNCH_LOG")
-  [ "$launch" = "custom-agent --flag" ] || fail "raw launch command changed"$'\n'"actual: $launch"
+  fm_assert_task_launch "$launch" "$FAKEBIN_DIR/custom-agent" "$WT_DIR" "$HOME_DIR/data" "$id" "$HOME_DIR/claude" --flag
   pass "active crew-dispatch profile allows the raw launch-command escape hatch"
 }
 
@@ -440,8 +493,7 @@ test_claude_threads_model_and_effort() {
   expect_code 0 "$status" "claude spawn with profile flags should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude sonnet high
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\"}' --model 'sonnet' --effort 'high'" \
-    "claude launch did not thread model and effort flags"
+  fm_assert_claude_launch "$launch" "$FAKEBIN_DIR/claude" "$WT_DIR" "$HOME_DIR/data" "$id" "$HOME_DIR/claude" --model sonnet --effort high
   assert_not_contains "$launch" "--tui-mode" "non-Pi launches must not receive Pi's TUI mode override"
   pass "claude receives --model and --effort profile flags"
 }
@@ -827,13 +879,12 @@ test_claude_forwards_firstmate_config_dir_when_set() {
   rec=$(make_spawn_case profile-claude-cfgdir claude "$id")
   read_case_record "$rec"
 
-  out=$(FM_TEST_CLAUDE_CONFIG_DIR="/opt/test/claude-work" \
+  out=$(FM_TEST_CLAUDE_CONFIG_DIR="$HOME_DIR/claude-work" \
     run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?
   expect_code 0 "$status" "claude spawn with CLAUDE_CONFIG_DIR set should succeed"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "CLAUDE_CONFIG_DIR='/opt/test/claude-work' env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\"}'" \
-    "claude launch did not forward firstmate's CLAUDE_CONFIG_DIR to the crewmate pane"
+  fm_assert_claude_launch "$launch" "$FAKEBIN_DIR/claude" "$WT_DIR" "$HOME_DIR/data" "$id" "$HOME_DIR/claude-work"
   pass "claude forwards firstmate's CLAUDE_CONFIG_DIR so the crewmate uses the same credential store"
 }
 
@@ -860,7 +911,7 @@ test_non_claude_harness_ignores_config_dir() {
   rec=$(make_spawn_case profile-codex-nocfgdir codex "$id")
   read_case_record "$rec"
 
-  out=$(FM_TEST_CLAUDE_CONFIG_DIR="/opt/test/claude-work" \
+  out=$(FM_TEST_CLAUDE_CONFIG_DIR="$HOME_DIR/claude-work" \
     run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?
   expect_code 0 "$status" "codex spawn with CLAUDE_CONFIG_DIR set should succeed"
@@ -919,6 +970,7 @@ NODE
   pass "spawn success requires a durable replayable launch record"
 }
 
+test_repeated_spawn_preserves_creation_and_joins_spend
 test_no_profile_keeps_claude_profile_defaults
 test_non_cursor_launch_clears_inherited_cursor_markers
 test_relative_home_overrides_launch_with_absolute_cross_process_paths

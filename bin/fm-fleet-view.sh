@@ -72,12 +72,17 @@ PAINTER_STATE="${FM_STATE_OVERRIDE:-$PAINTER_HOME/state}"
 
 usage() {
   cat <<'EOF'
-usage: fm-fleet-view.sh [--json] [--watch [interval]] [--section <names>]...
+usage: fm-fleet-view.sh [--json | --section-counts] [--watch [interval]] [--section <names>]...
                         [--geometry-command <executable>]
                         [--herdr-session <session> --herdr-pane <pane-id>]
 
 Render a narrow, prioritized fleet side panel from fm-fleet-snapshot.sh.
 Use --json to print the complete underlying snapshot.
+Use --section-counts to print one JSON object mapping all six section names to
+untruncated task-row counts from one snapshot, using the same membership as the
+panel. Finished counts cover its five displayed history entries. Headers,
+project labels and detail continuation lines are not task rows. This read-only
+measurement ignores terminal geometry and cannot be combined with --watch.
 Use --watch to redraw every 5 seconds, or provide a positive interval in seconds.
 Use --geometry-command to read "<columns> <lines>" from an executable before
 every redraw when an embedding surface has geometry more authoritative than
@@ -133,6 +138,7 @@ HERDR_IDENTITY_SET=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --json) FORMAT=json ;;
+    --section-counts) FORMAT=counts ;;
     --section)
       [ $# -gt 1 ] || { usage >&2; exit 2; }
       shift
@@ -264,8 +270,8 @@ if [ -n "$GEOMETRY_COMMAND" ] && [ ! -x "$GEOMETRY_COMMAND" ]; then
   exit 2
 fi
 
-if [ "$FORMAT" = json ] && [ "$WATCH" = 1 ]; then
-  echo "fm-fleet-view: --json and --watch cannot be combined" >&2
+if [ "$FORMAT" != panel ] && [ "$WATCH" = 1 ]; then
+  echo "fm-fleet-view: --json/--section-counts and --watch cannot be combined" >&2
   exit 2
 fi
 if [ "$WATCH" = 1 ]; then
@@ -416,7 +422,10 @@ clamp_to_pty() {  # <drawn> <lines|cols> -> the value to paint to
 
 render_once() {
   local width height snapshot rendered geometry status
-  if [ -n "$GEOMETRY_COMMAND" ]; then
+  if [ "$FORMAT" = counts ]; then
+    width=80
+    height=24
+  elif [ -n "$GEOMETRY_COMMAND" ]; then
     if geometry=$(authoritative_geometry); then
       :
     else
@@ -444,7 +453,7 @@ render_once() {
   if ! rendered=$(printf '%s\n' "$snapshot" | jq -r --argjson width "$width" \
     --argjson height "$height" \
     --argjson sections "$SECTIONS_JSON" --arg last "$LAST_SECTION" \
-    --argjson banner "$BANNER" '
+    --argjson banner "$BANNER" --arg format "$FORMAT" '
     # One section is rendered when it was selected, and separated from the next
     # one only while another selected section still follows it.
     def wanted($name): ($sections | index($name)) != null;
@@ -621,7 +630,12 @@ render_once() {
            priority:(.priority // 999999),order:(.order // 999999),
            detail:("← " + ((.unresolved_blocker_ids // []) | join(","))
                    + (if (.blocked_reason // "") == "" then "" else " · " + .blocked_reason end))}]) as $blocked_rows
-    | ((if wanted("waiting") then group_count($waiting) else 0 end)
+    | if $format == "counts" then
+        {waiting:($waiting|length), ready:($ready|length),
+         "in-flight":($in_flight|length), blocked:($blocked|length),
+         finished:($finished[:5]|length), failed:($failed|length)}
+      else
+      ((if wanted("waiting") then group_count($waiting) else 0 end)
        + (if wanted("ready") then group_count($ready_rows) else 0 end)
        + (if wanted("in-flight") then group_count($in_flight_rows) else 0 end)
        + (if wanted("blocked") then group_count($blocked_rows) else 0 end)) as $group_count
@@ -713,12 +727,17 @@ render_once() {
       gap("failed")
        else empty end),
       empty
+      end
   '); then
     echo "FLEET VIEW DEGRADED"
     echo "Snapshot data could not be rendered; retrying on the next redraw."
     return 1
   fi
-  fm_terminal_fit_height "$height" "$rendered" "$width"
+  if [ "$FORMAT" = counts ]; then
+    printf '%s\n' "$rendered"
+  else
+    fm_terminal_fit_height "$height" "$rendered" "$width"
+  fi
 }
 
 # --- painter ownership ------------------------------------------------------

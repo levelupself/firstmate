@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Real-Herdr executable-path test for cockpit placement and restart adoption.
+# FM_COCKPIT_SIZING_ONLY=1 runs only drawn proportional-sizing acceptance.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -105,6 +106,113 @@ cockpit_env() {
     HERDR_PANE_ID="$HEAD" \
     "$@"
 }
+
+# Focused drawn-rectangle acceptance, without running placement/restart cases.
+if [ "${FM_COCKPIT_SIZING_ONLY:-0}" = 1 ]; then
+  for shape in automatic equal empty; do
+    case "$shape" in
+      automatic)
+        {
+          printf '## In flight\n\n## Queued\n'
+          for i in 1 2 3; do
+            printf -- '- [ ] decision-%s - Decision (kind: captain) (hold: choose option) (hold-kind: captain)\n' "$i"
+          done
+          for i in $(seq 1 19); do
+            printf -- '- [ ] ready-%s - Ready task (kind: ship) (repo: demo)\n  Implement the described change.\n' "$i"
+          done
+          printf '\n## Done\n'
+        } > "$HOME_DIR/data/backlog.md"
+        printf 'waiting\nready\n' > "$HOME_DIR/config/cockpit-sections"
+        ratios='[0.2527]'
+        ;;
+      equal)
+        printf 'waiting @1\nready @1\nin-flight,blocked @1\n' > "$HOME_DIR/config/cockpit-sections"
+        ratios='[0.3333,0.5000]'
+        ;;
+      empty)
+        printf '## In flight\n\n## Queued\n\n## Done\n' > "$HOME_DIR/data/backlog.md"
+        printf 'waiting\nready @19\n' > "$HOME_DIR/config/cockpit-sections"
+        ratios='[0.1600]'
+        ;;
+    esac
+    out=$(lab tab create --workspace "$WORKSPACE" --cwd "$HOME_DIR" --no-focus) || fail 'could not create sizing tab'
+    shape_tab=$(printf '%s' "$out" | jq -er '.result.tab.tab_id') || fail 'missing sizing tab'
+    shape_head=$(printf '%s' "$out" | jq -er '.result.root_pane.pane_id') || fail 'missing sizing head'
+    # shellcheck disable=SC2016 # Positional arguments expand in the inner shell.
+    created=$(cockpit_env bash -c '
+      . "$1/bin/backends/herdr.sh"
+      fm_backend_herdr_cockpit_create_fleet_panes "$2" "$3" "$4" "$5" "$6"
+    ' bash "$ROOT" "$SESSION" "$WORKSPACE" "$shape_tab" "$shape_head" "$HOME_DIR") || fail "could not build $shape fleet"
+    ids=${created%%$'\n'*}
+    layout=$(lab pane layout --pane "$shape_head") || fail 'could not measure drawn rectangles'
+    printf '%s\n' "$layout" > "$TMP_ROOT/$shape.layout.json"
+    if ! python3 - "$TMP_ROOT/$shape.layout.json" "$ids" "$ratios" "$shape" <<'PY'
+import json, math, sys
+layout = json.load(open(sys.argv[1]))['result']['layout']
+ids = sys.argv[2].split(',')
+ratios = json.loads(sys.argv[3])
+rects = {p['pane_id']: p['rect'] for p in layout['panes']}
+rects = [rects[p] for p in ids]
+wire = [s['ratio'] for s in layout['splits'] if s['direction'] == 'right']
+assert wire == ratios, (wire, ratios)
+width = sum(r['width'] for r in rects)
+remaining = width
+for i, rect in enumerate(rects):
+    if i < len(ratios):
+        ideal = remaining * ratios[i]
+        assert rect['width'] == math.floor(ideal + .5), (rect, ideal)
+    else:
+        assert rect['width'] == remaining, (rect, remaining)
+    assert rect['height'] == rects[0]['height'] > 0
+    assert rect['y'] == rects[0]['y']
+    if i:
+        assert rect['x'] == rects[i-1]['x'] + rects[i-1]['width']
+    remaining -= rect['width']
+assert width > 0
+if sys.argv[4] == 'automatic':
+    assert rects[1]['width'] > rects[0]['width']
+if sys.argv[4] == 'empty':
+    assert rects[0]['width'] >= math.floor(width * .16) > 0
+print(sys.argv[4] + ': ' + json.dumps(rects, sort_keys=True))
+PY
+    then
+      fail "$shape drawn geometry disagrees with the split plan"
+    fi
+    # A legacy equal layout uses the historical wire sequence independently.
+    if [ "$shape" = equal ]; then
+      out=$(lab tab create --workspace "$WORKSPACE" --cwd "$HOME_DIR" --no-focus) || fail 'could not create legacy tab'
+      legacy_head=$(printf '%s' "$out" | jq -er '.result.root_pane.pane_id') || fail 'missing legacy head'
+      out=$(lab pane split "$legacy_head" --direction down --ratio 0.28 --cwd "$HOME_DIR" --no-focus) || fail 'legacy band split failed'
+      # The original child has the fleet-first rectangle; identities do not affect its shape.
+      legacy_ids=$legacy_head
+      previous=$legacy_head
+      for ratio in 0.3333 0.5000; do
+        out=$(lab pane split "$previous" --direction right --ratio "$ratio" --cwd "$HOME_DIR" --no-focus) || fail 'legacy inner split failed'
+        previous=$(printf '%s' "$out" | jq -er '.result.pane.pane_id') || fail 'missing legacy pane'
+        legacy_ids="$legacy_ids,$previous"
+      done
+      lab pane layout --pane "$legacy_head" > "$TMP_ROOT/legacy.layout.json" || fail 'legacy layout unavailable'
+      if ! python3 - "$TMP_ROOT/equal.layout.json" "$ids" "$TMP_ROOT/legacy.layout.json" "$legacy_ids" <<'PY'
+import json, sys
+def rectangles(path, ids):
+    panes = {p['pane_id']: p['rect'] for p in json.load(open(path))['result']['layout']['panes']}
+    return [panes[p] for p in ids.split(',')]
+assert rectangles(*sys.argv[1:3]) == rectangles(*sys.argv[3:5]), 'equal layout differs from legacy rectangles'
+print('equal: drawn rectangles exactly match legacy layout')
+PY
+      then
+        fail 'equal layout changed historical geometry'
+      fi
+    fi
+    # Changing measured membership never changes the already constructed band.
+    printf '## In flight\n\n## Queued\n\n## Done\n' > "$HOME_DIR/data/backlog.md"
+    sleep 1
+    after=$(lab pane layout --pane "$shape_head") || fail 'could not remeasure stable layout'
+    [ "$after" = "$layout" ] || fail "$shape layout moved after row counts changed"
+    pass "$shape drawn geometry and creation-only sizing"
+  done
+  exit 0
+fi
 
 cockpit_env "$ROOT/bin/fm-cockpit.sh" adopt >/dev/null \
   || fail "could not adopt the real Herdr frame"

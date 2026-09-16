@@ -1023,6 +1023,12 @@ test_view_renders_several_sections_in_priority_order() {
   write_fixture "$home"
   fakebin=$(make_fakebin "$home")
 
+  local counts
+  counts=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW" --section-counts) \
+    || fail "section row measurement failed"
+  printf '%s\n' "$counts" | jq -e '."in-flight" == 3 and .blocked == 1' >/dev/null \
+    || fail "measurement differs from the rows the renderer actually groups"
+
   # One pane of a cockpit region holds a group of sections, so the group has to
   # render as one panel rather than as a concatenation the caller controls.
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW" --section in-flight,blocked)

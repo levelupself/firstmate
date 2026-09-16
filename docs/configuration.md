@@ -59,11 +59,22 @@ This preference is local to each Firstmate home and is not part of secondmate in
 ## Cockpit fleet sections (config/cockpit-sections)
 
 How that region is divided into panes comes from the local, gitignored `config/cockpit-sections` in the same directory, and it is read only when the region is built.
-Each non-blank, non-comment line describes one pane as a comma-separated list of `bin/fm-fleet-view.sh` section names - `waiting`, `ready`, `in-flight`, `blocked`, `finished`, `failed` - and whitespace inside a line is ignored.
+Each non-blank, non-comment line describes one pane as a comma-separated list of `bin/fm-fleet-view.sh` section names - `waiting`, `ready`, `in-flight`, `blocked`, `finished`, `failed` - with whitespace in the section list ignored.
 An absent file means the default three panes `waiting`, `ready`, and `in-flight,blocked`, which read in the same priority order the single banner printed top to bottom.
 A section may be listed only once across the whole file, an unknown name is refused, and at most six panes are accepted; every split ratio within that supported limit stays above the ratio Herdr silently clamps.
 Every refusal is actionable and leaves the screen untouched rather than falling back to a shape nobody chose.
-The panes divide the band along the axis it does not already span, so a `stacked` band becomes columns and a `side-by-side` column becomes rows; the resulting panes are equal.
+The panes divide the band along the axis it does not already span, so a `stacked` band becomes columns and a `side-by-side` column becomes rows.
+By default each pane is weighted by the sum of its sections' task-row counts from a single fresh fleet snapshot, using the renderer's own membership rules before terminal clipping; headings, project labels and continuation lines do not count, and finished history counts only its five displayed entries.
+Append `@<weight>` to a line to override that pane's automatic count, for example `waiting @3` and `ready @19`.
+Weights must contain digits with an optional decimal point followed by digits, be positive and no greater than 1000000, and contain no sign, exponent notation, or embedded whitespace.
+Whitespace around the `@` delimiter and at the end of the line is accepted; existing unweighted lines retain their section selection and grouping unchanged.
+The region reserves 16% per pane and divides the remaining space in proportion to the weights, so a 3:19 pair receives approximately 25%:75%, and an empty pane retains its reserved share.
+All-zero counts use equal shares, and equal weights reproduce the former equal-pane splits.
+A single pane fills the region; with two or more panes, no pane can exceed 84% before rounding, and both rounded split ratios and their resulting final band shares are validated before any pane changes.
+Inner ratios rounded to four decimal places must lie within 0.10-0.90, and independently reconstructed final shares must lie within 0.15-0.85; the one-percentage-point margin around the 16% reservation accommodates rounding while staying above Herdr's 0.1 clamp and preventing crowding.
+The applied shares and each weight's source are announced before building the region.
+Sizing is computed only when the region is built: row arrivals, departures and edits to these preferences never resize a live region; rebuilding applies fresh values.
+If automatic counts cannot be read or validated, the build refuses without changing the screen; providing explicit weights for every pane avoids that measurement.
 This preference is local to each Firstmate home and is not part of secondmate inherited configuration.
 [`docs/herdr-backend.md`](herdr-backend.md) "Watching and task containers" owns what the resolved arrangement does to the screen and when a change to it takes effect.
 
@@ -89,9 +100,7 @@ For spawn-capable adapters, the runtime session-provider backend controls where 
 Treehouse remains the worktree provider for tmux, herdr, zellij, and cmux, since herdr, zellij, and cmux are session providers only; Orca provides both the task worktree and terminal endpoint.
 The pool remembers an interactive `treehouse get` only by the acquiring shell's process, so a parked task's clean copy reads as available again once no process has its working directory inside it and no durable lease protects it, including after a host reboot, while this home's `state/<id>.meta` still binds it.
 A task record binds its `worktree=` until `bin/fm-teardown.sh` stamps `teardown_at=` into it after the landed-work test or removes it; a status log or report alone binds nothing.
-Before a fresh ship or scout spawn or a reacquire asks Treehouse for a copy, `fm-spawn.sh` checks for other live records binding copies of the project and reads the pool inventory when such bindings exist.
-If the inventory exposes a bound copy the pool could hand out, it enters an unbound available copy instead, or stops naming the owning task and copy when none is free; an unreadable inventory with bound copies also refuses.
-The acquired path is checked again against all live records before launch or publication; the script header owns the acquisition and detach mechanics.
+The [`fm-spawn.sh` header](../bin/fm-spawn.sh) owns the bound-copy guard, including empty versus unreadable inventory handling, acquisition, detach, and the final ownership check; [`tests/fm-spawn-pool-slot-binding.test.sh`](../tests/fm-spawn-pool-slot-binding.test.sh) covers that contract.
 A task whose recorded copy was already taken that way is recovered with `bin/fm-spawn.sh <id> --reacquire-worktree`, which acquires a fresh copy holding the task's branch at its current head on the task's recorded tmux or herdr backend; `bin/fm-spawn.sh --help` owns both mechanics and [`stuck-crewmate-recovery`](../.agents/skills/stuck-crewmate-recovery/SKILL.md) owns when to use which recovery.
 New spawns choose the backend in this order: an explicit `--backend` flag that current authority for that exact task alone has authorized (a present captain instruction or the task's own accepted brief; never later-task precedent by analogy), then `FM_BACKEND`, then the first non-empty line of local gitignored `config/backend`, then runtime auto-detection from `$TMUX`, `HERDR_ENV=1`, or cmux runtime signals, then default `tmux`.
 If more than one runtime marker is present, detection resolves innermost-first: `$TMUX` is checked before `HERDR_ENV=1`, which is checked before cmux's primary `CMUX_WORKSPACE_ID` marker and its documented fallback signals - tmux or herdr started from inside a cmux terminal is the innermost, currently-executing layer, while cmux itself (a terminal application, not a nestable multiplexer) is always checked last.
@@ -674,7 +683,7 @@ FM_CREW_STATE_NM_TIMEOUT=10   # seconds allowed per no-mistakes query inside fm-
 FM_TEARDOWN_NM_TIMEOUT=10    # seconds allowed per no-mistakes query or abort inside fm-teardown.sh
 FM_CREW_STATE_RUNS_LIMIT=200  # recent no-mistakes run rows scanned when axi status cannot be attributed to the current code and published no pipeline ownership relationship, whose rejection is final
 FM_CREW_STATE_BIN=bin/fm-crew-state.sh   # test override for the current-state reader used by working/paused watcher triage
-FM_TASK_USAGE_TIMEOUT=15   # seconds allowed per codeburn query in fm-task-usage.sh (docs/task-usage.md)
+FM_TASK_USAGE_TIMEOUT=60   # seconds allowed per codeburn query in fm-task-usage.sh (docs/task-usage.md)
 FM_FLEET_USAGE_TIMEOUT=5   # seconds allowed per task's parallel codeburn query during fm-fleet-snapshot.sh usage collection
 FMX_PAIRING_TOKEN=      # Relay pairing token; .env opt-in authorizes replies and eligible lifecycle actions
 FMX_RELAY_URL=https://myfirstmate.io   # optional Relay endpoint override, mainly for local relay development

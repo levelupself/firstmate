@@ -99,6 +99,26 @@ test_env_file_exports_land_before_the_launch() {
   [ "$export_line" -lt "$launch_line" ] || fail "the export (line $export_line) landed after the launch (line $launch_line)"
   assert_grep "env_file=$env_file" "$HOME_DIR/state/$id.meta" \
     "meta did not record the env file the pane was launched with"
+  # Execute the delivered shell interface against a fake runtime, proving the
+  # stamp in the created rollout equals the activated launch receipt.
+  cat > "$FAKEBIN_DIR/codex" <<'STUB'
+#!/usr/bin/env bash
+node - <<'JS'
+const fs=require('fs'),path=require('path');const store=process.env.CODEX_HOME
+fs.mkdirSync(path.join(store,'sessions'),{recursive:true})
+fs.writeFileSync(path.join(store,'sessions','created.jsonl'),JSON.stringify({type:'session_meta',payload:{id:'created',cwd:process.cwd(),originator:process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE}})+'\n')
+JS
+STUB
+  chmod +x "$FAKEBIN_DIR/codex"
+  node - "$SENDLOG" "$CASE_DIR/launch.sh" <<'JS'
+const fs=require('fs');const [log,out]=process.argv.slice(2)
+const lines=fs.readFileSync(log,'utf8').split('\n').filter(x=>x.includes(' -l ')).map(x=>x.slice(x.indexOf(' -l ')+4))
+fs.writeFileSync(out,lines.join('\n')+'\n')
+JS
+  (cd "$WT_DIR" && CODEX_HOME="$CASE_DIR/codex-store" PATH="$FAKEBIN_DIR:$PATH" bash "$CASE_DIR/launch.sh") || fail 'delivered launch command failed'
+  FM_HOME="$HOME_DIR" node "$ROOT/bin/fm-task-session.mjs" index "$id" > "$CASE_DIR/index.json" || fail 'created session was not stamped'
+  node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1]));if(x.length!==1||x[0].id!=="created")process.exit(1)' "$CASE_DIR/index.json" || fail 'launch stamp join'
+  pass "activated launch stamps the created session through the real delivered command"
   pass "--env-file exports every variable, shell-quoted, before the launch command"
 }
 
