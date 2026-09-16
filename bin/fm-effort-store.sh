@@ -38,11 +38,13 @@
 #   --reverted yes|no
 #
 # `capture` is the lifecycle-owned synchronous append-and-enqueue path. It reads stamped
-# task metadata, a prior raw row when volatile metadata is gone, the durable
-# usage snapshot, and matching settled no-mistakes rounds. Operators normally
-# use `report`; only `report --sync` waits for deferred ingestion.
+# task metadata, a prior raw row when volatile metadata is gone, merge receipts,
+# and matching settled no-mistakes rounds. Operators normally use `report`;
+# `report --sync` waits for deferred ingestion, while ordinary reports do not.
+# Explicit rebuild and backfill-codeburn also wait for the store lock.
 # Capture never acquires the derived-store lock. Usage snapshots are persisted
 # by fm-task-usage before its capture call and survive volatile metadata removal.
+# state/.effort-capture-<task-id>.lock serializes each task's raw append.
 # Enqueue starts a detached job with one runner per database, coalescing pending
 # requests after acquiring the store lock. Failed work remains queued; the next
 # enqueue or report --sync retries it. No separately started daemon is required.
