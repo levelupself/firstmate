@@ -2229,11 +2229,17 @@ spawn_plan_pool_acquisition() {
   local bound rows owner path name status lease procs hazard='' hazard_owner='' candidate='' candidate_name='' free=''
   bound=$(spawn_bound_worktrees "$PROJ_ABS_REAL")
   [ -n "$bound" ] || return 0
-  if ! rows=$(spawn_pool_inventory_rows) || [ -z "$rows" ]; then
+  if ! rows=$(spawn_pool_inventory_rows); then
     owner=$(printf '%s\n' "$bound" | head -n 1 | cut -f1)
     echo "error: the pool inventory for '$PROJ_ABS' could not be read, so this spawn cannot prove the pool will not hand out a copy that task $owner (and possibly others) still binds; refusing to run treehouse get rather than refresh a bound copy. Run 'treehouse status --json' in the project to see why" >&2
     return 1
   fi
+  # An inventory that reads cleanly as empty is a pool with no copies at all
+  # (the pool directory was lost or never populated): `treehouse get` can only
+  # create a fresh copy, so no bound copy can be handed out and the bound
+  # records only mean their copies are gone, which is --reacquire-worktree's
+  # business, not this guard's.
+  [ -n "$rows" ] || return 0
   while IFS=$'\t' read -r name path status lease procs; do
     [ -n "$path" ] || continue
     owner=$(printf '%s\n' "$bound" | awk -F '\t' -v p="$(real_path_or_raw "$path")" '$2 == p { print $1; exit }')
