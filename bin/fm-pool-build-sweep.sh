@@ -3,16 +3,8 @@
 # Usage: fm-pool-build-sweep.sh [--dry-run] [--age-hours N] [--max-gb N] [--explain COPY]
 # Defaults: FM_POOL_BUILD_AGE_HOURS=24, FM_POOL_BUILD_MAX_GB=8 (decimal GB).
 # Both knobs require positive finite values; zero age is not supported.
-# Stale artifacts have superseded Cargo fingerprints, are not referenced by a
-# protected current build unit, and have mtime older than the age threshold.
-# Above the size cap, evict eligible files oldest first regardless of age.
-# A generation key is profile-directory, crate, unit, and compile_kind.
-# Only newest generations and transitive fingerprint dependencies are protected.
-# If that set exceeds the cap, evict custom top-level profile directories by
-# newest contained mtime, oldest first; debug and release remain protected.
-# Unknown artifacts survive except inside those evicted custom profiles.
-# Symlinks and nested repositories always retain the shared walker exclusions.
-# Remaining oversized protected output is reported as protected-over-cap.
+# docs/configuration.md owns generation retention, custom-profile eviction,
+# process guards, and the protected-over-cap maintenance contract.
 # --explain COPY implies dry-run and prints protected hashes and evictable bytes
 # per generation key for the named registered pool copy.
 # cargo-sweep, when installed, supplies a dry-run --maxsize plan; the engine
