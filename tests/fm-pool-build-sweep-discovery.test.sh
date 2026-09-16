@@ -12,6 +12,18 @@ sweep() {
     FM_TREEHOUSE_SYSTEM_PATH="$TMP_ROOT/system-local:$TMP_ROOT/system-homebrew" \
     "$ROOT/bin/fm-pool-build-sweep.sh" --dry-run
 }
+# Contain the login-shell fallback so tests never consult real pool inventories.
+rm "$TMP_ROOT/bin/bash"
+cat > "$TMP_ROOT/bin/bash" <<'SH'
+#!/bin/bash
+if [ "${1:-}" = -lc ]; then
+  printf '%s\n' "$2" >> "$TEST_FALLBACK_LOG"
+  exit 127
+fi
+exec /bin/bash "$@"
+SH
+chmod +x "$TMP_ROOT/bin/bash"
+export TEST_FALLBACK_LOG="$TMP_ROOT/fallback-log"
 if ! sweep > "$TMP_ROOT/missing" 2>&1; then
   cat "$TMP_ROOT/missing"
   fail 'missing treehouse aborted the sweep'
@@ -57,3 +69,6 @@ sweep > "$TMP_ROOT/broken"
 assert_contains "$(cat "$TMP_ROOT/broken")" 'skipped=treehouse-not-found' 'launch ENOENT escaped per-project skip handling'
 assert_contains "$(cat "$TMP_ROOT/broken")" "$TMP_ROOT/home/projects/two" 'launch ENOENT stopped project iteration'
 pass 'PATH precedence and launch ENOENT remain per-project skips'
+
+assert_contains "$(cat "$TEST_FALLBACK_LOG")" 'treehouse status --json' 'launch failure never tried login-shell fallback'
+pass 'failed login-shell fallback stays a per-project skip'
