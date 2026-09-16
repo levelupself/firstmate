@@ -14,8 +14,10 @@ fm_build_output_rules() {
   printf '%s\n' 'Cargo.toml target'
 }
 
-fm_prune_build_output() {
-  local wt=$1 mode=${2:-delete} marker output protected ignored nested size top
+# fm_build_output_target prints the sole eligible output root, or nothing.
+# Both live eviction and return-time full pruning use this boundary.
+fm_build_output_target() {
+  local wt=$1 marker output protected ignored nested top
   [ -d "$wt" ] && [ ! -L "$wt" ] || return 0
   top=$(git -C "$wt" rev-parse --show-toplevel) || return 1
   [ "$(cd "$wt" && pwd -P)" = "$(cd "$top" && pwd -P)" ] || return 1
@@ -26,17 +28,24 @@ fm_prune_build_output() {
     [ -z "$protected" ] || continue
     ignored=$(git -C "$wt" ls-files --others --ignored --exclude-standard --directory -- "$output") || return 1
     [ -n "$ignored" ] || continue
-    nested=$(find "$wt/$output" -name .git -print -quit) || return 1
+    nested=$(find "$wt/$output" \( -name .git -o -type l \) -print -quit) || return 1
     [ -z "$nested" ] || continue
-    size=$(du -sk "$wt/$output") || return 1
-    size=${size%%[[:space:]]*}
-    case "$mode" in
-      dry-run) printf 'would prune %s (%s KiB)\n' "$wt/$output" "$size" ;;
-      delete)
-        git -C "$wt" clean -fdX -- "$output" >/dev/null || return 1
-        printf 'pruned %s (%s KiB)\n' "$wt/$output" "$size"
-        ;;
-      *) return 2 ;;
-    esac
+    printf '%s\n' "$wt/$output"
   done < <(fm_build_output_rules)
+}
+
+fm_prune_build_output() {
+  local wt=$1 mode=${2:-delete} target size
+  target=$(fm_build_output_target "$wt") || return 1
+  [ -n "$target" ] || return 0
+  size=$(du -sk "$target") || return 1
+  size=${size%%[[:space:]]*}
+  case "$mode" in
+    dry-run) printf 'would prune %s (%s KiB)\n' "$target" "$size" ;;
+    delete)
+      git -C "$wt" clean -fdX -- "${target#"$wt/"}" >/dev/null || return 1
+      printf 'pruned %s (%s KiB)\n' "$target" "$size"
+      ;;
+    *) return 2 ;;
+  esac
 }
