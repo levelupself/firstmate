@@ -185,3 +185,35 @@ assert_present "$TEST_PLANNER_LOG" 'installed cargo-sweep was not used'
 assert_present "$TMP_ROOT/pool/size/rust/target/debug/deps/libdemo-3333333333333333.rlib" 'planner suggestion deleted newest generation'
 assert_contains "$(cat "$TMP_ROOT/planner")" 'planner=cargo-sweep' 'installed planner result was not consumed'
 pass 'installed cargo-sweep is filtered through newest-generation protection'
+
+# Feature and Cargo profile variants compete within each profile directory.
+wt="$TMP_ROOT/pool/variants/rust"
+git -C "$PROJECT" worktree add -q --detach "$wt"
+node - "$wt" "$TEST_INVENTORY" <<'JS'
+const fs=require('fs'), [wt,inventory]=process.argv.slice(2);
+fs.writeFileSync(inventory,JSON.stringify([{path:wt,processes:[]}]));
+for(const profile of ['debug','release','kernel-b/debug']) for(let i=1;i<=2;i++) {
+ const hash=String(i).repeat(16), base=`${wt}/target/${profile}`, fp=`${base}/.fingerprint/demo-${hash}`;
+ fs.mkdirSync(fp,{recursive:true});fs.mkdirSync(`${base}/deps`,{recursive:true});
+ const entries=[[`${fp}/lib-demo.json`,JSON.stringify({features:i===1?'[]':'["extra"]',profile:i,deps:[],compile_kind:0})],[`${fp}/lib-demo`,hash],[`${base}/deps/libdemo-${hash}.rlib`,Buffer.alloc(16384)]];
+ for(const [p,data] of entries){fs.writeFileSync(p,data);const t=new Date(Date.now()-(72-i)*3600000);fs.utimesSync(p,t,t);}
+}
+JS
+"$SWEEP" > "$TMP_ROOT/variants"
+for profile in debug release kernel-b/debug; do
+  assert_absent "$wt/target/$profile/deps/libdemo-1111111111111111.rlib" 'feature variant retained as independently current'
+  assert_present "$wt/target/$profile/deps/libdemo-2222222222222222.rlib" 'newest feature variant deleted'
+done
+"$SWEEP" --explain "$wt" > "$TMP_ROOT/explain"
+assert_contains "$(cat "$TMP_ROOT/explain")" 'generation_key=' 'explain omitted generation keys'
+assert_contains "$(cat "$TMP_ROOT/explain")" 'protected=2222222222222222' 'explain omitted protected generation'
+assert_contains "$(cat "$TMP_ROOT/explain")" 'evictable_bytes=0' 'explain omitted evictable bytes'
+"$SWEEP" --dry-run --max-gb 0.000001 > "$TMP_ROOT/profile-dry"
+assert_present "$wt/target/kernel-b/debug/deps/libdemo-2222222222222222.rlib" 'profile dry-run deleted output'
+"$SWEEP" --max-gb 0.000001 > "$TMP_ROOT/profile-cap"
+assert_absent "$wt/target/kernel-b" 'oversized newest set did not evict custom target directory'
+for profile in debug release; do
+  assert_present "$wt/target/$profile/deps/libdemo-2222222222222222.rlib" 'cap evicted standard profile'
+done
+assert_contains "$(cat "$TMP_ROOT/profile-cap")" 'protected-over-cap' 'remaining protected output not reported'
+pass 'feature variants supersede and custom profiles yield to the cap with explain and dry-run support'
