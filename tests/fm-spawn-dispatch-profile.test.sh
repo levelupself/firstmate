@@ -957,6 +957,8 @@ test_launch_capture_failure_prevents_spawn_success() {
   FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     "$ROOT/bin/fm-effort-store.sh" capture "$id" >/dev/null \
     || fail "durable launch metadata could not be replayed after storage recovery"
+  FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
+    "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "launch ingestion failed"
   db="$HOME_DIR/data/effort-store.sqlite"
   node - "$db" "$id" <<'NODE' || fail "replayed launch record did not populate the effort store"
 process.emitWarning = () => {}

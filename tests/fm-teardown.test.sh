@@ -1844,6 +1844,8 @@ JSON
   rc=$?
   set -e
   expect_code 0 "$rc" "effort-capture: teardown should succeed: $(tr '\n' ' ' < "$case_dir/stderr")"
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "teardown ingestion failed"
   db="$case_dir/data/effort-store.sqlite"
   assert_present "$db" 'effort-capture: teardown did not create the effort store'
   query="$case_dir/query.mjs"

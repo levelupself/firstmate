@@ -50,6 +50,7 @@ The watcher executes only byte-identified trusted poll shims, validated private 
 PR-poll sidecars, registrations, retirement receipts, migration logs, and quarantine are private provenance, and quarantined checks are non-runnable.
 Registered process-event sources and condition-to-action watches are private, are written only by `bin/fm-procevent.sh` and `bin/fm-procevent-when.sh`, and keep supervision required until their owner retires them; captured source output stays in the private inbox and never in a wake line.
 Generated Relay, pending-reply, public-followup, usage-cache, and startup-network children remain private and are owned by their named scripts, section 14, or `docs/task-usage.md`.
+Effort ingestion queues, worker logs, capture locks, and the disposable git cache are owned by [`bin/fm-effort-store.sh`](../../../bin/fm-effort-store.sh)'s header.
 
 Never touch `state/.watcher-down`, `state/.claude-autoarm*`, `state/.turnend-claude-blocks*`, `state/.turnend-claude-rewake`, `state/.cursor-park-owner*`, `state/.turnend-cursor-blocks`, `state/.hash-*`, `state/.count-*`, `state/.stale-*`, `state/.stale-since-*`, `state/.paused-*`, `state/.wedge-escalations-*`, `state/.seen-*`, `state/.hb-surfaced-*`, `state/.last-*`, `state/.heartbeat-streak`, `state/.subsuper-*`, or `state/.supervise-daemon.*`.
 `state/.<id>.open-decisions-cursor` is owned by `bin/fm-classify-lib.sh`, removed by teardown, and safe to delete only to force a full re-fold; the same library owns the status-presentation cursor and lock and teardown retires each task's row.

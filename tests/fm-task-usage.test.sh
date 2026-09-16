@@ -79,6 +79,7 @@ json=$("$USAGE" a --json) || exit 1
 node -e 'const x=JSON.parse(process.argv[1]); if(x.cost_usd!==11.004||x.sessions!==4||x.actual_models.join()!==x.models.map(m=>m.name).join())process.exit(1)' "$json" || fail 'whole spend'
 pass 'runtime switch retains whole spend and structural Claude descendants'
 node -e 'const x=JSON.parse(process.argv[1]);if(x.models.find(m=>m.name==="GPT-5").cost_usd!==null||x.models.find(m=>m.name==="Opus 5").cost_usd!==8)process.exit(1)' "$json" || fail 'mixed model costs must remain unknown'
+"$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail 'usage ingestion failed'
 node --input-type=module - "$FM_HOME/data/effort-store.sqlite" <<'JS' || fail 'effort store rejected stamped mixed-model totals'
 const {DatabaseSync}=await import('node:sqlite')
 const db=new DatabaseSync(process.argv[2],{readOnly:true})

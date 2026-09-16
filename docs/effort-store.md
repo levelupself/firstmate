@@ -16,12 +16,16 @@ GitHub and GitLab creation timestamps and the GitHub merge timestamp come from s
 The PR outcome is stamped only after the same forge response confirms the merged state.
 The sanctioned merge path also snapshots the matching no-mistakes run's structured process record while it is still available.
 Merges performed outside `fm-pr-merge.sh` are not observed or inferred later.
-Launch, PR-open, sanctioned merge, sanctioned local landing, and teardown producers incrementally capture their metadata or receipts and rebuild the store.
+Launch, PR-open, sanctioned merge, sanctioned local landing, and teardown producers synchronously append their metadata or receipts and enqueue derived ingestion.
 `fm-teardown.sh` additionally snapshots task usage, stamps teardown time and outcome, and captures the final revision before deleting task state.
-No agent or operator command is part of that lifecycle.
+Only durable evidence capture runs on the lifecycle critical path; launch, relaunch, PR checking, merge, and cleanup never wait for derived ingestion.
+The enqueuer starts a background job automatically, with a single runner and coalesced pending requests rather than a separately managed daemon.
+Requests arriving during ingestion remain queued for a subsequent pass.
+A failed job leaves its requests pending; the next enqueue or explicit synchronous report retries them.
 
 The derived layer is one SQLite file, `data/effort-store.sqlite`, under this home's gitignored `data/`.
 It is recomputed from its sources and is safe to delete; `fm-effort-store.sh rebuild` recreates it.
+A completed database replaces the previous database atomically, allowing reports to read while ingestion is running.
 Nothing in the derived layer is ever written back to the raw layer.
 
 ## Sources, all keyed by task
@@ -53,11 +57,13 @@ If the matching run or its structured round record is unavailable, all four fiel
 Run `bin/fm-effort-store.sh report` to list every task and aggregate totals.
 Run `bin/fm-effort-store.sh report <task-id>` for one task.
 The report shows launch-to-PR duration, cost, input and output tokens, actual models, and outcome.
+When the append log or queued evidence is ahead of the published database, the report identifies pending ingestion and lists raw task identities with unavailable measurements rather than a plausible zero or an incomplete aggregate.
+Use `report --sync` to wait for pending ingestion before reading measurements; ordinary reports never acquire the ingestion lock.
 The cross-task report groups tasks by the lifecycle row's project path, but project dollar totals remain unavailable because the store has no durable bound for the reporting period's complete historical task population.
 Each project shows cost-evidence coverage for its known lifecycle rows and explicitly states that historical population completeness is unproven instead of presenting the known subtotal as a total.
 A future project-total capability requires a durable reporting-period population bound; this store does not infer that bound from the rows it already contains.
 A pooled worktree never becomes the project bucket.
-A dash means the durable source is missing.
+A dash means the durable source is missing or ingestion is pending, as identified by the report.
 It never prints a plausible zero for an absent source.
 
 ## Historical codeburn recovery
@@ -116,7 +122,9 @@ It is the ultimate posterior: a task needing three later fixes was harder than e
 The walk is anchored at the later task's own commit and runs backwards with `git log --follow`, so a rename between the two tasks is followed rather than breaking the link.
 The row keeps both names: `introduced_path` is the name the earlier task knew, and `modified_path` is the name at the later change.
 
-The relation is cheap to compute and impossible to backfill once the task-to-commit link is lost, which is the other reason the raw layer matters.
+Per-commit file inventories and anchored rename walks are cached by project and commit, so unchanged evidence does not repeat file-history walks during incremental ingestion.
+The cache is disposable: a missing or unreadable entry is regenerated, and explicit `rebuild` refreshes the full cache.
+The task-to-commit link remains durable raw evidence rather than cache-only knowledge.
 
 ## Structure and its limits
 
@@ -142,10 +150,11 @@ The separate discovery-versus-churn and loud-versus-quiet research annotations r
 
 ## Verification
 
-The suites drive public lifecycle and store entry points and read results back through SQL only.
-They cover automatic lifecycle capture, launch-to-PR duration, durable usage and actual models, missing-versus-zero behavior, both recorded-by-hand fields, the durability link across a file rename, one-command reporting, and delete-and-rebuild identity.
+The suites drive public lifecycle and store entry points and verify SQL results, report output, and instrumented ingestion and git calls.
+They cover nonblocking lifecycle capture during stalled ingestion, request coalescing, cached history reuse, pending reports, launch-to-PR duration, durable usage and actual models, missing-versus-zero behavior, both recorded-by-hand fields, the durability link across a file rename, one-command reporting, and delete-and-rebuild identity.
 
 ```sh
+tests/fm-effort-async.test.sh
 tests/fm-effort-lifecycle.test.sh
 tests/fm-effort-store.test.sh
 ```

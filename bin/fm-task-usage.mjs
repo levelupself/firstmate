@@ -86,7 +86,10 @@ try {
     if(mode==='--snapshot') {
       fs.mkdirSync(taskDir(id),{recursive:true})
       const staged=snapshot+'.'+process.pid
-      fs.writeFileSync(staged,JSON.stringify(u)+'\n',{mode:0o600});fs.renameSync(staged,snapshot)
+      const fd=fs.openSync(staged,'w',0o600)
+      try { fs.writeFileSync(fd,JSON.stringify(u)+'\n');fs.fsyncSync(fd) }
+      finally { fs.closeSync(fd) }
+      fs.renameSync(staged,snapshot)
     }
     console.log(mode==='--json'?JSON.stringify(u):compact(u))
   }

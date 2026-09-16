@@ -49,6 +49,8 @@ fm_task_meta_set_once() {
   return "$status"
 }
 
+# Capture persists raw lifecycle evidence and enqueues ingestion; it never
+# waits on the derived-store lock while a lifecycle caller owns task metadata.
 fm_task_effort_capture_best_effort() {
   local root=$1 id=$2
   [ -x "$root/bin/fm-effort-store.sh" ] || return 0

@@ -28,7 +28,9 @@
 //
 // Determinism: rebuild consults no current wall clock. Event times are durable
 // inputs, so two rebuilds over the same inputs produce identical content and
-// `fingerprint` can prove it.
+// `fingerprint` can prove it. Capture only appends evidence; the shell queues
+// ingestion. Database publication is atomic, so readers never see a partial
+// rebuild. Commit-keyed git inventories are disposable ingestion accelerators.
 //
 // bin/fm-effort-store.sh is the entry point and owns the CLI contract; run it
 // with --help. This file is invoked by that script and not directly.
@@ -145,13 +147,49 @@ function readMetaWithRequiredFields(file, requiredFields) {
   return requiredFields.every(field => counts.get(field) === 1) ? meta : null
 }
 
+// Immutable commit inventories include numstat, statuses, and rename-following
+// history anchored at that commit. Cache only successful reads, scoped by repo
+// and commit; changing refs still resolves ownership again on each ingestion.
+let gitCacheRoot = null
+const gitCache = new Map()
+const gitMemo = new Map()
 function git(repo, args, {timeoutMs = 20000} = {}) {
+  const memoKey = JSON.stringify([repo, args])
+  if (gitMemo.has(memoKey)) return gitMemo.get(memoKey)
+  const sha = args[0] === 'show' ? args.at(-1)
+    : args[0] === 'log' && args[1] === '--follow' ? args[5] : null
+  let inventory = null
+  let cacheFile = null
+  const query = JSON.stringify(args)
+  if (gitCacheRoot && /^[a-f0-9]{40,64}$/.test(sha || '')) {
+    const repoKey = crypto.createHash('sha256').update(path.resolve(repo)).digest('hex')
+    cacheFile = path.join(gitCacheRoot, repoKey, `${sha}.json`)
+    inventory = gitCache.get(cacheFile)
+    if (!inventory) {
+      try {
+        const saved = JSON.parse(fs.readFileSync(cacheFile, 'utf8'))
+        if (saved.version === 1 && saved.commit === sha && saved.queries
+            && typeof saved.queries === 'object' && !Array.isArray(saved.queries)) inventory = saved
+      } catch { /* A missing or corrupt disposable cache is rebuilt. */ }
+      inventory ||= {version: 1, commit: sha, queries: {}}
+      gitCache.set(cacheFile, inventory)
+    }
+    if (typeof inventory.queries[query] === 'string') return inventory.queries[query]
+  }
   const result = spawnSync('git', ['-C', repo, ...args], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
     timeout: timeoutMs,
   })
   if (result.error || result.status !== 0) return null
+  gitMemo.set(memoKey, result.stdout)
+  if (inventory) {
+    inventory.queries[query] = result.stdout
+    fs.mkdirSync(path.dirname(cacheFile), {recursive: true})
+    const temporary = `${cacheFile}.${process.pid}.tmp`
+    fs.writeFileSync(temporary, JSON.stringify(inventory), {mode: 0o600})
+    fs.renameSync(temporary, cacheFile)
+  }
   return result.stdout
 }
 
@@ -256,13 +294,17 @@ function readPipelineMetrics(dbPath, identity) {
 // turning `captured` into lifecycle time. Other preamble or unknown-section
 // lines are surfaced as issues instead of being coerced into a guessed shape.
 
+function rawDigest(text) {
+  return crypto.createHash('sha256').update(text ?? '').digest('hex')
+}
+
 function readRawCapture(file, issues) {
   const text = readTextFile(file)
   if (text === null) {
     // An empty store and an unreadable raw layer look the same from the outside,
     // so say which one happened.
     issues.push({source: 'raw', task_id: null, kind: 'capture-unreadable', detail: file})
-    return {rows: []}
+    return {rows: [], digest: rawDigest(null)}
   }
   const rows = []
   let section = 'preamble'
@@ -323,7 +365,7 @@ function readRawCapture(file, issues) {
       rows.push(row)
     }
   }
-  return {rows}
+  return {rows, digest: rawDigest(text)}
 }
 
 // --- source 4: recorded-by-hand annotations --------------------------------
@@ -998,6 +1040,8 @@ function validatedLifecycleTimestamp(value, startedAt) {
 }
 
 function rebuild(options) {
+  gitCacheRoot = path.join(options.stateDir, 'effort-git-cache')
+  if (options.fullRebuild) fs.rmSync(gitCacheRoot, {recursive: true, force: true})
   const issues = []
   const raw = readRawCapture(options.rawFile, issues)
   const annotations = readAnnotations(options.annotationsFile, issues)
@@ -1032,13 +1076,15 @@ function rebuild(options) {
   const usage = collectUsage(tasks, options, issues)
   const gitResults = collectGit(tasks, options, issues)
 
-  const db = createDatabase(options.dbPath)
+  const temporaryDb = `${options.dbPath}.${process.pid}.tmp`
+  const db = createDatabase(temporaryDb)
   db.exec('BEGIN')
   try {
     const metaInsert = insert(db, 'store_meta', ['key', 'value'])
     for (const [key, value] of [
       ['schema_version', SCHEMA_VERSION],
       ['classifier_version', CLASSIFIER_VERSION],
+      ['raw_digest', raw.digest],
     ]) metaInsert.run(key, value)
 
     writeTasks(db, tasks, usage, gitResults, options)
@@ -1051,6 +1097,7 @@ function rebuild(options) {
     throw error
   }
   db.close()
+  fs.renameSync(temporaryDb, options.dbPath)
 
   return {tasks: tasks.length, issues: issues.length}
 }
@@ -1602,7 +1649,16 @@ function capture(options, taskId, argv) {
     && CAPTURE_COLUMNS.every(column => String(previous[column] ?? '') === row[column])
   if (!exact) {
     const lines = [V2_MARKER, CAPTURE_COLUMNS.join('\t'), CAPTURE_COLUMNS.map(column => escapeRawValue(row[column])).join('\t')]
-    fs.appendFileSync(options.rawFile, `${lines.join('\n')}\n`, {mode: 0o600})
+    // One O_APPEND write keeps concurrent tasks' self-contained schema blocks
+    // together. The durable layer is flushed before lifecycle cleanup proceeds.
+    const bytes = Buffer.from(`\n${lines.join('\n')}\n`)
+    const fd = fs.openSync(options.rawFile, 'a', 0o600)
+    try {
+      if (fs.writeSync(fd, bytes) !== bytes.length) throw new Error('short lifecycle append')
+      fs.fsyncSync(fd)
+    } finally {
+      fs.closeSync(fd)
+    }
   }
 }
 
@@ -1940,6 +1996,35 @@ function durationText(seconds) {
   return `${hours > 0 ? `${hours}h ` : ''}${minutes}m ${remainder}s`
 }
 
+function storeCurrent(options) {
+  if (!fs.existsSync(options.dbPath)) return false
+  let db
+  try {
+    db = new DatabaseSync(options.dbPath, {readOnly: true})
+    const digest = db.prepare("SELECT value FROM store_meta WHERE key = 'raw_digest'").get()?.value
+    return digest === rawDigest(readTextFile(options.rawFile))
+  } catch {
+    return false
+  } finally {
+    db?.close()
+  }
+}
+
+function pendingReport(options) {
+  const queueKey = crypto.createHash('sha256').update(path.resolve(options.dbPath)).digest('hex')
+  const queue = path.join(options.stateDir, `.effort-queue-${queueKey}`)
+  let queued = false
+  try { queued = fs.readdirSync(queue).some(name => name.startsWith('request.')) } catch { /* No queue yet. */ }
+  if (!queued && storeCurrent(options)) return null
+  const rows = readRawCapture(options.rawFile, []).rows
+  const ids = [...new Set(rows.map(row => row.task))].sort()
+    .filter(id => !options.taskId || id === options.taskId)
+  if (!ids.length) return null
+  return 'Store behind append log or queued evidence; pending ingestion. Run report --sync to wait.\n'
+    + 'TASK | LAUNCH->PR | COST | TOKENS | ACTUAL MODEL | OUTCOME\n'
+    + ids.map(id => `${id} | - | - | - | - | pending ingestion`).join('\n') + '\n'
+}
+
 function report(dbPath, taskId) {
   if (!fs.existsSync(dbPath)) return null
   const db = new DatabaseSync(dbPath, {readOnly: true})
@@ -2095,7 +2180,8 @@ const argv = argvPath && fs.existsSync(argvPath)
   ? fs.readFileSync(argvPath, 'utf8').split('\0').slice(0, -1)
   : []
 
-if (command === 'rebuild') {
+if (command === 'rebuild' || command === 'ingest') {
+  config.fullRebuild = command === 'rebuild'
   if (argv.length > 0) {
     warn(`rebuild takes no extra arguments; got '${argv[0]}'`)
     process.exit(2)
@@ -2105,6 +2191,8 @@ if (command === 'rebuild') {
   if (result.issues > 0) {
     process.stdout.write(`${result.issues} ingest issues recorded in ingest_issue\n`)
   }
+} else if (command === 'current') {
+  process.exit(storeCurrent(config) ? 0 : 1)
 } else if (command === 'fingerprint') {
   const value = fingerprint(config.dbPath)
   if (value === null) {
@@ -2154,11 +2242,9 @@ if (command === 'rebuild') {
     warn(error.message)
     process.exit(2)
   }
-  const result = rebuild(config)
-  process.stdout.write(`captured ${config.taskId}; rebuilt ${result.tasks} tasks into ${config.dbPath}\n`)
-  if (result.issues > 0) process.stdout.write(`${result.issues} ingest issues recorded in ingest_issue\n`)
+  process.stdout.write(`captured ${config.taskId}; ingestion queued by lifecycle entry point\n`)
 } else if (command === 'report') {
-  const output = report(config.dbPath, config.taskId)
+  const output = pendingReport(config) ?? report(config.dbPath, config.taskId)
   if (output === null) {
     warn('no store to report; lifecycle capture or rebuild has not run yet')
     process.exit(1)

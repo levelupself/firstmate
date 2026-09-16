@@ -28,7 +28,8 @@ Session files removed before any measurement cannot be reconstructed; launch rec
 The JSON contract is owned by `bin/fm-task-usage.mjs` and identified by `fm-task-usage.v3`.
 It reports task identity, configured runtime and model, actual model totals, tokens, cost, calls, sessions, and duration, with `correlation.attribution` set to `session-stamp` and the measured session sources retained.
 Model names and model totals are emitted from the same ordered collection, including across runtime switches.
-`bin/fm-teardown.sh` saves `data/<id>/usage.json` before deleting volatile task metadata, and snapshot capture refreshes the derived effort-store row.
+`bin/fm-teardown.sh` synchronously saves `data/<id>/usage.json` before deleting volatile task metadata.
+Snapshot capture then follows the append-and-enqueue lifecycle contract in [`effort-store.md`](effort-store.md), which also owns asynchronous reporting and retry behavior.
 Legacy snapshots remain readable without being rewritten or backfilled.
 
 Usage queries are best effort and bounded by `FM_TASK_USAGE_TIMEOUT` (default 60 seconds).
