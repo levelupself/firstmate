@@ -348,9 +348,34 @@ test_bound_only_by_torn_down_record_is_accepted() {
   pass "fm-spawn: a copy named only by a retired status log is accepted"
 }
 
+test_empty_inventory_with_bound_copies_acquires_fresh() {
+  local dir id=psb-fresh-f other=psb-lost-f bound fresh out rc meta
+  dir=$(new_case empty "$id" "$other")
+  bound="$dir/pool/7/proj"
+  fresh="$dir/pool/9/proj"
+  # The pool directory was lost (a host reboot wiped it): the parked task's
+  # record still names its copy, but the pool is empty and reads as such, so
+  # `treehouse get` can only create a fresh copy - nothing bound can be
+  # handed out. Reading a clean empty inventory as unreadable would deadlock
+  # every spawn behind records whose copies no longer exist.
+  git -C "$dir/proj" worktree remove --force "$bound"
+  git -C "$dir/proj" worktree add --quiet --detach "$fresh"
+  printf '%s\n' "$fresh" > "$dir/fake/pool-get"
+  printf '[]\n' > "$dir/fake/status.json"
+  out=$(run_spawn "$dir" "$id" "$dir/proj" --mode no-mistakes --yolo off); rc=$?
+  expect_code 0 "$rc" "an empty pool inventory must not be mistaken for an unreadable one"$'\n'"$out"
+  assert_contains "$out" "spawned $id" "spawn did not report success"
+  assert_grep 'treehouse get' "$dir/fake/keys" "an empty pool is acquired through the ordinary treehouse get"
+  meta="$dir/home/state/$id.meta"
+  assert_grep "worktree=$fresh" "$meta" "the new task's record does not name the fresh copy the pool created"
+  assert_no_grep "worktree=$bound" "$meta" "the new task's record names the lost copy"
+  pass "fm-spawn: an empty pool inventory with bound records acquires a fresh copy"
+}
+
 test_bound_by_live_record_steers_to_free_copy
 test_bound_by_live_record_with_no_free_copy_refuses
 test_unreadable_inventory_with_bound_copies_refuses
 test_bound_only_by_torn_down_record_is_accepted
+test_empty_inventory_with_bound_copies_acquires_fresh
 
 echo "# all fm-spawn-pool-slot-binding tests passed"
