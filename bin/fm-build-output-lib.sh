@@ -15,9 +15,10 @@ fm_build_output_rules() {
 }
 
 # fm_build_output_target prints the sole eligible output root, or nothing.
-# Both live eviction and return-time full pruning use this boundary.
+# Both live eviction and return-time full pruning use this root boundary.
+# fm-build-output-files.mjs then excludes symlinks and nested repository subtrees.
 fm_build_output_target() {
-  local wt=$1 marker output protected ignored nested top
+  local wt=$1 marker output protected ignored top
   [ -d "$wt" ] && [ ! -L "$wt" ] || return 0
   top=$(git -C "$wt" rev-parse --show-toplevel) || return 1
   [ "$(cd "$wt" && pwd -P)" = "$(cd "$top" && pwd -P)" ] || return 1
@@ -28,24 +29,14 @@ fm_build_output_target() {
     [ -z "$protected" ] || continue
     ignored=$(git -C "$wt" ls-files --others --ignored --exclude-standard --directory -- "$output") || return 1
     [ -n "$ignored" ] || continue
-    nested=$(find "$wt/$output" \( -name .git -o -type l \) -print -quit) || return 1
-    [ -z "$nested" ] || continue
     printf '%s\n' "$wt/$output"
   done < <(fm_build_output_rules)
 }
 
 fm_prune_build_output() {
-  local wt=$1 mode=${2:-delete} target size
+  local wt=$1 mode=${2:-delete} target lib_dir
   target=$(fm_build_output_target "$wt") || return 1
   [ -n "$target" ] || return 0
-  size=$(du -sk "$target") || return 1
-  size=${size%%[[:space:]]*}
-  case "$mode" in
-    dry-run) printf 'would prune %s (%s KiB)\n' "$target" "$size" ;;
-    delete)
-      git -C "$wt" clean -fdX -- "${target#"$wt/"}" >/dev/null || return 1
-      printf 'pruned %s (%s KiB)\n' "$target" "$size"
-      ;;
-    *) return 2 ;;
-  esac
+  lib_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || return 1
+  node "$lib_dir/fm-build-output-files.mjs" "$target" "$mode"
 }

@@ -16,6 +16,8 @@
 # Treehouse status --json is the inventory/process authority; cargo/rustc or
 # unknown process evidence skips the copy. Existing Cargo profile locks also
 # serialize deletion against a build starting after the inventory snapshot.
+# Treehouse resolves from PATH, ~/.local/bin, /usr/local/bin, or /opt/homebrew/bin.
+# A missing executable reports skipped=treehouse-not-found per project.
 # One line per copy: path, bytes_before, bytes_after, and reason (including skips).
 # --dry-run does not delete or schedule work; reported bytes_after is actual.
 # This is best-effort disk pressure control, not a build correctness mechanism.
