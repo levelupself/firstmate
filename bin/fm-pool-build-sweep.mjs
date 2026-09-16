@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {execFileSync, spawn} from 'node:child_process';
-import {files} from './fm-build-output-files.mjs';
+import {files, directories} from './fm-build-output-files.mjs';
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const home = process.env.FM_HOME;
 const state = process.env.FM_STATE_OVERRIDE || path.join(home, 'state');
@@ -11,10 +11,11 @@ const args = process.argv.slice(2);
 let dry = false, age = Number(process.env.FM_POOL_BUILD_AGE_HOURS || 24);
 let maxGB = Number(process.env.FM_POOL_BUILD_MAX_GB || 8);
 let scheduled = false, periodic = false;
-let lockedCopy;
+let lockedCopy, explain;
 for (let i = 0; i < args.length; i++) {
   switch (args[i]) {
     case '--dry-run': dry = true; break;
+    case '--explain': explain = path.resolve(args[++i]); dry = true; break;
     case '--age-hours': age = Number(args[++i]); break;
     case '--max-gb': maxGB = Number(args[++i]); break;
     case '--periodic': periodic = true; break;
@@ -62,19 +63,18 @@ function treehouse(project) {
     try {
       if (!fs.statSync(candidate).isFile()) continue;
       fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
+      return fs.realpathSync(candidate);
     } catch {}
   }
   throw Object.assign(Error('treehouse-not-found'), {code:'FM_TREEHOUSE_NOT_FOUND'});
 }
 function inventory(project) {
-  const binary = treehouse(project);
   let output;
-  try { output = run(binary, ['status','--json'], {cwd:project}); }
-  catch (e) {
-    if (e.code === 'ENOENT' && exists(project))
-      throw Object.assign(Error('treehouse-not-found'), {code:'FM_TREEHOUSE_NOT_FOUND'});
-    throw e;
+  try {
+    output = run(treehouse(project), ['status','--json'], {cwd:project});
+  } catch (e) {
+    try { output = run('bash', ['-lc','treehouse status --json'], {cwd:project}); }
+    catch { throw Object.assign(Error('treehouse-not-found'), {code:'FM_TREEHOUSE_NOT_FOUND'}); }
   }
   const entries = JSON.parse(output);
   if (!Array.isArray(entries)) throw Error('invalid Treehouse inventory');
@@ -122,14 +122,17 @@ function select(target, all) {
     const digest = fs.readFileSync(stamp,'utf8').trim();
     if (!/^[a-f0-9]{16}$/.test(digest)) throw Error('unknown-fingerprint-hash');
     const profile = rel.slice(0,fp).join(path.sep);
-    // Distinct target kinds/features/profiles remain independently current.
-    const key = JSON.stringify([profile, match[1], unit, json.target, json.profile, json.features, json.compile_kind]);
+    // Feature sets and Cargo profiles are rebuildable generations of one unit.
+    const key = JSON.stringify([profile, match[1], unit, json.compile_kind]);
     nodes.push({hash:match[2], crate:match[1].replaceAll('-','_'), profile, key, time:f.time, json,
       digest:BigInt(`0x${Buffer.from(digest,'hex').reverse().toString('hex')}`).toString()});
   }
   const newest = new Map();
-  for (const n of nodes) newest.set(n.key, Math.max(newest.get(n.key) || 0, n.time));
-  const keep = new Set(nodes.filter(n => n.time === newest.get(n.key)));
+  for (const n of nodes) {
+    const previous = newest.get(n.key);
+    if (!previous || n.time > previous.time || (n.time === previous.time && n.hash > previous.hash)) newest.set(n.key,n);
+  }
+  const keep = new Set(newest.values());
   const queue = [...keep];
   while (queue.length) {
     const n = queue.pop();
@@ -144,13 +147,30 @@ function select(target, all) {
   }
   const protectedHashes = new Set([...keep].map(n => `${n.profile}/${n.hash}`));
   const obsolete = new Set(nodes.filter(n => !protectedHashes.has(`${n.profile}/${n.hash}`)).map(n => `${n.profile}/${n.hash}`));
-  return all.filter(f => {
+  const candidates = all.filter(f => {
     const rel = path.relative(target,f.p).split(path.sep);
     const area = rel.findIndex(p => ['deps','build','.fingerprint'].includes(p));
     if (area < 1) return false;
     const hash = /-([a-f0-9]{16})(?:\.|$)/.exec(rel[area+1]);
     return hash && obsolete.has(`${rel.slice(0,area).join(path.sep)}/${hash[1]}`);
   }).sort((a,b) => a.time-b.time || a.p.localeCompare(b.p));
+  if (explain) for (const key of newest.keys()) {
+    const generations = nodes.filter(n => n.key === key);
+    const hashes = new Set(generations.map(n => n.hash));
+    const evictable = candidates.filter(f => {
+      const rel = path.relative(target,f.p).split(path.sep);
+      const area = rel.findIndex(p => ['deps','build','.fingerprint'].includes(p));
+      const hash = /-([a-f0-9]{16})(?:\.|$)/.exec(rel[area+1]);
+      return rel.slice(0,area).join(path.sep) === generations[0].profile && hash && hashes.has(hash[1]);
+    });
+    console.log(`generation_key=${key} protected=${generations.filter(n=>keep.has(n)).map(n=>n.hash).join(',')} evictable_bytes=${bytes(evictable)}`);
+  }
+  const profiles = [...new Set(nodes.map(n=>n.profile.split(path.sep)[0]))]
+    .filter(p=>!['debug','release'].includes(p))
+    .map(p=>({p:path.join(target,p), files:all.filter(f=>f.p.startsWith(path.join(target,p)+path.sep))}))
+    .map(p=>({...p,time:p.files.reduce((time,f)=>Math.max(time,f.time),0)}))
+    .sort((a,b)=>a.time-b.time || a.p.localeCompare(b.p));
+  return {candidates, profiles};
 }
 function sweep(project, wt) {
   let before = 0;
@@ -163,7 +183,7 @@ function sweep(project, wt) {
     if (!entry) throw Error('missing-pool-entry');
     const reason = processReason(entry);
     if (reason) {report(wt,before,before,`skipped=${reason}`);return;}
-    let candidates = select(target, all);
+    let {candidates, profiles} = select(target, all);
     const candidateBytes = bytes(candidates);
     const protectedSize = before-candidateBytes;
     // cargo-sweep is a planner only: it has no current-generation preservation
@@ -209,13 +229,14 @@ function sweep(project, wt) {
     const cutoff = Date.now()-age*3600000;
     const removedPaths = new Set();
     const remove = f => {
+      if (path.basename(f.p) === '.cargo-lock') return;
       const now = fs.lstatSync(f.p);
       if (!now.isFile() || now.ino !== f.ino || now.dev !== f.dev || now.mtimeMs !== f.time || now.size !== f.size)
         throw Error('artifact-changed');
       if (!dry) {
         fs.unlinkSync(f.p);
         let parent = path.dirname(f.p);
-        while (!['deps','build','.fingerprint'].includes(path.basename(parent))) {
+        while (parent !== target && !['deps','build','.fingerprint'].includes(path.basename(parent))) {
           try { fs.rmdirSync(parent); } catch { break; }
           parent = path.dirname(parent);
         }
@@ -244,7 +265,20 @@ function sweep(project, wt) {
       if (!surviving && complete && (group.every(f=>f.time<cutoff) || remaining>cap))
         for (const f of group) remove(f);
     }
-    report(wt,before,dry?before:remaining,`${dry?'dry-run ':''}reclaim_bytes=${removed} planner=${planner}${protectedSize>cap?' protected-over-cap':remaining>cap?' cap-unreachable':''}`);
+    // Only known profile roots can be sacrificed, and only after obsolete
+    // generations. Delete walker-admitted files, never excluded symlinks/repos.
+    if (protectedSize > cap) for (const profile of profiles) {
+      if (remaining <= cap) break;
+      const current = inventory(project);
+      if (current.some(e=>processReason(e))) throw Error('live-cargo-or-unknown-process');
+      for (const f of profile.files) if (!removedPaths.has(f.p)) remove(f);
+      if (!dry) {
+        for (const p of directories(profile.p)) {
+          try { fs.rmdirSync(p); } catch (e) { if (!['ENOTEMPTY','EEXIST'].includes(e.code)) throw e; }
+        }
+      }
+    }
+    report(wt,before,dry?before:remaining,`${dry?'dry-run ':''}reclaim_bytes=${removed} planner=${planner}${remaining>cap?(protectedSize>cap?' protected-over-cap':' cap-unreachable'):''}`);
   } catch (e) {
     report(wt,before,before,`skipped=${String(e.message).split('\n')[0]}`);
     if (e.code !== 'FM_TREEHOUSE_NOT_FOUND') process.exitCode = 1;
@@ -264,7 +298,7 @@ function withCargoLocks(project, entry) {
   if (!target) {report(wt,0,0,'skipped=no-eligible-rust-output');return;}
   const locks = files(target).filter(f => path.basename(f.p)==='.cargo-lock').map(f=>f.p);
   let argv = [process.execPath, fileURLToPath(import.meta.url), '--locked-copy',project,wt,
-    '--age-hours',String(age),'--max-gb',String(maxGB), ...(dry?['--dry-run']:[])];
+    '--age-hours',String(age),'--max-gb',String(maxGB), ...(dry?['--dry-run']:[]), ...(explain?['--explain',explain]:[])];
   for (const lock of locks) argv = ['flock','-n','-E','75',lock,...argv];
   try {const output=run(argv[0],argv.slice(1),{timeout:240000});if(output) console.log(output);}
   catch(e) {
@@ -279,7 +313,7 @@ else {
   for (const name of names) {
     const project = path.join(process.env.FM_PROJECTS_OVERRIDE || path.join(home,'projects'),name);
     try {
-      for (const entry of inventory(project)) withCargoLocks(project,entry);
+      for (const entry of inventory(project)) if (!explain || entry.path === explain) withCargoLocks(project,entry);
     } catch(e) {
       if (e.code === 'FM_TREEHOUSE_NOT_FOUND') report(project,0,0,'skipped=treehouse-not-found');
       else {console.error(`${project}: sweep failed: ${e.message}`);process.exitCode=1;}

@@ -105,9 +105,13 @@ A task whose recorded copy was already taken that way is recovered with `bin/fm-
 Live Treehouse copies receive a best-effort Rust build-output sweep from the existing heartbeat path, at most once per hour per home using a durable marker.
 `bin/fm-pool-build-sweep.sh` discovers copies through `treehouse status --json` for each registered project, skips copies with Cargo or rustc processes, and takes existing Cargo profile locks before deleting artifacts.
 `FM_POOL_BUILD_AGE_HOURS` or `--age-hours` defaults to 24 hours; only older artifacts with superseded fingerprints and no reference from the protected current fingerprint set qualify for age eviction.
-`FM_POOL_BUILD_MAX_GB` or `--max-gb` defaults to 8 decimal GB; above that threshold, eligible files are evicted oldest first until output fits, with the newest build units and their transitive dependencies always protected.
-If protected output alone exceeds the cap, the sweep reports `protected-over-cap` rather than deleting it.
-Unrecognized artifacts and incremental caches without a reliable fingerprint mapping remain protected, so this is best-effort size control, not a hard disk quota or a correctness mechanism.
+`FM_POOL_BUILD_MAX_GB` or `--max-gb` defaults to 8 decimal GB; above that threshold, eligible files are evicted oldest first until output fits, initially preserving the newest generation per `[profile-directory, crate, unit, compile_kind]` key and its transitive fingerprint dependencies.
+Feature sets and Cargo profile variants compete as generations within that key; switching features may require recompilation.
+If the protected output alone exceeds the cap, the sweep next evicts known custom top-level profile directories oldest first by their newest contained regular-file mtime, stopping once output fits; `debug` and `release` are exempt from this directory eviction.
+Before each custom-profile eviction, any Cargo, rustc, or unknown process evidence anywhere in that project's pool inventory blocks that eviction.
+Directory eviction preserves Cargo lock files, symlinks, and nested repositories under the shared walker exclusions, so an evicted directory can retain excluded entries.
+Unrecognized artifacts and incremental caches without a reliable fingerprint mapping remain protected except inside custom profiles selected for eviction.
+Remaining oversized protected output is reported as `protected-over-cap`; this is best-effort size control, not a hard disk quota or a correctness mechanism.
 When available, cargo-sweep supplies a dry-run size plan; it is never allowed to delete current artifacts directly.
 `--dry-run` reports planned reclamation without deleting files, and each copy's output includes before and after bytes and any skip reason.
 The helper's header owns invocation, cadence, logging, and timeout details; `tests/fm-pool-build-sweep.test.sh` covers preservation and eviction.

@@ -185,3 +185,96 @@ assert_present "$TEST_PLANNER_LOG" 'installed cargo-sweep was not used'
 assert_present "$TMP_ROOT/pool/size/rust/target/debug/deps/libdemo-3333333333333333.rlib" 'planner suggestion deleted newest generation'
 assert_contains "$(cat "$TMP_ROOT/planner")" 'planner=cargo-sweep' 'installed planner result was not consumed'
 pass 'installed cargo-sweep is filtered through newest-generation protection'
+
+# Feature and Cargo profile variants compete within each profile directory.
+wt="$TMP_ROOT/pool/variants/rust"
+git -C "$PROJECT" worktree add -q --detach "$wt"
+node - "$wt" "$TEST_INVENTORY" <<'JS'
+const fs=require('fs'), [wt,inventory]=process.argv.slice(2);
+fs.writeFileSync(inventory,JSON.stringify([{path:wt,processes:[]}]));
+for(const profile of ['debug','release','kernel-b/debug']) for(let i=1;i<=2;i++) {
+ const hash=String(i).repeat(16), base=`${wt}/target/${profile}`, fp=`${base}/.fingerprint/demo-${hash}`;
+ fs.mkdirSync(fp,{recursive:true});fs.mkdirSync(`${base}/deps`,{recursive:true});
+ const entries=[[`${fp}/lib-demo.json`,JSON.stringify({features:i===1?'[]':'["extra"]',profile:i,deps:[],compile_kind:0})],[`${fp}/lib-demo`,hash],[`${base}/deps/libdemo-${hash}.rlib`,Buffer.alloc(16384)]];
+ for(const [p,data] of entries){fs.writeFileSync(p,data);const t=new Date(Date.now()-(72-i)*3600000);fs.utimesSync(p,t,t);}
+}
+JS
+"$SWEEP" > "$TMP_ROOT/variants"
+for profile in debug release kernel-b/debug; do
+  assert_absent "$wt/target/$profile/deps/libdemo-1111111111111111.rlib" 'feature variant retained as independently current'
+  assert_present "$wt/target/$profile/deps/libdemo-2222222222222222.rlib" 'newest feature variant deleted'
+done
+"$SWEEP" --explain "$wt" > "$TMP_ROOT/explain"
+assert_contains "$(cat "$TMP_ROOT/explain")" 'generation_key=' 'explain omitted generation keys'
+assert_contains "$(cat "$TMP_ROOT/explain")" 'protected=2222222222222222' 'explain omitted protected generation'
+assert_contains "$(cat "$TMP_ROOT/explain")" 'evictable_bytes=0' 'explain omitted evictable bytes'
+"$SWEEP" --dry-run --max-gb 0.000001 > "$TMP_ROOT/profile-dry"
+assert_present "$wt/target/kernel-b/debug/deps/libdemo-2222222222222222.rlib" 'profile dry-run deleted output'
+"$SWEEP" --max-gb 0.000001 > "$TMP_ROOT/profile-cap"
+assert_absent "$wt/target/kernel-b" 'oversized newest set did not evict custom target directory'
+for profile in debug release; do
+  assert_present "$wt/target/$profile/deps/libdemo-2222222222222222.rlib" 'cap evicted standard profile'
+done
+assert_contains "$(cat "$TMP_ROOT/profile-cap")" 'protected-over-cap' 'remaining protected output not reported'
+pass 'feature variants supersede and custom profiles yield to the cap with explain and dry-run support'
+
+node - "$wt" <<'JS'
+const fs=require('fs'), wt=process.argv[2], base=`${wt}/target/kernel-c/debug`;
+const hash='3333333333333333', fp=`${base}/.fingerprint/demo-${hash}`;
+fs.mkdirSync(fp,{recursive:true});fs.mkdirSync(`${base}/deps`,{recursive:true});
+fs.writeFileSync(`${base}/.cargo-lock`,'');
+fs.writeFileSync(`${fp}/lib-demo.json`,JSON.stringify({deps:[],compile_kind:0}));
+fs.writeFileSync(`${fp}/lib-demo`,hash);
+fs.writeFileSync(`${base}/deps/libdemo-${hash}.rlib`,Buffer.alloc(16384));
+for(const kind of ['dangling','directory','file']) {
+ const repo=`${wt}/target/kernel-c/${kind}`;
+ fs.mkdirSync(`${repo}/empty/descendant`,{recursive:true});
+ if(kind==='dangling') fs.symlinkSync('absent',`${repo}/.git`);
+ else if(kind==='directory') fs.mkdirSync(`${repo}/.git`);
+ else fs.writeFileSync(`${repo}/.git`,'gitdir: elsewhere\n');
+}
+fs.mkdirSync(`${wt}/target/kernel-c/ordinary/empty`,{recursive:true});
+fs.symlinkSync('absent',`${wt}/target/kernel-c/scratch-link`);
+fs.writeFileSync(`${wt}/lock-before.json`,JSON.stringify(fs.statSync(`${base}/.cargo-lock`)));
+JS
+cat > "$TMP_ROOT/lock-contender.cjs" <<'JS'
+const fs=require('node:fs'), cp=require('node:child_process');
+const unlink=fs.unlinkSync;
+fs.unlinkSync=function(p,...args) {
+ const result=unlink.call(this,p,...args);
+ if(p===process.env.TEST_EVICT_ARTIFACT) {
+  const lock=process.env.TEST_EVICT_LOCK;
+  const before=fs.existsSync(lock)?fs.statSync(lock):null;
+  const contender=cp.spawnSync('flock',['-n','-E','75',lock,'true']);
+  fs.writeFileSync(process.env.TEST_CONTENDER_RESULT,JSON.stringify({before,status:contender.status}));
+ }
+ return result;
+};
+JS
+lock="$wt/target/kernel-c/debug/.cargo-lock"
+TEST_EVICT_LOCK="$lock" \
+TEST_EVICT_ARTIFACT="$wt/target/kernel-c/debug/deps/libdemo-3333333333333333.rlib" \
+TEST_CONTENDER_RESULT="$TMP_ROOT/contender.json" \
+NODE_OPTIONS="--require=$TMP_ROOT/lock-contender.cjs" \
+  "$SWEEP" --max-gb 0.000001 > "$TMP_ROOT/profile-lock"
+node - "$wt" "$TMP_ROOT/contender.json" <<'JS'
+const fs=require('fs'), assert=require('assert/strict'), [wt,result]=process.argv.slice(2);
+const original=JSON.parse(fs.readFileSync(`${wt}/lock-before.json`));
+const contender=JSON.parse(fs.readFileSync(result));
+assert.equal(contender.status,75,'concurrent build acquired lock during eviction');
+assert.ok(contender.before,'lock disappeared during eviction');
+const after=fs.statSync(`${wt}/target/kernel-c/debug/.cargo-lock`);
+for(const stat of [contender.before,after]) {
+ assert.equal(stat.ino,original.ino,'Cargo lock inode replaced');
+ assert.equal(stat.dev,original.dev,'Cargo lock device changed');
+}
+JS
+flock -n "$lock" true || fail 'Cargo lock was not released after eviction'
+assert_absent "$wt/target/kernel-c/debug/deps" 'locked custom profile artifacts retained'
+assert_absent "$wt/target/kernel-c/ordinary" 'ordinary empty directories retained'
+for kind in dangling directory file; do
+  assert_present "$wt/target/kernel-c/$kind/empty/descendant" 'nested repository directories pruned'
+done
+[ -L "$wt/target/kernel-c/dangling/.git" ] || fail 'dangling repository entry deleted'
+[ -L "$wt/target/kernel-c/scratch-link" ] || fail 'custom profile symlink deleted'
+pass 'custom eviction preserves Cargo lock serialization and shared walker exclusions'

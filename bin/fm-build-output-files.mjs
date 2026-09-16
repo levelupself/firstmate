@@ -24,6 +24,7 @@ function scan(root) {
   return {files, directories};
 }
 export const files = root => scan(root).files;
+export const directories = root => scan(root).directories;
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [root, mode] = process.argv.slice(2);
