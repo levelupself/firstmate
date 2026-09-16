@@ -1173,6 +1173,9 @@ EOF
   hb=$(( HEARTBEAT * (1 << streak) ))
   [ "$hb" -gt "$HEARTBEAT_MAX" ] && hb=$HEARTBEAT_MAX
   if [ "$(age_of "$STATE/.last-heartbeat")" -ge "$hb" ]; then
+    # Finite best-effort maintenance returns immediately; its own durable marker
+    # limits launches to once per hour across watcher restarts.
+    "$SCRIPT_DIR/fm-pool-build-sweep.sh" --periodic >/dev/null 2>&1 || true
     # Triage: in always-on mode a heartbeat is benign unless the cheap fleet-scan
     # turns up a captain-relevant status the per-wake path missed. Absorb the
     # no-change case (advance the schedule and back off exactly as wake() would,

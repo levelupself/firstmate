@@ -1185,7 +1185,7 @@ teardown_treehouse_return_attempt() {
       printf "fatal: Unable to create '%s': File exists.\n" "$lock" >&2
       return 128
     fi
-    fm_prune_build_output "$dir" || return 1
+    "$SCRIPT_DIR/fm-pool-build-sweep.sh" --return-copy "$dir" || return 1
   fi
   ( cd "$cd_dir" && treehouse return --force "$dir" )
 }
@@ -1195,7 +1195,7 @@ teardown_treehouse_return() {
   local out lock attempt=0 max_retries lock_desc
 
   if [ -n "$prune" ]; then
-    prune=$(fm_prune_build_output "$dir" dry-run) || return 1
+    prune=$("$SCRIPT_DIR/fm-pool-build-sweep.sh" --return-copy "$dir" --dry-run) || return 1
   fi
 
   # Capture stdout+stderr so non-lock failures stay visible and lock failures can
