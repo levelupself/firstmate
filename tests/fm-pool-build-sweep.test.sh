@@ -43,6 +43,15 @@ for (const e of entries) {
 }
 JS
 SWEEP="$ROOT/bin/fm-pool-build-sweep.sh"
+# Debugger scratch symlinks and nested repositories must not hide stale builds.
+wt="$TMP_ROOT/pool/age/rust"
+mkdir -p "$wt/target/scratch" "$wt/target/nested/.git" "$wt/target/linked-repo"
+printf keep > "$TMP_ROOT/outside"
+ln -s "$TMP_ROOT/outside" "$wt/target/scratch/system-lib"
+ln -s "$TMP_ROOT/absent" "$wt/target/scratch/dangling"
+printf keep > "$wt/target/nested/keep"
+printf 'gitdir: elsewhere\n' > "$wt/target/linked-repo/.git"
+printf keep > "$wt/target/linked-repo/keep"
 for source in argument environment; do
   if [ "$source" = argument ]; then
     command=("$SWEEP" --age-hours 0)
@@ -70,6 +79,11 @@ assert_present "$TMP_ROOT/pool/age/rust/target/debug/deps/libdemo-33333333333333
 assert_present "$TMP_ROOT/pool/busy/rust/target/debug/deps/libdemo-1111111111111111.rlib" 'live cargo output deleted'
 assert_contains "$(cat "$TMP_ROOT/age")" 'live-cargo' 'skip reason missing'
 assert_absent "$TMP_ROOT/pool/plain/rust/target" 'non-Rust copy changed'
+[ -L "$wt/target/scratch/system-lib" ] || fail 'sweep deleted scratch symlink'
+[ -L "$wt/target/scratch/dangling" ] || fail 'sweep deleted dangling symlink'
+assert_present "$wt/target/nested/keep" 'sweep deleted nested repository'
+assert_present "$wt/target/linked-repo/keep" 'sweep deleted linked repository'
+[ "$(cat "$TMP_ROOT/outside")" = keep ] || fail 'sweep followed scratch symlink'
 pass 'age sweep keeps newest fingerprint generation and skips cargo and non-Rust copies'
 "$SWEEP" --max-gb 0.00004 > "$TMP_ROOT/size"
 assert_absent "$TMP_ROOT/pool/size/rust/target/debug/deps/libdemo-1111111111111111.rlib" 'size sweep did not evict youngest-eligible old generation'

@@ -48,3 +48,24 @@ for name in leased referenced tracked exception; do
   [ -f "$TMP_ROOT/pool/$name/rust/target/binary" ] || fail "$name output deleted"
 done
 pass 'sweep preserves leases, task references, tracked and non-ignored files'
+
+# The teardown entry uses the same exclusions without sacrificing other output.
+wt="$TMP_ROOT/pool/idle/rust"
+mkdir -p "$wt/target/scratch" "$wt/target/nested/.git" "$wt/target/linked"
+printf binary > "$wt/target/binary"
+printf keep > "$TMP_ROOT/outside"
+ln -s "$TMP_ROOT/outside" "$wt/target/scratch/link"
+ln -s "$TMP_ROOT/missing" "$wt/target/scratch/dangling"
+printf keep > "$wt/target/nested/keep"
+printf 'gitdir: elsewhere\n' > "$wt/target/linked/.git"
+printf keep > "$wt/target/linked/keep"
+"$ROOT/bin/fm-pool-build-sweep.sh" --return-copy "$wt" --dry-run
+assert_present "$wt/target/binary" 'return dry-run deleted output'
+"$ROOT/bin/fm-pool-build-sweep.sh" --return-copy "$wt"
+assert_absent "$wt/target/binary" 'return prune retained ordinary ignored output'
+[ -L "$wt/target/scratch/link" ] || fail 'return prune deleted symlink'
+[ -L "$wt/target/scratch/dangling" ] || fail 'return prune deleted dangling symlink'
+assert_present "$wt/target/nested/keep" 'return prune deleted nested repository'
+assert_present "$wt/target/linked/keep" 'return prune deleted linked repository'
+[ "$(cat "$TMP_ROOT/outside")" = keep ] || fail 'return prune followed symlink'
+pass 'return pruning excludes symlinks and repository subtrees only'
