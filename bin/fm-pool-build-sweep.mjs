@@ -51,9 +51,12 @@ if (scheduled) {
 }
 // PATH wins, followed by the user-local and standard system install locations.
 function treehouse(project) {
+  const systemLocations = process.env.FM_TREEHOUSE_SYSTEM_PATH === undefined
+    ? ['/usr/local/bin', '/opt/homebrew/bin']
+    : process.env.FM_TREEHOUSE_SYSTEM_PATH.split(path.delimiter).filter(Boolean);
   const locations = [...(process.env.PATH || '').split(path.delimiter),
     ...(process.env.HOME ? [path.join(process.env.HOME, '.local/bin')] : []),
-    '/usr/local/bin', '/opt/homebrew/bin'];
+    ...systemLocations];
   for (const location of locations) {
     const candidate = path.resolve(project, location, 'treehouse');
     try {
