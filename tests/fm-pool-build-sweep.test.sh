@@ -101,6 +101,19 @@ flock "$TMP_ROOT/pool/size/rust/target/debug/.cargo-lock" bash -c '
 assert_contains "$(cat "$TMP_ROOT/locked")" 'live-cargo-lock' 'Cargo profile lock was not respected'
 pass 'Cargo profile locks close the inventory-to-deletion race'
 
+# A failure inside the locked child must explain itself on stderr, not merely
+# print the outer flock/bash argument list.
+fingerprint="$TMP_ROOT/pool/size/rust/target/debug/.fingerprint/demo-3333333333333333/lib-demo"
+cp "$fingerprint" "$TMP_ROOT/fingerprint.saved"
+printf invalid > "$fingerprint"
+rc=0
+"$SWEEP" > "$TMP_ROOT/child-failure.out" 2> "$TMP_ROOT/child-failure.err" || rc=$?
+[ "$rc" -ne 0 ] || fail 'invalid fingerprint returned success'
+assert_contains "$(cat "$TMP_ROOT/child-failure.err")" 'unknown-fingerprint-hash' 'locked child failure omitted its reason from stderr'
+mv "$TMP_ROOT/fingerprint.saved" "$fingerprint"
+pass 'locked child failure logs its concrete reason'
+
+
 # Remove an enumerated lock before flock opens it, both with and without its
 # parent directory. A real child error must retain stderr on its failure line.
 cat > "$TMP_ROOT/lock-race.cjs" <<'JS'
@@ -135,19 +148,6 @@ for TEST_LOCK_FAILURE in file directory stderr; do
 done
 rm -rf "${TEST_RACE_LOCK%/*}"
 pass 'vanished locks skip the copy and genuine lock failures retain stderr'
-
-# A failure inside the locked child must explain itself on stderr, not merely
-# print the outer flock/bash argument list.
-fingerprint="$TMP_ROOT/pool/size/rust/target/debug/.fingerprint/demo-3333333333333333/lib-demo"
-cp "$fingerprint" "$TMP_ROOT/fingerprint.saved"
-printf invalid > "$fingerprint"
-rc=0
-"$SWEEP" > "$TMP_ROOT/child-failure.out" 2> "$TMP_ROOT/child-failure.err" || rc=$?
-[ "$rc" -ne 0 ] || fail 'invalid fingerprint returned success'
-assert_contains "$(cat "$TMP_ROOT/child-failure.err")" 'unknown-fingerprint-hash' 'locked child failure omitted its reason from stderr'
-mv "$TMP_ROOT/fingerprint.saved" "$fingerprint"
-pass 'locked child failure logs its concrete reason'
-
 
 # The helper owns a durable attempt marker, including failed attempts.
 "$SWEEP" --periodic
