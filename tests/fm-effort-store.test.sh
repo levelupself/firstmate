@@ -1013,3 +1013,63 @@ assert_contains "$USAGE" 'report [<task-id>]' 'help should document the one repo
 assert_contains "$USAGE" 'backfill-codeburn [--replace-existing] <export.json>' \
   'help should document the explicit historical recovery command'
 pass 'reporting exposes project coverage and the documented backfill command'
+
+# --- context signal: peak context, compactions, and restarts at capture --------
+# The three fields sit on the task row beside outcome so a later query can
+# correlate rework with compaction and relaunch; they come from the task's own
+# stamped session records at capture time and are never backfilled.
+
+CTX_STAMP_A=33333333-3333-4333-8333-333333333333
+CTX_STAMP_B=44444444-4444-4444-8444-444444444444
+CTX_STORE="$ROOTDIR/ctx-store"
+CTX_WT="$ROOTDIR/worktrees/ctx"
+mkdir -p "$CTX_WT" "$FM_HOME/data/930-context/sessions"
+printf '{"schema":"fm-task-sessions.v1","id":"930-context","spawned_at":"2026-08-01T10:00:00Z"}\n' \
+  > "$FM_HOME/data/930-context/sessions/identity.json"
+printf '{"stamp":"%s","harness":"claude","store":"%s","worktree":"%s"}\n{"stamp":"%s","harness":"claude","store":"%s","worktree":"%s"}\n' \
+  "$CTX_STAMP_A" "$CTX_STORE" "$CTX_WT" "$CTX_STAMP_B" "$CTX_STORE" "$CTX_WT" \
+  > "$FM_HOME/data/930-context/sessions/launches.jsonl"
+CTX_DIR="$CTX_STORE/projects/$(printf '%s' "$CTX_WT" | tr -c 'A-Za-z0-9' '-')"
+mkdir -p "$CTX_DIR"
+write_ctx_record() {  # <stamp> <context-tokens>... (a "compact" token is a compaction)
+  local stamp=$1 file n=0 value
+  shift
+  file="$CTX_DIR/$stamp.jsonl"
+  printf '{"type":"user","cwd":"%s","sessionId":"%s","timestamp":"2026-08-01T10:00:01.000Z","uuid":"u-1","message":{"role":"user","content":"go"}}\n' "$CTX_WT" "$stamp" > "$file"
+  for value in "$@"; do
+    n=$((n + 1))
+    if [ "$value" = compact ]; then
+      printf '{"type":"user","cwd":"%s","sessionId":"%s","timestamp":"2026-08-01T10:%02d:00.000Z","uuid":"c-%s","isCompactSummary":true,"message":{"role":"user","content":"continued"}}\n' "$CTX_WT" "$stamp" "$n" "$n" >> "$file"
+    else
+      printf '{"type":"assistant","cwd":"%s","sessionId":"%s","timestamp":"2026-08-01T10:%02d:00.000Z","uuid":"a-%s","requestId":"r-%s","message":{"id":"m-%s","model":"claude-opus-5","role":"assistant","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":%s,"output_tokens":1},"content":[]}}\n' "$CTX_WT" "$stamp" "$n" "$n" "$n" "$n" "$value" >> "$file"
+    fi
+  done
+}
+write_ctx_record "$CTX_STAMP_A" 150000 240000 compact 40000 compact 90000
+write_ctx_record "$CTX_STAMP_B" 70000
+fm_write_meta "$FM_HOME/state/930-context.meta" \
+  "worktree=$CTX_WT" \
+  "project=$PROJECT" \
+  "harness=claude" \
+  "kind=ship" \
+  "spawned_at=2026-08-01T10:00:00Z" \
+  "teardown_at=2026-08-01T12:00:00Z" \
+  "outcome=forced"
+"$STORE" capture 930-context --outcome forced >/dev/null || fail 'context capture failed'
+CONTEXT_ROW=$(query "SELECT peak_context_tokens, compactions, restarts, outcome FROM task WHERE task_id = '930-context'")
+[ "$CONTEXT_ROW" = '240000|2|1|forced' ] \
+  || fail "capture did not store the context signal beside the outcome: $CONTEXT_ROW"
+UNBOUND_ROW=$(query "SELECT peak_context_tokens, compactions, restarts FROM task WHERE task_id = '910-lifecycle'")
+[ "$UNBOUND_ROW" = 'NULL|NULL|NULL' ] \
+  || fail "a task with no bound session record must keep the context fields missing, never zero: $UNBOUND_ROW"
+pass 'capture stores peak context, compactions, and restarts on the task row and leaves unbound tasks missing'
+
+CONTEXT_REPORT=$("$STORE" report --sync) || fail 'context report failed'
+assert_contains "$CONTEXT_REPORT" 'COMPACTIONS' 'report should carry the compaction-bucket summary line'
+CONTEXT_LINE=$(printf '%s\n' "$CONTEXT_REPORT" | grep '^COMPACTIONS')
+assert_contains "$CONTEXT_LINE" '2+: 1 task (forced 1)' 'the 2+ bucket should group the compacted task by outcome'
+assert_contains "$CONTEXT_LINE" '0: 0 tasks' 'the 0 bucket should be explicit even when empty'
+assert_contains "$CONTEXT_LINE" 'unknown:' 'tasks captured before the signal existed should be reported as unknown, not zero'
+TASK_REPORT=$("$STORE" report 930-context) || fail 'single context report failed'
+assert_contains "$TASK_REPORT" '240000 peak / 2 compactions / 1 restarts' 'single-task report should expose the context signal'
+pass 'report groups outcome by compaction bucket and exposes the per-task context signal'

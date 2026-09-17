@@ -80,8 +80,6 @@ test_tracked_extension_present_and_self_hashing() {
   assert_contains "$text" "fm_watch_arm_pi" "tracked extension missing tool name"
   assert_contains "$text" "fm-watch-arm-pi" "tracked extension missing command name"
   assert_contains "$text" "fm-watch-arm.sh" "tracked extension missing watcher arm"
-  assert_contains "$text" "sendUserMessage" "tracked extension missing Pi wake API"
-  assert_contains "$text" "deliverAs: \"followUp\"" "tracked extension missing followUp delivery"
   assert_contains "$text" ".pi-watch-extension-loaded" "tracked extension missing loaded marker"
   assert_contains "$text" 'createHash("sha256").update(readFileSync(extensionFile)).digest("hex")' "tracked extension does not self-hash its own content for extensionVersion"
   assert_contains "$text" 'fileURLToPath(import.meta.url)' "tracked extension does not self-locate via import.meta.url"
@@ -403,12 +401,13 @@ EOF
 }
 
 test_pi_actionable_close_starts_single_successor_before_delivery() {
+  local wake_kind=${1:-signal}
   local repo home plugin log stop bus out status
-  repo="$TMP_ROOT/pi-continuous-rearm-root"
-  home="$TMP_ROOT/pi-continuous-rearm-home"
-  log="$TMP_ROOT/pi-continuous-rearm.log"
-  stop="$TMP_ROOT/pi-continuous-rearm.stop"
-  bus="$TMP_ROOT/pi-continuous-rearm.bus"
+  repo="$TMP_ROOT/pi-continuous-rearm-$wake_kind-root"
+  home="$TMP_ROOT/pi-continuous-rearm-$wake_kind-home"
+  log="$TMP_ROOT/pi-continuous-rearm-$wake_kind.log"
+  stop="$TMP_ROOT/pi-continuous-rearm-$wake_kind.stop"
+  bus="$TMP_ROOT/pi-continuous-rearm-$wake_kind.bus"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   fm_checkpoint_bus "$bus"
   install_pi_watch_extension_fixture "$repo"
@@ -425,7 +424,7 @@ printf 'armed %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 count=$(grep -c '^arm=' "$FM_ARM_LOG")
 if [ "$count" -eq 1 ]; then
   printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
-  printf 'signal: synthetic actionable close\n'
+  printf '%s: synthetic actionable close\n' "$FM_TEST_WAKE_KIND"
   exit 0
 fi
 printf 'watcher: started pid=%s (beacon fresh) recovery-generation=fixture-generation\n' "$$"
@@ -433,7 +432,7 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" node --input-type=module 2>&1 <<'EOF'
+  out=$(FM_TEST_WAKE_KIND="$wake_kind" PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -453,7 +452,9 @@ const pi = {
   registerTool(candidate) {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
   },
-  sendUserMessage: async () => {
+  sendUserMessage: async (message, options) => {
+    if (options?.deliverAs !== "followUp") throw new Error(`wrong delivery mode: ${JSON.stringify(options)}`);
+    if (!message.includes(`${process.env.FM_TEST_WAKE_KIND}: synthetic actionable close`)) throw new Error(`wrong wake: ${message}`);
     rowsAtDelivery = existsSync(process.env.FM_ARM_LOG)
       ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
       : 0;
@@ -1678,13 +1679,14 @@ EOF
 }
 
 test_opencode_primary_watch_plugin_rearms_after_wake() {
+  local wake_kind=${1:-signal}
   local plugin repo home log stop bus out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
-  repo="$TMP_ROOT/opencode-rearm-root"
-  home="$TMP_ROOT/opencode-rearm-home"
-  log="$TMP_ROOT/opencode-rearm.log"
-  stop="$TMP_ROOT/opencode-rearm.stop"
-  bus="$TMP_ROOT/opencode-rearm.bus"
+  repo="$TMP_ROOT/opencode-rearm-$wake_kind-root"
+  home="$TMP_ROOT/opencode-rearm-$wake_kind-home"
+  log="$TMP_ROOT/opencode-rearm-$wake_kind.log"
+  stop="$TMP_ROOT/opencode-rearm-$wake_kind.stop"
+  bus="$TMP_ROOT/opencode-rearm-$wake_kind.bus"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   fm_checkpoint_bus "$bus"
   git init -q "$repo"
@@ -1702,7 +1704,7 @@ printf 'armed %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 count=$(grep -c '^arm=' "$FM_ARM_LOG")
 if [ "$count" -eq 1 ]; then
   printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
-  printf 'signal: synthetic wake\n'
+  printf '%s: synthetic wake\n' "$FM_TEST_WAKE_KIND"
   exit 0
 fi
 printf 'watcher: started pid=%s (beacon fresh) recovery-generation=fixture-generation\n' "$$"
@@ -1710,7 +1712,7 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" node 2>&1 <<'EOF'
+  out=$(FM_TEST_WAKE_KIND="$wake_kind" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -1726,7 +1728,8 @@ const promptBlocked = new Promise((resolve) => {
 });
 const client = {
   session: {
-    promptAsync: async () => {
+    promptAsync: async (request) => {
+      if (!JSON.stringify(request).includes(`${process.env.FM_TEST_WAKE_KIND}: synthetic wake`)) throw new Error(`wrong wake: ${JSON.stringify(request)}`);
       rowsAtPrompt = existsSync(process.env.FM_ARM_LOG)
         ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length
         : 0;
@@ -1780,15 +1783,16 @@ EOF
 }
 
 test_opencode_pre_ready_actionable_close_preserves_its_successor() {
+  local wake_kind=${1:-signal}
   local plugin repo home log release retired stop bus out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
-  repo="$TMP_ROOT/opencode-pre-ready-actionable-root"
-  home="$TMP_ROOT/opencode-pre-ready-actionable-home"
-  log="$TMP_ROOT/opencode-pre-ready-actionable.log"
-  release="$TMP_ROOT/opencode-pre-ready-actionable.release"
-  retired="$TMP_ROOT/opencode-pre-ready-actionable.retired"
-  stop="$TMP_ROOT/opencode-pre-ready-actionable.stop"
-  bus="$TMP_ROOT/opencode-pre-ready-actionable.bus"
+  repo="$TMP_ROOT/opencode-pre-ready-actionable-$wake_kind-root"
+  home="$TMP_ROOT/opencode-pre-ready-actionable-$wake_kind-home"
+  log="$TMP_ROOT/opencode-pre-ready-actionable-$wake_kind.log"
+  release="$TMP_ROOT/opencode-pre-ready-actionable-$wake_kind.release"
+  retired="$TMP_ROOT/opencode-pre-ready-actionable-$wake_kind.retired"
+  stop="$TMP_ROOT/opencode-pre-ready-actionable-$wake_kind.stop"
+  bus="$TMP_ROOT/opencode-pre-ready-actionable-$wake_kind.bus"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   fm_checkpoint_bus "$bus"
   git init -q "$repo"
@@ -1801,11 +1805,11 @@ printf 'armed %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
 count=$(wc -l < "$FM_ARM_LOG" | tr -d '[:space:]')
 if [ "$count" -eq 1 ]; then
   printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
-  printf 'signal: original wake\n'
+  printf '%s: original wake\n' "$FM_TEST_WAKE_KIND"
   exit 0
 fi
 if [ "$count" -eq 2 ]; then
-  printf 'signal: pre-ready successor wake\n'
+  printf '%s: pre-ready successor wake\n' "$FM_TEST_WAKE_KIND"
   trap 'printf "retired\\n" > "${FM_PRE_READY_RETIRED_FILE:?}"; exit 0' TERM INT
   while [ ! -e "$FM_PRE_READY_RELEASE_FILE" ]; do sleep 0.02; done
   exit 0
@@ -1815,7 +1819,7 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_PRE_READY_RELEASE_FILE="$release" FM_PRE_READY_RETIRED_FILE="$retired" FM_STOP_FILE="$stop" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+  out=$(FM_TEST_WAKE_KIND="$wake_kind" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_PRE_READY_RELEASE_FILE="$release" FM_PRE_READY_RETIRED_FILE="$retired" FM_STOP_FILE="$stop" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -2768,6 +2772,7 @@ test_pi_tool_returns_agent_tool_result
 test_pi_redundant_tool_call_is_owned_noop
 test_pi_scheduled_retry_call_is_owned_noop
 test_pi_actionable_close_starts_single_successor_before_delivery
+test_pi_actionable_close_starts_single_successor_before_delivery context
 test_pi_hung_successor_falls_back_to_typed_wake
 test_pi_unretired_successor_falls_back_without_retry
 test_pi_late_unretired_close_resumes_supervision
@@ -2784,7 +2789,9 @@ test_opencode_primary_watch_plugin_sources_effective_config
 test_opencode_primary_watch_plugin_requires_session_lock
 test_opencode_watch_arm_coordinator_respects_primary_scope
 test_opencode_primary_watch_plugin_rearms_after_wake
+test_opencode_primary_watch_plugin_rearms_after_wake context
 test_opencode_pre_ready_actionable_close_preserves_its_successor
+test_opencode_pre_ready_actionable_close_preserves_its_successor context
 test_opencode_undetermined_primacy_probe_retries_instead_of_abandoning
 test_opencode_hung_successor_falls_back_to_typed_wake
 test_opencode_unretired_successor_falls_back_without_retry

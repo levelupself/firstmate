@@ -6,6 +6,8 @@
 # decisions, dispatchable queued work, and dispatched work, followed by genuinely
 # blocked queued work.
 # Unreadable worker state stays under in-flight with a quiet qualifier.
+# In-flight rows show known context as "ctx <N>k" (rounded thousands of tokens)
+# and a positive compaction count as "c<N>"; missing measurements are omitted.
 # Finished and failed history is available only through --section.
 # --section may be repeated and may carry a comma-separated list, so one render
 # can hold any subset of sections. Whatever the caller asks for, the sections are
@@ -516,6 +518,12 @@ render_once() {
       end;
     def group_count($rows): [$rows[].project] | unique | length;
     def task_title($t): ($t.backlog.title // $t.project // $t.id // "unknown");
+    # The live context signal, when the snapshot carries it: the size in
+    # thousands of tokens and, once any compaction happened, the count.
+    def context_suffix($t):
+      (if ($t.context_tokens // null) == null then ""
+       else " · ctx " + (($t.context_tokens / 1000) | round | tostring) + "k" end)
+      + (if (($t.compactions // 0) > 0) then " · c" + ($t.compactions | tostring) else "" end);
     def task_step($t):
       (($t.current_state.detail // "") as $detail
        | if $detail != "" then $detail else ($t.hints.last_event_text // "unknown") end)
@@ -623,7 +631,7 @@ render_once() {
            detail:((if $state == "working" and $source == "run-step" and $detail != "" then $detail + " · "
                     elif $state == "working" then ""
                     elif $state == "unknown" then "state unavailable · "
-                    else $state + " · " end) + task_title(.))}]) as $in_flight_rows
+                    else $state + " · " end) + task_title(.) + context_suffix(.))}]) as $in_flight_rows
     | ([$blocked[]
         | {id:(.id // "unknown"),marker:"• ",joiner:" ",project:backlog_project(.),
            project_sort:(backlog_project(.) | ascii_downcase),state_rank:0,

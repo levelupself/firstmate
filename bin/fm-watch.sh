@@ -56,6 +56,18 @@
 #   check: inactive-outcome bounded poll-loop reconciliation found a suspicious
 #                          inactive terminal outcome that still lacks its durable
 #                          upstream receipt
+#   context: <id> <N>k tokens (warn <W>k)
+#                          a live ordinary task's context first reached
+#                          FM_CONTEXT_WARN_TOKENS, or grew a further
+#                          FM_CONTEXT_WARN_STEP past the last surfaced level;
+#                          read from its own session record by
+#                          bin/fm-context-watch.mjs tick, never from the pane
+#   context: <id> compacted (n=<count>)
+#                          that task's record shows a new context compaction.
+#                          Both context reasons are enqueued once, then the
+#                          surfaced level is recorded in
+#                          state/.context-surfaced-<id> so an unchanged record
+#                          is absorbed on every later poll
 # For normal supervision, resume the session-start primary-harness protocol
 # after each printed reason. Direct duplicate invocations of this script still
 # no-op through the watcher singleton lock.
@@ -65,6 +77,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 mkdir -p "$STATE"
 
 # The native event fast-path and only its true dependencies have one narrow
@@ -634,6 +647,23 @@ heartbeat_scan_finds_actionable() {
 # loop is the permanent fail-closed backstop). This preserves the single live
 # supervision cycle: the reader is a short-lived subprocess of THIS watcher, not
 # a second watcher, so every guard/beacon/arm/turn-end mechanism is unchanged.
+# One bounded read of every live ordinary task's context signal. Skipped
+# outright when no task record exists or node is unavailable, so an idle fleet
+# never pays a process spawn per poll. A tick failure is absorbed: the signal
+# is advisory and must never stall supervision.
+context_tick() {
+  local meta present=0
+  for meta in "$STATE"/*.meta; do
+    [ -e "$meta" ] || continue
+    present=1
+    break
+  done
+  [ "$present" -eq 1 ] || return 0
+  command -v node >/dev/null 2>&1 || return 0
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    node "$SCRIPT_DIR/fm-context-watch.mjs" tick 2>/dev/null || true
+}
+
 event_wait_or_sleep() {
   local w b session first_backend="" first_session="" rec rc
   local windows=()
@@ -869,6 +899,26 @@ while :; do
     fi
   else
     triage_log "inactive-outcome reconciliation unavailable"
+  fi
+
+  # Context signal: one node pass reads only the bytes each live task's session
+  # record appended since the last poll (bin/fm-context-watch.mjs tick owns the
+  # cache, thresholds, and reasons) and prints the wakes owed. Enqueue first,
+  # then record the surfaced level, so a failed enqueue re-offers the wake next
+  # poll and a surfaced level never re-fires (enqueue-before-suppress).
+  context_wakes=$(context_tick)
+  if [ -n "$context_wakes" ]; then
+    context_first=
+    while IFS=$(printf '\t') read -r ctx_id ctx_reason ctx_warned ctx_compactions ctx_restarts; do
+      [ -n "$ctx_id" ] || continue
+      fm_wake_append context "$ctx_id" "$ctx_reason" || exit 1
+      printf 'warned=%s\ncompactions=%s\nrestarts=%s\n' "$ctx_warned" "$ctx_compactions" "$ctx_restarts" \
+        > "$STATE/.context-surfaced-$ctx_id"
+      [ -n "$context_first" ] || context_first=$ctx_reason
+    done <<EOF
+$context_wakes
+EOF
+    [ -z "$context_first" ] || wake "$context_first"
   fi
 
   # Slow per-task checks (firstmate writes these, e.g. a merged-PR poll).

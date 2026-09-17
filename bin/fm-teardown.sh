@@ -2890,7 +2890,8 @@ rm -f "$STATE/$ID.turn-ended" \
   "$STATE/.$ID.open-decisions-cursor" \
   "$STATE/$ID.control-relaunch" "$STATE/$ID.control-relaunch.meta-prior" \
   "$STATE/$ID.control-relaunch.brief-prior" "$STATE/$ID.control-relaunch.note" \
-  "$STATE/usage-cache/$ID.json"
+  "$STATE/usage-cache/$ID.json" \
+  "$STATE/$ID.context-watch" "$STATE/.context-surfaced-$ID"
 if [ "$PRESERVE_PR_POLL" != 1 ]; then
   rm -f "$STATE/$ID.meta" "$STATE/$ID.launch-receipt"
 fi

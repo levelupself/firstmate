@@ -414,6 +414,12 @@ classify_check() {  # <full reason>  — check scripts print only when firstmate
   printf 'escalate|%s' "$1"
 }
 
+# A context wake names a worker whose context reached the warn level or
+# compacted: a possible too-large task, and only the supervisor can split it.
+classify_context() {  # <full reason>
+  printf 'escalate|%s' "$1"
+}
+
 classify_heartbeat() {
   # The wake itself is routine; the catch-all scan runs separately in
   # housekeeping on the HEARTBEAT_SCAN_SECS cadence.
@@ -1194,7 +1200,7 @@ should_force_self() {  # <reason>
 is_wake_reason() {  # <reason>
   local reason=$1
   case "$reason" in
-    signal:*|stale:*|check:*|heartbeat|heartbeat:*) return 0 ;;
+    signal:*|stale:*|check:*|context:*|heartbeat|heartbeat:*) return 0 ;;
   esac
   return 1
 }
@@ -1219,6 +1225,7 @@ handle_wake() {  # <reason> <state>
                   decision="escalate|${reason#stale: }" ;;
               esac ;;
     check:*)  decision=$(classify_check "$reason") ;;
+    context:*) decision=$(classify_context "$reason") ;;
     heartbeat|heartbeat:*) decision=$(classify_heartbeat) ;;
     *)        decision=$(classify_unknown "$reason") ;;
   esac
@@ -1295,7 +1302,7 @@ handle_durable_wakes() {  # <watcher-reason> <state>
   while IFS="$tab" read -r epoch sequence kind key payload rest; do
     case "$epoch" in ''|*[!0-9]*) continue ;; esac
     case "$sequence" in ''|*[!0-9]*) continue ;; esac
-    case "$kind" in signal|stale|check|heartbeat) ;; *) continue ;; esac
+    case "$kind" in signal|stale|check|heartbeat|context) ;; *) continue ;; esac
     handle_wake "$payload" "$state"
     handled=$((handled + 1))
   done < "$out"

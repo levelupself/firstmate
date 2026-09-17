@@ -320,7 +320,7 @@ while [ "$attempt" -lt "$ARM_ATTEMPTS" ]; do
 
   ACTIONABLE=0
   if [ -n "$ARM_OUT" ]; then
-    grep -Eq '^(signal:|stale:|check:|heartbeat($|:))' "$ARM_OUT" 2>/dev/null && ACTIONABLE=1
+    grep -Eq '^(signal:|stale:|check:|context:|heartbeat($|:))' "$ARM_OUT" 2>/dev/null && ACTIONABLE=1
   fi
   [ "$ACTIONABLE" -eq 1 ] && break
 
@@ -343,7 +343,7 @@ if ! fm_supervision_needed "$STATE" "$GRACE"; then
 fi
 
 if [ "$ACTIONABLE" -eq 1 ]; then
-  WAKE=$(grep -E '^(signal:|stale:|check:|heartbeat)' "$ARM_OUT" 2>/dev/null | head -8)
+  WAKE=$(grep -E '^(signal:|stale:|check:|context:|heartbeat)' "$ARM_OUT" 2>/dev/null | head -8)
   emit_followup watcher "firstmate watcher wake - one supervision event needs a handling turn now.
 $WAKE
 
