@@ -134,8 +134,11 @@
 //     so neither drives a class nor opens a quote. The
 //     first segment whose class is not other decides. A segment's first
 //     word (after leading VAR=value assignments, sudo, time, command, nice,
-//     and an interpreter such as bash or node followed by a script path)
-//     selects, in this order; python/python3 -m <module> selects by the
+//     the control words if, elif, while, until, then, else, do, {, (, and
+//     !, a case WORD in head and its pattern), and an interpreter such as
+//     bash or node followed by a script path) selects, in this order; a for
+//     or select header runs no command and is other, so the loop body
+//     decides; python/python3 -m <module> selects by the
 //     module, and bash/sh/zsh/dash -c <script> by the one script argument
 //     (its quoted string or bare word), which is split into its own segments;
 //     operands and redirects after it belong to the outer segment:
@@ -573,7 +576,8 @@ const SEARCH_WORDS = new Set(['rg', 'grep', 'egrep', 'fgrep', 'ag', 'ack', 'ast-
 const READ_WORDS = new Set(['cat', 'head', 'tail', 'less', 'more', 'ls', 'wc', 'stat', 'file', 'tree', 'pwd', 'du', 'df', 'readlink', 'realpath', 'jq', 'sqlite3', 'nl', 'od', 'xxd', 'hexdump', 'strings', 'cut', 'sort', 'uniq', 'tr', 'awk']);
 const EDIT_WORDS = new Set(['tee', 'cp', 'mv', 'rm', 'mkdir', 'touch', 'chmod', 'chown', 'ln', 'patch', 'truncate', 'rsync']);
 const PACKAGE_RUNNERS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
-const PREFIX_WORDS = new Set(['sudo', 'time', 'command', 'nice']);
+const PREFIX_WORDS = new Set(['sudo', 'time', 'command', 'nice', 'if', 'elif', 'while', 'until', 'then', 'else', 'do', '{', '(', '!']);
+const HEADER_WORDS = new Set(['for', 'select']);
 const INTERPRETERS = new Set(['bash', 'sh', 'zsh', 'dash', 'node', 'python', 'python3', 'perl', 'ruby']);
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash']);
 const PYTHONS = new Set(['python', 'python3']);
@@ -584,7 +588,15 @@ function classifySegment(segment) {
   const trimmed = segment.trim();
   const words = trimmed.split(/\s+/).filter(Boolean);
   const total = words.length;
+  if (words[0] === 'case') {
+    if (words[2] !== 'in') return 'other';
+    words.splice(0, 3);
+  }
+  if (words.length && /^\(?[^()\s]+\)$/.test(words[0])) words.shift();
+  if (words.length && words[0].length > 1 && words[0].startsWith('(')) words[0] = words[0].slice(1);
+  if (words.length && words[words.length - 1].length > 1 && words[words.length - 1].endsWith(')')) words[words.length - 1] = words[words.length - 1].slice(0, -1);
   while (words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]) || PREFIX_WORDS.has(words[0]))) words.shift();
+  if (words.length && HEADER_WORDS.has(words[0])) return 'other';
   // `bash tests/x.test.sh` is the test, not bash: an interpreter followed by
   // a script path is classified by the script, `python -m pytest` by the
   // module, and `bash -c '<script>'` by the script text.
@@ -638,7 +650,7 @@ function scriptArgument(text) {
 }
 
 function redirectsToFile(segment) {
-  const stripped = segment.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, (quoted) => quoted.replace(/>/g, '_'))
+  const stripped = segment.replace(/'[^']*'|"(?:[^"\\]|\\.)*"|\$?\(\([\s\S]*?\)\)/g, (opaque) => opaque.replace(/>/g, '_'))
     .replace(/\d?>&\d/g, '').replace(/&?>>?\s*\/dev\/null/g, '');
   return /(^|[^<>])&?>>?\s*[^\s&|;>]/.test(stripped);
 }

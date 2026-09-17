@@ -320,6 +320,14 @@ test_usage_skips_heredoc_bodies_and_unwraps_interpreters() {
     $'echo $((1 << 2))\ngrep foo src'
     $'python3 - <<\\PY\nprint(1 > 0)\nPY\ngrep foo src'
     $'python3 - <<PY\nprint(1)\ngrep foo src'
+    $'echo $((1 > 0))\ngrep foo src'
+    '(( x > 1 )) && grep foo src'
+    "for f in src/*.sh; do grep foo \"\$f\"; done"
+    'if [ -f x ]; then cat x; fi'
+    'for ((i=0; i<3; i++)); do grep foo src; done'
+    '! grep foo src'
+    '(cd sub && npm test)'
+    "case \$x in a) cat x ;; esac"
   )
   for command in "${commands[@]}"; do
     i=$((i + 1))
@@ -332,7 +340,8 @@ test_usage_skips_heredoc_bodies_and_unwraps_interpreters() {
     (.timeline | map(.tool_class))
     == ["other","other","search","search","edit","read","other",
         "test","test","test","edit","read","edit","other",
-        "read","search","read","test","search","search","search"]' \
+        "read","search","read","test","search","search","search",
+        "search","search","search","read","search","search","test","read"]' \
     >/dev/null || fail "heredoc and interpreter classes wrong: $out"
   pass "usage skips heredoc bodies and comments and classifies python -m and shell -c by what they run"
 }
