@@ -39,7 +39,11 @@
 #
 # `capture` is the lifecycle-owned synchronous append-and-enqueue path. It reads stamped
 # task metadata, a prior raw row when volatile metadata is gone, merge receipts,
-# and matching settled no-mistakes rounds. Operators normally use `report`;
+# and matching settled no-mistakes rounds, and persists the task's token
+# attribution (data/<task>/tool-usage.json) while its session records are
+# bound. Operators normally use `report`; every row carries the usage and
+# class-split columns, and `report <task-id>` adds the per-tool, per-class,
+# largest-result, and turn-timeline breakdown (docs/effort-store.md).
 # `report --sync` waits for deferred ingestion, while ordinary reports do not.
 # Explicit rebuild and backfill-codeburn also wait for the store lock.
 # Capture never acquires the derived-store lock. Usage snapshots are persisted

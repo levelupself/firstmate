@@ -10,8 +10,19 @@
 //
 //   raw         data/cost-attribution.tsv       identity, lifecycle, process
 //   codeburn    data/<task>/usage.json           effort tokens and notional cost
+//   tool-usage  data/<task>/tool-usage.json      where the tokens went, per turn
 //   git         the project clone               structure, time, durability
 //   annotation  data/effort-annotations.jsonl   the posterior nobody can derive
+//
+// tool-usage is the fm-task-tool-usage.v1 object bin/fm-context-watch.mjs
+// usage folds from the task's bound session records, persisted by capture
+// while those records exist and bound to the launch by spawned_at. Capture is
+// the only writer: rebuild reads the snapshot and never a session record, so
+// the breakdown is forward-only. A bound record that yields no request is
+// persisted as status "unavailable" and surfaces as an ingest issue, the same
+// way an unusable cost snapshot does. Token figures derived from bytes are
+// estimates under the one rule in that reader's header (ceil(bytes / 4)) and
+// keep the _est suffix in every column and report label.
 //
 // The fourth source exists because two of the required fields - round_reasons
 // and the loud/quiet failure bit - are not inferable from any artifact, and the
@@ -35,7 +46,7 @@
 // bin/fm-effort-store.sh is the entry point and owns the CLI contract; run it
 // with --help. This file is invoked by that script and not directly.
 
-const SCHEMA_VERSION = 'fm-effort-store.v3'
+const SCHEMA_VERSION = 'fm-effort-store.v4'
 const CLASSIFIER_VERSION = 'fm-effort-classifier.v1'
 const V2_MARKER = '# schema=firstmate-effort-attribution-v2'
 const LEGACY_CAPTURE_COLUMNS = [
@@ -69,6 +80,7 @@ const path = await import('node:path')
 const crypto = await import('node:crypto')
 const { spawnSync } = await import('node:child_process')
 const { fileURLToPath } = await import('node:url')
+const { TOOL_CLASSES: TOOL_CLASS_ORDER } = await import('./fm-model-bench-analyze.mjs')
 
 // --- small helpers ----------------------------------------------------------
 
@@ -581,6 +593,95 @@ function collectUsage(tasks, options, issues) {
   return byTask
 }
 
+// --- source 2b: the tool-usage snapshot ------------------------------------
+
+const TOOL_CLASSES = new Set(TOOL_CLASS_ORDER)
+const TOOL_CLASS_LIST = TOOL_CLASS_ORDER.map(cls => `'${cls}'`).join(', ')
+const TOOL_USAGE_SCHEMA = 'fm-task-tool-usage.v1'
+
+const countOrNull = value => (Number.isSafeInteger(value) && value >= 0 ? value : null)
+const secondsOrNull = value => (value === null ? null : (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined))
+
+function readTaskToolUsage(dataDir, taskId, spawnedAt, issues) {
+  if (!TASK_ID_PATTERN.test(taskId)) return {status: 'missing', detail: 'task id is not safe for a durable usage path'}
+  const file = path.join(dataDir, taskId, 'tool-usage.json')
+  const text = readTextFile(file)
+  if (text === null) return {status: 'missing', detail: 'no tool-usage snapshot was captured'}
+  let usage
+  try { usage = JSON.parse(text) } catch {
+    issues.push({source: 'tool-usage', task_id: taskId, kind: 'tool-usage-unparsable', detail: file})
+    return {status: 'missing', detail: 'tool-usage snapshot is not valid JSON'}
+  }
+  if (usage?.schema !== TOOL_USAGE_SCHEMA || usage.task !== taskId) {
+    issues.push({source: 'tool-usage', task_id: taskId, kind: 'tool-usage-identity', detail: file})
+    return {status: 'missing', detail: 'tool-usage snapshot has the wrong schema or task id'}
+  }
+  if (!spawnedAt || usage.spawned_at !== spawnedAt) {
+    issues.push({source: 'tool-usage', task_id: taskId, kind: 'tool-usage-launch-identity', detail: file})
+    return {status: 'missing', detail: 'tool-usage snapshot belongs to another launch'}
+  }
+  if (usage.status === 'unavailable') {
+    issues.push({source: 'tool-usage', task_id: taskId, kind: 'tool-usage-unavailable', detail: String(usage.reason || file)})
+    return {status: 'missing', detail: `bound session records yielded no breakdown: ${usage.reason || 'unknown reason'}`}
+  }
+  const shape = () => {
+    issues.push({source: 'tool-usage', task_id: taskId, kind: 'tool-usage-shape', detail: file})
+    return {status: 'missing', detail: 'tool-usage snapshot is malformed'}
+  }
+  const summary = {
+    turns: countOrNull(usage.turns),
+    tool_calls: countOrNull(usage.tool_calls),
+    tool_result_tokens_est: countOrNull(usage.tool_result_tokens_est),
+    assistant_output_tokens: countOrNull(usage.assistant_output_tokens),
+    base_prompt_tokens_est: countOrNull(usage.base_prompt_tokens_est),
+  }
+  if (usage.status !== 'present' || Object.values(summary).some(value => value === null) || summary.turns === 0) return shape()
+  if (![usage.tools, usage.classes, usage.largest, usage.timeline].every(Array.isArray)) return shape()
+  const usageRow = (row, withName) => {
+    const out = {
+      tool_name: withName ? row?.tool_name : undefined,
+      tool_class: row?.tool_class,
+      calls: countOrNull(row?.calls),
+      result_bytes: countOrNull(row?.result_bytes),
+      result_tokens_est: countOrNull(row?.result_tokens_est),
+      wall_seconds_in_tool: secondsOrNull(row?.wall_seconds_in_tool ?? null),
+    }
+    if ((withName && (typeof out.tool_name !== 'string' || !out.tool_name)) || !TOOL_CLASSES.has(out.tool_class)
+        || out.calls === null || out.result_bytes === null || out.result_tokens_est === null
+        || out.wall_seconds_in_tool === undefined) return null
+    return out
+  }
+  const tools = usage.tools.map(row => usageRow(row, true))
+  const classes = usage.classes.map(row => usageRow(row, false))
+  if (tools.includes(null) || classes.includes(null)) return shape()
+  const largest = usage.largest.map((row, index) => (
+    row?.rank === index + 1 && index < 5 && typeof row.tool_name === 'string' && row.tool_name
+      && TOOL_CLASSES.has(row.tool_class) && typeof row.command_or_input_head === 'string'
+      && countOrNull(row.tokens_est) !== null
+      ? {rank: row.rank, tool_name: row.tool_name, tool_class: row.tool_class,
+        command_or_input_head: row.command_or_input_head, tokens_est: row.tokens_est}
+      : null))
+  const timeline = usage.timeline.map((row, index) => (
+    row?.turn_index === index + 1 && (row.ts === null || typeof row.ts === 'string')
+      && (row.tool_name === null || typeof row.tool_name === 'string')
+      && (row.tool_class === null || TOOL_CLASSES.has(row.tool_class))
+      && countOrNull(row.tool_result_tokens_est) !== null
+      ? {turn_index: row.turn_index, ts: row.ts, context_tokens: countOrNull(row.context_tokens),
+        output_tokens: countOrNull(row.output_tokens), tool_name: row.tool_name,
+        tool_class: row.tool_class, tool_result_tokens_est: row.tool_result_tokens_est}
+      : null))
+  if (largest.includes(null) || timeline.includes(null) || timeline.length !== summary.turns) return shape()
+  return {status: 'present', detail: `${TOOL_USAGE_SCHEMA} durable snapshot`, summary, tools, classes, largest, timeline}
+}
+
+function collectToolUsage(tasks, options, issues) {
+  const byTask = new Map()
+  for (const task of tasks) {
+    byTask.set(task.taskId, readTaskToolUsage(options.dataDir, task.taskId, canonicalTimestamp(task.raw?.started_at), issues))
+  }
+  return byTask
+}
+
 // --- source 3: git ---------------------------------------------------------
 
 const SOURCE_EXTENSIONS = new Set([
@@ -918,14 +1019,76 @@ CREATE TABLE task (
   -- a task captured before the signal existed or with no bound record.
   peak_context_tokens INTEGER,
   compactions         INTEGER,
-  restarts            INTEGER
+  restarts            INTEGER,
+  -- Where the tokens went, from the tool-usage snapshot captured beside the
+  -- context signal: model requests, tool calls, the estimated tokens their
+  -- results put into the context, the model's own output, and the first
+  -- request's prompt size as the fixed-base estimate. *_est columns are
+  -- ceil(bytes / 4) estimates. NULL when no snapshot was captured.
+  turns                  INTEGER,
+  tool_calls             INTEGER,
+  tool_result_tokens_est INTEGER,
+  assistant_output_tokens INTEGER,
+  base_prompt_tokens_est INTEGER
+);
+
+-- One row per (tool, class) a task called. wall_seconds_in_tool is the summed
+-- gap between each call and its result, NULL when any call of the row was not
+-- timed.
+CREATE TABLE task_tool_usage (
+  task_id              TEXT NOT NULL,
+  tool_name            TEXT NOT NULL,
+  tool_class           TEXT NOT NULL CHECK (tool_class IN (${TOOL_CLASS_LIST})),
+  calls                INTEGER NOT NULL,
+  result_bytes         INTEGER NOT NULL,
+  result_tokens_est    INTEGER NOT NULL,
+  wall_seconds_in_tool REAL,
+  PRIMARY KEY (task_id, tool_name, tool_class)
+);
+
+-- The same calls rolled up by class.
+CREATE TABLE task_tool_class (
+  task_id              TEXT NOT NULL,
+  tool_class           TEXT NOT NULL CHECK (tool_class IN (${TOOL_CLASS_LIST})),
+  calls                INTEGER NOT NULL,
+  result_bytes         INTEGER NOT NULL,
+  result_tokens_est    INTEGER NOT NULL,
+  wall_seconds_in_tool REAL,
+  PRIMARY KEY (task_id, tool_class)
+);
+
+-- The five results that put the most into the context, with the first 120
+-- characters of what the call ran.
+CREATE TABLE task_largest_results (
+  task_id               TEXT NOT NULL,
+  rank                  INTEGER NOT NULL CHECK (rank BETWEEN 1 AND 5),
+  tool_name             TEXT NOT NULL,
+  tool_class            TEXT NOT NULL,
+  command_or_input_head TEXT NOT NULL,
+  tokens_est            INTEGER NOT NULL,
+  PRIMARY KEY (task_id, rank)
+);
+
+-- One row per model request so context growth is queryable turn by turn:
+-- the prompt size that request carried, its output, the first tool it called,
+-- and the estimated tokens every result of that turn put into the next prompt.
+CREATE TABLE task_turn_timeline (
+  task_id                TEXT NOT NULL,
+  turn_index             INTEGER NOT NULL,
+  ts                     TEXT,
+  context_tokens         INTEGER,
+  output_tokens          INTEGER,
+  tool_name              TEXT,
+  tool_class             TEXT,
+  tool_result_tokens_est INTEGER NOT NULL,
+  PRIMARY KEY (task_id, turn_index)
 );
 
 -- Which sources were consulted for each task and what came back. A task absent
 -- from a source is recorded here, never dropped from the store.
 CREATE TABLE task_source (
   task_id TEXT NOT NULL,
-  source  TEXT NOT NULL CHECK (source IN ('raw', 'codeburn', 'git', 'annotation')),
+  source  TEXT NOT NULL CHECK (source IN ('raw', 'codeburn', 'tool-usage', 'git', 'annotation')),
   status  TEXT NOT NULL CHECK (status IN ('present', 'missing')),
   detail  TEXT,
   PRIMARY KEY (task_id, source)
@@ -1082,6 +1245,7 @@ function rebuild(options) {
   }))
 
   const usage = collectUsage(tasks, options, issues)
+  const toolUsage = collectToolUsage(tasks, options, issues)
   const gitResults = collectGit(tasks, options, issues)
 
   const temporaryDb = `${options.dbPath}.${process.pid}.tmp`
@@ -1095,7 +1259,7 @@ function rebuild(options) {
       ['raw_digest', raw.digest],
     ]) metaInsert.run(key, value)
 
-    writeTasks(db, tasks, usage, gitResults, options)
+    writeTasks(db, tasks, usage, toolUsage, gitResults, options)
     writeDurability(db, gitResults)
     writeIssues(db, issues)
     db.exec('COMMIT')
@@ -1393,7 +1557,7 @@ function readLocalLandingReceipt(dataDir, taskId, spawnedAt) {
   return {local_landed_at: landedAt, project: receipt.project}
 }
 
-function writeTasks(db, tasks, usageByTask, gitResults, options) {
+function writeTasks(db, tasks, usageByTask, toolUsageByTask, gitResults, options) {
   const taskInsert = insert(db, 'task', [
     'task_id', 'title', 'repo', 'project_path', 'kind', 'branch', 'pr_url',
     'harness', 'model', 'effort', 'backend', 'worktree', 'dispatched_at',
@@ -1406,6 +1570,19 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
     'tokens_in', 'tokens_out', 'tokens_reasoning', 'tokens_cached_read',
     'tokens_cached_write', 'notional_cost_usd', 'api_calls', 'sessions',
     'outcome', 'reverted', 'peak_context_tokens', 'compactions', 'restarts',
+    'turns', 'tool_calls', 'tool_result_tokens_est', 'assistant_output_tokens', 'base_prompt_tokens_est',
+  ])
+  const toolInsert = insert(db, 'task_tool_usage', [
+    'task_id', 'tool_name', 'tool_class', 'calls', 'result_bytes', 'result_tokens_est', 'wall_seconds_in_tool',
+  ])
+  const classInsert = insert(db, 'task_tool_class', [
+    'task_id', 'tool_class', 'calls', 'result_bytes', 'result_tokens_est', 'wall_seconds_in_tool',
+  ])
+  const largestInsert = insert(db, 'task_largest_results', [
+    'task_id', 'rank', 'tool_name', 'tool_class', 'command_or_input_head', 'tokens_est',
+  ])
+  const turnInsert = insert(db, 'task_turn_timeline', [
+    'task_id', 'turn_index', 'ts', 'context_tokens', 'output_tokens', 'tool_name', 'tool_class', 'tool_result_tokens_est',
   ])
   const sourceInsert = insert(db, 'task_source', ['task_id', 'source', 'status', 'detail'])
   const roundInsert = insert(db, 'round_reason', ['task_id', 'round_index', 'reason', 'note'])
@@ -1427,6 +1604,8 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
     const prOpenedAt = validatedLifecycleTimestamp(row?.pr_opened_at, startedAt)
     const teardownAt = validatedLifecycleTimestamp(row?.teardown_at, startedAt)
     const burn = usageByTask.get(task.taskId) || {status: 'missing', detail: 'durable task usage snapshot was not consulted'}
+    const toolUsage = toolUsageByTask.get(task.taskId) || {status: 'missing', detail: 'tool-usage snapshot was not consulted'}
+    const attribution = toolUsage.status === 'present' ? toolUsage.summary : null
     const receipt = readMergeReceipt(options.dataDir, task.taskId, startedAt)
     const localReceiptCandidate = readLocalLandingReceipt(options.dataDir, task.taskId, startedAt)
     const localReceipt = localReceiptCandidate && row?.project === localReceiptCandidate.project ? localReceiptCandidate : null
@@ -1493,6 +1672,11 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
       bind(capturedCount(row?.peak_context_tokens)),
       bind(capturedCount(row?.compactions)),
       bind(capturedCount(row?.restarts)),
+      bind(attribution?.turns),
+      bind(attribution?.tool_calls),
+      bind(attribution?.tool_result_tokens_est),
+      bind(attribution?.assistant_output_tokens),
+      bind(attribution?.base_prompt_tokens_est),
     )
 
     sourceInsert.run(task.taskId, 'raw', row ? 'present' : 'missing',
@@ -1500,6 +1684,7 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
     sourceInsert.run(task.taskId, 'annotation', annotation ? 'present' : 'missing',
       annotation ? null : 'nothing recorded by hand for this task')
     sourceInsert.run(task.taskId, 'codeburn', burn.status, bind(burn.detail))
+    sourceInsert.run(task.taskId, 'tool-usage', toolUsage.status, bind(toolUsage.detail))
     sourceInsert.run(task.taskId, 'git', gitResult.status, bind(gitResult.detail))
 
     const rounds = Array.isArray(annotation?.round_reasons) ? annotation.round_reasons : []
@@ -1515,6 +1700,24 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
         fileInsert.run(task.taskId, file.path, bind(file.adds), bind(file.dels),
           file.is_prod_src, file.area, file.introduced,
           bind(file.import_in_degree), bind(file.import_out_degree))
+      }
+    }
+    if (toolUsage.status === 'present') {
+      for (const tool of toolUsage.tools) {
+        toolInsert.run(task.taskId, tool.tool_name, tool.tool_class, tool.calls, tool.result_bytes,
+          tool.result_tokens_est, bind(tool.wall_seconds_in_tool))
+      }
+      for (const cls of toolUsage.classes) {
+        classInsert.run(task.taskId, cls.tool_class, cls.calls, cls.result_bytes, cls.result_tokens_est,
+          bind(cls.wall_seconds_in_tool))
+      }
+      for (const result of toolUsage.largest) {
+        largestInsert.run(task.taskId, result.rank, result.tool_name, result.tool_class,
+          result.command_or_input_head, result.tokens_est)
+      }
+      for (const turn of toolUsage.timeline) {
+        turnInsert.run(task.taskId, turn.turn_index, bind(turn.ts), bind(turn.context_tokens),
+          bind(turn.output_tokens), bind(turn.tool_name), bind(turn.tool_class), turn.tool_result_tokens_est)
       }
     }
     if (burn.status === 'present') {
@@ -1593,6 +1796,41 @@ function readContextSignal(options, taskId) {
   }
 }
 
+// The breakdown at capture: bin/fm-context-watch.mjs usage folds the same
+// bound records. The object is persisted beside usage.json, bound to this
+// launch by spawned_at, and replaced on every later capture that can still
+// read the records; a capture that cannot bind them leaves the prior snapshot
+// untouched, so the last successful fold is what survives cleanup.
+function readToolUsageSnapshot(options, taskId) {
+  const reader = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fm-context-watch.mjs')
+  const result = spawnSync(process.execPath, [reader, 'usage', taskId], {
+    encoding: 'utf8',
+    env: {...process.env, FM_STATE_OVERRIDE: options.stateDir, FM_DATA_OVERRIDE: options.dataDir},
+    timeout: 60000,
+    maxBuffer: 64 * 1024 * 1024,
+  })
+  if (result.error || result.status !== 0) return null
+  let usage
+  try { usage = JSON.parse(result.stdout) } catch { return null }
+  if (usage?.schema !== TOOL_USAGE_SCHEMA || usage.task !== taskId) return null
+  return usage
+}
+
+function persistToolUsageSnapshot(options, taskId, usage, spawnedAt) {
+  const dir = path.join(options.dataDir, taskId)
+  const file = path.join(dir, 'tool-usage.json')
+  fs.mkdirSync(dir, {recursive: true})
+  const staged = `${file}.${process.pid}`
+  const fd = fs.openSync(staged, 'w', 0o600)
+  try {
+    fs.writeFileSync(fd, `${JSON.stringify({...usage, spawned_at: spawnedAt ?? null})}\n`)
+    fs.fsyncSync(fd)
+  } finally {
+    fs.closeSync(fd)
+  }
+  fs.renameSync(staged, file)
+}
+
 function resolvePipelineMetrics(pipeline, previous, identity) {
   if (pipeline === PIPELINE_METRICS_UNAVAILABLE) return null
   const source = pipeline ?? (
@@ -1654,6 +1892,8 @@ function capture(options, taskId, argv) {
   const pipeline = readPipelineMetrics(options.pipelineDbPath, {project, branch, prUrl})
   const processMetrics = resolvePipelineMetrics(pipeline, previous, {startedAt, project, branch, prUrl})
   const contextSignal = readContextSignal(options, taskId)
+  const toolUsage = readToolUsageSnapshot(options, taskId)
+  if (toolUsage) persistToolUsageSnapshot(options, taskId, toolUsage, canonicalTimestamp(startedAt))
   const row = {
     task: taskId,
     worktree: meta?.worktree ?? previous?.worktree,
@@ -2065,8 +2305,64 @@ function pendingReport(options) {
     .filter(id => !options.taskId || id === options.taskId)
   if (!ids.length) return null
   return 'Store behind append log or queued evidence; pending ingestion. Run report --sync to wait.\n'
-    + 'TASK | LAUNCH->PR | COST | TOKENS | ACTUAL MODEL | OUTCOME | CONTEXT\n'
-    + ids.map(id => `${id} | - | - | - | - | pending ingestion | -`).join('\n') + '\n'
+    + `${REPORT_HEADER}\n`
+    + ids.map(id => `${id} | - | - | - | - | pending ingestion | - | - | -`).join('\n') + '\n'
+}
+
+const REPORT_HEADER = 'TASK | LAUNCH->PR | COST | TOKENS | ACTUAL MODEL | OUTCOME | CONTEXT | USAGE | CLASSES (tok est)'
+
+const seconds = value => (value === null ? '-' : String(Math.round(Number(value) * 1000) / 1000))
+
+// The per-task breakdown under the summary row. Every figure derived from
+// bytes says "tok est"; a task with no snapshot says why instead of zeros.
+function taskUsageLines(db, row) {
+  const lines = []
+  const source = db.prepare("SELECT status, detail FROM task_source WHERE task_id = ? AND source = 'tool-usage'").get(row.task_id)
+  if (row.turns === null) {
+    lines.push(`TOOL USAGE unavailable: ${source?.detail || 'tool-usage source not consulted'}`)
+    return lines
+  }
+  lines.push(`BASE PROMPT ${row.base_prompt_tokens_est} tok est (first request) | TURNS ${row.turns} | TOOL CALLS ${row.tool_calls} | RESULT ${row.tool_result_tokens_est} tok est | OUTPUT ${row.assistant_output_tokens} tok`)
+  lines.push('CLASS | CALLS | RESULT TOK EST | WALL S')
+  const classes = db.prepare('SELECT tool_class, calls, result_tokens_est, wall_seconds_in_tool FROM task_tool_class WHERE task_id = ?').all(row.task_id)
+  for (const cls of sortedBy(classes, c => TOOL_CLASS_ORDER.indexOf(c.tool_class))) {
+    lines.push(`${cls.tool_class} | ${cls.calls} | ${cls.result_tokens_est} | ${seconds(cls.wall_seconds_in_tool)}`)
+  }
+  lines.push('TOOL | CLASS | CALLS | RESULT BYTES | RESULT TOK EST | WALL S')
+  const tools = db.prepare('SELECT tool_name, tool_class, calls, result_bytes, result_tokens_est, wall_seconds_in_tool FROM task_tool_usage WHERE task_id = ? ORDER BY result_tokens_est DESC, tool_name, tool_class').all(row.task_id)
+  for (const tool of tools) {
+    lines.push(`${tool.tool_name} | ${tool.tool_class} | ${tool.calls} | ${tool.result_bytes} | ${tool.result_tokens_est} | ${seconds(tool.wall_seconds_in_tool)}`)
+  }
+  lines.push('LARGEST RESULTS | RANK | TOOL | CLASS | TOK EST | COMMAND OR INPUT (first 120 chars)')
+  for (const result of db.prepare('SELECT rank, tool_name, tool_class, tokens_est, command_or_input_head FROM task_largest_results WHERE task_id = ? ORDER BY rank').all(row.task_id)) {
+    lines.push(`${result.rank} | ${result.tool_name} | ${result.tool_class} | ${result.tokens_est} tok est | ${result.command_or_input_head}`)
+  }
+  const timeline = db.prepare('SELECT turn_index, context_tokens, tool_name, tool_class FROM task_turn_timeline WHERE task_id = ? ORDER BY turn_index').all(row.task_id)
+  const at = fraction => timeline[Math.max(1, Math.ceil(timeline.length * fraction)) - 1]
+  const sample = turn => (turn.context_tokens === null ? '-' : String(turn.context_tokens))
+  const quarters = [0.25, 0.5, 0.75, 1].map(fraction => {
+    const turn = at(fraction)
+    return `@${Math.round(fraction * 100)}% (turn ${turn.turn_index}) ${sample(turn)}`
+  })
+  lines.push(`TIMELINE ${timeline.length} turns | ctx@1 ${sample(timeline[0])} | ${quarters.join(' | ')}`)
+  // A jump is the growth from one request's prompt to the next, attributed to
+  // the turn whose results landed in that next prompt. Compactions shrink the
+  // prompt and are not jumps.
+  const jumps = []
+  for (let index = 0; index + 1 < timeline.length; index += 1) {
+    const from = timeline[index]
+    const to = timeline[index + 1]
+    if (from.context_tokens === null || to.context_tokens === null) continue
+    const jump = to.context_tokens - from.context_tokens
+    if (jump > 0) jumps.push({jump, from, to})
+  }
+  jumps.sort((a, b) => b.jump - a.jump || a.from.turn_index - b.from.turn_index)
+  lines.push('LARGEST JUMPS | TOK | TURNS | TOOL (CLASS)')
+  for (const {jump, from, to} of jumps.slice(0, 5)) {
+    const tool = from.tool_name === null ? 'no tool' : `${from.tool_name} (${from.tool_class})`
+    lines.push(`+${jump} | turn ${from.turn_index} -> ${to.turn_index} | ${tool}`)
+  }
+  return lines
 }
 
 function report(dbPath, taskId) {
@@ -2076,20 +2372,31 @@ function report(dbPath, taskId) {
   const statement = db.prepare(`
     SELECT task_id, launch_to_pr_seconds, notional_cost_usd, tokens_in, tokens_out,
       outcome, peak_context_tokens, compactions, restarts,
+      turns, tool_calls, tool_result_tokens_est, assistant_output_tokens, base_prompt_tokens_est,
       (SELECT group_concat(model, ', ') FROM (
         SELECT model FROM task_model WHERE task_model.task_id = task.task_id ORDER BY provider, model
-      )) AS actual_models
+      )) AS actual_models,
+      (SELECT group_concat(tool_class || ' ' || result_tokens_est, ', ') FROM (
+        SELECT tool_class, result_tokens_est FROM task_tool_class WHERE task_tool_class.task_id = task.task_id
+        ORDER BY CASE tool_class ${TOOL_CLASS_ORDER.map((cls, index) => `WHEN '${cls}' THEN ${index}`).join(' ')} END
+      )) AS class_split
     FROM task ${filter}
     ORDER BY task_id
   `)
   const rows = taskId ? statement.all(taskId) : statement.all()
-  const lines = ['TASK | LAUNCH->PR | COST | TOKENS | ACTUAL MODEL | OUTCOME | CONTEXT']
+  const lines = [REPORT_HEADER]
   for (const row of rows) {
     const cost = row.notional_cost_usd === null ? '-' : `$${Number(row.notional_cost_usd).toFixed(4)}`
     const tokens = row.tokens_in === null || row.tokens_out === null ? '-' : `${row.tokens_in} in / ${row.tokens_out} out`
     const context = row.peak_context_tokens === null || row.compactions === null || row.restarts === null
       ? '-' : `${row.peak_context_tokens} peak / ${row.compactions} compactions / ${row.restarts} restarts`
-    lines.push(`${row.task_id} | ${durationText(row.launch_to_pr_seconds)} | ${cost} | ${tokens} | ${row.actual_models || '-'} | ${row.outcome || '-'} | ${context}`)
+    const usage = row.turns === null ? '-'
+      : `${row.turns} turns / ${row.tool_calls} calls / ${row.tool_result_tokens_est} result tok est / ${row.assistant_output_tokens} out tok / ${row.peak_context_tokens ?? '-'} peak ctx`
+    const classes = row.turns === null ? '-' : (row.class_split || 'no tool calls')
+    lines.push(`${row.task_id} | ${durationText(row.launch_to_pr_seconds)} | ${cost} | ${tokens} | ${row.actual_models || '-'} | ${row.outcome || '-'} | ${context} | ${usage} | ${classes}`)
+  }
+  if (taskId) {
+    for (const row of rows) lines.push(...taskUsageLines(db, row))
   }
   if (!taskId) {
     // Outcome by compaction bucket: the correlation the signal exists for. A
