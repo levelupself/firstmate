@@ -80,8 +80,6 @@ test_tracked_extension_present_and_self_hashing() {
   assert_contains "$text" "fm_watch_arm_pi" "tracked extension missing tool name"
   assert_contains "$text" "fm-watch-arm-pi" "tracked extension missing command name"
   assert_contains "$text" "fm-watch-arm.sh" "tracked extension missing watcher arm"
-  assert_contains "$text" "sendUserMessage" "tracked extension missing Pi wake API"
-  assert_contains "$text" "deliverAs: \"followUp\"" "tracked extension missing followUp delivery"
   assert_contains "$text" ".pi-watch-extension-loaded" "tracked extension missing loaded marker"
   assert_contains "$text" 'createHash("sha256").update(readFileSync(extensionFile)).digest("hex")' "tracked extension does not self-hash its own content for extensionVersion"
   assert_contains "$text" 'fileURLToPath(import.meta.url)' "tracked extension does not self-locate via import.meta.url"
@@ -454,7 +452,8 @@ const pi = {
   registerTool(candidate) {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
   },
-  sendUserMessage: async (message) => {
+  sendUserMessage: async (message, options) => {
+    if (options?.deliverAs !== "followUp") throw new Error(`wrong delivery mode: ${JSON.stringify(options)}`);
     if (!message.includes(`${process.env.FM_TEST_WAKE_KIND}: synthetic actionable close`)) throw new Error(`wrong wake: ${message}`);
     rowsAtDelivery = existsSync(process.env.FM_ARM_LOG)
       ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").length

@@ -109,16 +109,17 @@ function readLedger(id) {
 // the one rollout whose originator is the stamp.
 function bindRecords(id) {
   const ledger = readLedger(id)
-  const harness = ledger.receipts[0].harness
+  const harness = ledger.receipts[ledger.receipts.length - 1].harness
   if (!SUPPORTED.has(harness)) throw new Refusal(`harness ${harness} records no session stamp`)
   let sessions
   try { sessions = index(id) } catch (e) { throw new Refusal(e.message) }
   const records = []
   for (const receipt of ledger.receipts) {
-    const main = sessions.find(s => s.stamp === receipt.stamp
+    if (!SUPPORTED.has(receipt.harness)) throw new Refusal(`harness ${receipt.harness} records no session stamp`)
+    const main = sessions.find(s => s.stamp === receipt.stamp && s.provider === receipt.harness
       && (s.provider === 'codex' || path.basename(s.file, '.jsonl') === receipt.stamp))
     if (!main) throw new Refusal(`stamped session ${receipt.stamp} has no main record`)
-    records.push({stamp: receipt.stamp, file: main.file})
+    records.push({stamp: receipt.stamp, file: main.file, harness: receipt.harness})
   }
   return {harness, ledger, records}
 }
@@ -173,8 +174,8 @@ export function readTask(id) {
   const {harness, ledger, records} = bindRecords(id)
   const folded = records.map(r => {
     const tail = readTail(r.file, 0)
-    const fold = foldContext(harness, tail.rows, null)
-    return {stamp: r.stamp, file: r.file, offset: tail.offset, context: fold.context, peak: fold.peak, compactions: fold.compactions}
+    const fold = foldContext(r.harness, tail.rows, null)
+    return {stamp: r.stamp, file: r.file, harness: r.harness, offset: tail.offset, context: fold.context, peak: fold.peak, compactions: fold.compactions}
   })
   return {schema: SCHEMA, task: id, ...rollUp(harness, folded, ledger.receipts.length), records: folded}
 }
@@ -191,7 +192,8 @@ function markerPath(id) { return path.join(state, `.context-surfaced-${id}`) }
 function readCache(id) {
   try {
     const value = JSON.parse(fs.readFileSync(cachePath(id), 'utf8'))
-    if (value && value.schema === SCHEMA && value.task === id && Array.isArray(value.records)) return value
+    if (value && value.schema === SCHEMA && value.task === id && Array.isArray(value.records)
+      && value.records.every(r => SUPPORTED.has(r.harness))) return value
   } catch { /* absent or unreadable: refold */ }
   return {schema: SCHEMA, task: id, harness: null, launches: 0, ledger_size: -1, records: [], refusal: null, bind_attempted: 0}
 }
@@ -237,8 +239,11 @@ function tickTask(id, nowSecs) {
       try {
         const bound = bindRecords(id)
         const prior = new Map(cache.records.map(r => [r.file, r]))
-        cache.records = bound.records.map(r => prior.get(r.file)
-          || {stamp: r.stamp, file: r.file, offset: 0, context: null, peak: 0, compactions: 0})
+        cache.records = bound.records.map(r => {
+          const old = prior.get(r.file)
+          return old && old.harness === r.harness ? old
+            : {...r, offset: 0, context: null, peak: 0, compactions: 0}
+        })
         cache.harness = bound.harness
         cache.launches = bound.ledger.receipts.length
         cache.ledger_size = ledgerSize
@@ -255,7 +260,7 @@ function tickTask(id, nowSecs) {
     const tail = readTail(record.file, record.offset)
     if (tail.reset) Object.assign(record, {context: null, peak: 0, compactions: 0})
     if (tail.rows.length > 0) {
-      const fold = foldContext(cache.harness, tail.rows, record)
+      const fold = foldContext(record.harness, tail.rows, record)
       Object.assign(record, {context: fold.context, peak: fold.peak, compactions: fold.compactions})
     }
     if (tail.offset !== record.offset || tail.reset) { record.offset = tail.offset; changed = true }

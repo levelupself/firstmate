@@ -388,6 +388,63 @@ test_codex_compaction_invalidates_stale_usage() {
   pass "codex compaction invalidates stale usage until a fresh measurement"
 }
 
+test_cross_harness_relaunches() {
+  local before after home wt first second out cache
+  for before in claude codex; do
+    if [ "$before" = claude ]; then after=codex; else after=claude; fi
+    home=$(make_home "transition-$before"); wt="$home/wt"
+    bind_task "$home/data" ctx-switch "$before" "$home/store" "$wt" "$CLAUDE_STAMP"
+    fm_write_meta "$home/state/ctx-switch.meta" "worktree=$wt" "harness=$before" "kind=ship"
+    first=$("${before}_open" "$home/store" "$wt" "$CLAUDE_STAMP")
+    if [ "$before" = claude ]; then
+      claude_usage "$first" "$wt" "$CLAUDE_STAMP" 1 0 0 310000
+      claude_compaction "$first" "$wt" "$CLAUDE_STAMP" 2
+      claude_usage "$first" "$wt" "$CLAUDE_STAMP" 3 0 0 50000
+    else
+      codex_usage "$first" 1 310000 310100
+      codex_compaction "$first" 2
+      codex_usage "$first" 3 50000 360200
+    fi
+    out=$(tick "$home") || fail "initial $before tick failed: $out"
+    printf 'warned=300000\ncompactions=1\nrestarts=0\n' > "$home/state/.context-surfaced-ctx-switch"
+    printf '{"stamp":"%s","harness":"%s","store":"%s","worktree":"%s"}\n' "$CODEX_STAMP" "$after" "$home/store" "$wt" \
+      >> "$home/data/ctx-switch/sessions/launches.jsonl"
+    fm_write_meta "$home/state/ctx-switch.meta" "worktree=$wt" "harness=$after" "kind=ship"
+    second=$("${after}_open" "$home/store" "$wt" "$CODEX_STAMP")
+    if [ "$after" = claude ]; then
+      claude_usage "$second" "$wt" "$CODEX_STAMP" 1 0 0 220000
+    else
+      codex_usage "$second" 1 220000 220100
+    fi
+    sleep 1.1
+    out=$(tick "$home" FM_CONTEXT_BIND_RETRY_SECS=1) || fail "relaunch tick failed: $out"
+    [ "$out" = "$(printf 'ctx-switch\tcontext: ctx-switch 220k tokens (warn 200k)\t200000\t1\t1')" ] || fail "$before to $after crossing missing: $out"
+    printf 'warned=200000\ncompactions=1\nrestarts=1\n' > "$home/state/.context-surfaced-ctx-switch"
+    if [ "$after" = claude ]; then
+      claude_compaction "$second" "$wt" "$CODEX_STAMP" 2
+      claude_usage "$second" "$wt" "$CODEX_STAMP" 3 0 0 50000
+    else
+      codex_compaction "$second" 2
+      codex_usage "$second" 3 50000 270200
+    fi
+    out=$(tick "$home") || fail "replacement compaction tick failed: $out"
+    [ "$out" = "$(printf 'ctx-switch\tcontext: ctx-switch compacted (n=2)\t0\t2\t1')" ] || fail "$before to $after compaction missing: $out"
+    out=$(reader "$home" ctx-switch) || fail "mixed reader failed: $out"
+    [ "$out" = "context=50000 peak=310000 compactions=2 harness=$after source=$second" ] || fail "mixed reader wrong: $out"
+    out=$(FM_HOME="$home" node "$ROOT/bin/fm-context-watch.mjs" read ctx-switch) || fail "mixed JSON reader failed"
+    printf '%s' "$out" | jq -e --arg before "$before" --arg after "$after" \
+      '.harness == $after and .restarts == 1 and .context == 50000 and .peak == 310000 and .compactions == 2 and .records[0].harness == $before and .records[1].harness == $after' \
+      >/dev/null || fail "mixed JSON wrong: $out"
+    cache="$home/state/ctx-switch.context-watch"
+    jq 'del(.records[].harness) | .context = null | .compactions = 1' "$cache" > "$cache.old"
+    mv "$cache.old" "$cache"
+    out=$(tick "$home") || fail "legacy cache rebuild failed"
+    jq -e --arg after "$after" '.harness == $after and .context == 50000 and .peak == 310000 and .compactions == 2' "$cache" \
+      >/dev/null || fail "legacy mixed cache was not rebuilt"
+    pass "$before to $after relaunch preserves measurements and wakes"
+  done
+}
+
 test_claude_reader_folds_context_peak_and_compactions
 test_codex_reader_folds_context_peak_and_compactions
 test_reader_refuses_an_unbound_task_by_name
@@ -400,3 +457,5 @@ test_context_is_a_durable_wake_kind
 
 test_tick_unread_aggregates_remain_null
 test_codex_compaction_invalidates_stale_usage
+
+test_cross_harness_relaunches
