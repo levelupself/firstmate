@@ -1073,3 +1073,154 @@ assert_contains "$CONTEXT_LINE" 'unknown:' 'tasks captured before the signal exi
 TASK_REPORT=$("$STORE" report 930-context) || fail 'single context report failed'
 assert_contains "$TASK_REPORT" '240000 peak / 2 compactions / 1 restarts' 'single-task report should expose the context signal'
 pass 'report groups outcome by compaction bucket and exposes the per-task context signal'
+
+# --- token attribution: where each task's tokens went ------------------------
+# Every capture folds the task's bound session records into per-tool, per-class,
+# largest-result, and per-turn rows plus five summary columns on the task row.
+# The breakdown is written as a durable task snapshot at capture and is never
+# derived at rebuild, so a task captured before the fold existed stays NULL and
+# a bound record that yields no breakdown is an ingest issue, not a zero.
+
+TOOLS_STAMP=55555555-5555-4555-8555-555555555555
+mkdir -p "$FM_HOME/data/940-tools/sessions"
+printf '{"schema":"fm-task-sessions.v1","id":"940-tools","spawned_at":"2026-08-02T10:00:00Z"}\n' \
+  > "$FM_HOME/data/940-tools/sessions/identity.json"
+printf '{"stamp":"%s","harness":"claude","store":"%s","worktree":"%s"}\n' \
+  "$TOOLS_STAMP" "$CTX_STORE" "$CTX_WT" > "$FM_HOME/data/940-tools/sessions/launches.jsonl"
+TOOLS_RECORD="$CTX_DIR/$TOOLS_STAMP.jsonl"
+tools_row() { printf '%s\n' "$1" >> "$TOOLS_RECORD"; }
+printf '{"type":"user","cwd":"%s","sessionId":"%s","timestamp":"2026-08-02T10:00:01.000Z","uuid":"u-1","message":{"role":"user","content":"go"}}\n' "$CTX_WT" "$TOOLS_STAMP" > "$TOOLS_RECORD"
+tools_assistant() {  # <minute> <request> <context> <output> <content-json>
+  printf '{"type":"assistant","cwd":"%s","sessionId":"%s","timestamp":"2026-08-02T10:%02d:00.000Z","uuid":"a-%s-%s","requestId":"r-%s","message":{"id":"m-%s","model":"claude-opus-5","role":"assistant","usage":{"input_tokens":%s,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":%s},"content":%s}}\n' \
+    "$CTX_WT" "$TOOLS_STAMP" "$1" "$1" "$RANDOM" "$2" "$2" "$3" "$4" "$5" >> "$TOOLS_RECORD"
+}
+tools_result() {  # <minute> <second> <tool-id> <content>
+  printf '{"type":"user","cwd":"%s","sessionId":"%s","timestamp":"2026-08-02T10:%02d:%02d.000Z","uuid":"r-%s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"%s","content":"%s"}]}}\n' \
+    "$CTX_WT" "$TOOLS_STAMP" "$1" "$2" "$3" "$3" "$4" >> "$TOOLS_RECORD"
+}
+tools_assistant 1 1 50000 30 '[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"rg -n memory src"}}]'
+tools_result 1 2 t1 'src/Memory.ts:1:remember'
+tools_assistant 2 2 52000 70 '[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"src/Memory.ts"}}]'
+tools_result 2 1 t2 "$(printf 'z%.0s' $(seq 1 800))"
+tools_assistant 3 3 56000 90 '[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"git diff --stat"}}]'
+tools_result 3 6 t3 "$(printf 'd%.0s' $(seq 1 200))"
+tools_assistant 4 4 57000 40 '[{"type":"text","text":"done"}]'
+fm_write_meta "$FM_HOME/state/940-tools.meta" \
+  "worktree=$CTX_WT" "project=$PROJECT" "harness=claude" "kind=ship" \
+  "spawned_at=2026-08-02T10:00:00Z" "teardown_at=2026-08-02T12:00:00Z" "outcome=forced"
+"$STORE" capture 940-tools --outcome forced >/dev/null || fail 'tool usage capture failed'
+
+TOOLS_TASK=$(query "SELECT turns, tool_calls, tool_result_tokens_est, assistant_output_tokens, base_prompt_tokens_est, peak_context_tokens FROM task WHERE task_id = '940-tools'")
+[ "$TOOLS_TASK" = '4|3|256|230|50000|57000' ] \
+  || fail "capture did not store the token attribution summary beside the context signal: $TOOLS_TASK"
+[ "$(query "SELECT status FROM task_source WHERE task_id = '940-tools' AND source = 'tool-usage'")" = present ] \
+  || fail 'a captured breakdown should record the tool-usage source as present'
+TOOLS_ROWS=$(query "SELECT tool_name, tool_class, calls, result_bytes, result_tokens_est, wall_seconds_in_tool FROM task_tool_usage WHERE task_id = '940-tools' ORDER BY tool_name, tool_class")
+[ "$TOOLS_ROWS" = 'Bash|differential|1|200|50|6
+Bash|search|1|24|6|2
+Read|read|1|800|200|1' ] || fail "per-tool rows wrong: $TOOLS_ROWS"
+CLASS_ROWS=$(query "SELECT tool_class, calls, result_tokens_est, wall_seconds_in_tool FROM task_tool_class WHERE task_id = '940-tools' ORDER BY tool_class")
+[ "$CLASS_ROWS" = 'differential|1|50|6
+read|1|200|1
+search|1|6|2' ] || fail "per-class roll-up wrong: $CLASS_ROWS"
+LARGEST=$(query "SELECT rank, tool_name, tool_class, tokens_est, command_or_input_head FROM task_largest_results WHERE task_id = '940-tools' ORDER BY rank")
+[ "$LARGEST" = '1|Read|read|200|src/Memory.ts
+2|Bash|differential|50|git diff --stat
+3|Bash|search|6|rg -n memory src' ] || fail "largest results wrong: $LARGEST"
+TIMELINE=$(query "SELECT turn_index, ts, context_tokens, output_tokens, tool_name, tool_class, tool_result_tokens_est FROM task_turn_timeline WHERE task_id = '940-tools' ORDER BY turn_index")
+[ "$TIMELINE" = '1|2026-08-02T10:01:00.000Z|50000|30|Bash|search|6
+2|2026-08-02T10:02:00.000Z|52000|70|Read|read|200
+3|2026-08-02T10:03:00.000Z|56000|90|Bash|differential|50
+4|2026-08-02T10:04:00.000Z|57000|40|NULL|NULL|0' ] || fail "turn timeline wrong: $TIMELINE"
+pass 'capture stores the per-tool, per-class, largest-result, and per-turn attribution beside the task summary columns'
+
+# A bound record with usage rows but no tool call is a real zero; an unbound
+# task stays NULL; a bound record that yields no request at all is an issue.
+[ "$(query "SELECT tool_calls, turns FROM task WHERE task_id = '930-context'")" = '0|5' ] \
+  || fail "a bound record without tool calls should read as a real zero with its turns counted: $(query "SELECT tool_calls, turns FROM task WHERE task_id = '930-context'")"
+[ "$(query "SELECT turns, tool_calls, tool_result_tokens_est, assistant_output_tokens, base_prompt_tokens_est FROM task WHERE task_id = '910-lifecycle'")" = 'NULL|NULL|NULL|NULL|NULL' ] \
+  || fail 'a task with no bound session record must keep the attribution columns NULL'
+[ "$(query "SELECT COUNT(*) FROM ingest_issue WHERE task_id = '910-lifecycle' AND source = 'tool-usage'")" = 0 ] \
+  || fail 'an unbound task is missing, not an ingest issue'
+EMPTY_STAMP=66666666-6666-4666-8666-666666666666
+mkdir -p "$FM_HOME/data/941-empty/sessions"
+printf '{"schema":"fm-task-sessions.v1","id":"941-empty","spawned_at":"2026-08-03T10:00:00Z"}\n' \
+  > "$FM_HOME/data/941-empty/sessions/identity.json"
+printf '{"stamp":"%s","harness":"claude","store":"%s","worktree":"%s"}\n' \
+  "$EMPTY_STAMP" "$CTX_STORE" "$CTX_WT" > "$FM_HOME/data/941-empty/sessions/launches.jsonl"
+printf '{"type":"user","cwd":"%s","sessionId":"%s","timestamp":"2026-08-03T10:00:01.000Z","uuid":"u-1","message":{"role":"user","content":"go"}}\n' \
+  "$CTX_WT" "$EMPTY_STAMP" > "$CTX_DIR/$EMPTY_STAMP.jsonl"
+fm_write_meta "$FM_HOME/state/941-empty.meta" \
+  "worktree=$CTX_WT" "project=$PROJECT" "harness=claude" "kind=ship" \
+  "spawned_at=2026-08-03T10:00:00Z" "teardown_at=2026-08-03T12:00:00Z" "outcome=forced"
+"$STORE" capture 941-empty --outcome forced >/dev/null || fail 'empty-record capture failed'
+[ "$(query "SELECT kind FROM ingest_issue WHERE task_id = '941-empty' AND source = 'tool-usage'")" = 'tool-usage-unavailable' ] \
+  || fail "a bound record that yields no breakdown must be flagged: $(query "SELECT source, kind, detail FROM ingest_issue WHERE task_id = '941-empty'")"
+[ "$(query "SELECT status FROM task_source WHERE task_id = '941-empty' AND source = 'tool-usage'")" = missing ] \
+  || fail 'an unavailable breakdown records the tool-usage source as missing'
+[ "$(query "SELECT turns, tool_calls FROM task WHERE task_id = '941-empty'")" = 'NULL|NULL' ] \
+  || fail 'an unavailable breakdown must leave the summary columns NULL, never zero'
+pass 'missing attribution is missing, an empty bound record is a flagged issue, and a request without tool calls is a real zero'
+
+# The codex capture path folds the same way from a rollout.
+CODEX_TOOLS_STAMP=77777777-7777-4777-8777-777777777777
+mkdir -p "$FM_HOME/data/942-codex/sessions" "$CTX_STORE/sessions/2026/08/04"
+printf '{"schema":"fm-task-sessions.v1","id":"942-codex","spawned_at":"2026-08-04T10:00:00Z"}\n' \
+  > "$FM_HOME/data/942-codex/sessions/identity.json"
+printf '{"stamp":"%s","harness":"codex","store":"%s","worktree":"%s"}\n' \
+  "$CODEX_TOOLS_STAMP" "$CTX_STORE" "$CTX_WT" > "$FM_HOME/data/942-codex/sessions/launches.jsonl"
+CODEX_RECORD="$CTX_STORE/sessions/2026/08/04/rollout-2026-08-04T10-00-00-942.jsonl"
+{
+  printf '{"timestamp":"2026-08-04T10:00:00.000Z","ordinal":0,"type":"session_meta","payload":{"session_id":"942-session","id":"942-session","timestamp":"2026-08-04T10:00:00.000Z","cwd":"%s","originator":"%s","cli_version":"0.153.4","source":"cli"}}\n' "$CTX_WT" "$CODEX_TOOLS_STAMP"
+  printf '{"timestamp":"2026-08-04T10:01:00.000Z","ordinal":1,"type":"response_item","payload":{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\\"command\\":[\\"bash\\",\\"-lc\\",\\"npm run build\\"]}"}}\n'
+  printf '{"timestamp":"2026-08-04T10:01:08.000Z","ordinal":2,"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"built in 8s"}}\n'
+  printf '{"timestamp":"2026-08-04T10:01:09.000Z","ordinal":3,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":700,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":60,"reasoning_output_tokens":0,"total_tokens":760},"last_token_usage":{"input_tokens":700,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":60,"reasoning_output_tokens":0,"total_tokens":760},"model_context_window":258400},"rate_limits":null}}\n'
+} > "$CODEX_RECORD"
+fm_write_meta "$FM_HOME/state/942-codex.meta" \
+  "worktree=$CTX_WT" "project=$PROJECT" "harness=codex" "kind=ship" \
+  "spawned_at=2026-08-04T10:00:00Z" "teardown_at=2026-08-04T12:00:00Z" "outcome=forced"
+"$STORE" capture 942-codex --outcome forced >/dev/null || fail 'codex tool usage capture failed'
+CODEX_ROWS=$(query "SELECT tool_name, tool_class, calls, result_bytes, result_tokens_est, wall_seconds_in_tool FROM task_tool_usage WHERE task_id = '942-codex'")
+[ "$CODEX_ROWS" = 'shell|build|1|11|3|8' ] || fail "codex per-tool row wrong: $CODEX_ROWS"
+[ "$(query "SELECT turns, tool_calls, assistant_output_tokens, base_prompt_tokens_est FROM task WHERE task_id = '942-codex'")" = '1|1|60|700' ] \
+  || fail 'codex summary columns wrong'
+pass 'a codex rollout captures through the same attribution path'
+
+# --- reports: the class split per task and the timeline summary per task ------
+
+USAGE_REPORT=$("$STORE" report --sync) || fail 'usage report failed'
+assert_contains "$USAGE_REPORT" 'CONTEXT | USAGE | CLASSES' 'the cross-task header should carry the usage and class-split columns'
+USAGE_LINE=$(printf '%s\n' "$USAGE_REPORT" | grep '^940-tools ')
+assert_contains "$USAGE_LINE" '| 4 turns / 3 calls / 256 result tok est / 230 out tok / 57000 peak ctx |' \
+  'the cross-task row should show turns, calls, estimated result tokens, output tokens, and peak context'
+assert_contains "$USAGE_LINE" '| read 200, search 6, differential 50' \
+  'the cross-task row should show the class split in taxonomy order with estimated result tokens'
+UNBOUND_LINE=$(printf '%s\n' "$USAGE_REPORT" | grep '^910-lifecycle ')
+assert_contains "$UNBOUND_LINE" '| - | - |' 'a task without attribution should print dashes, never zeros'
+TOOLS_REPORT=$("$STORE" report 940-tools) || fail 'single tool report failed'
+assert_contains "$TOOLS_REPORT" 'BASE PROMPT 50000 tok est' 'the per-task report should show the base prompt estimate'
+assert_contains "$TOOLS_REPORT" 'Read | read | 1 | 800 | 200 | 1' 'the per-task report should list each tool with bytes, estimated tokens, and wall seconds'
+assert_contains "$TOOLS_REPORT" 'differential | 1 | 50 | 6' 'the per-task report should roll tokens and wall seconds up by class'
+assert_contains "$TOOLS_REPORT" '1 | Read | read | 200 tok est | src/Memory.ts' 'the per-task report should rank the largest results with their input head'
+assert_contains "$TOOLS_REPORT" 'TIMELINE 4 turns | ctx@1 50000 | @25% (turn 1) 50000 | @50% (turn 2) 52000 | @75% (turn 3) 56000 | @100% (turn 4) 57000' \
+  'the per-task report should sample context at turn 1 and at each quarter of the turns'
+assert_contains "$TOOLS_REPORT" '+4000 | turn 2 -> 3 | Read (read)' 'the largest single-turn jump should name the tool class of the turn whose results landed'
+assert_contains "$TOOLS_REPORT" '+2000 | turn 1 -> 2 | Bash (search)' 'the second largest jump should follow'
+assert_contains "$TOOLS_REPORT" 'tok est' 'every estimated token figure must be labelled as an estimate'
+EMPTY_REPORT=$("$STORE" report 941-empty) || fail 'empty tool report failed'
+assert_contains "$EMPTY_REPORT" 'TOOL USAGE unavailable' 'an unavailable breakdown should say so in the per-task report'
+pass 'reports show the class split per task and the per-task timeline summary with the largest jumps'
+
+# --- forward-only and rebuildable ----------------------------------------------
+# The breakdown survives the session record going away because capture wrote it
+# durably, and a rebuild reproduces it without consulting any record.
+
+TOOLS_FINGERPRINT=$("$STORE" fingerprint) || fail 'fingerprint after attribution failed'
+rm -f "$TOOLS_RECORD" "$CODEX_RECORD"
+rm -f "$DB"
+"$STORE" rebuild >/dev/null || fail 'rebuild after removing session records failed'
+[ "$("$STORE" fingerprint)" = "$TOOLS_FINGERPRINT" ] \
+  || fail 'rebuild must reproduce the attribution tables from the durable snapshot alone'
+[ "$(query "SELECT COUNT(*) FROM task_turn_timeline WHERE task_id = '940-tools'")" = 4 ] \
+  || fail 'the turn timeline must survive a rebuild without the session record'
+pass 'the attribution is forward-only durable evidence and the rebuild contract covers every new table'

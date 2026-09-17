@@ -175,6 +175,135 @@ test_reader_counts_restarts_across_launches() {
   pass "reader: context follows the newest launch while peak and compactions accumulate across restarts"
 }
 
+# --- usage: where the task's tokens went, per tool and per turn -------------
+
+usage_reader() {  # <home> <id>
+  FM_HOME="$1" FM_STATE_OVERRIDE="$1/state" FM_DATA_OVERRIDE="$1/data" \
+    node "$ROOT/bin/fm-context-watch.mjs" usage "$2"
+}
+
+# One assistant row carrying one tool_use block. Rows sharing <request> are one
+# model request, exactly as claude writes one row per content block.
+claude_tool_use() {  # <file> <worktree> <stamp> <minute> <request> <tool-id> <tool-name> <input-json> <context> <output>
+  printf '{"type":"assistant","cwd":"%s","sessionId":"%s","timestamp":"2026-09-17T10:%02d:00.000Z","uuid":"a-%s","parentUuid":"u-1","isSidechain":false,"requestId":"req_%s","message":{"id":"msg_%s","model":"claude-opus-5","role":"assistant","usage":{"input_tokens":%s,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":%s},"content":[{"type":"tool_use","id":"%s","name":"%s","input":%s}]}}\n' \
+    "$2" "$3" "$4" "$6" "$5" "$5" "$9" "${10}" "$6" "$7" "$8" >> "$1"
+}
+
+claude_tool_result() {  # <file> <worktree> <stamp> <minute> <second> <tool-id> <content-string>
+  printf '{"type":"user","cwd":"%s","sessionId":"%s","timestamp":"2026-09-17T10:%02d:%02d.000Z","uuid":"r-%s","parentUuid":"u-1","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"%s","content":"%s"}]}}\n' \
+    "$2" "$3" "$4" "$5" "$6" "$6" "$7" >> "$1"
+}
+
+codex_call() {  # <file> <minute> <second> <ordinal> <type> <call-id> <name> <payload-field-json>
+  printf '{"timestamp":"2026-09-17T10:%02d:%02d.000Z","ordinal":%s,"type":"response_item","payload":{"type":"%s","call_id":"%s","name":"%s",%s}}\n' \
+    "$2" "$3" "$4" "$5" "$6" "$7" "$8" >> "$1"
+}
+
+codex_output() {  # <file> <minute> <second> <ordinal> <type> <call-id> <output-json>
+  printf '{"timestamp":"2026-09-17T10:%02d:%02d.000Z","ordinal":%s,"type":"response_item","payload":{"type":"%s","call_id":"%s","output":%s}}\n' \
+    "$2" "$3" "$4" "$5" "$6" "$7" >> "$1"
+}
+
+codex_count() {  # <file> <minute> <second> <ordinal> <last-input> <last-output> <cumulative-total>
+  printf '{"timestamp":"2026-09-17T10:%02d:%02d.000Z","ordinal":%s,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%s,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":%s},"last_token_usage":{"input_tokens":%s,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":%s,"reasoning_output_tokens":0,"total_tokens":%s},"model_context_window":258400},"rate_limits":null}}\n' \
+    "$2" "$3" "$4" "$7" "$7" "$5" "$6" "$(( $5 + $6 ))" >> "$1"
+}
+
+test_claude_usage_folds_tools_classes_and_turns() {
+  local home wt file out
+  home=$(make_home claude-usage); wt="$home/wt"
+  bind_task "$home/data" use-claude claude "$home/store" "$wt" "$CLAUDE_STAMP"
+  file=$(claude_open "$home/store" "$wt" "$CLAUDE_STAMP")
+  claude_tool_use "$file" "$wt" "$CLAUDE_STAMP" 1 1 tu-1 Bash '{"command":"rg -n foo src"}' 60000 50
+  claude_tool_result "$file" "$wt" "$CLAUDE_STAMP" 1 2 tu-1 'src/a.ts:1:foo'
+  claude_tool_use "$file" "$wt" "$CLAUDE_STAMP" 2 2 tu-2 Read '{"file_path":"src/a.ts"}' 61000 80
+  claude_tool_result "$file" "$wt" "$CLAUDE_STAMP" 2 5 tu-2 "$(printf 'x%.0s' $(seq 1 400))"
+  # Two tool_use blocks in one request are one turn with two calls.
+  claude_tool_use "$file" "$wt" "$CLAUDE_STAMP" 3 3 tu-3 Bash '{"command":"cd sub && npm test"}' 62000 120
+  claude_tool_use "$file" "$wt" "$CLAUDE_STAMP" 3 3 tu-4 Bash '{"command":"git status"}' 62000 120
+  claude_tool_result "$file" "$wt" "$CLAUDE_STAMP" 3 10 tu-3 "$(printf 'y%.0s' $(seq 1 40))"
+  claude_tool_result "$file" "$wt" "$CLAUDE_STAMP" 3 12 tu-4 'clean'
+  claude_usage "$file" "$wt" "$CLAUDE_STAMP" 4 65000 0 0                   # a text-only turn
+  out=$(usage_reader "$home" use-claude) || fail "claude usage reader failed: $out"
+  printf '%s' "$out" | jq -e '
+    .schema == "fm-task-tool-usage.v1" and .task == "use-claude" and .harness == "claude" and .status == "present"
+    and .turns == 4 and .tool_calls == 4 and .base_prompt_tokens_est == 60000
+    and .assistant_output_tokens == 290 and .tool_result_bytes == 459 and .tool_result_tokens_est == 115' \
+    >/dev/null || fail "claude usage totals wrong: $out"
+  printf '%s' "$out" | jq -e '
+    (.tools | map({tool_name, tool_class, calls, result_bytes, result_tokens_est, wall_seconds_in_tool}))
+    == [{"tool_name":"Bash","tool_class":"git","calls":1,"result_bytes":5,"result_tokens_est":2,"wall_seconds_in_tool":12},
+        {"tool_name":"Bash","tool_class":"search","calls":1,"result_bytes":14,"result_tokens_est":4,"wall_seconds_in_tool":2},
+        {"tool_name":"Bash","tool_class":"test","calls":1,"result_bytes":40,"result_tokens_est":10,"wall_seconds_in_tool":10},
+        {"tool_name":"Read","tool_class":"read","calls":1,"result_bytes":400,"result_tokens_est":100,"wall_seconds_in_tool":5}]' \
+    >/dev/null || fail "claude per-tool rows wrong: $out"
+  printf '%s' "$out" | jq -e '
+    (.classes | map([.tool_class, .calls, .result_tokens_est, .wall_seconds_in_tool]))
+    == [["read",1,100,5],["search",1,4,2],["test",1,10,10],["git",1,2,12]]' \
+    >/dev/null || fail "claude class roll-up wrong: $out"
+  printf '%s' "$out" | jq -e '
+    (.largest | map([.rank, .tool_name, .tool_class, .tokens_est, .command_or_input_head]))
+    == [[1,"Read","read",100,"src/a.ts"],[2,"Bash","test",10,"cd sub && npm test"],[3,"Bash","search",4,"rg -n foo src"],[4,"Bash","git",2,"git status"]]' \
+    >/dev/null || fail "claude largest results wrong: $out"
+  printf '%s' "$out" | jq -e '
+    (.timeline | map([.turn_index, .ts, .context_tokens, .output_tokens, .tool_name, .tool_class, .tool_result_tokens_est]))
+    == [[1,"2026-09-17T10:01:00.000Z",60000,50,"Bash","search",4],
+        [2,"2026-09-17T10:02:00.000Z",61000,80,"Read","read",100],
+        [3,"2026-09-17T10:03:00.000Z",62000,120,"Bash","test",12],
+        [4,"2026-09-17T10:04:00.000Z",65000,40,null,null,0]]' \
+    >/dev/null || fail "claude turn timeline wrong: $out"
+  pass "claude usage: tool_use/tool_result pairs fold into per-tool, per-class, largest-result, and per-turn rows with ceil(bytes/4) estimates"
+}
+
+test_codex_usage_folds_tools_classes_and_turns() {
+  local home wt file out
+  home=$(make_home codex-usage); wt="$home/wt"
+  bind_task "$home/data" use-codex codex "$home/store" "$wt" "$CODEX_STAMP"
+  file=$(codex_open "$home/store" "$wt" "$CODEX_STAMP")
+  codex_call "$file" 1 0 1 custom_tool_call c1 exec '"input":"text(await tools.exec_command({cmd:\"cat README.md\"}));"'
+  codex_output "$file" 1 3 2 custom_tool_call_output c1 '[{"type":"input_text","text":"hello world!"}]'
+  codex_count "$file" 1 4 3 900 100 1000
+  codex_call "$file" 2 0 4 function_call c2 shell '"arguments":"{\"command\":[\"bash\",\"-lc\",\"cargo test\"]}"'
+  codex_output "$file" 2 30 5 function_call_output c2 '"ok"'
+  codex_count "$file" 2 31 6 900 100 1000                      # a repeat without advance is not a turn
+  codex_count "$file" 2 32 7 1100 200 2300
+  codex_call "$file" 3 0 8 custom_tool_call c3 apply_patch '"input":"*** Begin Patch\n*** End Patch"'
+  codex_output "$file" 3 1 9 custom_tool_call_output c3 '"Done"'
+  codex_count "$file" 3 2 10 1200 100 3600
+  out=$(usage_reader "$home" use-codex) || fail "codex usage reader failed: $out"
+  printf '%s' "$out" | jq -e '
+    .harness == "codex" and .status == "present" and .turns == 3 and .tool_calls == 3
+    and .base_prompt_tokens_est == 900 and .assistant_output_tokens == 400
+    and .tool_result_bytes == 18 and .tool_result_tokens_est == 5' \
+    >/dev/null || fail "codex usage totals wrong: $out"
+  printf '%s' "$out" | jq -e '
+    (.tools | map([.tool_name, .tool_class, .calls, .result_bytes, .result_tokens_est, .wall_seconds_in_tool]))
+    == [["apply_patch","edit",1,4,1,1],["exec","read",1,12,3,3],["shell","test",1,2,1,30]]' \
+    >/dev/null || fail "codex per-tool rows wrong: $out"
+  printf '%s' "$out" | jq -e '
+    (.timeline | map([.turn_index, .context_tokens, .output_tokens, .tool_name, .tool_class, .tool_result_tokens_est]))
+    == [[1,900,100,"exec","read",3],[2,1100,200,"shell","test",1],[3,1200,100,"apply_patch","edit",1]]' \
+    >/dev/null || fail "codex turn timeline wrong: $out"
+  printf '%s' "$out" | jq -e '(.largest | map(.command_or_input_head)) == ["cat README.md", "*** Begin Patch *** End Patch", "cargo test"]' \
+    >/dev/null || fail "codex heads should be the command each call ran, unwrapped from its script or shell array: $out"
+  pass "codex usage: function_call/custom_tool_call outputs fold by call_id and token_count closes each turn only when the cumulative total advances"
+}
+
+test_usage_reports_bound_records_without_a_request_as_unavailable() {
+  local home wt out
+  home=$(make_home empty-usage); wt="$home/wt"
+  bind_task "$home/data" use-empty claude "$home/store" "$wt" "$CLAUDE_STAMP"
+  claude_open "$home/store" "$wt" "$CLAUDE_STAMP" >/dev/null
+  out=$(usage_reader "$home" use-empty) || fail "an empty bound record must still print a usage object: $out"
+  printf '%s' "$out" | jq -e '.status == "unavailable" and .turns == 0 and (.reason | test("no model request"))' \
+    >/dev/null || fail "empty record must be reported unavailable, not as zeros: $out"
+  if out=$(usage_reader "$home" use-nobody 2>&1); then
+    fail "an unbound task must be refused: $out"
+  fi
+  assert_contains "$out" "no session record bound" "usage refusal must name the missing binding"
+  pass "usage: bound records with no model request are unavailable by name, and an unbound task is refused"
+}
+
 # --- watcher: one wake per crossing, step, and compaction ------------------
 
 watch_ctx() {  # <home> <fakebin> <out> [env...]
@@ -449,6 +578,9 @@ test_claude_reader_folds_context_peak_and_compactions
 test_codex_reader_folds_context_peak_and_compactions
 test_reader_refuses_an_unbound_task_by_name
 test_reader_counts_restarts_across_launches
+test_claude_usage_folds_tools_classes_and_turns
+test_codex_usage_folds_tools_classes_and_turns
+test_usage_reports_bound_records_without_a_request_as_unavailable
 test_watcher_wakes_once_per_crossing_step_and_compaction
 test_watcher_honours_warn_and_step_overrides
 test_watcher_skips_unbound_and_secondmate_tasks

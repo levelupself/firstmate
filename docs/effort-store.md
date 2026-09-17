@@ -34,6 +34,7 @@ Nothing in the derived layer is ever written back to the raw layer.
 |---|---|---|
 | raw | `data/cost-attribution.tsv` | identity, dispatch axes, lifecycle timestamps, configured model, process counts, and outcome stamps |
 | codeburn | `data/<task>/usage.json` | tokens, notional cost, calls, sessions, and actual-model split |
+| tool-usage | `data/<task>/tool-usage.json` | where the tokens went: turns, tool calls, result sizes by tool and class, the largest results, and the per-turn timeline |
 | git | the project clone named in the raw row | structure, commit link, and the durability relation |
 | annotation | `data/effort-annotations.jsonl` | the posterior that no artifact records |
 
@@ -60,6 +61,26 @@ Three more process columns are captured from the task's own stamped session reco
 If a capture cannot read the signal, it preserves any previously captured values; without prior values, the fields remain NULL rather than zero.
 The values are stamped into the append-only raw layer at capture and are forward-only: rebuild never backfills historical rows, though a later lifecycle capture can record an available signal.
 The cross-task report adds one `COMPACTIONS` line grouping outcome by compaction bucket (`0`, `1`, `2+`, and `unknown` for rows without the count).
+
+## Where the tokens went
+
+Task totals hide the split that explains context growth, so every lifecycle capture also folds the task's bound session records into a token attribution and persists it as `data/<task>/tool-usage.json`.
+`bin/fm-context-watch.mjs usage` produces that object from the same bound records as the context signal, using the shared fold in `bin/fm-model-bench-analyze.mjs`; that reader's header owns the turn definition, the byte rule, and the tool class taxonomy.
+The `task` row carries five summary columns beside `tokens_in`, `tokens_out`, and `peak_context_tokens`: `turns` (model requests), `tool_calls`, `tool_result_tokens_est` (what tool results put into the context), `assistant_output_tokens` (the model's own output), and `base_prompt_tokens_est` (the first request's prompt size, which estimates the fixed base of system prompt, instructions, and launch brief).
+`task_tool_usage` holds one row per tool and class with calls, result bytes, estimated result tokens, and wall seconds spent waiting for results; `task_tool_class` rolls the same calls up by class.
+`task_largest_results` ranks the five results that put the most into the context with the first 120 characters of what each call ran.
+`task_turn_timeline` holds one row per model request with its timestamp, prompt size, output tokens, first tool and class, and the estimated tokens that turn's results put into the next prompt, so context growth is queryable turn by turn.
+
+Every token figure derived from bytes is an estimate under one rule, `ceil(bytes / 4)`, and carries the `_est` suffix in column names and the `tok est` label in reports; `assistant_output_tokens`, `context_tokens`, and `output_tokens` are read from the record's own usage and are exact.
+Tool calls are classified into a fixed taxonomy of `read`, `search`, `edit`, `build`, `test`, `differential`, `git`, and `other`, from the tool name first and from the command text for command-running tools; the rule table lives in the `bin/fm-model-bench-analyze.mjs` header.
+
+The breakdown is forward-only: capture is the only writer, and it replaces the snapshot on every capture that can still read the records while leaving the prior snapshot untouched when it cannot, so the last successful fold survives cleanup.
+Rebuild reads the snapshot and never a session record, so a task captured before the fold existed keeps every attribution column NULL and its `tool-usage` source `missing`.
+A bound record that yields no model request is persisted as `unavailable` and surfaces as a `tool-usage-unavailable` ingest issue, the same way an unusable cost snapshot does; a request that called no tool is a real zero.
+The snapshot is bound to its launch by `spawned_at`, and a snapshot from another launch is rejected as `tool-usage-launch-identity`.
+
+Every cross-task report row adds a `USAGE` column (`turns / calls / result tok est / out tok / peak ctx`) and a `CLASSES` column with the estimated result tokens per class in taxonomy order.
+`report <task-id>` adds the base prompt estimate, the class roll-up, the per-tool table, the five largest results, a `TIMELINE` line sampling the prompt size at turn 1 and at 25, 50, 75, and 100 percent of the turns, and the five largest single-turn jumps with the tool and class of the turn whose results landed.
 
 ## Reading the headline numbers
 
@@ -160,10 +181,12 @@ The separate discovery-versus-churn and loud-versus-quiet research annotations r
 ## Verification
 
 The suites drive public lifecycle and store entry points and verify SQL results, report output, and instrumented ingestion and git calls.
-They cover nonblocking lifecycle capture during stalled ingestion, request coalescing, cached history reuse, pending reports, launch-to-PR duration, durable usage and actual models, missing-versus-zero behavior, both recorded-by-hand fields, the durability link across a file rename, one-command reporting, and delete-and-rebuild identity.
+They cover nonblocking lifecycle capture during stalled ingestion, request coalescing, cached history reuse, pending reports, launch-to-PR duration, durable usage and actual models, missing-versus-zero behavior, both recorded-by-hand fields, the durability link across a file rename, one-command reporting, token attribution capture and reporting for both session record formats, and delete-and-rebuild identity.
+The context-watch suite proves the per-harness tool fold and class taxonomy through the `usage` reader.
 
 ```sh
 tests/fm-effort-async.test.sh
 tests/fm-effort-lifecycle.test.sh
 tests/fm-effort-store.test.sh
+tests/fm-context-watch.test.sh
 ```

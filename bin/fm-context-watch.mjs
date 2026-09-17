@@ -20,6 +20,22 @@
 //     stamp, or a stamped record the store has not written yet - exits 1 with
 //     a named refusal on stderr and prints nothing, never a zero.
 //
+//   fm-context-watch.mjs usage <task-id>
+//
+//     Where the task's tokens went. Binds the same records as read, folds
+//     every one with bin/fm-model-bench-analyze.mjs foldTurns (that header
+//     owns the turn definition, the ceil(bytes/4) estimate rule, and the tool
+//     class taxonomy), and prints one fm-task-tool-usage.v1 JSON object:
+//     {schema, task, harness, status, reason?, records[], turns, tool_calls,
+//     tool_result_bytes, tool_result_tokens_est, assistant_output_tokens,
+//     base_prompt_tokens_est, tools[], classes[], largest[], timeline[]} with
+//     turn indexes continuing across relaunched records in ledger order.
+//     status is "present" when at least one model request was folded and
+//     "unavailable" (reason names why, every count zero or null) when the
+//     bound records carry none yet; an unbound task is refused exactly as
+//     read refuses it. bin/fm-effort-store.mjs capture persists this object
+//     as the task's durable data/<id>/tool-usage.json.
+//
 //   fm-context-watch.mjs tick
 //
 //     The watcher's per-poll pass over every live ordinary task
@@ -57,9 +73,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {fileURLToPath} from 'node:url'
 import {data, state, taskDir, index} from './fm-task-session.mjs'
-import {foldContext} from './fm-model-bench-analyze.mjs'
+import {foldContext, foldTurns, rollUpTurns} from './fm-model-bench-analyze.mjs'
 
 const SCHEMA = 'fm-context-watch.v1'
+const USAGE_SCHEMA = 'fm-task-tool-usage.v1'
 const SUPPORTED = new Set(['claude', 'codex'])
 const WARN_DEFAULT = 200000
 const STEP_DEFAULT = 100000
@@ -176,6 +193,22 @@ export function readTask(id) {
     return {stamp: r.stamp, file: r.file, harness: r.harness, offset: tail.offset, context: fold.context, peak: fold.peak, compactions: fold.compactions}
   })
   return {schema: SCHEMA, task: id, ...rollUp(harness, folded, ledger.receipts.length), records: folded}
+}
+
+export function readUsage(id) {
+  const {harness, records} = bindRecords(id)
+  const folds = records.map(r => foldTurns(r.harness, readTail(r.file, 0).rows))
+  const roll = rollUpTurns(folds)
+  const status = roll.turns > 0 ? 'present' : 'unavailable'
+  return {
+    schema: USAGE_SCHEMA,
+    task: id,
+    harness,
+    status,
+    ...(status === 'unavailable' ? {reason: 'no model request in the bound session records'} : {}),
+    records: records.map(r => r.file),
+    ...roll,
+  }
 }
 
 function lineOf(result) {
@@ -319,10 +352,22 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         throw e
       }
       process.stdout.write((args.includes('--line') ? lineOf(result) : JSON.stringify(result)) + '\n')
+    } else if (mode === 'usage') {
+      const id = args.find(a => !a.startsWith('--'))
+      if (!id) throw new Error('usage: fm-context-watch.mjs usage <task-id>')
+      let result
+      try { result = readUsage(id) } catch (e) {
+        if (e instanceof Refusal) {
+          process.stderr.write(`fm-context-watch: ${id}: no session record bound (${e.message})\n`)
+          process.exit(1)
+        }
+        throw e
+      }
+      process.stdout.write(JSON.stringify(result) + '\n')
     } else if (mode === 'tick') {
       tick()
     } else {
-      throw new Error('usage: fm-context-watch.mjs read <task-id> [--line] | tick')
+      throw new Error('usage: fm-context-watch.mjs read <task-id> [--line] | usage <task-id> | tick')
     }
   } catch (e) {
     process.stderr.write(`fm-context-watch: ${e.message}\n`)

@@ -94,6 +94,64 @@
 //     then a VOID banner for every void arm and a warning block. Numbers for
 //     an arm whose model is not confirmed are withheld, not blanked quietly:
 //     the row says UNCONFIRMED and the reason follows the table.
+//
+//   Shared folds for other readers (no command of their own)
+//
+//     foldContext (above) and foldTurns are exported for bin/fm-context-watch.mjs
+//     so the live context reader, the usage breakdown, and the bench slice
+//     share one per-harness row parser. foldTurns answers "where did the
+//     tokens go": one turn per model request (claude: one per distinct
+//     requestId; codex: one per event_msg token_count whose cumulative
+//     total_token_usage advanced, which lands after that response's tool
+//     outputs), each carrying its timestamp, prompt size (context_tokens),
+//     output_tokens, and the tool calls it issued. Calls are claude tool_use
+//     blocks paired with tool_result blocks by tool_use_id, and codex
+//     function_call / custom_tool_call items paired with their *_output items
+//     by call_id. A result's result_bytes is the UTF-8 length of the text that
+//     entered the context (a string, or the text blocks of an array, with a
+//     non-text block counted as its JSON). Every token figure derived from
+//     bytes is an estimate under one rule, tokens_est = ceil(bytes / 4), and
+//     is named *_est wherever it appears. wall_seconds is the gap between the
+//     call row and its result row, null when either lacks a timestamp.
+//     base_prompt_tokens_est is the first turn's prompt size: it estimates the
+//     fixed base (system prompt, instructions, launch brief) because the first
+//     request also carries the first user message.
+//
+//     Tool class taxonomy (classifyTool). A call's class comes from the tool
+//     name first, then from its command text for command-running tools:
+//       claude  Read -> read; Grep, Glob -> search; Edit, Write, MultiEdit,
+//               NotebookEdit -> edit; Bash -> by command text; else other.
+//       codex   read_file, view_image -> read; grep_files, list_dir -> search;
+//               apply_patch -> edit; shell, shell_command, exec_command,
+//               local_shell, container.exec -> by the command argument (a
+//               ["bash", "-lc", script] array is the script); exec -> by
+//               every cmd:"..." string in its script; else other.
+//     Command text is split into segments on newlines, &&, ||, ;, and |, and
+//     the first segment whose class is not other decides. A segment's first
+//     word (after leading VAR=value assignments, sudo, time, command, nice,
+//     and an interpreter such as bash or node followed by a script path)
+//     selects, in this order:
+//       differential  diff, cmp, comm, colordiff, delta, git diff/range-diff/difftool
+//       git           git, gh, gh-axi, glab
+//       test          pytest, jest, vitest, mocha, bats, playwright, go test,
+//                     cargo test, npm/pnpm/yarn/bun test or run test*, npx of
+//                     those runners, node --test, bin/fm-test-run.sh, any
+//                     path under tests/ or ending in .test.<ext>
+//       build         make, cmake, tsc, esbuild, vite, webpack, rollup,
+//                     shellcheck, eslint, prettier, ruff, mypy, black, gofmt,
+//                     cargo build/check/clippy, go build/vet/mod,
+//                     npm/pnpm/yarn/bun run build, ci, install, i, bin/fm-lint.sh
+//       search        rg, grep, egrep, fgrep, ag, ack, ast-grep, find, fd,
+//                     fdfind, locate, which, whereis, type
+//       read          cat, head, tail, less, more, ls, wc, stat, file, tree,
+//                     pwd, du, df, readlink, realpath, jq, sqlite3, nl, od,
+//                     xxd, hexdump, strings, cut, sort, uniq, tr, awk,
+//                     sed without -i
+//       edit          sed -i, tee, cp, mv, rm, mkdir, touch, chmod, chown,
+//                     ln, patch, truncate, rsync, git apply
+//     A read, search, or other segment that redirects to a file outside its
+//     quoted strings (> or >> to anything but /dev/null or a descriptor) is
+//     edit, because the effect is a write. Anything else is other.
 
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -482,6 +540,331 @@ export function foldContext(harness, rows, seed) {
     if (context > out.peak) out.peak = context;
   }
   return out;
+}
+
+// --- turn and tool fold -----------------------------------------------------
+//
+// Where the tokens went, per model request. The header documents the turn
+// definition, the byte and estimate rules, and the tool class taxonomy;
+// bin/fm-context-watch.mjs usage binds a task's records and rolls this up.
+
+export const TOOL_CLASSES = ['read', 'search', 'edit', 'build', 'test', 'differential', 'git', 'other'];
+const CLASS_RANK = new Map(TOOL_CLASSES.map((c, i) => [c, i]));
+export const HEAD_CHARS = 120;
+
+export function tokensEst(bytes) {
+  return Math.ceil(num(bytes) / 4);
+}
+
+const DIFFERENTIAL_WORDS = new Set(['diff', 'cmp', 'comm', 'colordiff', 'delta']);
+const GIT_WORDS = new Set(['git', 'gh', 'gh-axi', 'glab']);
+const TEST_WORDS = new Set(['pytest', 'jest', 'vitest', 'mocha', 'bats', 'playwright']);
+const BUILD_WORDS = new Set(['make', 'cmake', 'tsc', 'esbuild', 'vite', 'webpack', 'rollup', 'shellcheck', 'eslint', 'prettier', 'ruff', 'mypy', 'black', 'gofmt']);
+const SEARCH_WORDS = new Set(['rg', 'grep', 'egrep', 'fgrep', 'ag', 'ack', 'ast-grep', 'find', 'fd', 'fdfind', 'locate', 'which', 'whereis', 'type']);
+const READ_WORDS = new Set(['cat', 'head', 'tail', 'less', 'more', 'ls', 'wc', 'stat', 'file', 'tree', 'pwd', 'du', 'df', 'readlink', 'realpath', 'jq', 'sqlite3', 'nl', 'od', 'xxd', 'hexdump', 'strings', 'cut', 'sort', 'uniq', 'tr', 'awk']);
+const EDIT_WORDS = new Set(['tee', 'cp', 'mv', 'rm', 'mkdir', 'touch', 'chmod', 'chown', 'ln', 'patch', 'truncate', 'rsync']);
+const PACKAGE_RUNNERS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
+const PREFIX_WORDS = new Set(['sudo', 'time', 'command', 'nice']);
+const INTERPRETERS = new Set(['bash', 'sh', 'zsh', 'dash', 'node', 'python', 'python3', 'perl', 'ruby']);
+
+const isTestPath = (word) => /(^|\/)tests\/|\.test\.[A-Za-z0-9]+$/.test(word) || word.endsWith('bin/fm-test-run.sh');
+
+function classifySegment(segment) {
+  const words = segment.trim().split(/\s+/).filter(Boolean);
+  while (words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]) || PREFIX_WORDS.has(words[0]))) words.shift();
+  // `bash tests/x.test.sh` is the test, not bash: an interpreter followed by
+  // a script path is classified by the script.
+  if (words.length > 1 && INTERPRETERS.has(words[0].replace(/^.*\//, '')) && !words[1].startsWith('-')) words.shift();
+  if (!words.length) return 'other';
+  const [first, second = '', third = ''] = words;
+  const base = first.replace(/^.*\//, '');
+  let cls = 'other';
+  if (DIFFERENTIAL_WORDS.has(base) || (base === 'git' && ['diff', 'range-diff', 'difftool'].includes(second))) cls = 'differential';
+  else if (base === 'git' && second === 'apply') cls = 'edit';
+  else if (GIT_WORDS.has(base)) cls = 'git';
+  else if (TEST_WORDS.has(base) || (base === 'go' && second === 'test') || (base === 'cargo' && second === 'test')
+    || (PACKAGE_RUNNERS.has(base) && (second === 'test' || (second === 'run' && third.startsWith('test'))))
+    || (base === 'npx' && TEST_WORDS.has(second)) || (base === 'node' && second === '--test')
+    || isTestPath(first)) cls = 'test';
+  else if (BUILD_WORDS.has(base) || (base === 'cargo' && ['build', 'check', 'clippy'].includes(second))
+    || (base === 'go' && ['build', 'vet', 'mod'].includes(second))
+    || (PACKAGE_RUNNERS.has(base) && ((second === 'run' && third === 'build') || ['ci', 'install', 'i'].includes(second)))
+    || first.endsWith('bin/fm-lint.sh')) cls = 'build';
+  else if (SEARCH_WORDS.has(base)) cls = 'search';
+  else if (base === 'sed') cls = words.some((w) => /^-[a-zA-Z]*i/.test(w) || w === '--in-place') ? 'edit' : 'read';
+  else if (READ_WORDS.has(base)) cls = 'read';
+  else if (EDIT_WORDS.has(base)) cls = 'edit';
+  if ((cls === 'read' || cls === 'search' || cls === 'other') && redirectsToFile(segment)) cls = 'edit';
+  return cls;
+}
+
+function redirectsToFile(segment) {
+  const stripped = segment.replace(/'[^']*'/g, '').replace(/"(?:[^"\\]|\\.)*"/g, '')
+    .replace(/\d?>&\d/g, '').replace(/&?>>?\s*\/dev\/null/g, '');
+  return /(^|[^<>&])>>?\s*[^\s&|;>]/.test(stripped);
+}
+
+export function classifyCommand(text) {
+  if (typeof text !== 'string' || !text.trim()) return 'other';
+  for (const segment of text.split(/\n|&&|\|\||;|\|/)) {
+    const cls = classifySegment(segment);
+    if (cls !== 'other') return cls;
+  }
+  return 'other';
+}
+
+const CLAUDE_TOOL_CLASS = { Read: 'read', Grep: 'search', Glob: 'search', Edit: 'edit', Write: 'edit', MultiEdit: 'edit', NotebookEdit: 'edit' };
+const CODEX_TOOL_CLASS = { read_file: 'read', view_image: 'read', grep_files: 'search', list_dir: 'search', apply_patch: 'edit' };
+const CODEX_SHELL_TOOLS = new Set(['shell', 'shell_command', 'exec_command', 'local_shell', 'container.exec']);
+
+// The command text a call ran, or null for a tool that runs no command.
+export function commandTextOf(harness, name, input) {
+  if (harness === 'claude') {
+    return name === 'Bash' && input && typeof input.command === 'string' ? input.command : null;
+  }
+  if (CODEX_SHELL_TOOLS.has(name)) {
+    const args = parseArguments(input);
+    const command = args && (args.command ?? args.cmd);
+    if (Array.isArray(command)) {
+      // ["bash", "-lc", "<script>"] is the script, not bash.
+      const [shell = '', flag = ''] = command.map(String);
+      if (command.length >= 3 && /^(bash|sh|zsh|dash)$/.test(shell.replace(/^.*\//, '')) && /^-[a-z]*c[a-z]*$/.test(flag)) {
+        return command.slice(2).map(String).join(' ');
+      }
+      return command.map(String).join(' ');
+    }
+    return typeof command === 'string' ? command : (typeof input === 'string' ? input : null);
+  }
+  if (name === 'exec' && typeof input === 'string') {
+    const commands = [];
+    for (const m of input.matchAll(/cmd\s*:\s*"((?:[^"\\]|\\.)*)"/g)) commands.push(m[1].replace(/\\n/g, '\n').replace(/\\(.)/g, '$1'));
+    return commands.length ? commands.join('\n') : null;
+  }
+  return null;
+}
+
+function parseArguments(input) {
+  if (input && typeof input === 'object') return input;
+  if (typeof input !== 'string') return null;
+  try { return JSON.parse(input); } catch { return null; }
+}
+
+export function classifyTool(harness, name, input) {
+  const fixed = harness === 'claude' ? CLAUDE_TOOL_CLASS[name] : CODEX_TOOL_CLASS[name];
+  if (fixed) return fixed;
+  const command = commandTextOf(harness, name, input);
+  return command === null ? 'other' : classifyCommand(command);
+}
+
+// The first HEAD_CHARS characters, whitespace collapsed, of what the call ran:
+// the command text, else the file, pattern, or path it named, else its input.
+export function inputHeadOf(harness, name, input) {
+  let text = commandTextOf(harness, name, input);
+  if (text === null) {
+    if (input && typeof input === 'object') {
+      const named = ['file_path', 'path', 'pattern', 'notebook_path', 'url', 'prompt'].find((k) => typeof input[k] === 'string');
+      text = named ? input[named] : JSON.stringify(input);
+    } else {
+      text = input === undefined || input === null ? '' : String(input);
+    }
+  }
+  return text.replace(/\s+/g, ' ').trim().slice(0, HEAD_CHARS);
+}
+
+// The bytes a result put into the context: a string as is, an array by its
+// text blocks (claude text / codex input_text) with any other block as JSON.
+export function resultBytesOf(content) {
+  if (content === undefined || content === null) return 0;
+  if (typeof content === 'string') return Buffer.byteLength(content, 'utf8');
+  if (Array.isArray(content)) {
+    let bytes = 0;
+    for (const block of content) {
+      if (block && typeof block.text === 'string' && (block.type === 'text' || block.type === 'input_text' || block.type === 'output_text')) bytes += Buffer.byteLength(block.text, 'utf8');
+      else bytes += Buffer.byteLength(JSON.stringify(block ?? null), 'utf8');
+    }
+    return bytes;
+  }
+  return Buffer.byteLength(JSON.stringify(content), 'utf8');
+}
+
+function newTurn(index, ms, ts, context, output) {
+  return { index, ms, ts, context_tokens: context, output_tokens: output, tools: [] };
+}
+
+function newCall(turn, name, cls, head, ms) {
+  const call = { turn, name, tool_class: cls, head, issued_ms: ms, result_ms: null, result_bytes: null };
+  turn.tools.push(call);
+  return call;
+}
+
+function settleCall(call, ms, content) {
+  call.result_ms = Number.isFinite(ms) ? ms : null;
+  call.result_bytes = resultBytesOf(content);
+}
+
+// Returns {turns:[{index, ts, context_tokens, output_tokens, tools:[{name,
+// tool_class, head, issued_ms, result_ms, result_bytes}]}], orphan_results,
+// malformed}. A call with no result yet keeps result_bytes null and counts as
+// a call with zero result bytes in roll-ups.
+export function foldTurns(harness, rows) {
+  const turns = [];
+  const calls = new Map();
+  let orphanResults = 0;
+  let malformed = 0;
+  if (harness === 'claude') {
+    const byRequest = new Map();
+    for (const r of rows) {
+      if (!r) continue;
+      if (r.__malformed) { malformed += 1; continue; }
+      if (r.isSidechain === true) continue;
+      const ms = Date.parse(r.timestamp || '');
+      const message = r.message && typeof r.message === 'object' ? r.message : null;
+      if (r.type === 'assistant' && message) {
+        if (message.model === '<synthetic>') continue;
+        const u = message.usage;
+        if (!u || typeof u !== 'object') continue;
+        const key = r.requestId || message.id || r.uuid;
+        if (!key) continue;
+        let turn = byRequest.get(key);
+        if (!turn) {
+          const usage = normaliseClaudeUsage(u);
+          turn = newTurn(turns.length + 1, ms, typeof r.timestamp === 'string' ? r.timestamp : null, usage.input, usage.output);
+          byRequest.set(key, turn);
+          turns.push(turn);
+        }
+        for (const block of Array.isArray(message.content) ? message.content : []) {
+          if (!block || block.type !== 'tool_use' || typeof block.name !== 'string') continue;
+          const call = newCall(turn, block.name, classifyTool('claude', block.name, block.input), inputHeadOf('claude', block.name, block.input), Number.isFinite(ms) ? ms : null);
+          if (typeof block.id === 'string') calls.set(block.id, call);
+        }
+        continue;
+      }
+      if (r.type === 'user' && message && Array.isArray(message.content)) {
+        for (const block of message.content) {
+          if (!block || block.type !== 'tool_result') continue;
+          const call = calls.get(block.tool_use_id);
+          if (!call) { orphanResults += 1; continue; }
+          settleCall(call, ms, block.content);
+        }
+      }
+    }
+  } else {
+    let pending = [];
+    let previousTotal = null;
+    for (const r of rows) {
+      if (!r) continue;
+      if (r.__malformed) { malformed += 1; continue; }
+      const ms = Date.parse(r.timestamp || '');
+      const p = r.payload;
+      if (!p || typeof p !== 'object') continue;
+      if (r.type === 'response_item') {
+        if (p.type === 'function_call' || p.type === 'custom_tool_call') {
+          const name = typeof p.name === 'string' ? p.name : p.type;
+          const input = p.type === 'function_call' ? p.arguments : p.input;
+          const call = { name, tool_class: classifyTool('codex', name, input), head: inputHeadOf('codex', name, input), issued_ms: Number.isFinite(ms) ? ms : null, result_ms: null, result_bytes: null };
+          pending.push(call);
+          if (typeof p.call_id === 'string') calls.set(p.call_id, call);
+        } else if (p.type === 'function_call_output' || p.type === 'custom_tool_call_output') {
+          const call = calls.get(p.call_id);
+          if (!call) { orphanResults += 1; continue; }
+          settleCall(call, ms, p.output);
+        }
+        continue;
+      }
+      if (r.type !== 'event_msg' || p.type !== 'token_count') continue;
+      const total = p.info && p.info.total_token_usage;
+      const last = p.info && p.info.last_token_usage;
+      if (!total || !last || typeof last !== 'object') continue;
+      const cumulative = Number.isFinite(total.total_tokens) ? total.total_tokens : num(total.input_tokens) + num(total.output_tokens);
+      if (previousTotal !== null && cumulative <= previousTotal) continue;
+      previousTotal = cumulative;
+      const turn = newTurn(turns.length + 1, ms, typeof r.timestamp === 'string' ? r.timestamp : null, num(last.input_tokens), num(last.output_tokens));
+      for (const call of pending) { call.turn = turn; turn.tools.push(call); }
+      pending = [];
+      turns.push(turn);
+    }
+    // Calls issued after the last closing token_count belong to an open turn
+    // the record has not closed; they are not attributed to any turn.
+  }
+  return { turns, orphan_results: orphanResults, malformed };
+}
+
+// Roll a task's folded records (in launch order) into the fm-task-tool-usage.v1
+// shape: totals, per-tool and per-class rows, the five largest results, and
+// the turn timeline with indexes continuing across records.
+export function rollUpTurns(folds) {
+  const tools = new Map();
+  const classes = new Map();
+  const results = [];
+  const timeline = [];
+  let toolCalls = 0;
+  let resultBytes = 0;
+  let outputTokens = 0;
+  let basePrompt = null;
+  for (const fold of folds) {
+    for (const turn of fold.turns) {
+      const index = timeline.length + 1;
+      if (basePrompt === null) basePrompt = turn.context_tokens;
+      outputTokens += num(turn.output_tokens);
+      let turnBytes = 0;
+      for (const call of turn.tools) {
+        toolCalls += 1;
+        const bytes = num(call.result_bytes);
+        turnBytes += bytes;
+        resultBytes += bytes;
+        const wall = call.issued_ms !== null && call.result_ms !== null ? Math.max(0, call.result_ms - call.issued_ms) : null;
+        for (const [map, key] of [[tools, `${call.name}\0${call.tool_class}`], [classes, call.tool_class]]) {
+          const row = map.get(key) || { tool_name: call.name, tool_class: call.tool_class, calls: 0, result_bytes: 0, wall_ms: 0, timed: 0 };
+          row.calls += 1;
+          row.result_bytes += bytes;
+          if (wall !== null) { row.wall_ms += wall; row.timed += 1; }
+          map.set(key, row);
+        }
+        results.push({ tool_name: call.name, tool_class: call.tool_class, command_or_input_head: call.head, result_bytes: bytes, order: results.length });
+      }
+      const first = turn.tools[0] || null;
+      timeline.push({
+        turn_index: index,
+        ts: turn.ts,
+        context_tokens: turn.context_tokens,
+        output_tokens: turn.output_tokens,
+        tool_name: first ? first.name : null,
+        tool_class: first ? first.tool_class : null,
+        tool_result_tokens_est: tokensEst(turnBytes),
+      });
+    }
+  }
+  const finish = (row) => ({
+    tool_name: row.tool_name,
+    tool_class: row.tool_class,
+    calls: row.calls,
+    result_bytes: row.result_bytes,
+    result_tokens_est: tokensEst(row.result_bytes),
+    // Partial timing would understate the total, so the sum is reported only
+    // when every call of the row was timed.
+    wall_seconds_in_tool: row.timed === row.calls ? Math.round(row.wall_ms) / 1000 : null,
+  });
+  const byName = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const toolRows = [...tools.values()].sort((a, b) => byName(a.tool_name, b.tool_name) || byName(a.tool_class, b.tool_class)).map(finish);
+  const classRows = [...classes.values()].sort((a, b) => CLASS_RANK.get(a.tool_class) - CLASS_RANK.get(b.tool_class)).map((row) => {
+    const out = finish(row);
+    delete out.tool_name;
+    return out;
+  });
+  const largest = results.sort((a, b) => b.result_bytes - a.result_bytes || a.order - b.order).slice(0, 5)
+    .map((row, i) => ({ rank: i + 1, tool_name: row.tool_name, tool_class: row.tool_class, command_or_input_head: row.command_or_input_head, tokens_est: tokensEst(row.result_bytes) }));
+  return {
+    turns: timeline.length,
+    tool_calls: toolCalls,
+    tool_result_bytes: resultBytes,
+    tool_result_tokens_est: tokensEst(resultBytes),
+    assistant_output_tokens: outputTokens,
+    base_prompt_tokens_est: basePrompt,
+    tools: toolRows,
+    classes: classRows,
+    largest,
+    timeline,
+  };
 }
 
 // --- slicing ----------------------------------------------------------------
