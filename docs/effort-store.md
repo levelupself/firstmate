@@ -86,7 +86,7 @@ Every cross-task report row adds a `USAGE` column (`turns / calls / result tok e
 
 Run `bin/fm-effort-store.sh report` to list every task and aggregate totals.
 Run `bin/fm-effort-store.sh report <task-id>` for one task.
-The report shows launch-to-PR duration, cost, input and output tokens, actual models, outcome, and the context signal.
+The report shows launch-to-PR duration, cost, input and output tokens, actual models, outcome, the context signal, and the token attribution columns described under [Where the tokens went](#where-the-tokens-went).
 When the published database has an older schema, or the append log or queued evidence is ahead of it, the report identifies pending ingestion and lists raw task identities with unavailable measurements rather than a plausible zero or an incomplete aggregate.
 Use `report --sync` to wait for pending ingestion before reading measurements; ordinary reports never acquire the ingestion lock.
 The cross-task report groups tasks by the lifecycle row's project path, but project dollar totals remain unavailable because the store has no durable bound for the reporting period's complete historical task population.
@@ -171,7 +171,7 @@ Event times are written once by the lifecycle edge that observed them and become
 
 ## Deterministic limits
 
-Launch time, PR-open time, sanctioned merge or local landing time, teardown time, outcome, process counts, cost, tokens, calls, sessions, configured model, and actual models are deterministic lifecycle or snapshot facts.
+Launch time, PR-open time, sanctioned merge or local landing time, teardown time, outcome, process counts, cost, tokens, calls, sessions, configured model, actual models, and the token attribution snapshot are deterministic lifecycle or snapshot facts.
 A task discovered from any durable raw row, usage snapshot, or annotation remains visible when another source is absent, with that source's measurements NULL and its `task_source` row marked `missing`.
 Legacy `fm-task-usage.v1` snapshots are discovered but treated as missing because they predate deterministic reported-project attribution and may contain the broken plausible-zero result.
 Baseline-only task directories from before lifecycle capture remain `usage-pre-deterministic-attribution` because they have no trustworthy task window or project mapping for a history join.
