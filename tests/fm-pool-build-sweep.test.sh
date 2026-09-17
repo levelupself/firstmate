@@ -136,6 +136,19 @@ done
 rm -rf "${TEST_RACE_LOCK%/*}"
 pass 'vanished locks skip the copy and genuine lock failures retain stderr'
 
+# A failure inside the locked child must explain itself on stderr, not merely
+# print the outer flock/bash argument list.
+fingerprint="$TMP_ROOT/pool/size/rust/target/debug/.fingerprint/demo-3333333333333333/lib-demo"
+cp "$fingerprint" "$TMP_ROOT/fingerprint.saved"
+printf invalid > "$fingerprint"
+rc=0
+"$SWEEP" > "$TMP_ROOT/child-failure.out" 2> "$TMP_ROOT/child-failure.err" || rc=$?
+[ "$rc" -ne 0 ] || fail 'invalid fingerprint returned success'
+assert_contains "$(cat "$TMP_ROOT/child-failure.err")" 'unknown-fingerprint-hash' 'locked child failure omitted its reason from stderr'
+mv "$TMP_ROOT/fingerprint.saved" "$fingerprint"
+pass 'locked child failure logs its concrete reason'
+
+
 # The helper owns a durable attempt marker, including failed attempts.
 "$SWEEP" --periodic
 for _ in {1..100}; do
@@ -541,6 +554,21 @@ for name in thin fat-c fat-b fat-a; do
 done | FM_POOL_TOTAL_BUDGET_GB=0.0001 "$ROOT/bin/fm-pool-footprint.sh" --pool-audit > "$TMP_ROOT/alias-audit.out"
 [ -z "$(check_output)" ] || fail 'canonical project alias or inventory order repeated the wake'
 pass 'canonical project identity survives aliases and inventory reordering'
+
+# The self-project fallback uses the same code root override as spawn/teardown.
+# Audit its actual pool even when this home has no projects/<self> clone.
+cp "$FM_HOME/data/projects.md" "$TMP_ROOT/projects.saved"
+printf '%s\n' '- absent - fixture' '- rust - self fixture' > "$FM_HOME/data/projects.md"
+rm -f "$FM_HOME/state/.pool-build-sweep.last"
+FM_ROOT_OVERRIDE="$PROJECT" FM_PROJECTS_OVERRIDE="$TMP_ROOT/no-clones" \
+  FM_POOL_TOTAL_BUDGET_GB=0.0001 "$SWEEP" --scheduled > "$TMP_ROOT/self-audit.out" 2>&1 \
+  || fail "self-project audit failed: $(cat "$TMP_ROOT/self-audit.out")"
+assert_contains "$(cat "$TMP_ROOT/self-audit.out")" 'skipped=no-clone' 'missing clone was not skipped'
+assert_contains "$(cat "$FM_HOME/state/pool-footprint.over-budget")" "$PROJECT" 'self-project pool was not audited'
+assert_contains "$(cat "$FM_HOME/state/pool-footprint.over-budget")" "$TMP_ROOT/pool/fat-a/rust" 'self-project copy was omitted'
+assert_not_contains "$(cat "$FM_HOME/state/pool-footprint.over-budget")" 'inventory-unavailable' 'missing clone created a false wake'
+mv "$TMP_ROOT/projects.saved" "$FM_HOME/data/projects.md"
+pass 'scheduled audit measures the self-project pool and excludes absent clones'
 
 index=$(git -C "$TMP_ROOT/pool/thin/rust" rev-parse --git-path index)
 printf 'broken index\n' > "$index"
