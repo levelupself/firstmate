@@ -1036,6 +1036,127 @@ SH
   pass "migration pauses older watchers and acquires exclusion before its first scan or marker"
 }
 
+# start_gated_migration <dir> <name>
+# Runs a real migration whose under-lock scan blocks on "$dir/<name>.release",
+# so a concurrent process can observe a sibling migration holding the watcher
+# lock for as long as the test needs. Sets GATED_PID; "$dir/<name>.gate" appears
+# once the sibling is under the lock.
+GATED_PID=
+start_gated_migration() {
+  local dir=$1 name=$2 gatebin state
+  state="$dir/home/state"
+  gatebin="$dir/gatebin-$name"
+  mkdir -p "$gatebin"
+  # Lock acquisition itself calls basename before any pid is claimed; only a
+  # call made while the lock records a holder is the under-lock scan.
+  cat > "$gatebin/basename" <<SH
+#!/usr/bin/env bash
+if [ -s '$state/.watch.lock/pid' ]; then
+  : > '$dir/$name.gate'
+  while [ ! -e '$dir/$name.release' ]; do sleep 0.02; done
+fi
+exec '$REAL_BASENAME' "\$@"
+SH
+  chmod +x "$gatebin/basename"
+  FM_HOME="$dir/home" PATH="$gatebin:$BASE_PATH" "$MIGRATE" > "$dir/$name.out" 2> "$dir/$name.err" &
+  GATED_PID=$!
+  local i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$dir/$name.gate" ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -e "$dir/$name.gate" ] || fail "gated sibling migration never reached its under-lock scan"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$GATED_PID" ] \
+    || fail "gated sibling migration did not hold the watcher lock at its scan"
+}
+
+test_migration_waits_for_sibling_migration() {
+  local dir state sibling_pid rc i
+  dir=$(make_case migration-sibling-wait)
+  state="$dir/home/state"
+  write_ambiguous_poll "$dir"
+  start_gated_migration "$dir" sibling
+  sibling_pid=$GATED_PID
+
+  # A second migration for the same home must wait for the sibling instead of
+  # reading its live, non-watcher hold as ambiguous ownership.
+  set +e
+  FM_HOME="$dir/home" PATH="$BASE_PATH" "$MIGRATE" --checks-safe > "$dir/second.out" 2> "$dir/second.err" &
+  local second_pid=$!
+  set -e
+  sleep 1
+  kill -0 "$second_pid" 2>/dev/null \
+    || fail "second migration gave up while a sibling migration held the lock: $(cat "$dir/second.err")"
+  kill -0 "$sibling_pid" 2>/dev/null || fail "second migration disturbed the sibling migration"
+  : > "$dir/sibling.release"
+  set +e
+  wait "$sibling_pid"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "sibling migration failed: $(cat "$dir/sibling.err")"
+  set +e
+  wait "$second_pid"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "second migration failed after the sibling released: $(cat "$dir/second.err")"
+  [ ! -s "$dir/second.err" ] || fail "second migration reported a diagnostic: $(cat "$dir/second.err")"
+  assert_valid_migration_marker "$state/.pr-check-migration-v1"
+  [ ! -e "$state/.watch.lock" ] || fail "sibling wait left the watcher lock held"
+  pass "a concurrent migration waits for a sibling migration holding the watcher lock"
+}
+
+test_migration_sibling_wait_is_bounded() {
+  local dir state sibling_pid rc
+  dir=$(make_case migration-sibling-timeout)
+  state="$dir/home/state"
+  write_ambiguous_poll "$dir"
+  start_gated_migration "$dir" sibling
+  sibling_pid=$GATED_PID
+  set +e
+  FM_HOME="$dir/home" FM_WATCHER_STALE_GRACE=1 PATH="$BASE_PATH" "$MIGRATE" --checks-safe \
+    > "$dir/second.out" 2> "$dir/second.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "second migration succeeded while a sibling still held the lock"
+  assert_grep 'PR_CHECK_MIGRATION: a concurrent PR check migration has held the watcher lock' "$dir/second.err" \
+    "bounded sibling wait did not name the concurrent migration"
+  assert_no_grep 'ownership is ambiguous' "$dir/second.err" \
+    "bounded sibling wait misreported the sibling as ambiguous ownership"
+  kill -0 "$sibling_pid" 2>/dev/null || fail "bounded sibling wait killed the sibling migration"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$sibling_pid" ] \
+    || fail "bounded sibling wait disturbed the sibling's lock"
+  : > "$dir/sibling.release"
+  wait "$sibling_pid" || fail "sibling migration failed after release: $(cat "$dir/sibling.err")"
+  pass "a concurrent migration stops waiting for a sibling after the watcher stale grace"
+}
+
+test_migration_refuses_unknown_live_lock_holder() {
+  local dir state holder rc
+  dir=$(make_case migration-unknown-holder)
+  state="$dir/home/state"
+  write_ambiguous_poll "$dir"
+  sleep 300 &
+  holder=$!
+  mkdir "$state/.watch.lock"
+  printf '%s\n' "$holder" > "$state/.watch.lock/pid"
+  # Older than the mid-acquire settle grace: this holder had time to record who
+  # it is and never did, so it is neither a watcher nor a sibling migration.
+  touch -t 200001010000 "$state/.watch.lock"
+  set +e
+  FM_HOME="$dir/home" PATH="$BASE_PATH" "$MIGRATE" --checks-safe > "$dir/migrate.out" 2> "$dir/migrate.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "migration proceeded past an unknown live lock holder"
+  assert_grep 'PR_CHECK_MIGRATION: watcher ownership is ambiguous' "$dir/migrate.err" \
+    "unknown live holder was not reported as ambiguous ownership"
+  kill -0 "$holder" 2>/dev/null || fail "migration killed an unknown live lock holder"
+  [ "$(cat "$state/.watch.lock/pid")" = "$holder" ] || fail "migration disturbed an unknown holder's lock"
+  [ ! -e "$state/.pr-check-migration-v1" ] || fail "migration published a marker without exclusion"
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  pass "migration still refuses an unknown live watcher-lock holder"
+}
+
 test_migration_initializes_fresh_state() {
   local dir state rc
   dir="$TMP_ROOT/migration-fresh-state"
@@ -3513,6 +3634,9 @@ test_concurrent_watcher_sees_only_complete_publication
 test_postrename_poll_validation_revokes_and_retries
 test_migration_initializes_fresh_state
 test_migration_excludes_older_watcher_before_scan
+test_migration_waits_for_sibling_migration
+test_migration_sibling_wait_is_bounded
+test_migration_refuses_unknown_live_lock_holder
 test_private_artifact_paths_refuse_symlinks_and_directories
 test_marker_and_diagnostic_rename_fail_closed
 test_postrename_marker_and_diagnostic_validation_retries

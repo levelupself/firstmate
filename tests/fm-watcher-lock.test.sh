@@ -830,6 +830,65 @@ test_arm_fails_loud_when_no_fresh_watcher_confirmable() {
   pass "arm reports FAILED and exits non-zero when no fresh watcher can be confirmed"
 }
 
+test_arm_confirmation_waits_behind_sibling_migration() {
+  # A PR check migration started elsewhere (a crewmate registering a PR check,
+  # a session-start bootstrap) can hold the watcher lock for longer than the
+  # confirmation budget. The arm's fresh child waits behind it, so the budget
+  # must count from the migration's release, not from the fork; otherwise both
+  # bounded Stop-owned attempts land inside one migration window and supervision
+  # gives up while the home is being recovered.
+  local dir state fakebin gatebin armout armpid migrate_pid lock_pid i rc real_basename
+  dir=$(make_case arm-sibling-migration)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  gatebin="$dir/gatebin"
+  armout="$dir/arm.out"
+  real_basename=$(command -v basename)
+  mkdir -p "$gatebin"
+  printf 'window=fm-task-a\npr=https://github.com/o/r/pull/9\n' > "$state/task-a.meta"
+  printf 'legacy poll bytes\n' > "$state/task-a.check.sh"
+  chmod 0600 "$state/task-a.meta" "$state/task-a.check.sh"
+  # Lock acquisition itself calls basename before any pid is claimed; only a
+  # call made while the lock records a holder is the migration's under-lock scan.
+  cat > "$gatebin/basename" <<SH
+#!/usr/bin/env bash
+if [ -s '$state/.watch.lock/pid' ]; then
+  : > '$dir/gate'
+  while [ ! -e '$dir/release' ]; do sleep 0.02; done
+fi
+exec '$real_basename' "\$@"
+SH
+  chmod +x "$gatebin/basename"
+  PATH="$gatebin:$PATH" FM_HOME="$dir" "$ROOT/bin/fm-pr-check-migrate.sh" > "$dir/migrate.out" 2> "$dir/migrate.err" &
+  migrate_pid=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$dir/gate" ]; do sleep 0.05; i=$((i + 1)); done
+  [ -e "$dir/gate" ] || fail "sibling migration never reached its under-lock scan"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$migrate_pid" ] \
+    || fail "sibling migration did not hold the watcher lock at its scan"
+
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" &
+  armpid=$!
+  # Hold the lock well past the confirmation budget.
+  sleep 3
+  is_live_non_zombie "$armpid" || fail "arm gave up while a sibling migration held the lock: $(cat "$armout")"
+  ! grep -qF 'watcher: FAILED' "$armout" || fail "arm reported FAILED behind a sibling migration: $(cat "$armout")"
+  : > "$dir/release"
+  wait "$migrate_pid" || fail "sibling migration failed: $(cat "$dir/migrate.err")"
+  i=0
+  while [ "$i" -lt 150 ] && ! grep -qF 'watcher: started pid=' "$armout" 2>/dev/null; do
+    sleep 0.1; i=$((i + 1))
+  done
+  grep -qF 'watcher: started pid=' "$armout" || fail "arm did not start a watcher after the sibling migration released: $(cat "$armout")"
+  ! grep -qF 'watcher: FAILED' "$armout" || fail "arm printed FAILED after the sibling migration released: $(cat "$armout")"
+  lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  grep -F "watcher: started pid=$lock_pid (beacon fresh)" "$armout" >/dev/null \
+    || fail "arm started line did not name the confirmed live watcher (lock '$lock_pid')"
+  kill "$armpid" "$lock_pid" 2>/dev/null || true
+  wait "$armpid" 2>/dev/null || true
+  pass "arm confirmation budget counts from a sibling migration's release"
+}
+
 test_cycle_exit_ledger_links_successor_and_stays_bounded() {
   local dir state fakebin armout check_file first_arm successor_arm successor_pid i size iteration
   dir=$(make_case cycle-ledger)
@@ -1125,5 +1184,6 @@ test_arm_hup_cleans_child_and_temp_output
 test_arm_propagates_immediate_wake_before_confirmation
 test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable
+test_arm_confirmation_waits_behind_sibling_migration
 test_cycle_exit_ledger_links_successor_and_stays_bounded
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified
