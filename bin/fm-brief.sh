@@ -92,6 +92,13 @@
 # frames the prohibition as agent identity rather than one literal trailer
 # string, so it survives the harness rewording the trailer; a trailer
 # crediting a human co-author is unaffected.
+# Ship and scout briefs carry a turn-ending section stating the mechanism that
+# strands workers: ending a turn stops the worker and nothing resumes it, so a
+# turn must never end while a background command, watcher, or wait it started is
+# still running. The section names that concrete failure and the foreground
+# alternative because the bare rule alone did not land with workers who believed
+# another turn would arrive on its own; it is worded around the turn, not any
+# one command, so it survives changing tooling.
 # Refuses to overwrite an existing brief.
 set -eu
 
@@ -140,6 +147,18 @@ For any full-suite run the terminal report relies on, report the exact full comm
 A terminal report that names a full-suite run without all three fields is incomplete.
 EOF
 SUITE_GUIDANCE=${SUITE_GUIDANCE%$'\n'}
+
+IFS= read -r -d '' TURN_GUIDANCE <<'EOF' || true
+# Turns
+Ending your turn stops you. Nothing resumes you. There is no next turn unless a human or firstmate notices and starts one.
+So never end a turn while work you started is still outstanding.
+The concrete failure: a turn ends while a background command, watcher, or wait you launched is still running - the pane reports a shell or monitor still running, the work stops there, and you sit idle until someone steers you.
+Ending a turn with "I'll report at the next gate or outcome" is that same failure; the next gate cannot reach you.
+Run a long suite, build, or run in the foreground to a log file, or wait on its PID in the foreground, so its result lands inside your turn; read the tail of the log rather than the whole file.
+If you must poll a run, poll it once, act on that return in the same turn, and keep going.
+Starting a run means driving it to a gate or an outcome; waiting is declining to ask.
+EOF
+TURN_GUIDANCE=${TURN_GUIDANCE%$'\n'}
 
 resolve_directory_input() {
   local name=$1 path=$2 resolved
@@ -436,6 +455,8 @@ This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
 The report is the only thing that survives, so anything worth keeping must be in it.
 
+$TURN_GUIDANCE
+
 # Rules
 $SEARCH_GUIDANCE
 
@@ -584,6 +605,8 @@ The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse
 If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
+
+$TURN_GUIDANCE
 
 # Rules
 $SEARCH_GUIDANCE

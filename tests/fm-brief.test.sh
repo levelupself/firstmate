@@ -777,6 +777,44 @@ test_ship_commit_section_overrides_injected_agent_coauthor_trailer() {
   pass "fm-brief.sh: ship commit section overrides an injected agent co-author trailer"
 }
 
+test_ship_and_scout_briefs_carry_the_turn_ending_mechanism() {
+  local home id brief kind
+  home="$TMP_ROOT/turn-ending-home"
+  mkdir -p "$home/data"
+  # Every crewmate scaffold that can launch a long command must carry the
+  # mechanism, not only the rule: workers told the bare rule still parked a
+  # turn on a running shell because they believed another turn would arrive.
+  for kind in no-mistakes direct-PR local-only scout; do
+    id="brief-turn-${kind}"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$kind" >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "brief was not scaffolded for $kind"
+    assert_grep "Ending your turn stops you" "$brief" \
+      "brief ($kind) does not state that ending a turn stops the worker"
+    assert_grep "Nothing resumes you" "$brief" \
+      "brief ($kind) does not state that nothing resumes a stopped worker"
+    assert_grep "no next turn unless" "$brief" \
+      "brief ($kind) does not state that no next turn arrives on its own"
+    assert_grep "background command" "$brief" \
+      "brief ($kind) does not name the concrete failure of a turn ending on a running background command"
+    assert_grep "still running" "$brief" \
+      "brief ($kind) does not name the still-running shell the pane reports"
+    assert_grep "never end a turn while work you started is still outstanding" "$brief" \
+      "brief ($kind) does not carry the never-end-a-turn-holding-work rule"
+    assert_grep "act on that return in the same turn" "$brief" \
+      "brief ($kind) does not tell the worker to act on a poll result in the same turn"
+    assert_grep "foreground" "$brief" \
+      "brief ($kind) does not tell the worker to run long suites in the foreground"
+    assert_grep "waiting is declining to ask" "$brief" \
+      "brief ($kind) does not frame waiting as declining to drive the run"
+  done
+  pass "fm-brief.sh: ship and scout briefs state why a turn must never end holding outstanding work"
+}
+
 test_herdr_lab_contract_is_explicit_and_complete() {
   local home id brief
   home="$TMP_ROOT/herdr-lab-home"
@@ -1171,6 +1209,7 @@ test_reports_disclose_commit_and_proof_files
 test_ship_reports_bind_full_suite_to_clean_commit
 test_ship_project_memory_wording
 test_ship_commit_section_overrides_injected_agent_coauthor_trailer
+test_ship_and_scout_briefs_carry_the_turn_ending_mechanism
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
