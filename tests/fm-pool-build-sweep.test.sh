@@ -103,27 +103,27 @@ pass 'Cargo profile locks close the inventory-to-deletion race'
 
 # Remove an enumerated lock before flock opens it, both with and without its
 # parent directory. A real child error must retain stderr on its failure line.
-export TEST_REAL_FLOCK
-TEST_REAL_FLOCK=$(command -v flock)
-cat > "$TMP_ROOT/fakebin/flock" <<'EOF'
-#!/usr/bin/env bash
-if [ "${4:-}" = "$TEST_RACE_LOCK" ]; then
-  case "$TEST_LOCK_FAILURE" in
-    file) rm "$4" ;;
-    directory) rm -r "${4%/*}" ;;
-    stderr) printf 'fixture lock permission denied\n' >&2; exit 73 ;;
-  esac
-fi
-exec "$TEST_REAL_FLOCK" "$@"
-EOF
-chmod +x "$TMP_ROOT/fakebin/flock"
+cat > "$TMP_ROOT/lock-race.cjs" <<'JS'
+const fs = require('node:fs'), cp = require('node:child_process');
+const exec = cp.execFileSync;
+cp.execFileSync = function(cmd, args, opts) {
+  const lock = process.env.TEST_RACE_LOCK;
+  if (args.includes(lock)) {
+    if (process.env.TEST_LOCK_FAILURE === 'file') fs.unlinkSync(lock);
+    else if (process.env.TEST_LOCK_FAILURE === 'directory') fs.rmSync(require('node:path').dirname(lock), {recursive:true});
+    else return exec('bash', ['-c', 'echo "fixture lock permission denied" >&2; exit 73'], opts);
+  }
+  return exec(cmd, args, opts);
+};
+require('node:module').syncBuiltinESMExports();
+JS
 export TEST_RACE_LOCK="$TMP_ROOT/pool/size/rust/target/race/.cargo-lock"
 for TEST_LOCK_FAILURE in file directory stderr; do
   export TEST_LOCK_FAILURE
   mkdir -p "${TEST_RACE_LOCK%/*}"
   touch "$TEST_RACE_LOCK"
   rc=0
-  "$SWEEP" > "$TMP_ROOT/race-$TEST_LOCK_FAILURE" 2>&1 || rc=$?
+  NODE_OPTIONS="--require=$TMP_ROOT/lock-race.cjs" "$SWEEP" > "$TMP_ROOT/race-$TEST_LOCK_FAILURE" 2>&1 || rc=$?
   output=$(cat "$TMP_ROOT/race-$TEST_LOCK_FAILURE")
   if [ "$TEST_LOCK_FAILURE" = stderr ]; then
     [ "$rc" -ne 0 ] || fail 'real lock failure returned success'
@@ -133,7 +133,6 @@ for TEST_LOCK_FAILURE in file directory stderr; do
     assert_contains "$output" 'skipped=copy-changed-during-sweep' 'vanished lock was not skipped'
   fi
 done
-rm "$TMP_ROOT/fakebin/flock"
 rm -rf "${TEST_RACE_LOCK%/*}"
 pass 'vanished locks skip the copy and genuine lock failures retain stderr'
 
