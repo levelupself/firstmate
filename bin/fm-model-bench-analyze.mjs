@@ -473,7 +473,7 @@ export function foldContext(harness, rows, seed) {
   };
   for (const r of rows) {
     if (r && r.__malformed) { out.malformed += 1; continue; }
-    if (isCompactionRow(harness, r)) { out.compactions += 1; continue; }
+    if (isCompactionRow(harness, r)) { out.compactions += 1; out.context = null; continue; }
     const context = contextRow(harness, r);
     if (context === null) continue;
     out.context = context;

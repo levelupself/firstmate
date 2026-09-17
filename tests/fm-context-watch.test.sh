@@ -256,9 +256,11 @@ test_watcher_wakes_once_per_crossing_step_and_compaction() {
   expect_wake "$home" "$fakebin" "$out" "context: ctx-live 310k tokens (warn 200k)" "next 100k step"
 
   claude_compaction "$file" "$wt" "$CLAUDE_STAMP" 5
-  claude_usage "$file" "$wt" "$CLAUDE_STAMP" 6 0 0 50000
   expect_wake "$home" "$fakebin" "$out" "context: ctx-live compacted (n=1)" "compaction"
   expect_quiet "$home" "$fakebin" "$out" "unchanged record after the compaction"
+
+  claude_usage "$file" "$wt" "$CLAUDE_STAMP" 6 0 0 50000
+  expect_quiet "$home" "$fakebin" "$out" "first measurement after compaction"
 
   # Climbing back over the threshold after a compaction is a fresh crossing.
   claude_usage "$file" "$wt" "$CLAUDE_STAMP" 7 0 0 220000
@@ -348,6 +350,44 @@ test_context_is_a_durable_wake_kind() {
   pass "context is a durable wake kind the queue accepts and lists"
 }
 
+test_tick_unread_aggregates_remain_null() {
+  local home wt out file
+  home=$(make_home unread); wt="$home/wt"
+  bind_task "$home/data" ctx-unread claude "$home/store" "$wt" "$CLAUDE_STAMP"
+  fm_write_meta "$home/state/ctx-unread.meta" "worktree=$wt" "harness=claude" "kind=ship"
+  out=$(tick "$home") || fail "unread tick failed: $out"
+  jq -e '.context == null and .peak == null and .compactions == null and .refusal != null' \
+    "$home/state/ctx-unread.context-watch" >/dev/null || fail "unread cache reports measured aggregates"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-fleet-snapshot.sh" --json) || fail "unread snapshot failed"
+  printf '%s' "$out" | jq -e '.tasks[] | select(.id == "ctx-unread") | .context_tokens == null and .context_peak_tokens == null and .compactions == null' \
+    >/dev/null || fail "unread snapshot reports measured aggregates: $out"
+  file=$(claude_open "$home/store" "$wt" "$CLAUDE_STAMP")
+  sleep 1.1
+  out=$(tick "$home" FM_CONTEXT_BIND_RETRY_SECS=1) || fail "read tick failed: $out"
+  jq -e '.context == null and .peak == 0 and .compactions == 0' \
+    "$home/state/ctx-unread.context-watch" >/dev/null || fail "read record lacks measured aggregates"
+  pass "unread aggregates stay null through failed binding and snapshot rendering"
+}
+
+test_codex_compaction_invalidates_stale_usage() {
+  local home wt file out
+  home=$(make_home codex-stale); wt="$home/wt"
+  bind_task "$home/data" ctx-stale codex "$home/store" "$wt" "$CODEX_STAMP"
+  fm_write_meta "$home/state/ctx-stale.meta" "worktree=$wt" "harness=codex" "kind=ship"
+  file=$(codex_open "$home/store" "$wt" "$CODEX_STAMP")
+  codex_usage "$file" 1 310000 310100
+  codex_compaction "$file" 2
+  out=$(tick "$home") || fail "compaction tick failed: $out"
+  [ "$out" = "$(printf 'ctx-stale\tcontext: ctx-stale compacted (n=1)\t0\t1\t0')" ] || fail "stale usage emitted a threshold wake: $out"
+  printf 'warned=0\ncompactions=1\nrestarts=0\n' > "$home/state/.context-surfaced-ctx-stale"
+  out=$(tick "$home") || fail "unchanged tick failed"
+  [ -z "$out" ] || fail "cached stale usage emitted a wake: $out"
+  codex_usage "$file" 3 220000 530200
+  out=$(tick "$home") || fail "fresh measurement tick failed"
+  [ "$out" = "$(printf 'ctx-stale\tcontext: ctx-stale 220k tokens (warn 200k)\t200000\t1\t0')" ] || fail "fresh crossing missing: $out"
+  pass "codex compaction invalidates stale usage until a fresh measurement"
+}
+
 test_claude_reader_folds_context_peak_and_compactions
 test_codex_reader_folds_context_peak_and_compactions
 test_reader_refuses_an_unbound_task_by_name
@@ -357,3 +397,6 @@ test_watcher_honours_warn_and_step_overrides
 test_watcher_skips_unbound_and_secondmate_tasks
 test_tick_rebinds_a_relaunch_whose_record_appears_later
 test_context_is_a_durable_wake_kind
+
+test_tick_unread_aggregates_remain_null
+test_codex_compaction_invalidates_stale_usage

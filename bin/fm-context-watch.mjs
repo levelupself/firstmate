@@ -155,12 +155,13 @@ function readTail(file, offset) {
 
 function rollUp(harness, records, launches) {
   const newest = records[records.length - 1]
+  const measured = records.some(r => r.offset > 0)
   return {
     harness,
     source: newest ? newest.file : null,
     context: newest && Number.isFinite(newest.context) ? newest.context : null,
-    peak: records.reduce((m, r) => Math.max(m, r.peak || 0), 0),
-    compactions: records.reduce((n, r) => n + (r.compactions || 0), 0),
+    peak: measured ? records.reduce((m, r) => Math.max(m, r.peak || 0), 0) : null,
+    compactions: measured ? records.reduce((n, r) => n + (r.compactions || 0), 0) : null,
     restarts: Math.max(0, launches - 1),
     launches,
   }
@@ -173,7 +174,7 @@ export function readTask(id) {
   const folded = records.map(r => {
     const tail = readTail(r.file, 0)
     const fold = foldContext(harness, tail.rows, null)
-    return {stamp: r.stamp, file: r.file, context: fold.context, peak: fold.peak, compactions: fold.compactions}
+    return {stamp: r.stamp, file: r.file, offset: tail.offset, context: fold.context, peak: fold.peak, compactions: fold.compactions}
   })
   return {schema: SCHEMA, task: id, ...rollUp(harness, folded, ledger.receipts.length), records: folded}
 }
