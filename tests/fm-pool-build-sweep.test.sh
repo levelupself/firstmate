@@ -278,3 +278,115 @@ done
 [ -L "$wt/target/kernel-c/dangling/.git" ] || fail 'dangling repository entry deleted'
 [ -L "$wt/target/kernel-c/scratch-link" ] || fail 'custom profile symlink deleted'
 pass 'custom eviction preserves Cargo lock serialization and shared walker exclusions'
+
+# Nested output is eligible without a root manifest, including linked worktrees.
+wt="$TMP_ROOT/pool/nested/rust"
+git -C "$PROJECT" worktree add -q --detach "$wt"
+# Keep the ignore rule local to this disposable fixture.
+printf '.oracle-work/\n' >> "$wt/.gitignore"
+nested="$wt/.oracle-work/extension-worktree"
+git -C "$PROJECT" worktree add -q --detach "$nested"
+node - "$wt" "$TEST_INVENTORY" <<'JS'
+const fs=require('fs'), [wt,inventory]=process.argv.slice(2);
+fs.writeFileSync(inventory,JSON.stringify([{path:wt,processes:[]}]));
+for(const parent of ['x','extension-worktree']) for(let i=1;i<=2;i++) {
+ const hash=String(i).repeat(16), base=`${wt}/.oracle-work/${parent}/target/debug`, fp=`${base}/.fingerprint/demo-${hash}`;
+ fs.mkdirSync(fp,{recursive:true});fs.mkdirSync(`${base}/deps`,{recursive:true});
+ for(const [p,data] of [[`${fp}/lib-demo.json`,JSON.stringify({deps:[],compile_kind:0})],[`${fp}/lib-demo`,hash],[`${base}/deps/libdemo-${hash}.rlib`,Buffer.alloc(16384)]]) {
+  fs.writeFileSync(p,data);const t=new Date(Date.now()-(72-i)*3600000);fs.utimesSync(p,t,t);
+ }
+}
+fs.writeFileSync(`${wt}/.oracle-work/report.json`,'{}');
+for(const ext of ['md','log','txt','patch']) fs.writeFileSync(`${wt}/.oracle-work/report.${ext}`,'evidence');
+fs.mkdirSync(`${wt}/.oracle-work/x/target/notes`,{recursive:true});
+fs.writeFileSync(`${wt}/.oracle-work/x/target/notes/build.json`,'{}');
+fs.mkdirSync(`${wt}/outside-target`,{recursive:true});
+fs.writeFileSync(`${wt}/outside-target/keep`,'preserve');
+fs.symlinkSync(`${wt}/outside-target`,`${wt}/.oracle-work/directory-link`);
+fs.writeFileSync(`${wt}/.oracle-work/disposable.jar`,'binary');
+fs.writeFileSync(`${wt}/.oracle-work/large.log`,'');fs.truncateSync(`${wt}/.oracle-work/large.log`,50000000);
+fs.symlinkSync(process.env.TMP_OUTSIDE || `${wt}/Cargo.toml`,`${wt}/.oracle-work/link`);
+JS
+"$SWEEP" --explain "$wt" > "$TMP_ROOT/nested-explain"
+assert_contains "$(cat "$TMP_ROOT/nested-explain")" "$wt/.oracle-work/x/target" 'explain omitted nested target'
+assert_contains "$(cat "$TMP_ROOT/nested-explain")" 'category=oracle-evidence' 'explain omitted evidence category'
+node - "$SWEEP" "$wt" "$TEST_INVENTORY" <<'JS'
+const fs=require('fs'), cp=require('child_process'), assert=require('assert/strict');
+const [sweep,wt,inventory]=process.argv.slice(2);
+const lock=`${wt}/.oracle-work/extension-worktree/target/debug/.cargo-lock`;
+fs.writeFileSync(lock,'');
+function snapshot(p) {
+ const stat=fs.lstatSync(p);
+ if(stat.isSymbolicLink()) return {link:fs.readlinkSync(p)};
+ if(stat.isDirectory()) return Object.fromEntries(fs.readdirSync(p).sort().map(n=>[n,snapshot(`${p}/${n}`)]));
+ return {size:stat.size,mtime:stat.mtimeMs,ino:stat.ino,data:fs.readFileSync(p).toString('base64')};
+}
+function size(p) {
+ const stat=fs.lstatSync(p);
+ return stat.isSymbolicLink()?0:stat.isDirectory()?fs.readdirSync(p).reduce((sum,n)=>sum+size(`${p}/${n}`),0):stat.size;
+}
+const before=snapshot(wt);
+for(const busy of [true,false]) {
+ fs.writeFileSync(inventory,JSON.stringify([{path:wt,processes:busy?[{pid:123,name:'cargo'}]:[]}]));
+ const output=busy
+  ?cp.execFileSync(sweep,['--explain',wt],{encoding:'utf8'})
+  :cp.execFileSync('flock',[lock,sweep,'--explain',wt],{encoding:'utf8'});
+ assert.ok(output.includes(`skipped=${busy?'live-cargo':'live-cargo-lock'}`),output);
+ for(const parent of ['x','extension-worktree']) {
+  const target=`${wt}/.oracle-work/${parent}/target`;
+  assert.ok(output.includes(`${target} category=cargo-target bytes=${size(target)}`),output);
+ }
+ for(const category of ['oracle-scratch','oracle-evidence'])
+  assert.match(output,new RegExp(`category=${category}[^\\n]*bytes_before=[1-9][0-9]*`));
+ assert.deepEqual(snapshot(wt),before,'explain changed copy contents or file metadata');
+}
+JS
+pass 'busy-process and held-lock explanations report nested sizes without changing files'
+# Nested locks serialize the whole copy before any target is swept.
+# shellcheck disable=SC2016
+flock "$nested/target/debug/.cargo-lock" bash -c '"$1" > "$2"' _ "$SWEEP" "$TMP_ROOT/nested-lock"
+assert_contains "$(cat "$TMP_ROOT/nested-lock")" 'live-cargo-lock' 'nested Cargo lock ignored'
+assert_present "$wt/.oracle-work/x/target/debug/deps/libdemo-1111111111111111.rlib" 'copy swept while nested Cargo lock held'
+"$SWEEP" > "$TMP_ROOT/nested-sweep"
+for parent in x extension-worktree; do
+  assert_absent "$wt/.oracle-work/$parent/target/debug/deps/libdemo-1111111111111111.rlib" 'nested stale generation retained'
+  assert_present "$wt/.oracle-work/$parent/target/debug/deps/libdemo-2222222222222222.rlib" 'nested newest generation deleted'
+done
+assert_present "$wt/.oracle-work/disposable.jar" 'live sweep deleted non-target scratch'
+"$SWEEP" --return-copy "$wt" --dry-run > "$TMP_ROOT/nested-return-dry"
+assert_present "$nested/.git" 'return dry-run deleted worktree metadata'
+assert_present "$wt/.oracle-work/disposable.jar" 'return dry-run deleted scratch'
+"$SWEEP" --return-copy "$wt" > "$TMP_ROOT/nested-return"
+assert_absent "$wt/.oracle-work/x/target" 'return retained nested cargo target'
+assert_absent "$nested" 'return retained nested worktree'
+assert_absent "$wt/.oracle-work/disposable.jar" 'return retained scratch binary'
+assert_absent "$wt/.oracle-work/large.log" 'return retained oversized evidence'
+assert_present "$wt/.oracle-work/report.json" 'return deleted JSON evidence'
+for ext in md log txt patch; do
+  assert_present "$wt/.oracle-work/report.$ext" 'return deleted small evidence'
+done
+assert_present "$wt/outside-target/keep" 'return followed directory symlink'
+assert_present "$wt/Cargo.toml" 'return followed scratch symlink'
+[ -L "$wt/.oracle-work/link" ] || fail 'return removed scratch symlink'
+if git -C "$PROJECT" worktree list --porcelain | rg -F "worktree $nested"; then fail 'return retained nested worktree registration'; fi
+assert_contains "$(cat "$TMP_ROOT/nested-return")" 'bytes_after=' 'return omitted byte accounting'
+pass 'nested targets sweep safely and returned scratch retains only small evidence and exclusions'
+
+# Outer tracked content and ignore exceptions protect the entire scratch root.
+for protection in tracked nonignored; do
+  wt="$TMP_ROOT/pool/$protection-scratch/rust"
+  git -C "$PROJECT" worktree add -q --detach "$wt"
+  mkdir -p "$wt/.oracle-work"
+  printf 'keep' > "$wt/.oracle-work/keep"
+  printf 'discard' > "$wt/.oracle-work/scratch.jar"
+  if [ "$protection" = tracked ]; then
+    printf '.oracle-work/\n' >> "$wt/.gitignore"
+    git -C "$wt" add -f .oracle-work/keep
+  else
+    printf '.oracle-work/*\n!.oracle-work/keep\n' >> "$wt/.gitignore"
+  fi
+  "$SWEEP" --return-copy "$wt" > "$TMP_ROOT/protected-return"
+  assert_present "$wt/.oracle-work/keep" 'return deleted protected scratch file'
+  assert_present "$wt/.oracle-work/scratch.jar" 'return failed to protect mixed scratch root'
+done
+pass 'tracked and nonignored scratch roots remain protected'

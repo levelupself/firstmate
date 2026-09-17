@@ -11,7 +11,7 @@ const args = process.argv.slice(2);
 let dry = false, age = Number(process.env.FM_POOL_BUILD_AGE_HOURS || 24);
 let maxGB = Number(process.env.FM_POOL_BUILD_MAX_GB || 8);
 let scheduled = false, periodic = false;
-let lockedCopy, explain;
+let lockedCopy, lockedTargets, explain;
 for (let i = 0; i < args.length; i++) {
   switch (args[i]) {
     case '--dry-run': dry = true; break;
@@ -21,6 +21,7 @@ for (let i = 0; i < args.length; i++) {
     case '--periodic': periodic = true; break;
     case '--scheduled': scheduled = true; break;
     case '--locked-copy': lockedCopy = [args[++i], args[++i]]; break;
+    case '--locked-targets': lockedTargets = JSON.parse(args[++i]); break;
     default: throw Error(`unknown argument: ${args[i]}`);
   }
 }
@@ -96,7 +97,7 @@ function processReason(entry) {
 const bytes = entries => entries.reduce((sum, f) => sum + f.size, 0);
 const report = (wt, before, after, reason) => console.log(`${wt}\tbytes_before=${before}\tbytes_after=${after}\t${reason}`);
 function boundary(wt) {
-  return run('bash', ['-c', '. "$1"; fm_build_output_target "$2"', '_', path.join(dir, 'fm-build-output-lib.sh'), wt]);
+  return JSON.parse(run('bash', ['-c', '. "$1"; fm_build_output_target "$2"', '_', path.join(dir, 'fm-build-output-lib.sh'), wt]));
 }
 function sameRepo(project, wt) {
   const common = p => fs.realpathSync(run('git', ['-C', p, 'rev-parse','--path-format=absolute','--git-common-dir']));
@@ -172,12 +173,11 @@ function select(target, all) {
     .sort((a,b)=>a.time-b.time || a.p.localeCompare(b.p));
   return {candidates, profiles};
 }
-function sweep(project, wt) {
+function sweep(project, wt, target) {
   let before = 0;
   try {
     if (!sameRepo(project,wt)) {report(wt,0,0,'skipped=not-pool-copy');return;}
-    const target = boundary(wt);
-    if (!target) { report(wt,0,0,'skipped=no-eligible-rust-output');return; }
+    if (!boundary(wt).includes(target)) { report(wt,0,0,'skipped=no-eligible-rust-output');return; }
     const all = files(target); before = bytes(all);
     const entry = inventory(project).find(e => e.path === wt);
     if (!entry) throw Error('missing-pool-entry');
@@ -220,7 +220,7 @@ function sweep(project, wt) {
       }
     }
     // Recheck both the Git boundary and process inventory after planning.
-    if (boundary(wt) !== target) throw Error('output-boundary-changed');
+    if (!boundary(wt).includes(target)) throw Error('output-boundary-changed');
     const fresh = inventory(project).find(e => e.path === wt);
     if (!fresh) throw Error('missing-pool-entry');
     const busy = processReason(fresh);
@@ -287,6 +287,12 @@ function sweep(project, wt) {
 function withCargoLocks(project, entry) {
   const wt = entry.path;
   if (!sameRepo(project,wt)) {report(wt,0,0,'skipped=not-pool-copy');return;}
+  const targets = boundary(wt);
+  if (explain) {
+    for (const target of targets) console.log(`${target} category=cargo-target bytes=${bytes(files(target))}`);
+    const output=run('bash',['-c','. "$1"; fm_prune_build_output "$2" dry-run','_',path.join(dir,'fm-build-output-lib.sh'),wt]);
+    if(output) console.log(output);
+  }
   const reason = processReason(entry);
   if (reason) {
     let size=0;try {size=bytes(files(path.join(wt,'target')));}catch{}
@@ -294,19 +300,22 @@ function withCargoLocks(project, entry) {
   }
   // Cargo uses flock on each profile's .cargo-lock. Only open existing regular
   // files beneath the eligible output root; a symlink never redirects a lock.
-  const target = boundary(wt);
-  if (!target) {report(wt,0,0,'skipped=no-eligible-rust-output');return;}
-  const locks = files(target).filter(f => path.basename(f.p)==='.cargo-lock').map(f=>f.p);
+  if (!targets.length) {report(wt,0,0,'skipped=no-eligible-rust-output');return;}
+  const locks = targets.flatMap(target=>files(target)).filter(f => path.basename(f.p)==='.cargo-lock').map(f=>f.p);
   let argv = [process.execPath, fileURLToPath(import.meta.url), '--locked-copy',project,wt,
-    '--age-hours',String(age),'--max-gb',String(maxGB), ...(dry?['--dry-run']:[]), ...(explain?['--explain',explain]:[])];
+    '--locked-targets',JSON.stringify(targets), '--age-hours',String(age),'--max-gb',String(maxGB), ...(dry?['--dry-run']:[]), ...(explain?['--explain',explain]:[])];
   for (const lock of locks) argv = ['flock','-n','-E','75',lock,...argv];
   try {const output=run(argv[0],argv.slice(1),{timeout:240000});if(output) console.log(output);}
   catch(e) {
-    if(e.status===75) {const size=bytes(files(target));report(wt,size,size,'skipped=live-cargo-lock');}
+    if(e.status===75) {const size=bytes(targets.flatMap(target=>files(target)));report(wt,size,size,'skipped=live-cargo-lock');}
     else {if(e.stdout) process.stdout.write(e.stdout);console.error(`${wt}: sweep failed: ${e.stderr || e.message}`);process.exitCode=1;}
   }
 }
-if (lockedCopy) sweep(...lockedCopy);
+if (lockedCopy) {
+  const current=boundary(lockedCopy[1]);
+  if(JSON.stringify(current)!==JSON.stringify(lockedTargets)) throw Error('output-boundary-changed');
+  for (const target of current) sweep(...lockedCopy,target);
+}
 else {
   const registry = path.join(process.env.FM_DATA_OVERRIDE || path.join(home,'data'), 'projects.md');
   const names = exists(registry) ? [...new Set(fs.readFileSync(registry,'utf8').split('\n').map(l => /^- ([^\s/]+)(?:\s|$)/.exec(l)?.[1]).filter(n=>n && n!=='.' && n!=='..'))] : [];

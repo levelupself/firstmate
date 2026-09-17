@@ -115,7 +115,13 @@ Remaining oversized protected output is reported as `protected-over-cap`; this i
 When available, cargo-sweep supplies a dry-run size plan; it is never allowed to delete current artifacts directly.
 `--dry-run` reports planned reclamation without deleting files, and each copy's output includes before and after bytes and any skip reason.
 The helper's header owns invocation, cadence, logging, and timeout details; `tests/fm-pool-build-sweep.test.sh` covers preservation and eviction.
+Both cleanup paths discover ignored Cargo `target/` directories at any depth, including inside scratch worktrees and clones; nested targets require `.rustc_info.json`, `CACHEDIR.TAG`, or a profile `.fingerprint` directory.
+Live maintenance applies the generation rules and size cap independently to each target and never removes non-target scratch.
+`--explain` lists nested target sizes and return-time scratch categories.
 Return-time cleanup invokes the same helper's full-prune entry after the existing landed-work and process checks, sharing its ignored-output boundary with live maintenance through `bin/fm-build-output-lib.sh`.
+On return, ignored `.oracle-work/` is disposable, including build trees, jars, and nested Git worktrees or clones.
+Only regular `*.json`, `*.md`, `*.log`, `*.txt`, and `*.patch` evidence files smaller than 50 decimal MB survive outside build trees and Git metadata; symlinks are preserved without following them, and tracked or non-ignored content in the owning copy protects its cleanup root.
+Removed nested worktree metadata is followed by `git worktree prune` to retire dangling registrations, and return cleanup reports before and after bytes per category.
 New spawns choose the backend in this order: an explicit `--backend` flag that current authority for that exact task alone has authorized (a present captain instruction or the task's own accepted brief; never later-task precedent by analogy), then `FM_BACKEND`, then the first non-empty line of local gitignored `config/backend`, then runtime auto-detection from `$TMUX`, `HERDR_ENV=1`, or cmux runtime signals, then default `tmux`.
 If more than one runtime marker is present, detection resolves innermost-first: `$TMUX` is checked before `HERDR_ENV=1`, which is checked before cmux's primary `CMUX_WORKSPACE_ID` marker and its documented fallback signals - tmux or herdr started from inside a cmux terminal is the innermost, currently-executing layer, while cmux itself (a terminal application, not a nestable multiplexer) is always checked last.
 See [`docs/cmux-backend.md`](cmux-backend.md#runtime-detection) for why cmux can be selected when `CMUX_WORKSPACE_ID` is absent.

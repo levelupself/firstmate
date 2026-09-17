@@ -1,7 +1,7 @@
-// Shared file-granularity boundary after fm_build_output_target's Git checks.
+// Live-sweep file-granularity boundary after fm_build_output_target's Git checks.
 // Symlinks are never followed or deleted; special files are also excluded.
 // Any .git entry protects its containing directory and all descendants.
-// These exclusions leave other regular files eligible in both cleanup paths.
+// Return-time traversal and scratch exclusions belong to fm-build-output-roots.mjs.
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';

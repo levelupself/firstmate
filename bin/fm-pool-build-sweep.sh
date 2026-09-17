@@ -6,19 +6,19 @@
 # docs/configuration.md owns generation retention, custom-profile eviction,
 # process guards, and the protected-over-cap maintenance contract.
 # --explain COPY implies dry-run and prints protected hashes and evictable bytes
-# per generation key for the named registered pool copy.
+# per generation key, target sizes, and return categories for the named copy.
 # cargo-sweep, when installed, supplies a dry-run --maxsize plan; the engine
 # filters it through the same preservation boundary before deleting anything.
-# fm-build-output-lib.sh owns root eligibility and points to the shared walker
-# for file exclusions, used by both live sweeping and return-time pruning.
+# fm-build-output-lib.sh owns root eligibility for both cleanup paths and
+# points to their respective traversal and file-exclusion implementations.
 # Treehouse status --json is the inventory/process authority; cargo/rustc or
 # unknown process evidence skips the copy. Existing Cargo profile locks also
 # serialize deletion against a build starting after the inventory snapshot.
 # Treehouse resolves from PATH, ~/.local/bin, /usr/local/bin, or /opt/homebrew/bin.
 # Executables resolve through realpath; launch failures try bash -lc treehouse.
 # A failed fallback reports skipped=treehouse-not-found per project.
-# One line per copy: path, bytes_before, bytes_after, and reason (including skips).
-# Byte totals count only regular files admitted by the shared walker.
+# Each target's sweep reports copy path, bytes_before, bytes_after, and reason.
+# Byte totals count only regular files admitted by the relevant traversal.
 # --dry-run does not delete or schedule work; reported bytes_after is actual.
 # This is best-effort disk pressure control, not a build correctness mechanism.
 # --periodic starts one finite worker without waiting; --scheduled is internal.
