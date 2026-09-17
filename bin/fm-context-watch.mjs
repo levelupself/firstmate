@@ -13,10 +13,8 @@
 //     the prompt size the newest launch's last request carried, peak the
 //     largest figure seen across every launch, compactions the count across
 //     every launch, and restarts the number of receipts beyond the first. The
-//     per-harness fields are the ones bin/fm-model-bench-analyze.mjs owns
-//     (foldContext): claude assistant usage input + cache_creation + cache_read
-//     and isCompactSummary rows; codex token_count last_token_usage input and
-//     compacted rows. --line prints instead
+//     per-harness fields and compaction invalidation are owned by
+//     bin/fm-model-bench-analyze.mjs (foldContext). --line prints instead
 //       context=<tokens> peak=<tokens> compactions=<n> harness=<h> source=<record>
 //     A task with no bound record - no receipts, a harness that records no
 //     stamp, or a stamped record the store has not written yet - exits 1 with

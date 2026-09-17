@@ -56,7 +56,9 @@
 //     usage; codex: last_token_usage.input_tokens of the last token_count),
 //     context_peak_tokens is the largest such figure seen, and compactions
 //     counts context compactions (claude: rows with isCompactSummary true;
-//     codex: rollout items of type compacted). The same fold
+//     codex: rollout items of type compacted). A compaction clears current
+//     context to null until another usage row arrives, preserving the peak.
+//     The same fold
 //     (foldContext) is exported for bin/fm-context-watch.mjs, which reads
 //     only the tail of a live record, so both readers share one parser.
 //

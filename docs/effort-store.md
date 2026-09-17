@@ -56,8 +56,9 @@ If the matching run or its structured round record is unavailable, all four fiel
 
 Three more process columns are captured from the task's own stamped session records at lifecycle capture, beside `outcome`, `review_rounds`, `gate_failures`, and `reverted`, so rework and failure can be correlated with how large the task grew.
 `peak_context_tokens` is the largest prompt any request carried across every launch, `compactions` counts context compactions across every launch, and `restarts` counts launch receipts beyond the first.
-`bin/fm-context-watch.mjs` owns the per-harness record fields and reads them while the records still exist; a task it cannot bind keeps all three NULL rather than zero.
-The values are stamped into the append-only raw layer at capture and are forward-only: a task captured before the signal existed stays NULL, and rebuild never backfills it.
+`bin/fm-context-watch.mjs` reads the bound records using the shared fold owned by `bin/fm-model-bench-analyze.mjs`.
+If a capture cannot read the signal, it preserves any previously captured values; without prior values, the fields remain NULL rather than zero.
+The values are stamped into the append-only raw layer at capture and are forward-only: rebuild never backfills historical rows, though a later lifecycle capture can record an available signal.
 The cross-task report adds one `COMPACTIONS` line grouping outcome by compaction bucket (`0`, `1`, `2+`, and `unknown` for rows without the count).
 
 ## Reading the headline numbers
@@ -65,7 +66,7 @@ The cross-task report adds one `COMPACTIONS` line grouping outcome by compaction
 Run `bin/fm-effort-store.sh report` to list every task and aggregate totals.
 Run `bin/fm-effort-store.sh report <task-id>` for one task.
 The report shows launch-to-PR duration, cost, input and output tokens, actual models, outcome, and the context signal.
-When the append log or queued evidence is ahead of the published database, the report identifies pending ingestion and lists raw task identities with unavailable measurements rather than a plausible zero or an incomplete aggregate.
+When the published database has an older schema, or the append log or queued evidence is ahead of it, the report identifies pending ingestion and lists raw task identities with unavailable measurements rather than a plausible zero or an incomplete aggregate.
 Use `report --sync` to wait for pending ingestion before reading measurements; ordinary reports never acquire the ingestion lock.
 The cross-task report groups tasks by the lifecycle row's project path, but project dollar totals remain unavailable because the store has no durable bound for the reporting period's complete historical task population.
 Each project shows cost-evidence coverage for its known lifecycle rows and explicitly states that historical population completeness is unproven instead of presenting the known subtotal as a total.

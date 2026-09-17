@@ -6,6 +6,8 @@
 # decisions, dispatchable queued work, and dispatched work, followed by genuinely
 # blocked queued work.
 # Unreadable worker state stays under in-flight with a quiet qualifier.
+# In-flight rows show known context as "ctx <N>k" (rounded thousands of tokens)
+# and a positive compaction count as "c<N>"; missing measurements are omitted.
 # Finished and failed history is available only through --section.
 # --section may be repeated and may carry a comma-separated list, so one render
 # can hold any subset of sections. Whatever the caller asks for, the sections are
