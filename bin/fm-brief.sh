@@ -80,6 +80,10 @@
 # "blocked:": pause for a known external wait expected to clear on its own,
 # blocked when firstmate must act. Ship briefs also teach workers to append the
 # configured captain-held verb after escalating a decision and parking idle.
+# The shared repeated-obstacle rule keys on a repeated attempt that learned
+# nothing new, not on how many times a diagnosed defect recurs: a worker fixing
+# instances of one known defect or holding an untried route keeps going, while
+# a worker looping on a wall it cannot move stops and asks for help.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -129,6 +133,13 @@ On a file it cannot parse - an unrecognized language, or the wrong `-l` - ast-gr
 Never read an empty structural result as proof: confirm an empty ast-grep result with `rg` over the same paths, or with a positive-control pattern you know matches there, before reporting that nothing exists.
 EOF
 SEARCH_GUIDANCE=${SEARCH_GUIDANCE%$'\n'}
+
+IFS= read -r -d '' OBSTACLE_RULE <<'EOF' || true
+If you hit the same obstacle twice with nothing new learned between the attempts - the same approach, the same failure, and no untried route - append `blocked: {why}` and stop; firstmate will help.
+   A defect you have already diagnosed and are fixing instance by instance is progress, not a repeated obstacle, even when it recurs in more files or fails the same verification again: fix the next instance and keep going.
+   An untried route that could work means you are not yet blocked; try it before stopping.
+EOF
+OBSTACLE_RULE=${OBSTACLE_RULE%$'\n'}
 
 IFS= read -r -d '' PROOF_GUIDANCE <<'EOF' || true
 Every reported verification observation must name the exact full commit SHA of the checked-out tree it covered and list its proof files.
@@ -473,7 +484,7 @@ $SEARCH_GUIDANCE
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset):
    firstmate then leaves your idle pane alone and rechecks it on a long cadence instead of
    treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
-5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
+5. $OBSTACLE_RULE
 6. If a decision belongs to a human (product choices, destructive actions),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
@@ -636,7 +647,7 @@ $SUITE_GUIDANCE
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
    a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long
    cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
-7. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
+7. $OBSTACLE_RULE
 8. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\`, then append \`$CAPTAIN_HELD_VERB: {why the task is parked}\` before going idle and stopping. Firstmate will apply the configured authority and reply with the decision.
    The \`$CAPTAIN_HELD_VERB\` line only records the park and never closes the decision, with or without a matching key.
