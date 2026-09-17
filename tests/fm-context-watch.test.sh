@@ -313,6 +313,13 @@ test_usage_skips_heredoc_bodies_and_unwraps_interpreters() {
     "bash -lc 'ls | grep foo'"
     "bash -c 'cat x' > out"
     "python3 -c 'print(1 > 0)'"
+    "bash -c 'cat x' 2>&1"
+    "bash -c 'rg foo' --"
+    "bash -c 'ls \$1' _ dir"
+    'bash -c "npm test" 2>&1 | tail -5'
+    $'echo $((1 << 2))\ngrep foo src'
+    $'python3 - <<\\PY\nprint(1 > 0)\nPY\ngrep foo src'
+    $'python3 - <<PY\nprint(1)\ngrep foo src'
   )
   for command in "${commands[@]}"; do
     i=$((i + 1))
@@ -324,7 +331,8 @@ test_usage_skips_heredoc_bodies_and_unwraps_interpreters() {
   printf '%s' "$out" | jq -e '
     (.timeline | map(.tool_class))
     == ["other","other","search","search","edit","read","other",
-        "test","test","test","edit","read","edit","other"]' \
+        "test","test","test","edit","read","edit","other",
+        "read","search","read","test","search","search","search"]' \
     >/dev/null || fail "heredoc and interpreter classes wrong: $out"
   pass "usage skips heredoc bodies and comments and classifies python -m and shell -c by what they run"
 }

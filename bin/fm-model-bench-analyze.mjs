@@ -129,14 +129,16 @@
 //     Command text is split into segments on newlines, &&, ||, ;, and |
 //     outside single and double quotes (a separator inside a quoted string,
 //     such as the | in jq 'a | b', does not split); a # comment runs to the
-//     end of its line and a heredoc body (<<TAG, <<'TAG', <<-TAG through the
-//     TAG line) is skipped, so neither drives a class nor opens a quote. The
+//     end of its line and a heredoc body (<<TAG, <<'TAG', <<\TAG, <<-TAG
+//     through the TAG line; << inside $((...)) is not an opener) is skipped,
+//     so neither drives a class nor opens a quote. The
 //     first segment whose class is not other decides. A segment's first
 //     word (after leading VAR=value assignments, sudo, time, command, nice,
 //     and an interpreter such as bash or node followed by a script path)
 //     selects, in this order; python/python3 -m <module> selects by the
-//     module, and bash/sh/zsh/dash -c <script> by the script text, which is
-//     split into its own segments:
+//     module, and bash/sh/zsh/dash -c <script> by the one script argument
+//     (its quoted string or bare word), which is split into its own segments;
+//     operands and redirects after it belong to the outer segment:
 //       differential  diff, cmp, comm, colordiff, delta, git diff/range-diff/difftool
 //       git           git, gh, gh-axi, glab
 //       test          pytest, unittest, jest, vitest, mocha, bats, playwright, go test,
@@ -589,7 +591,7 @@ function classifySegment(segment) {
   const interpreter = words.length > 1 ? words[0].replace(/^.*\//, '') : '';
   let cls;
   if (SHELLS.has(interpreter) && /^-[a-z]*c[a-z]*$/.test(words[1])) {
-    cls = classifyCommand(unquote(dropWords(trimmed, total - words.length + 2)));
+    cls = classifyCommand(scriptArgument(dropWords(trimmed, total - words.length + 2)));
   } else {
     if (PYTHONS.has(interpreter) && words[1] === '-m' && words.length > 2) words.splice(0, 2);
     else if (INTERPRETERS.has(interpreter) && !words[1].startsWith('-')) words.shift();
@@ -627,10 +629,12 @@ function dropWords(text, count) {
   return rest;
 }
 
-function unquote(text) {
-  if (text.length >= 2 && text.startsWith("'") && text.endsWith("'")) return text.slice(1, -1);
-  if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) return text.slice(1, -1).replace(/\\(.)/g, '$1');
-  return text;
+function scriptArgument(text) {
+  const word = /^(?:'([^']*)'|"((?:[^"\\]|\\.)*)"|(\S+))/.exec(text);
+  if (!word) return '';
+  if (word[1] !== undefined) return word[1];
+  if (word[2] !== undefined) return word[2].replace(/\\(.)/g, '$1');
+  return word[3];
 }
 
 function redirectsToFile(segment) {
@@ -641,8 +645,10 @@ function redirectsToFile(segment) {
 
 // Segments of a command text, split on newlines, &&, ||, ;, and | that sit
 // outside single or double quotes; a backslash escapes the next character
-// outside single quotes. A # comment runs to the end of its line, and the
-// body of each heredoc a line opens is skipped through its terminator line.
+// outside single quotes. A # comment runs to the end of its line, arithmetic
+// $((...)) is opaque, and the body of each heredoc a line opens (<<TAG,
+// <<'TAG', <<"TAG", <<\TAG, <<-TAG) is skipped through its terminator line;
+// a body with no terminator is scanned as ordinary lines.
 function splitSegments(text) {
   const segments = [];
   let quote = null;
@@ -665,8 +671,13 @@ function splitSegments(text) {
       i = start - 1;
       continue;
     }
+    if (text.startsWith('$((', i) || (text.startsWith('((', i) && (i === 0 || /[\s;|&]/.test(text[i - 1])))) {
+      const end = text.indexOf('))', i + 2);
+      i = end === -1 ? text.length - 1 : end + 1;
+      continue;
+    }
     if (ch === '<' && text[i + 1] === '<' && text[i + 2] !== '<') {
-      const tag = /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([^\s;|&<>'"]+))/.exec(text.slice(i));
+      const tag = /^<<-?\s*(?:'([^']*)'|"([^"]*)"|\\?([A-Za-z0-9_.-]+))/.exec(text.slice(i));
       if (tag) {
         heredocs.push(tag[1] ?? tag[2] ?? tag[3]);
         i += tag[0].length - 1;
@@ -679,12 +690,16 @@ function splitSegments(text) {
       current = '';
       let pos = i + 1;
       for (const tag of heredocs) {
-        while (pos < text.length) {
-          const end = text.indexOf('\n', pos);
-          const line = end === -1 ? text.slice(pos) : text.slice(pos, end);
-          pos = end === -1 ? text.length : end + 1;
-          if (line.trim() === tag) break;
+        let cursor = pos;
+        let closed = false;
+        while (cursor < text.length && !closed) {
+          const end = text.indexOf('\n', cursor);
+          const line = end === -1 ? text.slice(cursor) : text.slice(cursor, end);
+          cursor = end === -1 ? text.length : end + 1;
+          closed = line.trim() === tag;
         }
+        if (!closed) break;
+        pos = cursor;
       }
       heredocs = [];
       start = pos;
