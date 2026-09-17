@@ -78,7 +78,11 @@
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
-# blocked when firstmate must act. Ship briefs also teach workers to append the
+# blocked when firstmate must act. Ship and scout scaffolds also teach the
+# long-run=<path> working: token (fm-classify-lib.sh FM_CLASSIFY_LONG_RUN_TOKEN)
+# that names the file a long quiet foreground job keeps writing, so the watcher
+# can judge liveness from that file instead of wedge-escalating the pane.
+# Ship briefs also teach workers to append the
 # configured captain-held verb after escalating a decision and parking idle.
 # The shared repeated-obstacle rule keys on a repeated attempt that learned
 # nothing new, not on how many times a diagnosed defect recurs: a worker fixing
@@ -484,6 +488,10 @@ $SEARCH_GUIDANCE
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset):
    firstmate then leaves your idle pane alone and rechecks it on a long cadence instead of
    treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
+   For a long foreground job whose output goes to a file instead of the screen (a full test suite,
+   a long build), put the file it keeps writing on your \`working:\` line as a whole-word
+   \`long-run=<absolute path>\` token: while that file keeps changing, firstmate treats your quiet
+   pane as alive instead of a possible wedge; once it stops changing, the usual wedge check resumes.
 5. $OBSTACLE_RULE
 6. If a decision belongs to a human (product choices, destructive actions),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
@@ -647,6 +655,11 @@ $SUITE_GUIDANCE
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
    a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long
    cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
+   For a long foreground job whose output goes to a file instead of the screen (a full test suite,
+   a long build), put the file it keeps writing on your \`working:\` line as a whole-word
+   \`long-run=<absolute path>\` token, e.g. \`working: full suite under way, ~2h long-run=/tmp/suite.log\`:
+   while that file keeps changing, firstmate treats your quiet pane as alive instead of a possible
+   wedge; once it stops changing, or if it is never written, the usual wedge check resumes.
 7. $OBSTACLE_RULE
 8. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\`, then append \`$CAPTAIN_HELD_VERB: {why the task is parked}\` before going idle and stopping. Firstmate will apply the configured authority and reply with the decision.
