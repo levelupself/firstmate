@@ -17,6 +17,10 @@
 # Treehouse resolves from PATH, ~/.local/bin, /usr/local/bin, or /opt/homebrew/bin.
 # Executables resolve through realpath; launch failures try bash -lc treehouse.
 # A failed fallback reports skipped=treehouse-not-found per project.
+# A missing clone matching the code root basename uses FM_ROOT_OVERRIDE or the
+# script code root, as in spawn/teardown; other absent clones report skipped=no-clone.
+# Locks disappearing before their read-only open report skipped=copy-changed-during-sweep.
+# Other child failures retain their stderr in the sweep failure log.
 # Each target's sweep reports copy path, bytes_before, bytes_after, and reason.
 # Byte totals count only regular files admitted by the relevant traversal.
 # --dry-run does not delete or schedule work; reported bytes_after is actual.

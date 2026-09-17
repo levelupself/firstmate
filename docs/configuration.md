@@ -103,7 +103,7 @@ A task record binds its `worktree=` until `bin/fm-teardown.sh` stamps `teardown_
 The [`fm-spawn.sh` header](../bin/fm-spawn.sh) owns the bound-copy guard, including empty versus unreadable inventory handling, acquisition, detach, and the final ownership check; [`tests/fm-spawn-pool-slot-binding.test.sh`](../tests/fm-spawn-pool-slot-binding.test.sh) covers that contract.
 A task whose recorded copy was already taken that way is recovered with `bin/fm-spawn.sh <id> --reacquire-worktree`, which acquires a fresh copy holding the task's branch at its current head on the task's recorded tmux or herdr backend; `bin/fm-spawn.sh --help` owns both mechanics and [`stuck-crewmate-recovery`](../.agents/skills/stuck-crewmate-recovery/SKILL.md) owns when to use which recovery.
 Live Treehouse copies receive a best-effort Rust build-output sweep from the existing heartbeat path, at most once per hour per home using a durable marker.
-`bin/fm-pool-build-sweep.sh` discovers copies through `treehouse status --json` for each registered project, skips copies with Cargo or rustc processes, and takes existing Cargo profile locks before deleting artifacts.
+`bin/fm-pool-build-sweep.sh` discovers copies through `treehouse status --json` for registered projects with a resolved local path, skips copies with Cargo or rustc processes, and takes existing Cargo profile locks before deleting artifacts.
 `FM_POOL_BUILD_AGE_HOURS` or `--age-hours` defaults to 24 hours; only older artifacts with superseded fingerprints and no reference from the protected current fingerprint set qualify for age eviction.
 `FM_POOL_BUILD_MAX_GB` or `--max-gb` defaults to 8 decimal GB; above that threshold, eligible files are evicted oldest first until output fits, initially preserving the newest generation per `[profile-directory, crate, unit, compile_kind]` key and its transitive fingerprint dependencies.
 Feature sets and Cargo profile variants compete as generations within that key; switching features may require recompilation.
@@ -114,7 +114,7 @@ Unrecognized artifacts and incremental caches without a reliable fingerprint map
 Remaining oversized protected output is reported as `protected-over-cap`; this is best-effort size control, not a hard disk quota or a correctness mechanism.
 When available, cargo-sweep supplies a dry-run size plan; it is never allowed to delete current artifacts directly.
 `--dry-run` reports planned reclamation without deleting files, and each copy's output includes before and after bytes and any skip reason.
-The helper's header owns invocation, cadence, logging, and timeout details; `tests/fm-pool-build-sweep.test.sh` covers preservation and eviction.
+The [helper's header](../bin/fm-pool-build-sweep.sh) owns project resolution (including the code-root fallback and absent-clone skips), disappearing-lock skips, invocation, cadence, logging, and timeout details; `tests/fm-pool-build-sweep-discovery.test.sh` and `tests/fm-pool-build-sweep.test.sh` cover discovery, preservation, and eviction.
 Both cleanup paths discover ignored Cargo `target/` directories at any depth, including inside scratch worktrees and clones; nested targets require `.rustc_info.json`, `CACHEDIR.TAG`, or a profile `.fingerprint` directory.
 Live maintenance applies the generation rules and size cap independently to each target and never removes non-target scratch.
 `--explain` lists nested target sizes and return-time scratch categories.

@@ -72,3 +72,24 @@ pass 'PATH precedence and launch ENOENT remain per-project skips'
 
 assert_contains "$(cat "$TEST_FALLBACK_LOG")" 'treehouse status --json' 'launch failure never tried login-shell fallback'
 pass 'failed login-shell fallback stays a per-project skip'
+
+# Missing clones are ordinary skips; the code root remains a registered project.
+rm "$TMP_ROOT/bin/treehouse"
+mkdir -p "$TMP_ROOT/code/self"
+printf '%s\n' '- absent - fixture' '- self - fixture' > "$TMP_ROOT/home/data/projects.md"
+: > "$TEST_DISCOVERY_LOG"
+env HOME="$TMP_ROOT/account" PATH="$TMP_ROOT/bin" FM_HOME="$TMP_ROOT/home" \
+  FM_ROOT_OVERRIDE="$TMP_ROOT/code/self" \
+  FM_TREEHOUSE_SYSTEM_PATH="$TMP_ROOT/system-homebrew" \
+  "$ROOT/bin/fm-pool-build-sweep.sh" --dry-run > "$TMP_ROOT/self"
+errors=0
+if ! [[ "$(cat "$TMP_ROOT/self")" == *'skipped=no-clone'* ]]; then
+  echo 'not ok - missing clone must report skipped=no-clone'
+  errors=$((errors+1))
+fi
+if ! [[ "$(cat "$TEST_DISCOVERY_LOG")" == *"$TMP_ROOT/code/self"* ]]; then
+  echo 'not ok - self-project inventory must use code root'
+  errors=$((errors+1))
+fi
+[ "$errors" -eq 0 ] || fail 'project resolution regressions'
+pass 'missing clones skip and self-project inventory uses the code root'

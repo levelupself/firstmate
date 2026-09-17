@@ -101,6 +101,54 @@ flock "$TMP_ROOT/pool/size/rust/target/debug/.cargo-lock" bash -c '
 assert_contains "$(cat "$TMP_ROOT/locked")" 'live-cargo-lock' 'Cargo profile lock was not respected'
 pass 'Cargo profile locks close the inventory-to-deletion race'
 
+# A failure inside the locked child must explain itself on stderr, not merely
+# print the outer flock/bash argument list.
+fingerprint="$TMP_ROOT/pool/size/rust/target/debug/.fingerprint/demo-3333333333333333/lib-demo"
+cp "$fingerprint" "$TMP_ROOT/fingerprint.saved"
+printf invalid > "$fingerprint"
+rc=0
+"$SWEEP" > "$TMP_ROOT/child-failure.out" 2> "$TMP_ROOT/child-failure.err" || rc=$?
+[ "$rc" -ne 0 ] || fail 'invalid fingerprint returned success'
+assert_contains "$(cat "$TMP_ROOT/child-failure.err")" 'unknown-fingerprint-hash' 'locked child failure omitted its reason from stderr'
+mv "$TMP_ROOT/fingerprint.saved" "$fingerprint"
+pass 'locked child failure logs its concrete reason'
+
+
+# Remove an enumerated lock before flock opens it, both with and without its
+# parent directory. A real child error must retain stderr on its failure line.
+cat > "$TMP_ROOT/lock-race.cjs" <<'JS'
+const fs = require('node:fs'), cp = require('node:child_process');
+const exec = cp.execFileSync;
+cp.execFileSync = function(cmd, args, opts) {
+  const lock = process.env.TEST_RACE_LOCK;
+  if (args.includes(lock)) {
+    if (process.env.TEST_LOCK_FAILURE === 'file') fs.unlinkSync(lock);
+    else if (process.env.TEST_LOCK_FAILURE === 'directory') fs.rmSync(require('node:path').dirname(lock), {recursive:true});
+    else return exec('bash', ['-c', 'echo "fixture lock permission denied" >&2; exit 73'], opts);
+  }
+  return exec(cmd, args, opts);
+};
+require('node:module').syncBuiltinESMExports();
+JS
+export TEST_RACE_LOCK="$TMP_ROOT/pool/size/rust/target/race/.cargo-lock"
+for TEST_LOCK_FAILURE in file directory stderr; do
+  export TEST_LOCK_FAILURE
+  mkdir -p "${TEST_RACE_LOCK%/*}"
+  touch "$TEST_RACE_LOCK"
+  rc=0
+  NODE_OPTIONS="--require=$TMP_ROOT/lock-race.cjs" "$SWEEP" > "$TMP_ROOT/race-$TEST_LOCK_FAILURE" 2>&1 || rc=$?
+  output=$(cat "$TMP_ROOT/race-$TEST_LOCK_FAILURE")
+  if [ "$TEST_LOCK_FAILURE" = stderr ]; then
+    [ "$rc" -ne 0 ] || fail 'real lock failure returned success'
+    assert_contains "$output" 'sweep failed: fixture lock permission denied' 'child stderr missing from failure line'
+  else
+    [ "$rc" -eq 0 ] || fail "vanished lock failed the sweep: $output"
+    assert_contains "$output" 'skipped=copy-changed-during-sweep' 'vanished lock was not skipped'
+  fi
+done
+rm -rf "${TEST_RACE_LOCK%/*}"
+pass 'vanished locks skip the copy and genuine lock failures retain stderr'
+
 # The helper owns a durable attempt marker, including failed attempts.
 "$SWEEP" --periodic
 for _ in {1..100}; do
@@ -506,6 +554,21 @@ for name in thin fat-c fat-b fat-a; do
 done | FM_POOL_TOTAL_BUDGET_GB=0.0001 "$ROOT/bin/fm-pool-footprint.sh" --pool-audit > "$TMP_ROOT/alias-audit.out"
 [ -z "$(check_output)" ] || fail 'canonical project alias or inventory order repeated the wake'
 pass 'canonical project identity survives aliases and inventory reordering'
+
+# The self-project fallback uses the same code root override as spawn/teardown.
+# Audit its actual pool even when this home has no projects/<self> clone.
+cp "$FM_HOME/data/projects.md" "$TMP_ROOT/projects.saved"
+printf '%s\n' '- absent - fixture' '- rust - self fixture' > "$FM_HOME/data/projects.md"
+rm -f "$FM_HOME/state/.pool-build-sweep.last"
+FM_ROOT_OVERRIDE="$PROJECT" FM_PROJECTS_OVERRIDE="$TMP_ROOT/no-clones" \
+  FM_POOL_TOTAL_BUDGET_GB=0.0001 "$SWEEP" --scheduled > "$TMP_ROOT/self-audit.out" 2>&1 \
+  || fail "self-project audit failed: $(cat "$TMP_ROOT/self-audit.out")"
+assert_contains "$(cat "$TMP_ROOT/self-audit.out")" 'skipped=no-clone' 'missing clone was not skipped'
+assert_contains "$(cat "$FM_HOME/state/pool-footprint.over-budget")" "$PROJECT" 'self-project pool was not audited'
+assert_contains "$(cat "$FM_HOME/state/pool-footprint.over-budget")" "$TMP_ROOT/pool/fat-a/rust" 'self-project copy was omitted'
+assert_not_contains "$(cat "$FM_HOME/state/pool-footprint.over-budget")" 'inventory-unavailable' 'missing clone created a false wake'
+mv "$TMP_ROOT/projects.saved" "$FM_HOME/data/projects.md"
+pass 'scheduled audit measures the self-project pool and excludes absent clones'
 
 index=$(git -C "$TMP_ROOT/pool/thin/rust" rev-parse --git-path index)
 printf 'broken index\n' > "$index"
