@@ -174,7 +174,7 @@ Its header owns the exact refusal mechanics, while `tests/fm-spawn-worktree-sett
 
 Returned task copies shed reproducible ignored build output after teardown's landed-work and process checks, before Treehouse releases the copy.
 Build output is not unlanded work: tracked files and non-ignored files remain protected, including files hidden by Git index flags.
-The single extensible rule table is in [`bin/fm-build-output-lib.sh`](../bin/fm-build-output-lib.sh); it currently maps a root `Cargo.toml` to root `target/` only.
+The single extensible rule table for return pruning and live sweeping is in [`bin/fm-build-output-lib.sh`](../bin/fm-build-output-lib.sh); [`docs/configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns output eligibility and scratch evidence retention.
 [`bin/fm-pool-prune.sh`](../bin/fm-pool-prune.sh) applies that same table to idle copies in this home's pools, with a dry-run size report and exclusions for leases, live processes, and every task-record worktree reference.
 Its header owns project selection, pool locking, and inventory refusal mechanics.
 [`bin/fm-resources.sh`](../bin/fm-resources.sh) reports disk space, VM memory, load, and task-copy count for capacity review before releasing another task; session start prints the same advisory line without making it a spawn gate.
