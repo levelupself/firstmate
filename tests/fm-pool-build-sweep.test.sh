@@ -473,3 +473,48 @@ scheduled_sweep 1000
 scheduled_sweep 0.0001
 [ -n "$(check_output)" ] || fail 'a pool crossing the budget again did not wake firstmate'
 pass 'pool budget wake follows the total: new total, silence under budget, wake on re-crossing'
+
+for name in fat-a fat-b fat-c thin; do
+  case "$name" in
+    fat-a) size=1048576 ;;
+    fat-b) size=262144 ;;
+    fat-c) size=131072 ;;
+    thin) size=1024 ;;
+  esac
+  rm -f "$TMP_ROOT/pool/$name/rust/.oracle-work/more.bin"
+  head -c "$size" /dev/zero > "$TMP_ROOT/pool/$name/rust/.oracle-work/blob.bin"
+done
+scheduled_sweep 0.0001
+before=$(check_output)
+head -c 4096 /dev/zero >> "$TMP_ROOT/pool/thin/rust/.oracle-work/blob.bin"
+scheduled_sweep 0.0001
+after=$(check_output)
+[ -n "$after" ] || fail 'exact byte increase hidden by rounding did not wake'
+[ "$before" = "$after" ] || fail 'fixture failed to keep the rounded display unchanged'
+[ -z "$(check_output)" ] || fail 'exact total woke twice'
+mv "$TMP_ROOT/pool/fat-a/rust/.oracle-work/blob.bin" "$TMP_ROOT/swapped-blob"
+mv "$TMP_ROOT/pool/fat-b/rust/.oracle-work/blob.bin" "$TMP_ROOT/pool/fat-a/rust/.oracle-work/blob.bin"
+mv "$TMP_ROOT/swapped-blob" "$TMP_ROOT/pool/fat-b/rust/.oracle-work/blob.bin"
+scheduled_sweep 0.0001
+[ -z "$(check_output)" ] || fail 'redistributing an unchanged total repeated the wake'
+[ "$(head -n 1 "$FM_HOME/state/pool-footprint.over-budget")" != "$after" ] || fail 'fixture failed to change the top-copy display'
+pass 'wake identity uses exact bytes independently of rounding and top-copy distribution'
+
+ln -s "$PROJECT" "$TMP_ROOT/project-alias"
+for name in thin fat-c fat-b fat-a; do
+  printf '%s\t%s\n' "$TMP_ROOT/project-alias" "$TMP_ROOT/pool/$name/rust"
+done | FM_POOL_TOTAL_BUDGET_GB=0.0001 "$ROOT/bin/fm-pool-footprint.sh" --pool-audit > "$TMP_ROOT/alias-audit.out"
+[ -z "$(check_output)" ] || fail 'canonical project alias or inventory order repeated the wake'
+pass 'canonical project identity survives aliases and inventory reordering'
+
+index=$(git -C "$TMP_ROOT/pool/thin/rust" rev-parse --git-path index)
+printf 'broken index\n' > "$index"
+rm -f "$FM_HOME/state/.pool-build-sweep.last"
+FM_POOL_TOTAL_BUDGET_GB=0.0001 "$SWEEP" --scheduled > "$TMP_ROOT/broken-sweep.out" 2>&1 || true
+broken=$(check_output)
+assert_contains "$broken" 'could not measure' 'audit silently accepted a failed ignored listing'
+assert_contains "$broken" "$TMP_ROOT/pool/thin/rust" 'audit did not name the unmeasurable copy'
+rm -f "$FM_HOME/state/.pool-build-sweep.last"
+FM_POOL_TOTAL_BUDGET_GB=0.0001 "$SWEEP" --scheduled > "$TMP_ROOT/broken-sweep.out" 2>&1 || true
+[ -z "$(check_output)" ] || fail 'unchanged measurement failure repeated the wake'
+pass 'scheduled audit surfaces failed ignored listings exactly once'

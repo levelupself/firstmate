@@ -83,7 +83,9 @@
 # docs/configuration.md) is neither returned to the pool nor retired: teardown
 # prints `REFUSED: copy over footprint budget` with its ten largest ignored
 # paths and exits non-zero before teardown_at= is stamped, so the record still
-# binds the copy and nothing has changed for inspection. --force never skips
+# binds the copy for inspection. Every Treehouse return attempt also applies
+# the gate, including direct and nested children during forced retirement.
+# A refused child retains its records without a deletion fallback. --force never skips
 # this gate; only --footprint-override --reason <text> does, and every
 # override is appended to state/teardown.log as one
 # `<utc> footprint-override task=<id> worktree=<path> footprint_bytes=<n>
@@ -1164,6 +1166,7 @@ fi
 # Compatibility alias used by the safety-check wait path and older call sites.
 STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS
 TEARDOWN_TREEHOUSE_LOCK_REFUSED=2
+TEARDOWN_FOOTPRINT_REFUSED=5
 TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED=3
 TEARDOWN_PROCEVENT_RESTORE_FAILED=4
 
@@ -1236,14 +1239,14 @@ teardown_treehouse_return_attempt() {
       printf "fatal: Unable to create '%s': File exists.\n" "$lock" >&2
       return 128
     fi
-    "$SCRIPT_DIR/fm-pool-build-sweep.sh" --return-copy "$dir" || return 1
   fi
+  teardown_footprint_gate "$dir" || return "$TEARDOWN_FOOTPRINT_REFUSED"
   ( cd "$cd_dir" && treehouse return --force "$dir" )
 }
 
 teardown_treehouse_return() {
   local dir=$1 cd_dir=$2 label=$3 post_cleanup_check=${4:-} prune=${5:-}
-  local out lock attempt=0 max_retries lock_desc
+  local out lock attempt=0 max_retries lock_desc return_rc
 
   if [ -n "$prune" ]; then
     prune=$("$SCRIPT_DIR/fm-pool-build-sweep.sh" --return-copy "$dir" --dry-run) || return 1
@@ -1254,7 +1257,10 @@ teardown_treehouse_return() {
   if out=$( teardown_treehouse_return_attempt "$dir" "$cd_dir" "$prune" 2>&1 ); then
     [ -n "$out" ] && printf '%s\n' "$out"
     return 0
+  else
+    return_rc=$?
   fi
+  [ "$return_rc" -ne "$TEARDOWN_FOOTPRINT_REFUSED" ] || { printf '%s\n' "$out" >&2; return "$return_rc"; }
   [ -n "$out" ] && printf '%s\n' "$out" >&2
 
   if ! treehouse_return_is_index_lock_error "$out"; then
@@ -1280,7 +1286,10 @@ teardown_treehouse_return() {
       [ -n "$out" ] && printf '%s\n' "$out"
       echo "teardown: $label return succeeded on retry; lock cleared on its own" >&2
       return 0
+    else
+      return_rc=$?
     fi
+    [ "$return_rc" -ne "$TEARDOWN_FOOTPRINT_REFUSED" ] || { printf '%s\n' "$out" >&2; return "$return_rc"; }
     [ -n "$out" ] && printf '%s\n' "$out" >&2
 
     if ! treehouse_return_is_index_lock_error "$out"; then
@@ -1307,7 +1316,10 @@ teardown_treehouse_return() {
         [ -n "$out" ] && printf '%s\n' "$out"
         echo "teardown: $label return succeeded after stale-lock cleanup" >&2
         return 0
+      else
+        return_rc=$?
       fi
+      [ "$return_rc" -ne "$TEARDOWN_FOOTPRINT_REFUSED" ] || { printf '%s\n' "$out" >&2; return "$return_rc"; }
       [ -n "$out" ] && printf '%s\n' "$out" >&2
       echo "teardown: $label return still failing after stale-lock cleanup" >&2
       return 1
@@ -2510,7 +2522,7 @@ cleanup_firstmate_home_children() {
           :
         else
           child_return_rc=$?
-          if [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LOCK_REFUSED" ]; then
+          if [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LOCK_REFUSED" ] || [ "$child_return_rc" -eq "$TEARDOWN_FOOTPRINT_REFUSED" ]; then
             return "$child_return_rc"
           fi
           safe_rm_rf_child_worktree "$child_wt" "$child_proj"

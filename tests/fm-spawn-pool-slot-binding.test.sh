@@ -459,6 +459,24 @@ test_bound_copy_with_over_budget_free_copy_refuses() {
   pass "fm-spawn: a bloated free copy never substitutes for a bound one"
 }
 
+test_failed_listing_refuses_spawn() {
+  local dir id=psb-failed-listing other=psb-torn-listing copy index out rc
+  dir=$(new_case failedlisting "$id" "$other")
+  release_binding "$dir" "$other"
+  for copy in "$dir/pool/7/proj" "$dir/pool/3/proj"; do
+    index=$(git -C "$copy" rev-parse --git-path index)
+    printf 'broken index\n' > "$index"
+  done
+  out=$(FM_POOL_COPY_BUDGET_GB=0.00001 run_spawn "$dir" "$id" "$dir/proj" --mode no-mistakes --yolo off); rc=$?
+  [ "$rc" -ne 0 ] || fail "spawn accepted failed ignored listings: $out"
+  assert_contains "$out" "$dir/pool/7/proj" 'refusal omitted the unmeasurable copy'
+  assert_no_grep '^new-window ' "$dir/fake/tmux.log" 'failed listing allowed endpoint creation'
+  assert_absent "$dir/home/state/$id.meta" 'failed listing published a task record'
+  pass 'spawn refuses free copies with failed ignored listings'
+}
+
+test_failed_listing_refuses_spawn
+
 test_bound_by_live_record_steers_to_free_copy
 test_bound_by_live_record_with_no_free_copy_refuses
 test_unreadable_inventory_with_bound_copies_refuses

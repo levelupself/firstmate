@@ -7,18 +7,18 @@
 # `git ls-files --others --ignored --exclude-standard --directory` reports,
 # summed with `du` without following symlinks (bin/fm-pool-footprint-lib.sh
 # owns the measurement shared with fm-teardown.sh and fm-spawn.sh).
-# report prints the largest ignored paths as "<bytes>\t<path>" lines, each
+# report prints "<bytes>\t<shell-escaped path>" lines, each
 # ignored directory expanded one level, largest first, at most N (default 10).
 # --pool-audit is the scheduled sweep's post-run step: it reads one
 # "<project>\t<copy>" row per line from stdin (bin/fm-pool-build-sweep.mjs
 # emits the inventory it just swept), sums the footprint per project, and
 # compares each total with FM_POOL_TOTAL_BUDGET_GB (default 80 decimal GB).
 # When any project pool is over budget it writes state/pool-footprint.over-budget,
-# one line naming each over-budget project's total and its three largest
-# copies, ensures state/pool-footprint.check.sh exists and is registered
+# a display line followed by sorted canonical project identities and exact
+# byte totals used as wake keys, ensures state/pool-footprint.check.sh exists and is registered
 # through bin/fm-check-register.sh, and exits 0. The check prints that line
-# only when it differs from state/.pool-footprint-surfaced, then records it
-# there, so the watcher wakes firstmate exactly once per distinct total.
+# only when its wake keys differ from state/.pool-footprint-surfaced, then
+# records those keys there, so the watcher wakes firstmate exactly once per distinct total.
 # When every pool fits, the audit removes the record and the surfaced marker
 # so a later crossing wakes again; the registered check stays in place and
 # prints nothing. An unmeasurable copy is itself surfaced through the same
@@ -53,8 +53,10 @@ check_body() {
 record='$RECORD'
 surfaced='$SURFACED'
 [ -f "\$record" ] && [ ! -L "\$record" ] || exit 0
-if [ -f "\$surfaced" ] && cmp -s -- "\$record" "\$surfaced"; then exit 0; fi
-cp -- "\$record" "\$surfaced" || exit 1
+keys=\$(sed '1d' -- "\$record") || exit 1
+[ -n "\$keys" ] || exit 0
+if [ -f "\$surfaced" ] && [ "\$keys" = "\$(cat -- "\$surfaced")" ]; then exit 0; fi
+printf '%s\n' "\$keys" > "\$surfaced" || exit 1
 head -n 1 -- "\$record"
 SH
 }
@@ -75,13 +77,16 @@ ensure_check_registered() {
 
 pool_audit() {
   local budget project copy bytes line='' over=0 tmp unmeasurable=''
-  local -a projects=() totals=() copies=() copy_bytes=() copy_projects=()
+  local -a projects=() totals=() copies=() copy_bytes=() copy_projects=() keys=()
   budget=$(fm_pool_total_budget_bytes) || exit 2
   while IFS=$'\t' read -r project copy; do
     [ -n "$project" ] && [ -n "$copy" ] || continue
+    project=$(cd "$project" && pwd -P) || return 1
     bytes=$(fm_pool_footprint_bytes "$copy") || {
       echo "error: cannot measure ignored footprint of $copy" >&2
       unmeasurable="$unmeasurable $copy"
+      printf -v tmp '%q\tunmeasurable\t%q' "$project" "$copy"
+      keys+=("$tmp")
       continue
     }
     copies+=("$copy"); copy_bytes+=("$bytes"); copy_projects+=("$project")
@@ -97,6 +102,8 @@ pool_audit() {
   for ((i = 0; i < ${#projects[@]}; i++)); do
     [ "${totals[$i]}" -gt "$budget" ] || continue
     over=1
+    printf -v tmp '%q\t%s' "${projects[$i]}" "${totals[$i]}"
+    keys+=("$tmp")
     top=$(for ((j = 0; j < ${#copies[@]}; j++)); do
       [ "${copy_projects[$j]}" = "${projects[$i]}" ] || continue
       printf '%s\t%s\n' "${copy_bytes[$j]}" "${copies[$j]}"
@@ -118,6 +125,7 @@ pool_audit() {
   umask 077
   tmp=$(mktemp "$STATE/.fm-pool-footprint-record.XXXXXX")
   printf 'pool over budget: %s\n' "$line" > "$tmp"
+  printf '%s\n' "${keys[@]}" | LC_ALL=C sort >> "$tmp"
   chmod 0600 "$tmp"
   mv -f -- "$tmp" "$RECORD"
   ensure_check_registered
