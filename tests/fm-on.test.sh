@@ -11,7 +11,27 @@ TMP_ROOT=$(fm_test_tmproot fm-on)
 # and physicalize macOS's /var -> /private/var alias before transport validation.
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
-trap 'if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then kill "$(cat "$TMP_ROOT/remote-jobs/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
+# Ask the bootstrapped worker to stop and wait until it has exited and
+# released worker.lock. Bash runs the worker's TERM handler only after its
+# current poll sleep, and that handler still writes a quarantine marker inside
+# worker.lock before releasing it, so removing the fixture root right after
+# the kill races those writes and rm fails with "Directory not empty".
+stop_worker() {
+  local pid
+  pid=$(cat "$TMP_ROOT/remote-jobs/worker.pid" 2>/dev/null || true)
+  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+  kill -TERM "$pid" 2>/dev/null || true
+  for _ in $(seq 1 100); do
+    if ! kill -0 "$pid" 2>/dev/null && [ ! -e "$TMP_ROOT/remote-jobs/worker.lock" ]; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  return 1
+}
+# A worker that does not stop leaves rm to report the populated lock rather
+# than having the cleanup hide it.
+trap 'stop_worker || true; rm -rf -- "$TMP_ROOT"' EXIT
 LOCAL_HOME="$TMP_ROOT/local-home"
 REMOTE_ROOT="$TMP_ROOT/remote-root"
 REMOTE_HOME="$TMP_ROOT/remote-home"
@@ -259,12 +279,7 @@ for candidate in "${MANAGER_DIRS[@]}" "${OPTIONAL_DIRS[@]}"; do
 done
 pass "the entrypoint composes a deduplicated discovered child PATH (kept $PRESENT_CHECKED existing, omitted $ABSENT_CHECKED absent)"
 
-WORKER_PID=$(cat "$TMP_ROOT/remote-jobs/worker.pid")
-kill -TERM "$WORKER_PID"
-for _ in $(seq 1 100); do
-  [ ! -f "$TMP_ROOT/remote-jobs/worker.pid" ] && break
-  sleep 0.05
-done
+stop_worker || fail "the worker did not stop for the doctor bootstrap fixture"
 assert_absent "$TMP_ROOT/remote-jobs/worker.pid" "the worker did not stop for the doctor bootstrap fixture"
 set +e
 out=$(fm_on ios fm-remote-doctor.sh 2>&1)
@@ -488,5 +503,13 @@ set -e
 [ "$(cat "$SSH_COUNT")" -eq 1 ] || fail "ambiguous completion was retried"
 [ "$(grep -c mutation "$REMOTE_HOME/mutations")" -eq 1 ] || fail "ambiguous mutation did not execute exactly once"
 pass "unreachable and ambiguous transport failures are surfaced without retry"
+
+# The EXIT trap removes the fixture root; the worker it bootstrapped must have
+# exited and released its ownership lock first, or the removal races the
+# worker's own shutdown writes inside worker.lock.
+stop_worker || fail "the worker did not stop before cleanup"
+assert_absent "$TMP_ROOT/remote-jobs/worker.lock" "the stopped worker still holds its ownership lock at cleanup"
+assert_absent "$TMP_ROOT/remote-jobs/worker.pid" "the stopped worker still publishes its pid at cleanup"
+pass "a stopped worker releases its ownership lock before the fixture is removed"
 
 echo "ALL TESTS PASSED"
