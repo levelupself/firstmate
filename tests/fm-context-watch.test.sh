@@ -273,12 +273,24 @@ printf 'a -> b'
 printf "a -> b"
 cat input > output
 cat input
+jq 'select(.n > 1) | .x' data.json
+awk '$3 > 100 {print $1}; END {print NR}' file
+node -e "console.log(1 > 0); process.exit(0)"
+echo "a; b > c"
+echo "a; b > c" && rg foo src > hits.txt
+cat input &> out.log
+cat input &>> out.log
+cat input &> /dev/null
+cat input 2>&1
+cat input >&2
 COMMANDS
   out=$(usage_reader "$home" use-quotes) || fail "quoted redirect usage failed: $out"
   printf '%s' "$out" | jq -e '
-    (.timeline | map(.tool_class)) == ["edit","edit","edit","other","other","edit","read"]' \
+    (.timeline | map(.tool_class))
+    == ["edit","edit","edit","other","other","edit","read",
+        "read","read","other","other","edit","edit","edit","read","read","read"]' \
     >/dev/null || fail "quoted redirect classes wrong: $out"
-  pass "usage distinguishes quoted redirect destinations from literal arrows"
+  pass "usage distinguishes quoted redirect destinations and quoted separators from literal arrows"
 }
 
 test_codex_usage_folds_tools_classes_and_turns() {

@@ -126,8 +126,10 @@
 //               local_shell, container.exec -> by the command argument (a
 //               ["bash", "-lc", script] array is the script); exec -> by
 //               every cmd:"..." string in its script; else other.
-//     Command text is split into segments on newlines, &&, ||, ;, and |, and
-//     the first segment whose class is not other decides. A segment's first
+//     Command text is split into segments on newlines, &&, ||, ;, and |
+//     outside single and double quotes (a separator inside a quoted string,
+//     such as the | in jq 'a | b', does not split), and the first segment
+//     whose class is not other decides. A segment's first
 //     word (after leading VAR=value assignments, sudo, time, command, nice,
 //     and an interpreter such as bash or node followed by a script path)
 //     selects, in this order:
@@ -150,8 +152,9 @@
 //       edit          sed -i, tee, cp, mv, rm, mkdir, touch, chmod, chown,
 //                     ln, patch, truncate, rsync, git apply
 //     A read, search, or other segment that redirects to a file outside its
-//     quoted strings (> or >> to anything but /dev/null or a descriptor) is
-//     edit, because the effect is a write. Anything else is other.
+//     quoted strings (>, >>, or the combined &> and &>> to anything but
+//     /dev/null; descriptor duplications such as 2>&1 and >&2 do not count)
+//     is edit, because the effect is a write. Anything else is other.
 
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -601,12 +604,39 @@ function classifySegment(segment) {
 function redirectsToFile(segment) {
   const stripped = segment.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, (quoted) => quoted.replace(/>/g, '_'))
     .replace(/\d?>&\d/g, '').replace(/&?>>?\s*\/dev\/null/g, '');
-  return /(^|[^<>&])>>?\s*[^\s&|;>]/.test(stripped);
+  return /(^|[^<>])&?>>?\s*[^\s&|;>]/.test(stripped);
+}
+
+// Segments of a command text, split on newlines, &&, ||, ;, and | that sit
+// outside single or double quotes; a backslash escapes the next character
+// outside single quotes.
+function splitSegments(text) {
+  const segments = [];
+  let quote = null;
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === '\\' && quote === '"') i += 1;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '\\') { i += 1; continue; }
+    if (ch === "'" || ch === '"') { quote = ch; continue; }
+    const pair = text.slice(i, i + 2);
+    if (ch === '\n' || ch === ';' || ch === '|' || pair === '&&') {
+      segments.push(text.slice(start, i));
+      if (pair === '&&' || pair === '||') i += 1;
+      start = i + 1;
+    }
+  }
+  segments.push(text.slice(start));
+  return segments;
 }
 
 export function classifyCommand(text) {
   if (typeof text !== 'string' || !text.trim()) return 'other';
-  for (const segment of text.split(/\n|&&|\|\||;|\|/)) {
+  for (const segment of splitSegments(text)) {
     const cls = classifySegment(segment);
     if (cls !== 'other') return cls;
   }
