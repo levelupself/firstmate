@@ -179,7 +179,6 @@ function sweep(project, wt, target) {
     if (!sameRepo(project,wt)) {report(wt,0,0,'skipped=not-pool-copy');return;}
     if (!boundary(wt).includes(target)) { report(wt,0,0,'skipped=no-eligible-rust-output');return; }
     const all = files(target); before = bytes(all);
-    if (explain) console.log(`${target} category=cargo-target bytes=${before}`);
     const entry = inventory(project).find(e => e.path === wt);
     if (!entry) throw Error('missing-pool-entry');
     const reason = processReason(entry);
@@ -288,6 +287,12 @@ function sweep(project, wt, target) {
 function withCargoLocks(project, entry) {
   const wt = entry.path;
   if (!sameRepo(project,wt)) {report(wt,0,0,'skipped=not-pool-copy');return;}
+  const targets = boundary(wt);
+  if (explain) {
+    for (const target of targets) console.log(`${target} category=cargo-target bytes=${bytes(files(target))}`);
+    const output=run('bash',['-c','. "$1"; fm_prune_build_output "$2" dry-run','_',path.join(dir,'fm-build-output-lib.sh'),wt]);
+    if(output) console.log(output);
+  }
   const reason = processReason(entry);
   if (reason) {
     let size=0;try {size=bytes(files(path.join(wt,'target')));}catch{}
@@ -295,11 +300,6 @@ function withCargoLocks(project, entry) {
   }
   // Cargo uses flock on each profile's .cargo-lock. Only open existing regular
   // files beneath the eligible output root; a symlink never redirects a lock.
-  const targets = boundary(wt);
-  if (explain) {
-    const output=run('bash',['-c','. "$1"; fm_prune_build_output "$2" dry-run','_',path.join(dir,'fm-build-output-lib.sh'),wt]);
-    if(output) console.log(output);
-  }
   if (!targets.length) {report(wt,0,0,'skipped=no-eligible-rust-output');return;}
   const locks = targets.flatMap(target=>files(target)).filter(f => path.basename(f.p)==='.cargo-lock').map(f=>f.p);
   let argv = [process.execPath, fileURLToPath(import.meta.url), '--locked-copy',project,wt,

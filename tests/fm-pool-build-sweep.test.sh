@@ -310,6 +310,38 @@ JS
 "$SWEEP" --explain "$wt" > "$TMP_ROOT/nested-explain"
 assert_contains "$(cat "$TMP_ROOT/nested-explain")" "$wt/.oracle-work/x/target" 'explain omitted nested target'
 assert_contains "$(cat "$TMP_ROOT/nested-explain")" 'category=oracle-evidence' 'explain omitted evidence category'
+node - "$SWEEP" "$wt" "$TEST_INVENTORY" <<'JS'
+const fs=require('fs'), cp=require('child_process'), assert=require('assert/strict');
+const [sweep,wt,inventory]=process.argv.slice(2);
+const lock=`${wt}/.oracle-work/extension-worktree/target/debug/.cargo-lock`;
+fs.writeFileSync(lock,'');
+function snapshot(p) {
+ const stat=fs.lstatSync(p);
+ if(stat.isSymbolicLink()) return {link:fs.readlinkSync(p)};
+ if(stat.isDirectory()) return Object.fromEntries(fs.readdirSync(p).sort().map(n=>[n,snapshot(`${p}/${n}`)]));
+ return {size:stat.size,mtime:stat.mtimeMs,ino:stat.ino,data:fs.readFileSync(p).toString('base64')};
+}
+function size(p) {
+ const stat=fs.lstatSync(p);
+ return stat.isSymbolicLink()?0:stat.isDirectory()?fs.readdirSync(p).reduce((sum,n)=>sum+size(`${p}/${n}`),0):stat.size;
+}
+const before=snapshot(wt);
+for(const busy of [true,false]) {
+ fs.writeFileSync(inventory,JSON.stringify([{path:wt,processes:busy?[{pid:123,name:'cargo'}]:[]}]));
+ const output=busy
+  ?cp.execFileSync(sweep,['--explain',wt],{encoding:'utf8'})
+  :cp.execFileSync('flock',[lock,sweep,'--explain',wt],{encoding:'utf8'});
+ assert.ok(output.includes(`skipped=${busy?'live-cargo':'live-cargo-lock'}`),output);
+ for(const parent of ['x','extension-worktree']) {
+  const target=`${wt}/.oracle-work/${parent}/target`;
+  assert.ok(output.includes(`${target} category=cargo-target bytes=${size(target)}`),output);
+ }
+ for(const category of ['oracle-scratch','oracle-evidence'])
+  assert.match(output,new RegExp(`category=${category}[^\\n]*bytes_before=[1-9][0-9]*`));
+ assert.deepEqual(snapshot(wt),before,'explain changed copy contents or file metadata');
+}
+JS
+pass 'busy-process and held-lock explanations report nested sizes without changing files'
 # Nested locks serialize the whole copy before any target is swept.
 # shellcheck disable=SC2016
 flock "$nested/target/debug/.cargo-lock" bash -c '"$1" > "$2"' _ "$SWEEP" "$TMP_ROOT/nested-lock"
