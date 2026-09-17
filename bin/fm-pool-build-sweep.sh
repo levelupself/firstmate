@@ -25,6 +25,9 @@
 # state/.pool-build-sweep.lock and .pool-build-sweep.last provide exclusion and
 # a durable one-hour cadence per FM_HOME, including failures and restarts.
 # state/.pool-build-sweep.log contains bounded worker output; timeout is 300s.
+# Each scheduled run ends with bin/fm-pool-footprint.sh --pool-audit over the
+# inventory it swept; that helper owns the FM_POOL_TOTAL_BUDGET_GB record,
+# its registered watcher check, and the one-wake-per-distinct-total contract.
 # --return-copy PATH [--dry-run] is teardown's full-prune entry after landed-work
 # and process cleanup, retaining its existing contract via the shared rule table.
 set -euo pipefail

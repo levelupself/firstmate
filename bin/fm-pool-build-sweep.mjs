@@ -319,13 +319,26 @@ if (lockedCopy) {
 else {
   const registry = path.join(process.env.FM_DATA_OVERRIDE || path.join(home,'data'), 'projects.md');
   const names = exists(registry) ? [...new Set(fs.readFileSync(registry,'utf8').split('\n').map(l => /^- ([^\s/]+)(?:\s|$)/.exec(l)?.[1]).filter(n=>n && n!=='.' && n!=='..'))] : [];
+  const audited = [];
   for (const name of names) {
     const project = path.join(process.env.FM_PROJECTS_OVERRIDE || path.join(home,'projects'),name);
     try {
-      for (const entry of inventory(project)) if (!explain || entry.path === explain) withCargoLocks(project,entry);
+      for (const entry of inventory(project)) {
+        audited.push(`${project}\t${entry.path}`);
+        if (!explain || entry.path === explain) withCargoLocks(project,entry);
+      }
     } catch(e) {
       if (e.code === 'FM_TREEHOUSE_NOT_FOUND') report(project,0,0,'skipped=treehouse-not-found');
       else {console.error(`${project}: sweep failed: ${e.message}`);process.exitCode=1;}
     }
+  }
+  // The pool budget audit follows every scheduled run over the inventory it
+  // just swept; fm-pool-footprint.sh owns the record, check, and wake contract.
+  if (scheduled) {
+    try {
+      const output = execFileSync(path.join(dir,'fm-pool-footprint.sh'), ['--pool-audit'],
+        {encoding:'utf8', input:audited.map(row => `${row}\n`).join(''), timeout:240000, stdio:['pipe','pipe','pipe']}).trim();
+      if (output) console.log(output);
+    } catch(e) {console.error(`pool budget audit failed: ${e.stderr || e.message}`);process.exitCode=1;}
   }
 }

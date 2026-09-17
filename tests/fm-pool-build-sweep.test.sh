@@ -390,3 +390,86 @@ for protection in tracked nonignored; do
   assert_present "$wt/.oracle-work/scratch.jar" 'return failed to protect mixed scratch root'
 done
 pass 'tracked and nonignored scratch roots remain protected'
+
+# Pool budget wake: after a scheduled run, a project pool whose ignored
+# footprint exceeds FM_POOL_TOTAL_BUDGET_GB gets one registered watcher check
+# that surfaces exactly one wake per distinct over-budget total.
+CHECK="$FM_HOME/state/pool-footprint.check.sh"
+CHECKPOINT="$ROOT/bin/fm-watch-checkpoint.sh"
+printf '%s\n' fm-pr-check-migration-scan-v1 > "$FM_HOME/state/.pr-check-migration-scan-v1"
+printf '%s\n' fm-pr-check-migration-v1 > "$FM_HOME/state/.pr-check-migration-v1"
+chmod 0600 "$FM_HOME/state/.pr-check-migration-scan-v1" "$FM_HOME/state/.pr-check-migration-v1"
+scheduled_sweep() {  # <total-budget-gb>
+  rm -f "$FM_HOME/state/.pool-build-sweep.last"
+  FM_POOL_TOTAL_BUDGET_GB="$1" "$SWEEP" --scheduled > "$TMP_ROOT/scheduled.out" 2>&1 \
+    || fail "scheduled sweep failed: $(cat "$TMP_ROOT/scheduled.out")"
+}
+check_output() {
+  [ -f "$CHECK" ] || { printf ''; return 0; }
+  bash "$CHECK"
+}
+printf '.oracle-work/\n' >> "$PROJECT/.git/info/exclude"
+for name in fat-a fat-b fat-c thin; do
+  wt="$TMP_ROOT/pool/$name/rust"
+  git -C "$PROJECT" worktree add -q --detach "$wt"
+  mkdir -p "$wt/.oracle-work"
+  case "$name" in
+    fat-a) size=262144 ;;
+    fat-b) size=131072 ;;
+    fat-c) size=65536 ;;
+    *) size=1024 ;;
+  esac
+  head -c "$size" /dev/zero | tr '\0' x > "$wt/.oracle-work/blob.bin"
+done
+node - "$TMP_ROOT" <<'JS'
+const fs=require('fs'), root=process.argv[2];
+const entries=['fat-a','fat-b','fat-c','thin'].map(name=>({name,path:`${root}/pool/${name}/rust`,status:'available',lease_id:'',processes:[]}));
+fs.writeFileSync(`${root}/inventory.json`,JSON.stringify(entries));
+JS
+scheduled_sweep 0.0001
+assert_present "$CHECK" 'over-budget pool did not write its watcher check'
+assert_present "$FM_HOME/state/pool-footprint.check-trust" 'pool footprint check was not registered'
+first=$(check_output)
+[ -n "$first" ] || fail 'registered check printed nothing for an over-budget pool'
+[ "$(printf '%s\n' "$first" | wc -l)" -eq 1 ] || fail "check printed more than one line: $first"
+assert_contains "$first" 'rust' 'wake does not name the project'
+for name in fat-a fat-b fat-c; do
+  assert_contains "$first" "$TMP_ROOT/pool/$name/rust" "wake omits top copy $name"
+done
+assert_not_contains "$first" "$TMP_ROOT/pool/thin/rust" 'wake lists more than the top three copies'
+[ -z "$(check_output)" ] || fail 'check repeated the wake for an unchanged total'
+scheduled_sweep 0.0001
+[ -z "$(check_output)" ] || fail 'a rerun with an unchanged total produced a second wake'
+pass 'scheduled sweep surfaces one wake per over-budget pool total'
+
+# The watcher itself trusts the registered check and surfaces the line once.
+rm -f "$FM_HOME/state/.pool-footprint-surfaced"
+FM_HOME="$FM_HOME" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=1 "$CHECKPOINT" --seconds 8 \
+  > "$TMP_ROOT/checkpoint.out" 2> "$TMP_ROOT/checkpoint.err" || fail "watcher checkpoint did not wake: $(cat "$TMP_ROOT/checkpoint.out" "$TMP_ROOT/checkpoint.err")"
+assert_contains "$(cat "$TMP_ROOT/checkpoint.out")" 'check:' 'watcher did not surface the pool footprint check'
+assert_contains "$(cat "$TMP_ROOT/checkpoint.out")" "$TMP_ROOT/pool/fat-a/rust" 'watcher wake omits the largest copy'
+# Drain and acknowledge that wake as a handling turn would, so the next
+# checkpoint has no queued wake to resurface and can only wake on a repeat.
+drained=$(FM_HOME="$FM_HOME" "$ROOT/bin/fm-wake-drain.sh" 2> "$TMP_ROOT/drain.err")
+assert_contains "$drained" "$TMP_ROOT/pool/fat-a/rust" 'queued wake omits the largest copy'
+sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$TMP_ROOT/drain.err")
+generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$TMP_ROOT/drain.err")
+FM_HOME="$FM_HOME" "$ROOT/bin/fm-wake-drain.sh" --ack-through "$sequence" --recovery-generation "$generation" > /dev/null
+rc=0
+FM_HOME="$FM_HOME" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=1 "$CHECKPOINT" --seconds 3 \
+  > "$TMP_ROOT/checkpoint2.out" 2> "$TMP_ROOT/checkpoint2.err" || rc=$?
+[ "$rc" -eq 124 ] || fail "watcher repeated the pool footprint wake: $(cat "$TMP_ROOT/checkpoint2.out")"
+pass 'watcher surfaces the registered pool footprint check exactly once'
+
+# A changed total is a new wake; dropping under budget clears the record so a
+# later crossing surfaces again.
+head -c 65536 /dev/zero | tr '\0' x > "$TMP_ROOT/pool/thin/rust/.oracle-work/more.bin"
+scheduled_sweep 0.0001
+second=$(check_output)
+[ -n "$second" ] || fail 'a changed over-budget total did not produce a new wake'
+[ "$second" != "$first" ] || fail 'changed total repeated the earlier wake line'
+scheduled_sweep 1000
+[ -z "$(check_output)" ] || fail 'an under-budget pool still woke firstmate'
+scheduled_sweep 0.0001
+[ -n "$(check_output)" ] || fail 'a pool crossing the budget again did not wake firstmate'
+pass 'pool budget wake follows the total: new total, silence under budget, wake on re-crossing'

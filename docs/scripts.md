@@ -131,6 +131,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-teardown.sh`         | Fail-closed teardown: return landed ship worktrees, require completed scout deliverables, retire secondmate homes |
 | [`fm-pool-prune.sh`](../bin/fm-pool-prune.sh) | Prune eligible build output from idle copies in this home's Treehouse pools |
 | [`fm-pool-build-sweep.sh`](../bin/fm-pool-build-sweep.sh) | Sweep stale Rust output from live pool copies; [configuration](configuration.md) owns the maintenance contract |
+| [`fm-pool-footprint.sh`](../bin/fm-pool-footprint.sh) | Measure a copy's ignored footprint and run the scheduled pool budget audit behind the footprint gates |
 | [`fm-build-output-lib.sh`](../bin/fm-build-output-lib.sh) | Shared build-output pruning rules and deletion safety boundary |
 | [`fm-resources.sh`](../bin/fm-resources.sh) | Print an advisory capacity snapshot for task release review |
 | `fm-harness.sh`          | Detect the running harness and resolve crew or secondmate harness, model, and effort |

@@ -113,6 +113,19 @@
 #   ordinary acquisition of a fresh copy even when records bind lost copies.
 #   Whatever copy the pane lands in is checked
 #   again against every live record before anything is launched or recorded.
+#   Footprint pre-condition (footprint-gate): before any pooled copy is
+#   entered, every free unbound copy the inventory reports is measured through
+#   bin/fm-pool-footprint-lib.sh; one over FM_POOL_COPY_BUDGET_GB (default 12
+#   decimal GB, docs/configuration.md) is pruned through the return rule table
+#   (it is unowned by definition) and re-measured, and one still over budget is
+#   never handed to the new worker. When every free copy fits, `treehouse get`
+#   runs unchanged; when some free copy is still over budget, the pane is
+#   steered into the first copy that fits with `treehouse enter <name>` and
+#   the refused copies are named; when none fits, the spawn stops naming
+#   them. An inventory that cannot be read while nothing is bound keeps the
+#   ordinary acquisition, because the pool then reports nothing to measure and
+#   `treehouse get` itself cannot hand out a copy the same binary cannot list;
+#   an unmeasurable free copy counts as over budget.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -389,6 +402,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
+# shellcheck source=bin/fm-pool-footprint-lib.sh
+. "$SCRIPT_DIR/fm-pool-footprint-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-cursor-lib.sh
@@ -2221,17 +2236,43 @@ for (const e of parsed) {
 NODE
 }
 
+# spawn_footprint_admit <path>: the footprint pre-condition from the script
+# header for one free unbound copy. Measures, prunes an over-budget copy
+# through the return rule table, re-measures, and succeeds only when the copy
+# fits FM_POOL_COPY_BUDGET_GB. Prints why a copy is refused.
+spawn_footprint_admit() {  # <path>
+  local path=$1 budget total
+  budget=$(fm_pool_copy_budget_bytes) || return 1
+  total=$(fm_pool_footprint_bytes "$path") || {
+    echo "notice: free copy '$path' cannot be measured for ignored footprint; treating it as over budget" >&2
+    return 1
+  }
+  [ "$total" -gt "$budget" ] || return 0
+  "$SCRIPT_DIR/fm-pool-build-sweep.sh" --return-copy "$path" >/dev/null || {
+    echo "notice: free copy '$path' holds $(fm_pool_footprint_human "$total") of ignored output and its return prune failed; refusing it" >&2
+    return 1
+  }
+  total=$(fm_pool_footprint_bytes "$path") || {
+    echo "notice: free copy '$path' cannot be measured for ignored footprint after its prune; treating it as over budget" >&2
+    return 1
+  }
+  [ "$total" -gt "$budget" ] || return 0
+  echo "notice: free copy '$path' still holds $(fm_pool_footprint_human "$total") of ignored output after the return prune (FM_POOL_COPY_BUDGET_GB=$(fm_pool_footprint_gb "$budget") GB); refusing to hand it to $ID. Inspect it with 'bin/fm-pool-footprint.sh report $path'" >&2
+  return 1
+}
+
 # spawn_plan_pool_acquisition: decides how the pane acquires its copy. Sets
 # SPAWN_POOL_ACQUIRE to the exact pane command and, for a steered acquisition,
-# SPAWN_POOL_ENTER_PATH to the copy it must land in. With no bound copies the
-# pool is not even consulted and the ordinary `treehouse get` runs unchanged.
+# SPAWN_POOL_ENTER_PATH to the copy it must land in. Every free unbound copy
+# passes the footprint pre-condition; the ordinary `treehouse get` runs only
+# when no bound copy could be handed out and every free copy fits the budget.
 SPAWN_POOL_ACQUIRE='treehouse get'
 SPAWN_POOL_ENTER_PATH=
 spawn_plan_pool_acquisition() {
-  local bound rows owner path name status lease procs hazard='' hazard_owner='' candidate='' candidate_name='' free=''
+  local bound rows owner path name status lease procs hazard='' hazard_owner='' candidate='' candidate_name='' free='' bloated=''
   bound=$(spawn_bound_worktrees "$PROJ_ABS_REAL")
-  [ -n "$bound" ] || return 0
   if ! rows=$(spawn_pool_inventory_rows); then
+    [ -n "$bound" ] || return 0
     owner=$(printf '%s\n' "$bound" | head -n 1 | cut -f1)
     echo "error: the pool inventory for '$PROJ_ABS' could not be read, so this spawn cannot prove the pool will not hand out a copy that task $owner (and possibly others) still binds; refusing to run treehouse get rather than refresh a bound copy. Run 'treehouse status --json' in the project to see why" >&2
     return 1
@@ -2255,20 +2296,35 @@ spawn_plan_pool_acquisition() {
       esac
       continue
     fi
-    if [ -z "$candidate" ] && [ "$status" = available ] && [ "$lease" = - ] && [ "$procs" = 0 ]; then
-      candidate=$path
-      candidate_name=$name
+    if [ "$status" = available ] && [ "$lease" = - ] && [ "$procs" = 0 ]; then
+      # Every free copy is measured, not only the first: `treehouse get` may
+      # pick any of them, so each must be proven to fit before get may run.
+      if spawn_footprint_admit "$path"; then
+        [ -n "$candidate" ] || { candidate=$path; candidate_name=$name; }
+      else
+        bloated="$bloated '$path'"
+      fi
     fi
   done <<ROWS
 $rows
 ROWS
-  [ -n "$hazard" ] || return 0
+  if [ -n "$hazard" ]; then
+    if [ -z "$candidate" ]; then
+      free=$(printf '%s\n' "$rows" | awk -F '\t' '$3 == "available" { n++ } END { print n + 0 }')
+      echo "error: the pool would hand out '$hazard', which task $hazard_owner still binds (its record names that copy and it has not been torn down), and no other free copy is available ($free available, all bound${bloated:+ or over the footprint budget:$bloated}); refusing to spawn $ID rather than refresh $hazard_owner's copy. Free a copy (finish or tear down a task) or recover $hazard_owner with 'bin/fm-spawn.sh $hazard_owner --reacquire-worktree' once one is free" >&2
+      return 1
+    fi
+    echo "notice: the pool would hand out '$hazard', which task $hazard_owner still binds; steering $ID into free copy $candidate_name ('$candidate') instead and leaving $hazard_owner's copy untouched" >&2
+    SPAWN_POOL_ACQUIRE="treehouse enter $candidate_name"
+    SPAWN_POOL_ENTER_PATH=$candidate
+    return 0
+  fi
+  [ -n "$bloated" ] || return 0
   if [ -z "$candidate" ]; then
-    free=$(printf '%s\n' "$rows" | awk -F '\t' '$3 == "available" { n++ } END { print n + 0 }')
-    echo "error: the pool would hand out '$hazard', which task $hazard_owner still binds (its record names that copy and it has not been torn down), and no other free copy is available ($free available, all bound); refusing to spawn $ID rather than refresh $hazard_owner's copy. Free a copy (finish or tear down a task) or recover $hazard_owner with 'bin/fm-spawn.sh $hazard_owner --reacquire-worktree' once one is free" >&2
+    echo "error: every free copy in the pool for '$PROJ_ABS' is still over the footprint budget after the return prune:$bloated; refusing to spawn $ID rather than hand a bloated copy to a new worker. Inspect them with 'bin/fm-pool-footprint.sh report <copy>', remove or relocate the output, then retry" >&2
     return 1
   fi
-  echo "notice: the pool would hand out '$hazard', which task $hazard_owner still binds; steering $ID into free copy $candidate_name ('$candidate') instead and leaving $hazard_owner's copy untouched" >&2
+  echo "notice: the pool could hand out an over-budget copy ($bloated ); steering $ID into free copy $candidate_name ('$candidate') instead" >&2
   SPAWN_POOL_ACQUIRE="treehouse enter $candidate_name"
   SPAWN_POOL_ENTER_PATH=$candidate
 }
