@@ -644,6 +644,61 @@ test_behavioral_tests_are_red_first() {
   pass "fm-brief.sh: every ship mode requires red-first behavioural tests"
 }
 
+# The repeated-obstacle rule read "if you hit the same obstacle twice, append
+# blocked: and stop". Keyed on the count alone, it stopped workers who had already
+# diagnosed one defect and were fixing its instances (a third file with the same
+# unsupported field, one definition failing the same verification twice) and
+# workers with untried routes (one capture method failing twice with two other
+# methods available). Each stop looked identical to a genuinely stuck worker and
+# cost a firstmate round trip that said "keep going". The rule now keys on a
+# repeated attempt that learned nothing new, keeps the stop for a wall the worker
+# cannot move, and names a diagnosed defect's recurrence as progress. Every brief
+# that carries the rule must carry the distinction, and the ship rule keeps its
+# slot so the no-mistakes escalation pointer at rule 8 stays correct.
+test_repeated_obstacle_rule_keys_on_new_information() {
+  local home id brief kind
+  home="$TMP_ROOT/repeated-obstacle-home"
+  write_registry "$home"
+
+  for id_kind in "brief-obstacle-nm:no-mistakes" "brief-obstacle-dp:direct-PR" "brief-obstacle-lo:local-only" "brief-obstacle-scout:scout"; do
+    id=${id_kind%%:*}
+    kind=${id_kind##*:}
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$kind" >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$id: brief was not scaffolded"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_no_grep 'If you hit the same obstacle twice, append `blocked: {why}` and stop' "$brief" \
+      "$id: brief still stops a worker on the bare count of a repeated obstacle"
+    assert_grep "with nothing new learned between the attempts" "$brief" \
+      "$id: brief does not key the stop on a repeated attempt that learned nothing new"
+    assert_grep "the same approach, the same failure, and no untried route" "$brief" \
+      "$id: brief does not name what makes a repeat a wall rather than progress"
+    assert_grep "A defect you have already diagnosed and are fixing instance by instance is progress, not a repeated obstacle" "$brief" \
+      "$id: brief does not exempt a diagnosed defect's recurrence from the stop"
+    assert_grep "even when it recurs in more files or fails the same verification again" "$brief" \
+      "$id: brief does not cover the recurrence shapes that stopped workers"
+    assert_grep "An untried route that could work means you are not yet blocked" "$brief" \
+      "$id: brief does not send a worker to an untried route before stopping"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'append `blocked: {why}` and stop; firstmate will help' "$brief" \
+      "$id: brief lost the stop for a worker looping on a wall it cannot move"
+  done
+
+  # The ship rule stays in slot 7 and the scout rule in slot 5, so the no-mistakes
+  # escalation pointer and every later rule number remain correct.
+  grep -q "^7\. If you hit the same obstacle twice with nothing new learned" "$home/data/brief-obstacle-nm/brief.md" \
+    || fail "ship brief moved the repeated-obstacle rule out of slot 7"
+  assert_grep "escalate to firstmate (rule 8) and stop" "$home/data/brief-obstacle-nm/brief.md" \
+    "no-mistakes escalation pointer no longer matches the renumbered rules"
+  grep -q "^5\. If you hit the same obstacle twice with nothing new learned" "$home/data/brief-obstacle-scout/brief.md" \
+    || fail "scout brief moved the repeated-obstacle rule out of slot 5"
+  pass "fm-brief.sh: the repeated-obstacle rule stops a looping worker, not one fixing a diagnosed defect"
+}
+
 # Observation provenance is the worker-side input to the merge-time stale-proof
 # decision. The definition deliberately follows what the observation exercised,
 # not the broader set of files the worker happened to edit: a later pipeline fix
@@ -1167,6 +1222,7 @@ test_no_mistakes_dod_wording
 test_terminal_report_cannot_be_written_at_commit
 test_no_mistakes_ready_signal_requires_working_ci
 test_behavioral_tests_are_red_first
+test_repeated_obstacle_rule_keys_on_new_information
 test_reports_disclose_commit_and_proof_files
 test_ship_reports_bind_full_suite_to_clean_commit
 test_ship_project_memory_wording
