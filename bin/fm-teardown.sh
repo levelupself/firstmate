@@ -86,8 +86,9 @@
 # binds the copy for inspection. Every Treehouse return attempt also applies
 # the gate, including direct and nested children during forced retirement.
 # A refused child retains its records without a deletion fallback. --force never skips
-# this gate; only --footprint-override --reason <text> does, and every
-# override is appended to state/teardown.log as one
+# this gate; --footprint-override --reason <text> bypasses only the
+# over-budget refusal, not prune, measurement, or log-write failures. Each
+# accepted over-budget gate override is appended to state/teardown.log as one
 # `<utc> footprint-override task=<id> worktree=<path> footprint_bytes=<n>
 # budget_bytes=<n> reason=<text>` line. state/teardown.log is append-only
 # private evidence that no script reads back. The gate skips its own prune,
