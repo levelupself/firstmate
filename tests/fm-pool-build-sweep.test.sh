@@ -101,6 +101,42 @@ flock "$TMP_ROOT/pool/size/rust/target/debug/.cargo-lock" bash -c '
 assert_contains "$(cat "$TMP_ROOT/locked")" 'live-cargo-lock' 'Cargo profile lock was not respected'
 pass 'Cargo profile locks close the inventory-to-deletion race'
 
+# Remove an enumerated lock before flock opens it, both with and without its
+# parent directory. A real child error must retain stderr on its failure line.
+export TEST_REAL_FLOCK
+TEST_REAL_FLOCK=$(command -v flock)
+cat > "$TMP_ROOT/fakebin/flock" <<'EOF'
+#!/usr/bin/env bash
+if [ "${4:-}" = "$TEST_RACE_LOCK" ]; then
+  case "$TEST_LOCK_FAILURE" in
+    file) rm "$4" ;;
+    directory) rm -r "${4%/*}" ;;
+    stderr) printf 'fixture lock permission denied\n' >&2; exit 73 ;;
+  esac
+fi
+exec "$TEST_REAL_FLOCK" "$@"
+EOF
+chmod +x "$TMP_ROOT/fakebin/flock"
+export TEST_RACE_LOCK="$TMP_ROOT/pool/size/rust/target/race/.cargo-lock"
+for TEST_LOCK_FAILURE in file directory stderr; do
+  export TEST_LOCK_FAILURE
+  mkdir -p "${TEST_RACE_LOCK%/*}"
+  touch "$TEST_RACE_LOCK"
+  rc=0
+  "$SWEEP" > "$TMP_ROOT/race-$TEST_LOCK_FAILURE" 2>&1 || rc=$?
+  output=$(cat "$TMP_ROOT/race-$TEST_LOCK_FAILURE")
+  if [ "$TEST_LOCK_FAILURE" = stderr ]; then
+    [ "$rc" -ne 0 ] || fail 'real lock failure returned success'
+    assert_contains "$output" 'sweep failed: fixture lock permission denied' 'child stderr missing from failure line'
+  else
+    [ "$rc" -eq 0 ] || fail "vanished lock failed the sweep: $output"
+    assert_contains "$output" 'skipped=copy-changed-during-sweep' 'vanished lock was not skipped'
+  fi
+done
+rm "$TMP_ROOT/fakebin/flock"
+rm -rf "${TEST_RACE_LOCK%/*}"
+pass 'vanished locks skip the copy and genuine lock failures retain stderr'
+
 # The helper owns a durable attempt marker, including failed attempts.
 "$SWEEP" --periodic
 for _ in {1..100}; do
