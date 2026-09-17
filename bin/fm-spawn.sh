@@ -47,10 +47,12 @@
 #   exact task's identity, its kind is ship or scout, the recorded endpoint is
 #   positively missing (an endpoint that still exists is --relaunch's job), the
 #   named path is an isolated worktree root on branch fm/<task-id>, and
-#   `treehouse status --json` names that copy exactly once with no lease and no
-#   process this spawn cannot claim. Every one of those is re-proved once the
-#   replacement endpoint exists and before anything durable is published, so the
-#   facts have to hold at publication rather than merely when first read.
+#   `treehouse status --json` names that copy - matched by resolved directory,
+#   so a pool root spelled through a symlink still counts - exactly once with
+#   no lease and no process this spawn cannot claim. Every one of those is
+#   re-proved once the replacement endpoint exists and before anything durable
+#   is published, so the facts have to hold at publication rather than merely
+#   when first read.
 #   Nothing here fetches, resets, checks out, cleans, forces, discards, or
 #   returns the copy: uncommitted content is preserved exactly, and a copy that
 #   cannot be positively proved is refused rather than repaired.
