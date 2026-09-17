@@ -247,6 +247,15 @@
 #   provisioned firstmate home; the default is kind=ship.
 #   Before a secondmate launch, the home is locally fast-forwarded to the primary
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
+#   Every launch that would start an agent on this host first passes the host
+#   capacity guard: it refuses, naming the reading and the threshold, while the
+#   1-minute load average exceeds FM_SPAWN_MAX_LOAD (default 60), MemAvailable
+#   is under FM_SPAWN_MIN_MEM_GB (default 12 decimal GB), or this home's active
+#   direct reports already number FM_SPAWN_MAX_ACTIVE (default 12). The refusal
+#   happens before any endpoint, copy, or record exists, so the task stays
+#   queued and the same command retries once the host has room; the
+#   "host capacity guard" section below owns what counts as active and how the
+#   readings are taken.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from the primary project checkout.
 #   The task path itself comes from the pane shell's own `pwd -P`, written to a
@@ -416,6 +425,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-task-meta-lock-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
+# shellcheck source=bin/fm-classify-lib.sh
+. "$SCRIPT_DIR/fm-classify-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -1328,6 +1339,101 @@ if ! fm_lock_try_acquire "$SPAWN_TASK_LOCK"; then
   exit 1
 fi
 SPAWN_TASK_LOCK_HELD=1
+
+# --- host capacity guard ------------------------------------------------------
+# Every launch that starts an agent process on this host passes three checks
+# before any endpoint, copy, or record exists, so a refusal leaves the task
+# exactly as queued and the identical command retries once the host has room.
+# Each refusal prints the measured value and the threshold it crossed.
+#   FM_SPAWN_MAX_LOAD (default 60): the 1-minute load average may not exceed it.
+#   FM_SPAWN_MIN_MEM_GB (default 12 decimal GB): MemAvailable may not fall below it.
+#   FM_SPAWN_MAX_ACTIVE (default 12): this home's active direct reports, plus
+#     the one being launched, may not exceed it.
+# The load and memory readings are the kernel's own /proc/loadavg and
+# /proc/meminfo (FM_PROC_ROOT_OVERRIDE relocates them for tests); a host with
+# neither file is not measured by those two checks and says so in a notice,
+# while a Linux host whose files cannot be parsed refuses. An invalid threshold
+# stops the spawn rather than defaulting. An active direct report is another
+# record in this home without teardown_at= whose recorded endpoint is not
+# positively agent-free and whose last status event is not done or failed, so
+# a finished worker waiting on its merge never blocks a new one; a backend
+# without a recovery-grade classifier reads unknown and counts, so the cap can
+# over-count but never under-count. The count is per home: a secondmate's own
+# crewmates are bounded by its home's cap, and the host readings are what
+# bound the machine as a whole. Remote secondmate launches leave the host
+# before this point and are not measured here.
+spawn_capacity_positive_int() {  # <env-name> <default>
+  local name=$1 value=${!1:-$2}
+  case "$value" in
+    [1-9]|[1-9][0-9]*) printf '%s\n' "$value" ;;
+    *) echo "error: $name must be a positive integer, got '$value'" >&2; return 1 ;;
+  esac
+}
+
+spawn_capacity_positive_decimal() {  # <env-name> <default>
+  local name=$1 value=${!1:-$2}
+  awk -v v="$value" 'BEGIN {
+    if (v !~ /^([0-9]+\.?[0-9]*|\.[0-9]+)$/ || v + 0 <= 0) exit 1
+    print v
+  }' || { echo "error: $name must be a positive decimal value, got '$value'" >&2; return 1; }
+}
+
+# spawn_active_direct_reports: one id per line, every other record in this
+# home that still counts as an active worker (see the section comment).
+spawn_active_direct_reports() {
+  local meta id backend target
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+    id=$(basename "$meta" .meta)
+    [ "$id" != "$ID" ] || continue
+    grep -q '^teardown_at=' "$meta" 2>/dev/null && continue
+    case "$(status_line_verb "$(last_status_line "$STATE/$id.status")")" in
+      done|failed) continue ;;
+    esac
+    backend=$(fm_backend_of_meta "$meta")
+    target=$(fm_backend_target_of_meta "$meta" 2>/dev/null) || target=
+    [ -n "$target" ] || continue
+    [ "$(fm_backend_agent_alive "$backend" "$target")" != dead ] || continue
+    printf '%s\n' "$id"
+  done
+}
+
+spawn_capacity_admit() {
+  local proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc} max_load min_mem_bytes max_active
+  local load1 mem_kb mem_bytes active count
+  max_load=$(spawn_capacity_positive_decimal FM_SPAWN_MAX_LOAD 60) || return 1
+  min_mem_bytes=$(fm_pool_footprint_budget_bytes FM_SPAWN_MIN_MEM_GB 12) || return 1
+  max_active=$(spawn_capacity_positive_int FM_SPAWN_MAX_ACTIVE 12) || return 1
+  if [ -r "$proc_root/loadavg" ] || [ -r "$proc_root/meminfo" ]; then
+    load1=$(awk 'NR == 1 { print $1; exit }' "$proc_root/loadavg" 2>/dev/null) || load1=
+    case "$load1" in
+      ''|*[!0-9.]*) echo "error: could not read the 1-minute load average from $proc_root/loadavg; refusing to launch $ID without knowing the host can carry it" >&2; return 1 ;;
+    esac
+    if awk -v l="$load1" -v m="$max_load" 'BEGIN { exit !(l + 0 > m + 0) }'; then
+      echo "error: host capacity: the 1-minute load average is $load1, over FM_SPAWN_MAX_LOAD=$max_load; refusing to launch $ID. The task stays queued; retry the same command once load drops" >&2
+      return 1
+    fi
+    mem_kb=$(awk '$1 == "MemAvailable:" { print $2; exit }' "$proc_root/meminfo" 2>/dev/null) || mem_kb=
+    case "$mem_kb" in
+      ''|*[!0-9]*) echo "error: could not read MemAvailable from $proc_root/meminfo; refusing to launch $ID without knowing the host can carry it" >&2; return 1 ;;
+    esac
+    mem_bytes=$((mem_kb * 1024))
+    if [ "$mem_bytes" -lt "$min_mem_bytes" ]; then
+      echo "error: host capacity: MemAvailable is $(fm_pool_footprint_human "$mem_bytes"), under FM_SPAWN_MIN_MEM_GB=${FM_SPAWN_MIN_MEM_GB:-12} GB; refusing to launch $ID. The task stays queued; retry the same command once memory frees up" >&2
+      return 1
+    fi
+  else
+    echo "notice: no $proc_root/loadavg or $proc_root/meminfo on this host, so the load and memory guard did not run for $ID; only the active-worker cap applies" >&2
+  fi
+  active=$(spawn_active_direct_reports)
+  count=$(printf '%s\n' "$active" | grep -c .) || count=0
+  if [ "$count" -ge "$max_active" ]; then
+    echo "error: host capacity: this home already has $count active direct reports ($(printf '%s\n' "$active" | paste -sd, - | sed 's/,/, /g')), which meets FM_SPAWN_MAX_ACTIVE=$max_active; refusing to launch $ID. The task stays queued; retry the same command once a worker finishes or is torn down" >&2
+    return 1
+  fi
+}
+spawn_capacity_admit || exit 1
+
 PROJ=
 ARG3=
 FIRSTMATE_HOME=
