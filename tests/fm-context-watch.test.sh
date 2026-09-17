@@ -293,6 +293,62 @@ COMMANDS
   pass "usage distinguishes quoted redirect destinations and quoted separators from literal arrows"
 }
 
+test_usage_skips_heredoc_bodies_and_unwraps_interpreters() {
+  local home wt file out input i=0
+  home=$(make_home heredocs-interpreters); wt="$home/wt"
+  bind_task "$home/data" use-heredocs claude "$home/store" "$wt" "$CLAUDE_STAMP"
+  file=$(claude_open "$home/store" "$wt" "$CLAUDE_STAMP")
+  local -a commands=(
+    $'python3 - <<\'PY\'\nprint(1 > 0)\nPY'
+    $'node - <<\'JS\'\nconst f = (x) => x\nJS'
+    $'python3 - <<\'PY\'\n# don\'t\nPY\ngrep foo src'
+    $'# don\'t\ngrep foo src'
+    $'cat <<-EOF > out.txt\n\tbody\n\tEOF'
+    $'cat <<EOF | grep x\nbody > y\nEOF'
+    'echo a #> not-a-file'
+    'python -m pytest tests/'
+    'python3 -m unittest discover'
+    "bash -c 'npm test'"
+    'sh -c "cat x > y"'
+    "bash -lc 'ls | grep foo'"
+    "bash -c 'cat x' > out"
+    "python3 -c 'print(1 > 0)'"
+  )
+  for command in "${commands[@]}"; do
+    i=$((i + 1))
+    input=$(jq -cn --arg command "$command" '{command: $command}')
+    claude_tool_use "$file" "$wt" "$CLAUDE_STAMP" "$i" "$i" "tu-$i" Bash "$input" 60000 50
+    claude_tool_result "$file" "$wt" "$CLAUDE_STAMP" "$i" 2 "tu-$i" 'done'
+  done
+  out=$(usage_reader "$home" use-heredocs) || fail "heredoc usage failed: $out"
+  printf '%s' "$out" | jq -e '
+    (.timeline | map(.tool_class))
+    == ["other","other","search","search","edit","read","other",
+        "test","test","test","edit","read","edit","other"]' \
+    >/dev/null || fail "heredoc and interpreter classes wrong: $out"
+  pass "usage skips heredoc bodies and comments and classifies python -m and shell -c by what they run"
+}
+
+test_codex_usage_unwraps_interpreter_arrays() {
+  local home wt file out
+  home=$(make_home codex-interpreters); wt="$home/wt"
+  bind_task "$home/data" use-codex-arrays codex "$home/store" "$wt" "$CODEX_STAMP"
+  file=$(codex_open "$home/store" "$wt" "$CODEX_STAMP")
+  codex_call "$file" 1 0 1 function_call c1 shell '"arguments":"{\"command\":[\"python3\",\"-m\",\"pytest\",\"tests/\"]}"'
+  codex_output "$file" 1 1 2 function_call_output c1 '"ok"'
+  codex_count "$file" 1 2 3 900 100 1000
+  codex_call "$file" 2 0 4 function_call c2 shell '"arguments":"{\"command\":[\"bash\",\"-lc\",\"bash -c \\\"rg foo src\\\"\"]}"'
+  codex_output "$file" 2 1 5 function_call_output c2 '"ok"'
+  codex_count "$file" 2 2 6 1000 100 2100
+  codex_call "$file" 3 0 7 function_call c3 shell '"arguments":"{\"command\":[\"sh\",\"-c\",\"cat <<EOF\\nbody > y\\nEOF\"]}"'
+  codex_output "$file" 3 1 8 function_call_output c3 '"ok"'
+  codex_count "$file" 3 2 9 1100 100 3300
+  out=$(usage_reader "$home" use-codex-arrays) || fail "codex interpreter usage failed: $out"
+  printf '%s' "$out" | jq -e '(.timeline | map(.tool_class)) == ["test","search","read"]' \
+    >/dev/null || fail "codex interpreter array classes wrong: $out"
+  pass "codex usage classifies python -m and shell -c arrays by what they run"
+}
+
 test_codex_usage_folds_tools_classes_and_turns() {
   local home wt file out
   home=$(make_home codex-usage); wt="$home/wt"
@@ -619,6 +675,8 @@ test_reader_counts_restarts_across_launches
 test_claude_usage_folds_tools_classes_and_turns
 test_codex_usage_folds_tools_classes_and_turns
 test_usage_classifies_quoted_redirects
+test_usage_skips_heredoc_bodies_and_unwraps_interpreters
+test_codex_usage_unwraps_interpreter_arrays
 test_usage_reports_bound_records_without_a_request_as_unavailable
 test_watcher_wakes_once_per_crossing_step_and_compaction
 test_watcher_honours_warn_and_step_overrides

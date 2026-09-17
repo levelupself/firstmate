@@ -128,14 +128,18 @@
 //               every cmd:"..." string in its script; else other.
 //     Command text is split into segments on newlines, &&, ||, ;, and |
 //     outside single and double quotes (a separator inside a quoted string,
-//     such as the | in jq 'a | b', does not split), and the first segment
-//     whose class is not other decides. A segment's first
+//     such as the | in jq 'a | b', does not split); a # comment runs to the
+//     end of its line and a heredoc body (<<TAG, <<'TAG', <<-TAG through the
+//     TAG line) is skipped, so neither drives a class nor opens a quote. The
+//     first segment whose class is not other decides. A segment's first
 //     word (after leading VAR=value assignments, sudo, time, command, nice,
 //     and an interpreter such as bash or node followed by a script path)
-//     selects, in this order:
+//     selects, in this order; python/python3 -m <module> selects by the
+//     module, and bash/sh/zsh/dash -c <script> by the script text, which is
+//     split into its own segments:
 //       differential  diff, cmp, comm, colordiff, delta, git diff/range-diff/difftool
 //       git           git, gh, gh-axi, glab
-//       test          pytest, jest, vitest, mocha, bats, playwright, go test,
+//       test          pytest, unittest, jest, vitest, mocha, bats, playwright, go test,
 //                     cargo test, npm/pnpm/yarn/bun test or run test*, npx of
 //                     those runners, node --test, bin/fm-test-run.sh, any
 //                     path under tests/ or ending in .test.<ext>
@@ -561,7 +565,7 @@ export function tokensEst(bytes) {
 
 const DIFFERENTIAL_WORDS = new Set(['diff', 'cmp', 'comm', 'colordiff', 'delta']);
 const GIT_WORDS = new Set(['git', 'gh', 'gh-axi', 'glab']);
-const TEST_WORDS = new Set(['pytest', 'jest', 'vitest', 'mocha', 'bats', 'playwright']);
+const TEST_WORDS = new Set(['pytest', 'unittest', 'jest', 'vitest', 'mocha', 'bats', 'playwright']);
 const BUILD_WORDS = new Set(['make', 'cmake', 'tsc', 'esbuild', 'vite', 'webpack', 'rollup', 'shellcheck', 'eslint', 'prettier', 'ruff', 'mypy', 'black', 'gofmt']);
 const SEARCH_WORDS = new Set(['rg', 'grep', 'egrep', 'fgrep', 'ag', 'ack', 'ast-grep', 'find', 'fd', 'fdfind', 'locate', 'which', 'whereis', 'type']);
 const READ_WORDS = new Set(['cat', 'head', 'tail', 'less', 'more', 'ls', 'wc', 'stat', 'file', 'tree', 'pwd', 'du', 'df', 'readlink', 'realpath', 'jq', 'sqlite3', 'nl', 'od', 'xxd', 'hexdump', 'strings', 'cut', 'sort', 'uniq', 'tr', 'awk']);
@@ -569,36 +573,64 @@ const EDIT_WORDS = new Set(['tee', 'cp', 'mv', 'rm', 'mkdir', 'touch', 'chmod', 
 const PACKAGE_RUNNERS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
 const PREFIX_WORDS = new Set(['sudo', 'time', 'command', 'nice']);
 const INTERPRETERS = new Set(['bash', 'sh', 'zsh', 'dash', 'node', 'python', 'python3', 'perl', 'ruby']);
+const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash']);
+const PYTHONS = new Set(['python', 'python3']);
 
 const isTestPath = (word) => /(^|\/)tests\/|\.test\.[A-Za-z0-9]+$/.test(word) || word.endsWith('bin/fm-test-run.sh');
 
 function classifySegment(segment) {
-  const words = segment.trim().split(/\s+/).filter(Boolean);
+  const trimmed = segment.trim();
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  const total = words.length;
   while (words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]) || PREFIX_WORDS.has(words[0]))) words.shift();
   // `bash tests/x.test.sh` is the test, not bash: an interpreter followed by
-  // a script path is classified by the script.
-  if (words.length > 1 && INTERPRETERS.has(words[0].replace(/^.*\//, '')) && !words[1].startsWith('-')) words.shift();
+  // a script path is classified by the script, `python -m pytest` by the
+  // module, and `bash -c '<script>'` by the script text.
+  const interpreter = words.length > 1 ? words[0].replace(/^.*\//, '') : '';
+  let cls;
+  if (SHELLS.has(interpreter) && /^-[a-z]*c[a-z]*$/.test(words[1])) {
+    cls = classifyCommand(unquote(dropWords(trimmed, total - words.length + 2)));
+  } else {
+    if (PYTHONS.has(interpreter) && words[1] === '-m' && words.length > 2) words.splice(0, 2);
+    else if (INTERPRETERS.has(interpreter) && !words[1].startsWith('-')) words.shift();
+    cls = classifyWords(words);
+  }
+  if ((cls === 'read' || cls === 'search' || cls === 'other') && redirectsToFile(segment)) cls = 'edit';
+  return cls;
+}
+
+function classifyWords(words) {
   if (!words.length) return 'other';
   const [first, second = '', third = ''] = words;
   const base = first.replace(/^.*\//, '');
-  let cls = 'other';
-  if (DIFFERENTIAL_WORDS.has(base) || (base === 'git' && ['diff', 'range-diff', 'difftool'].includes(second))) cls = 'differential';
-  else if (base === 'git' && second === 'apply') cls = 'edit';
-  else if (GIT_WORDS.has(base)) cls = 'git';
-  else if (TEST_WORDS.has(base) || (base === 'go' && second === 'test') || (base === 'cargo' && second === 'test')
+  if (DIFFERENTIAL_WORDS.has(base) || (base === 'git' && ['diff', 'range-diff', 'difftool'].includes(second))) return 'differential';
+  if (base === 'git' && second === 'apply') return 'edit';
+  if (GIT_WORDS.has(base)) return 'git';
+  if (TEST_WORDS.has(base) || (base === 'go' && second === 'test') || (base === 'cargo' && second === 'test')
     || (PACKAGE_RUNNERS.has(base) && (second === 'test' || (second === 'run' && third.startsWith('test'))))
     || (base === 'npx' && TEST_WORDS.has(second)) || (base === 'node' && second === '--test')
-    || isTestPath(first)) cls = 'test';
-  else if (BUILD_WORDS.has(base) || (base === 'cargo' && ['build', 'check', 'clippy'].includes(second))
+    || isTestPath(first)) return 'test';
+  if (BUILD_WORDS.has(base) || (base === 'cargo' && ['build', 'check', 'clippy'].includes(second))
     || (base === 'go' && ['build', 'vet', 'mod'].includes(second))
     || (PACKAGE_RUNNERS.has(base) && ((second === 'run' && third === 'build') || ['ci', 'install', 'i'].includes(second)))
-    || first.endsWith('bin/fm-lint.sh')) cls = 'build';
-  else if (SEARCH_WORDS.has(base)) cls = 'search';
-  else if (base === 'sed') cls = words.some((w) => /^-[a-zA-Z]*i/.test(w) || w === '--in-place') ? 'edit' : 'read';
-  else if (READ_WORDS.has(base)) cls = 'read';
-  else if (EDIT_WORDS.has(base)) cls = 'edit';
-  if ((cls === 'read' || cls === 'search' || cls === 'other') && redirectsToFile(segment)) cls = 'edit';
-  return cls;
+    || first.endsWith('bin/fm-lint.sh')) return 'build';
+  if (SEARCH_WORDS.has(base)) return 'search';
+  if (base === 'sed') return words.some((w) => /^-[a-zA-Z]*i/.test(w) || w === '--in-place') ? 'edit' : 'read';
+  if (READ_WORDS.has(base)) return 'read';
+  if (EDIT_WORDS.has(base)) return 'edit';
+  return 'other';
+}
+
+function dropWords(text, count) {
+  let rest = text;
+  for (let i = 0; i < count; i += 1) rest = rest.replace(/^\S+\s*/, '');
+  return rest;
+}
+
+function unquote(text) {
+  if (text.length >= 2 && text.startsWith("'") && text.endsWith("'")) return text.slice(1, -1);
+  if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) return text.slice(1, -1).replace(/\\(.)/g, '$1');
+  return text;
 }
 
 function redirectsToFile(segment) {
@@ -609,11 +641,14 @@ function redirectsToFile(segment) {
 
 // Segments of a command text, split on newlines, &&, ||, ;, and | that sit
 // outside single or double quotes; a backslash escapes the next character
-// outside single quotes.
+// outside single quotes. A # comment runs to the end of its line, and the
+// body of each heredoc a line opens is skipped through its terminator line.
 function splitSegments(text) {
   const segments = [];
   let quote = null;
   let start = 0;
+  let current = '';
+  let heredocs = [];
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i];
     if (quote) {
@@ -623,14 +658,45 @@ function splitSegments(text) {
     }
     if (ch === '\\') { i += 1; continue; }
     if (ch === "'" || ch === '"') { quote = ch; continue; }
+    if (ch === '#' && (i === 0 || /[\s;|&]/.test(text[i - 1]))) {
+      const end = text.indexOf('\n', i);
+      current += text.slice(start, i);
+      start = end === -1 ? text.length : end;
+      i = start - 1;
+      continue;
+    }
+    if (ch === '<' && text[i + 1] === '<' && text[i + 2] !== '<') {
+      const tag = /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([^\s;|&<>'"]+))/.exec(text.slice(i));
+      if (tag) {
+        heredocs.push(tag[1] ?? tag[2] ?? tag[3]);
+        i += tag[0].length - 1;
+        continue;
+      }
+    }
     const pair = text.slice(i, i + 2);
-    if (ch === '\n' || ch === ';' || ch === '|' || pair === '&&') {
-      segments.push(text.slice(start, i));
+    if (ch === '\n') {
+      segments.push(current + text.slice(start, i));
+      current = '';
+      let pos = i + 1;
+      for (const tag of heredocs) {
+        while (pos < text.length) {
+          const end = text.indexOf('\n', pos);
+          const line = end === -1 ? text.slice(pos) : text.slice(pos, end);
+          pos = end === -1 ? text.length : end + 1;
+          if (line.trim() === tag) break;
+        }
+      }
+      heredocs = [];
+      start = pos;
+      i = pos - 1;
+    } else if (ch === ';' || ch === '|' || pair === '&&') {
+      segments.push(current + text.slice(start, i));
+      current = '';
       if (pair === '&&' || pair === '||') i += 1;
       start = i + 1;
     }
   }
-  segments.push(text.slice(start));
+  segments.push(current + text.slice(start));
   return segments;
 }
 

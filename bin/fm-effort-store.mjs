@@ -80,6 +80,7 @@ const path = await import('node:path')
 const crypto = await import('node:crypto')
 const { spawnSync } = await import('node:child_process')
 const { fileURLToPath } = await import('node:url')
+const { TOOL_CLASSES: TOOL_CLASS_ORDER } = await import('./fm-model-bench-analyze.mjs')
 
 // --- small helpers ----------------------------------------------------------
 
@@ -594,7 +595,8 @@ function collectUsage(tasks, options, issues) {
 
 // --- source 2b: the tool-usage snapshot ------------------------------------
 
-const TOOL_CLASSES = new Set(['read', 'search', 'edit', 'build', 'test', 'differential', 'git', 'other'])
+const TOOL_CLASSES = new Set(TOOL_CLASS_ORDER)
+const TOOL_CLASS_LIST = TOOL_CLASS_ORDER.map(cls => `'${cls}'`).join(', ')
 const TOOL_USAGE_SCHEMA = 'fm-task-tool-usage.v1'
 
 const countOrNull = value => (Number.isSafeInteger(value) && value >= 0 ? value : null)
@@ -1036,7 +1038,7 @@ CREATE TABLE task (
 CREATE TABLE task_tool_usage (
   task_id              TEXT NOT NULL,
   tool_name            TEXT NOT NULL,
-  tool_class           TEXT NOT NULL CHECK (tool_class IN ('read', 'search', 'edit', 'build', 'test', 'differential', 'git', 'other')),
+  tool_class           TEXT NOT NULL CHECK (tool_class IN (${TOOL_CLASS_LIST})),
   calls                INTEGER NOT NULL,
   result_bytes         INTEGER NOT NULL,
   result_tokens_est    INTEGER NOT NULL,
@@ -1047,7 +1049,7 @@ CREATE TABLE task_tool_usage (
 -- The same calls rolled up by class.
 CREATE TABLE task_tool_class (
   task_id              TEXT NOT NULL,
-  tool_class           TEXT NOT NULL CHECK (tool_class IN ('read', 'search', 'edit', 'build', 'test', 'differential', 'git', 'other')),
+  tool_class           TEXT NOT NULL CHECK (tool_class IN (${TOOL_CLASS_LIST})),
   calls                INTEGER NOT NULL,
   result_bytes         INTEGER NOT NULL,
   result_tokens_est    INTEGER NOT NULL,
@@ -2308,7 +2310,6 @@ function pendingReport(options) {
 }
 
 const REPORT_HEADER = 'TASK | LAUNCH->PR | COST | TOKENS | ACTUAL MODEL | OUTCOME | CONTEXT | USAGE | CLASSES (tok est)'
-const CLASS_ORDER = ['read', 'search', 'edit', 'build', 'test', 'differential', 'git', 'other']
 
 const seconds = value => (value === null ? '-' : String(Math.round(Number(value) * 1000) / 1000))
 
@@ -2324,7 +2325,7 @@ function taskUsageLines(db, row) {
   lines.push(`BASE PROMPT ${row.base_prompt_tokens_est} tok est (first request) | TURNS ${row.turns} | TOOL CALLS ${row.tool_calls} | RESULT ${row.tool_result_tokens_est} tok est | OUTPUT ${row.assistant_output_tokens} tok`)
   lines.push('CLASS | CALLS | RESULT TOK EST | WALL S')
   const classes = db.prepare('SELECT tool_class, calls, result_tokens_est, wall_seconds_in_tool FROM task_tool_class WHERE task_id = ?').all(row.task_id)
-  for (const cls of sortedBy(classes, c => CLASS_ORDER.indexOf(c.tool_class))) {
+  for (const cls of sortedBy(classes, c => TOOL_CLASS_ORDER.indexOf(c.tool_class))) {
     lines.push(`${cls.tool_class} | ${cls.calls} | ${cls.result_tokens_est} | ${seconds(cls.wall_seconds_in_tool)}`)
   }
   lines.push('TOOL | CLASS | CALLS | RESULT BYTES | RESULT TOK EST | WALL S')
@@ -2377,7 +2378,7 @@ function report(dbPath, taskId) {
       )) AS actual_models,
       (SELECT group_concat(tool_class || ' ' || result_tokens_est, ', ') FROM (
         SELECT tool_class, result_tokens_est FROM task_tool_class WHERE task_tool_class.task_id = task.task_id
-        ORDER BY CASE tool_class ${CLASS_ORDER.map((cls, index) => `WHEN '${cls}' THEN ${index}`).join(' ')} END
+        ORDER BY CASE tool_class ${TOOL_CLASS_ORDER.map((cls, index) => `WHEN '${cls}' THEN ${index}`).join(' ')} END
       )) AS class_split
     FROM task ${filter}
     ORDER BY task_id
