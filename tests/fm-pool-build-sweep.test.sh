@@ -297,7 +297,12 @@ for(const parent of ['x','extension-worktree']) for(let i=1;i<=2;i++) {
  }
 }
 fs.writeFileSync(`${wt}/.oracle-work/report.json`,'{}');
-fs.writeFileSync(`${wt}/.oracle-work/report.md`,'evidence');
+for(const ext of ['md','log','txt','patch']) fs.writeFileSync(`${wt}/.oracle-work/report.${ext}`,'evidence');
+fs.mkdirSync(`${wt}/.oracle-work/x/target/notes`,{recursive:true});
+fs.writeFileSync(`${wt}/.oracle-work/x/target/notes/build.json`,'{}');
+fs.mkdirSync(`${wt}/outside-target`,{recursive:true});
+fs.writeFileSync(`${wt}/outside-target/keep`,'preserve');
+fs.symlinkSync(`${wt}/outside-target`,`${wt}/.oracle-work/directory-link`);
 fs.writeFileSync(`${wt}/.oracle-work/disposable.jar`,'binary');
 fs.writeFileSync(`${wt}/.oracle-work/large.log`,'');fs.truncateSync(`${wt}/.oracle-work/large.log`,50000000);
 fs.symlinkSync(process.env.TMP_OUTSIDE || `${wt}/Cargo.toml`,`${wt}/.oracle-work/link`);
@@ -305,21 +310,51 @@ JS
 "$SWEEP" --explain "$wt" > "$TMP_ROOT/nested-explain"
 assert_contains "$(cat "$TMP_ROOT/nested-explain")" "$wt/.oracle-work/x/target" 'explain omitted nested target'
 assert_contains "$(cat "$TMP_ROOT/nested-explain")" 'category=oracle-evidence' 'explain omitted evidence category'
+# Nested locks serialize the whole copy before any target is swept.
+# shellcheck disable=SC2016
+flock "$nested/target/debug/.cargo-lock" bash -c '"$1" > "$2"' _ "$SWEEP" "$TMP_ROOT/nested-lock"
+assert_contains "$(cat "$TMP_ROOT/nested-lock")" 'live-cargo-lock' 'nested Cargo lock ignored'
+assert_present "$wt/.oracle-work/x/target/debug/deps/libdemo-1111111111111111.rlib" 'copy swept while nested Cargo lock held'
 "$SWEEP" > "$TMP_ROOT/nested-sweep"
 for parent in x extension-worktree; do
   assert_absent "$wt/.oracle-work/$parent/target/debug/deps/libdemo-1111111111111111.rlib" 'nested stale generation retained'
   assert_present "$wt/.oracle-work/$parent/target/debug/deps/libdemo-2222222222222222.rlib" 'nested newest generation deleted'
 done
 assert_present "$wt/.oracle-work/disposable.jar" 'live sweep deleted non-target scratch'
+"$SWEEP" --return-copy "$wt" --dry-run > "$TMP_ROOT/nested-return-dry"
+assert_present "$nested/.git" 'return dry-run deleted worktree metadata'
+assert_present "$wt/.oracle-work/disposable.jar" 'return dry-run deleted scratch'
 "$SWEEP" --return-copy "$wt" > "$TMP_ROOT/nested-return"
 assert_absent "$wt/.oracle-work/x/target" 'return retained nested cargo target'
 assert_absent "$nested" 'return retained nested worktree'
 assert_absent "$wt/.oracle-work/disposable.jar" 'return retained scratch binary'
 assert_absent "$wt/.oracle-work/large.log" 'return retained oversized evidence'
 assert_present "$wt/.oracle-work/report.json" 'return deleted JSON evidence'
-assert_present "$wt/.oracle-work/report.md" 'return deleted Markdown evidence'
+for ext in md log txt patch; do
+  assert_present "$wt/.oracle-work/report.$ext" 'return deleted small evidence'
+done
+assert_present "$wt/outside-target/keep" 'return followed directory symlink'
 assert_present "$wt/Cargo.toml" 'return followed scratch symlink'
 [ -L "$wt/.oracle-work/link" ] || fail 'return removed scratch symlink'
 if git -C "$PROJECT" worktree list --porcelain | rg -F "worktree $nested"; then fail 'return retained nested worktree registration'; fi
 assert_contains "$(cat "$TMP_ROOT/nested-return")" 'bytes_after=' 'return omitted byte accounting'
 pass 'nested targets sweep safely and returned scratch retains only small evidence and exclusions'
+
+# Outer tracked content and ignore exceptions protect the entire scratch root.
+for protection in tracked nonignored; do
+  wt="$TMP_ROOT/pool/$protection-scratch/rust"
+  git -C "$PROJECT" worktree add -q --detach "$wt"
+  mkdir -p "$wt/.oracle-work"
+  printf 'keep' > "$wt/.oracle-work/keep"
+  printf 'discard' > "$wt/.oracle-work/scratch.jar"
+  if [ "$protection" = tracked ]; then
+    printf '.oracle-work/\n' >> "$wt/.gitignore"
+    git -C "$wt" add -f .oracle-work/keep
+  else
+    printf '.oracle-work/*\n!.oracle-work/keep\n' >> "$wt/.gitignore"
+  fi
+  "$SWEEP" --return-copy "$wt" > "$TMP_ROOT/protected-return"
+  assert_present "$wt/.oracle-work/keep" 'return deleted protected scratch file'
+  assert_present "$wt/.oracle-work/scratch.jar" 'return failed to protect mixed scratch root'
+done
+pass 'tracked and nonignored scratch roots remain protected'
