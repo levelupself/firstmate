@@ -806,14 +806,18 @@ fi
 
 # A PR check migration that won the lock in the instant after this watcher's
 # own migration returned releases it within its bounded run; wait for that
-# recorded hold instead of treating it as a peer watcher. The wait shares the
-# stale-holder grace, past which the live-holder handling below applies.
+# recorded hold instead of treating it as a peer watcher, and give a holder
+# still inside the mid-acquire settle grace time to record who it is. The wait
+# shares the stale-holder grace, past which the live-holder handling below applies.
 acquire_watch_lock() {
-  local migration_deadline='' now holder
+  local migration_deadline='' now holder settle_grace
+  settle_grace=$FM_LOCK_STALE_AFTER
+  [ "$settle_grace" -lt 2 ] && settle_grace=2
   while ! fm_lock_try_acquire "$WATCH_LOCK"; do
     holder=${FM_LOCK_HELD_PID:-}
     [ -n "$holder" ] && fm_pid_alive "$holder" || return 1
-    if ! fm_migration_lock_matches_pid "$STATE" "$holder" "$FM_HOME"; then
+    if ! fm_migration_lock_matches_pid "$STATE" "$holder" "$FM_HOME" \
+      && [ "$(fm_path_age "$WATCH_LOCK")" -ge "$settle_grace" ]; then
       [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "$holder" ] && return 1
       continue
     fi
