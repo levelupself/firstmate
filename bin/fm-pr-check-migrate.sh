@@ -314,6 +314,9 @@ while :; do
     sleep 0.1
     continue
   fi
+  # A holder that released between the pid read and the checks above is not
+  # unknown; re-read the lock instead of refusing on its half-removed record.
+  [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "$pid" ] || continue
   echo "PR_CHECK_MIGRATION: watcher ownership is ambiguous; review state/.watch.lock before rearming polls" >&2
   exit 1
 done

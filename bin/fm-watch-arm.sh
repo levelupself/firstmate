@@ -551,17 +551,20 @@ owned_child_finished() {
 # While a PR check migration holds the watcher lock (the child's own, or a
 # sibling the child's migration is waiting behind), the child cannot claim the
 # lock, so the budget counts from that migration's release instead of the fork.
-# The child's migration bounds that wait, so a wedged migration still ends here
-# as a child exit rather than an open-ended confirmation.
+# That extension stops at a ceiling of GRACE past the original budget: a
+# migration wedged under the lock still ends here as a confirmation timeout
+# rather than an open-ended wait that leaves the home silently unsupervised.
 migration_holds_watch_lock() {
   local pid
   pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
   fm_pid_alive "$pid" && fm_migration_lock_matches_pid "$STATE" "$pid" "$FM_HOME"
 }
+limit=$(( $(date +%s) + CONFIRM_TIMEOUT + GRACE + 1 ))
 deadline=$(( $(date +%s) + CONFIRM_TIMEOUT + 1 ))
 while :; do
   if migration_holds_watch_lock; then
-    deadline=$(( $(date +%s) + CONFIRM_TIMEOUT + 1 ))
+    pushed=$(( $(date +%s) + CONFIRM_TIMEOUT + 1 ))
+    [ "$pushed" -gt "$limit" ] || deadline=$pushed
   fi
   if healthy_watcher; then
     if [ "$HEALTHY_PID" = "$child" ]; then

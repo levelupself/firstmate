@@ -889,6 +889,106 @@ SH
   pass "arm confirmation budget counts from a sibling migration's release"
 }
 
+test_arm_fails_loud_when_migration_hold_never_releases() {
+  # A recorded migration hold extends the confirmation budget, but only up to a
+  # ceiling: a migration that wedges under the lock must still end in the
+  # confirmation-timeout FAILED line so the bounded auto-arm can move on, and
+  # the wedged holder must be left for inspection rather than killed.
+  local dir state fakebin gatebin armout armpid migrate_pid status i real_basename
+  dir=$(make_case arm-wedged-migration)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  gatebin="$dir/gatebin"
+  armout="$dir/arm.out"
+  real_basename=$(command -v basename)
+  mkdir -p "$gatebin"
+  printf 'window=fm-task-a\npr=https://github.com/o/r/pull/9\n' > "$state/task-a.meta"
+  printf 'legacy poll bytes\n' > "$state/task-a.check.sh"
+  chmod 0600 "$state/task-a.meta" "$state/task-a.check.sh"
+  cat > "$gatebin/basename" <<SH
+#!/usr/bin/env bash
+if [ -s '$state/.watch.lock/pid' ]; then
+  : > '$dir/gate'
+  while [ ! -e '$dir/release' ]; do sleep 0.02; done
+fi
+exec '$real_basename' "\$@"
+SH
+  chmod +x "$gatebin/basename"
+  PATH="$gatebin:$PATH" FM_HOME="$dir" "$ROOT/bin/fm-pr-check-migrate.sh" > "$dir/migrate.out" 2> "$dir/migrate.err" &
+  migrate_pid=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$dir/gate" ]; do sleep 0.05; i=$((i + 1)); done
+  [ -e "$dir/gate" ] || fail "migration never reached its under-lock scan"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$migrate_pid" ] \
+    || fail "migration did not hold the watcher lock at its scan"
+
+  # The child's own migration waits far longer than the arm's ceiling
+  # (CONFIRM_TIMEOUT + GRACE + 1), so only the ceiling can end this arm.
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 FM_GUARD_GRACE=1 FM_WATCHER_STALE_GRACE=300 "$WATCH_ARM" > "$armout" &
+  armpid=$!
+  wait_for_exit "$armpid" 300
+  status=$?
+  [ "$status" -ne 124 ] || fail "arm never returned while a migration hold stayed wedged: $(cat "$armout")"
+  [ "$status" -ne 0 ] || fail "arm exited zero behind a wedged migration hold: $(cat "$armout")"
+  grep -qF 'watcher: FAILED - no live watcher with a fresh beacon' "$armout" \
+    || fail "arm did not end in the confirmation-timeout FAILED line: $(cat "$armout")"
+  ! grep -qF 'watcher: started' "$armout" || fail "arm falsely reported started: $(cat "$armout")"
+  is_live_non_zombie "$migrate_pid" || fail "arm killed the wedged migration holder"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$migrate_pid" ] \
+    || fail "wedged migration lost the watcher lock while the arm gave up"
+  : > "$dir/release"
+  wait "$migrate_pid" || fail "released migration failed: $(cat "$dir/migrate.err")"
+  i=0
+  while [ "$i" -lt 100 ] && [ -e "$state/.watch.lock" ]; do sleep 0.1; i=$((i + 1)); done
+  pass "arm confirmation ends in FAILED when a migration hold never releases"
+}
+
+test_watch_claims_lock_after_recorded_migration_hold_releases() {
+  # A queued migration can win the lock in the instant between the watcher's
+  # own pre-lock migration returning and its acquire. That recorded hold is not
+  # a peer watcher: the watcher waits for its release and then claims the lock
+  # instead of exiting as "already running" or off a stale heartbeat.
+  local dir state fakebin out err holder identity pid i lock_pid
+  dir=$(make_case watch-behind-migration-hold)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  err="$dir/watch.err"
+  mark_pr_check_migration_complete "$state"
+  sleep 300 &
+  holder=$!
+  identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$holder") || fail "could not identify the migration holder pid"
+  mkdir "$state/.watch.lock"
+  printf '%s\n' "$holder" > "$state/.watch.lock/pid"
+  printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
+  printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
+  printf '%s\n' migration > "$state/.watch.lock/role"
+  touch -t 200001010000 "$state/.last-watcher-beat"
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2> "$err" &
+  pid=$!
+  sleep 1
+  is_live_non_zombie "$pid" || fail "watcher exited instead of waiting behind a recorded migration hold: $(cat "$out" "$err")"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$holder" ] \
+    || fail "watcher disturbed the migration hold while waiting"
+  rm -rf "$state/.watch.lock"
+  i=0
+  while [ "$i" -lt 100 ]; do
+    lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+    [ "$lock_pid" = "$pid" ] && [ -n "$(find "$state" -maxdepth 1 -name .last-watcher-beat -newer "$out" 2>/dev/null)" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$lock_pid" = "$pid" ] || fail "watcher did not claim the lock after the migration released: $(cat "$out" "$err")"
+  [ -n "$(find "$state" -maxdepth 1 -name .last-watcher-beat -newer "$out" 2>/dev/null)" ] || fail "watcher did not beat after claiming the lock"
+  is_live_non_zombie "$pid" || fail "watcher exited after claiming the lock: $(cat "$out" "$err")"
+  ! grep -qF 'already running' "$out" "$err" || fail "watcher treated the migration hold as a running watcher: $(cat "$out" "$err")"
+  ! grep -qF 'heartbeat is stale' "$err" || fail "watcher treated the migration hold as a stale watcher: $(cat "$err")"
+  kill "$pid" "$holder" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  pass "watcher claims the lock once a recorded migration hold releases"
+}
+
 test_cycle_exit_ledger_links_successor_and_stays_bounded() {
   local dir state fakebin armout check_file first_arm successor_arm successor_pid i size iteration
   dir=$(make_case cycle-ledger)
@@ -1185,5 +1285,7 @@ test_arm_propagates_immediate_wake_before_confirmation
 test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable
 test_arm_confirmation_waits_behind_sibling_migration
+test_arm_fails_loud_when_migration_hold_never_releases
+test_watch_claims_lock_after_recorded_migration_hold_releases
 test_cycle_exit_ledger_links_successor_and_stays_bounded
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified

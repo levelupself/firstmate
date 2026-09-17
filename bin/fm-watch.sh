@@ -804,7 +804,27 @@ fi
   exit 1
 }
 
-if ! fm_lock_try_acquire "$WATCH_LOCK"; then
+# A PR check migration that won the lock in the instant after this watcher's
+# own migration returned releases it within its bounded run; wait for that
+# recorded hold instead of treating it as a peer watcher. The wait shares the
+# stale-holder grace, past which the live-holder handling below applies.
+acquire_watch_lock() {
+  local migration_deadline='' now holder
+  while ! fm_lock_try_acquire "$WATCH_LOCK"; do
+    holder=${FM_LOCK_HELD_PID:-}
+    [ -n "$holder" ] && fm_pid_alive "$holder" || return 1
+    if ! fm_migration_lock_matches_pid "$STATE" "$holder" "$FM_HOME"; then
+      [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "$holder" ] && return 1
+      continue
+    fi
+    now=$(date +%s)
+    [ -n "$migration_deadline" ] || migration_deadline=$((now + WATCHER_STALE_GRACE))
+    [ "$now" -lt "$migration_deadline" ] || return 1
+    sleep 0.1
+  done
+}
+
+if ! acquire_watch_lock; then
   BEAT="$STATE/.last-watcher-beat"
   if [ -n "${FM_LOCK_HELD_PID:-}" ]; then
     if [ -e "$BEAT" ]; then
