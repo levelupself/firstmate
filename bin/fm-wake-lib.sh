@@ -477,13 +477,20 @@ fm_lock_remove_path() {
   rmdir "$lockdir" 2>/dev/null
 }
 
+# fm_lock_settle_grace
+# Seconds a freshly created lock may go without recording its holder before it
+# counts as abandoned or unknown: FM_LOCK_STALE_AFTER, never below 2.
+fm_lock_settle_grace() {
+  local grace=$FM_LOCK_STALE_AFTER
+  [ "$grace" -lt 2 ] && grace=2
+  echo "$grace"
+}
+
 fm_lock_mid_acquire_is_fresh() {
-  local lockdir=$1 pid=$2 mid_acquire_stale
+  local lockdir=$1 pid=$2
   case "$pid" in
     ''|*[!0-9]*)
-      mid_acquire_stale=$FM_LOCK_STALE_AFTER
-      [ "$mid_acquire_stale" -lt 2 ] && mid_acquire_stale=2
-      [ "$(fm_path_age "$lockdir")" -lt "$mid_acquire_stale" ]
+      [ "$(fm_path_age "$lockdir")" -lt "$(fm_lock_settle_grace)" ]
       return
       ;;
   esac

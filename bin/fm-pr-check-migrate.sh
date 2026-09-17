@@ -277,8 +277,7 @@ stopped_watcher=0
 # that just acquired the lock has the mid-acquire settle grace to record who it
 # is before it counts as unknown. An unknown live holder still refuses.
 SIBLING_WAIT=${FM_WATCHER_STALE_GRACE:-${FM_GUARD_GRACE:-300}}
-settle_grace=$FM_LOCK_STALE_AFTER
-[ "$settle_grace" -lt 2 ] && settle_grace=2
+settle_grace=$(fm_lock_settle_grace)
 sibling_deadline=
 while :; do
   pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)

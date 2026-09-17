@@ -1038,6 +1038,41 @@ test_watch_waits_for_holder_inside_settle_grace_until_annotated() {
   pass "watcher retries inside the settle grace and follows the hold once it is recorded"
 }
 
+test_watch_stands_down_at_once_behind_recorded_peer() {
+  # A holder that has already recorded itself as this home's watcher has
+  # nothing left to settle: a second watcher must stand down immediately, not
+  # wait out the mid-acquire settle grace, because that wait is charged to the
+  # arm's confirmation budget.
+  local dir state fakebin out err peer identity pid status
+  dir=$(make_case watch-behind-recorded-peer)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  err="$dir/watch.err"
+  mark_pr_check_migration_complete "$state"
+  sleep 300 &
+  peer=$!
+  identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$peer") || fail "could not identify the peer pid"
+  mkdir "$state/.watch.lock"
+  printf '%s\n' "$peer" > "$state/.watch.lock/pid"
+  printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
+  printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
+  printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
+  touch "$state/.last-watcher-beat"
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_LOCK_STALE_AFTER=10 FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2> "$err" &
+  pid=$!
+  wait_for_exit "$pid" 30
+  status=$?
+  [ "$status" -ne 124 ] || fail "watcher waited out the settle grace behind a recorded peer: $(cat "$out" "$err")"
+  [ "$status" -eq 0 ] || fail "watcher did not stand down cleanly behind a recorded peer (status $status): $(cat "$err")"
+  grep -qF "watcher: already running pid $peer" "$out" || fail "watcher did not report the recorded peer: $(cat "$out" "$err")"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$peer" ] || fail "watcher disturbed the recorded peer's lock"
+  is_live_non_zombie "$peer" || fail "watcher killed the recorded peer"
+  kill "$peer" 2>/dev/null || true
+  wait "$peer" 2>/dev/null || true
+  pass "watcher stands down immediately behind a recorded peer"
+}
+
 test_cycle_exit_ledger_links_successor_and_stays_bounded() {
   local dir state fakebin armout check_file first_arm successor_arm successor_pid i size iteration
   dir=$(make_case cycle-ledger)
@@ -1337,5 +1372,6 @@ test_arm_confirmation_waits_behind_sibling_migration
 test_arm_fails_loud_when_migration_hold_never_releases
 test_watch_claims_lock_after_recorded_migration_hold_releases
 test_watch_waits_for_holder_inside_settle_grace_until_annotated
+test_watch_stands_down_at_once_behind_recorded_peer
 test_cycle_exit_ledger_links_successor_and_stays_bounded
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified
