@@ -2511,19 +2511,27 @@ reattach_pid_is_ours() {  # <pid>
 # once, carry no lease, and list no process this spawn cannot claim as its own.
 # Parsed with node rather than jq, because jq is not a required tool for the
 # tmux backend this path runs on and a missing parser must not read as a clean
-# inventory.
+# inventory. Treehouse reports each copy's path as the pool root was spelled,
+# while the retained copy arrives resolved, so both sides are resolved (the
+# same way real_path_or_raw resolves, falling back to the raw string) before
+# they are compared; a symlinked pool root must not read as an unlisted copy.
 reattach_verify_owner_free() {  # <phase>
   local phase=$1 inventory verdict pid
   inventory=$(cd "$PROJ_ABS" && treehouse status --json 2>/dev/null) || {
     echo "error: treehouse could not report the pool holding '$WT' ($phase); refusing to guess whether task $ID's retained copy is in use" >&2
     return 1
   }
-  verdict=$(FM_REATTACH_INVENTORY="$inventory" node - "$WT" <<'NODE'
-const target = process.argv[2]
+  verdict=$(FM_REATTACH_INVENTORY="$inventory" node - "$(real_path_or_raw "$WT")" <<'NODE'
+const fs = require('fs')
+const realPathOrRaw = path => {
+  if (typeof path !== 'string') return null
+  try { return fs.realpathSync(path) } catch { return path }
+}
+const target = realPathOrRaw(process.argv[2])
 let parsed
 try { parsed = JSON.parse(process.env.FM_REATTACH_INVENTORY || '') } catch { parsed = null }
 if (!Array.isArray(parsed)) { process.stdout.write('unreadable\n'); process.exit(0) }
-const found = parsed.filter(entry => entry && entry.path === target)
+const found = parsed.filter(entry => entry && realPathOrRaw(entry.path) === target)
 if (found.length !== 1) { process.stdout.write('ambiguous\n'); process.exit(0) }
 const entry = found[0]
 if (typeof entry.lease_id !== 'string') { process.stdout.write('unreadable\n'); process.exit(0) }

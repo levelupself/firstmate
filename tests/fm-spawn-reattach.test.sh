@@ -354,6 +354,75 @@ test_unidentifiable_replacement_pane_refuses() {
   pass "fm-spawn reattach: a replacement pane it cannot identify refuses instead of guessing ownership"
 }
 
+# --- 1b. pool-inventory path identity ---------------------------------------
+#
+# `treehouse status --json` reports the pool root as the operator spelled it,
+# while the retained copy is resolved through `pwd -P` before it is compared. On
+# a symlinked pool root (a symlinked home, macOS /var -> /private/var) those two
+# spellings name the same directory, and a raw string comparison would report
+# the copy as not listed. Identity must be decided on resolved paths, and the
+# exactly-once contract must still hold on those resolved paths.
+
+test_symlinked_pool_root_resolves() {
+  local dir id=rt-symlink retained linked out rc meta
+  dir=$(new_case symlink "$id")
+  retained="$dir/pool/7/proj"
+  ln -s "$dir/pool" "$dir/pool-link"
+  linked="$dir/pool-link/7/proj"
+  pool_status_json "$linked" > "$dir/fake/status.json"
+  out=$(run_reattach "$dir" "$id" --reattach-worktree "$linked"); rc=$?
+  expect_code 0 "$rc" "a copy the inventory names through a symlinked pool root should reattach"$'\n'"$out"
+  case "$out" in
+    *'does not name retained copy'*)
+      fail "a symlinked pool root was reported as ambiguous instead of resolved"
+      ;;
+  esac
+  meta="$dir/home/state/$id.meta"
+  assert_grep "worktree=$retained" "$meta" \
+    "the published record must name the resolved retained copy"
+  [ "$(git -C "$retained" symbolic-ref --short HEAD)" = "fm/$id" ] \
+    || fail "the reattach moved the retained copy off its task branch"
+  assert_contains "$out" "spawned $id" "the operation should report success"
+  pass "fm-spawn reattach: a pool inventory spelled through a symlinked root still proves the copy"
+}
+
+test_duplicate_inventory_entries_after_resolution_refuse() {
+  local dir id=rt-dup retained linked out rc
+  dir=$(new_case dup "$id")
+  retained="$dir/pool/7/proj"
+  ln -s "$dir/pool" "$dir/pool-link"
+  linked="$dir/pool-link/7/proj"
+  # Two entries, two spellings, one directory: resolving must not collapse the
+  # exactly-once contract into a match.
+  printf '[%s,%s]\n' \
+    "$(pool_status_json "$retained" | sed 's/^\[//; s/\]$//')" \
+    "$(pool_status_json "$linked" | sed 's/^\[//; s/\]$//')" \
+    > "$dir/fake/status.json"
+  snapshot "$dir" "$id"
+  out=$(run_reattach "$dir" "$id" --reattach-worktree "$retained"); rc=$?
+  expect_code 1 "$rc" "a copy the inventory names twice must refuse"$'\n'"$out"
+  assert_contains "$out" "does not name retained copy '$retained' exactly once" \
+    "the refusal must name the ambiguity it caught"
+  assert_nothing_changed "$dir" "$id" "$retained"
+  pass "fm-spawn reattach: two inventory entries that resolve to the retained copy still refuse"
+}
+
+test_unmatched_inventory_entry_refuses() {
+  local dir id=rt-unmatched retained out rc
+  dir=$(new_case unmatched "$id")
+  retained="$dir/pool/7/proj"
+  # The inventory names a sibling copy only; nothing in it resolves to the
+  # retained copy, so the proof is still absent.
+  pool_status_json "$dir/pool/3/proj" > "$dir/fake/status.json"
+  snapshot "$dir" "$id"
+  out=$(run_reattach "$dir" "$id" --reattach-worktree "$retained"); rc=$?
+  expect_code 1 "$rc" "a copy the inventory does not name must refuse"$'\n'"$out"
+  assert_contains "$out" "does not name retained copy '$retained' exactly once" \
+    "the refusal must name the missing proof"
+  assert_nothing_changed "$dir" "$id" "$retained"
+  pass "fm-spawn reattach: an inventory that never names the retained copy still refuses"
+}
+
 # --- 2. success preserves the work ------------------------------------------
 
 test_uncommitted_content_survives_reattach() {
@@ -622,6 +691,9 @@ run_case test_existing_endpoint_refuses
 run_case test_unreadable_ownership_refuses
 run_case test_delivery_axes_cannot_be_overridden
 run_case test_unidentifiable_replacement_pane_refuses
+run_case test_symlinked_pool_root_resolves
+run_case test_duplicate_inventory_entries_after_resolution_refuse
+run_case test_unmatched_inventory_entry_refuses
 run_case test_uncommitted_content_survives_reattach
 run_case test_displaced_copy_is_named_and_left_alone
 run_case test_unresolvable_wiring_snapshot_refuses_before_arming
