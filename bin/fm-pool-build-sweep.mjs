@@ -6,6 +6,8 @@ import {execFileSync, spawn} from 'node:child_process';
 import {files, directories} from './fm-build-output-files.mjs';
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const home = process.env.FM_HOME;
+// Match fm-spawn.sh and fm-teardown.sh's code-root resolution.
+const root = path.resolve(process.env.FM_ROOT_OVERRIDE || path.join(dir, '..'));
 const state = process.env.FM_STATE_OVERRIDE || path.join(home, 'state');
 const args = process.argv.slice(2);
 let dry = false, age = Number(process.env.FM_POOL_BUILD_AGE_HOURS || 24);
@@ -281,7 +283,10 @@ function sweep(project, wt, target) {
     report(wt,before,dry?before:remaining,`${dry?'dry-run ':''}reclaim_bytes=${removed} planner=${planner}${remaining>cap?(protectedSize>cap?' protected-over-cap':' cap-unreachable'):''}`);
   } catch (e) {
     report(wt,before,before,`skipped=${String(e.message).split('\n')[0]}`);
-    if (e.code !== 'FM_TREEHOUSE_NOT_FOUND') process.exitCode = 1;
+    if (e.code !== 'FM_TREEHOUSE_NOT_FOUND') {
+      console.error(`${wt}: ${e.stderr || e.message}`);
+      process.exitCode = 1;
+    }
   }
 }
 function withCargoLocks(project, entry) {
@@ -304,10 +309,15 @@ function withCargoLocks(project, entry) {
   const locks = targets.flatMap(target=>files(target)).filter(f => path.basename(f.p)==='.cargo-lock').map(f=>f.p);
   let argv = [process.execPath, fileURLToPath(import.meta.url), '--locked-copy',project,wt,
     '--locked-targets',JSON.stringify(targets), '--age-hours',String(age),'--max-gb',String(maxGB), ...(dry?['--dry-run']:[]), ...(explain?['--explain',explain]:[])];
-  for (const lock of locks) argv = ['flock','-n','-E','75',lock,...argv];
+  // Read-only opens never recreate a lock removed by a live worker. Keep each
+  // descriptor open in its shell until the entire nested sweep returns.
+  for (const lock of locks) argv = ['bash','-c',
+    'exec {fd}<"$1" || exit 76; shift; flock -n -E 75 "$fd" || exit $?; "$@"',
+    '_',lock,...argv];
   try {const output=run(argv[0],argv.slice(1),{timeout:240000});if(output) console.log(output);}
   catch(e) {
-    if(e.status===75) {const size=bytes(targets.flatMap(target=>files(target)));report(wt,size,size,'skipped=live-cargo-lock');}
+    if(e.status===76 && locks.some(lock=>!exists(lock))) {report(wt,0,0,'skipped=copy-changed-during-sweep');}
+    else if(e.status===75) {const size=bytes(targets.flatMap(target=>files(target)));report(wt,size,size,'skipped=live-cargo-lock');}
     else {if(e.stdout) process.stdout.write(e.stdout);console.error(`${wt}: sweep failed: ${e.stderr || e.message}`);process.exitCode=1;}
   }
 }
@@ -321,7 +331,9 @@ else {
   const names = exists(registry) ? [...new Set(fs.readFileSync(registry,'utf8').split('\n').map(l => /^- ([^\s/]+)(?:\s|$)/.exec(l)?.[1]).filter(n=>n && n!=='.' && n!=='..'))] : [];
   const audited = [], captured = [];
   for (const name of names) {
-    const project = path.resolve(process.env.FM_PROJECTS_OVERRIDE || path.join(home,'projects'),name);
+    let project = path.resolve(process.env.FM_PROJECTS_OVERRIDE || path.join(home,'projects'),name);
+    if (!exists(project) && name === path.basename(root)) project = root;
+    if (!exists(project)) {report(project,0,0,'skipped=no-clone');continue;}
     try {
       const entries = inventory(project);
       captured.push({project, entries});
