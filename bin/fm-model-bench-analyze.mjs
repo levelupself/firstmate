@@ -599,7 +599,7 @@ function classifySegment(segment) {
 }
 
 function redirectsToFile(segment) {
-  const stripped = segment.replace(/'[^']*'/g, '').replace(/"(?:[^"\\]|\\.)*"/g, '')
+  const stripped = segment.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, (quoted) => quoted.replace(/>/g, '_'))
     .replace(/\d?>&\d/g, '').replace(/&?>>?\s*\/dev\/null/g, '');
   return /(^|[^<>&])>>?\s*[^\s&|;>]/.test(stripped);
 }

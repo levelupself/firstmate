@@ -79,7 +79,7 @@ Rebuild reads the snapshot and never a session record, so a task captured before
 A bound record that yields no model request is persisted as `unavailable` and surfaces as a `tool-usage-unavailable` ingest issue, the same way an unusable cost snapshot does; a request that called no tool is a real zero.
 The snapshot is bound to its launch by `spawned_at`, and a snapshot from another launch is rejected as `tool-usage-launch-identity`.
 
-Every cross-task report row adds a `USAGE` column (`turns / calls / result tok est / out tok / peak ctx`) and a `CLASSES` column with the estimated result tokens per class in taxonomy order.
+Every cross-task report row adds a `USAGE` column (`turns / calls / result tok est / out tok / peak ctx`) and a `CLASSES (tok est)` column with the estimated result tokens per class in taxonomy order.
 `report <task-id>` adds the base prompt estimate, the class roll-up, the per-tool table, the five largest results, a `TIMELINE` line sampling the prompt size at turn 1 and at 25, 50, 75, and 100 percent of the turns, and the five largest single-turn jumps with the tool and class of the turn whose results landed.
 
 ## Reading the headline numbers

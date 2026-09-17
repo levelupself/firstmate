@@ -255,6 +255,32 @@ test_claude_usage_folds_tools_classes_and_turns() {
   pass "claude usage: tool_use/tool_result pairs fold into per-tool, per-class, largest-result, and per-turn rows with ceil(bytes/4) estimates"
 }
 
+test_usage_classifies_quoted_redirects() {
+  local home wt file out command input i=0
+  home=$(make_home quoted-redirects); wt="$home/wt"
+  bind_task "$home/data" use-quotes claude "$home/store" "$wt" "$CLAUDE_STAMP"
+  file=$(claude_open "$home/store" "$wt" "$CLAUDE_STAMP")
+  while IFS= read -r command; do
+    i=$((i + 1))
+    input=$(jq -cn --arg command "$command" '{command: $command}')
+    claude_tool_use "$file" "$wt" "$CLAUDE_STAMP" "$i" "$i" "tu-$i" Bash "$input" 60000 50
+    claude_tool_result "$file" "$wt" "$CLAUDE_STAMP" "$i" 2 "tu-$i" 'done'
+  done <<'COMMANDS'
+cat input > "output file"
+cat input > 'output file'
+rg pattern input >> "output file"
+printf 'a -> b'
+printf "a -> b"
+cat input > output
+cat input
+COMMANDS
+  out=$(usage_reader "$home" use-quotes) || fail "quoted redirect usage failed: $out"
+  printf '%s' "$out" | jq -e '
+    (.timeline | map(.tool_class)) == ["edit","edit","edit","other","other","edit","read"]' \
+    >/dev/null || fail "quoted redirect classes wrong: $out"
+  pass "usage distinguishes quoted redirect destinations from literal arrows"
+}
+
 test_codex_usage_folds_tools_classes_and_turns() {
   local home wt file out
   home=$(make_home codex-usage); wt="$home/wt"
@@ -580,6 +606,7 @@ test_reader_refuses_an_unbound_task_by_name
 test_reader_counts_restarts_across_launches
 test_claude_usage_folds_tools_classes_and_turns
 test_codex_usage_folds_tools_classes_and_turns
+test_usage_classifies_quoted_redirects
 test_usage_reports_bound_records_without_a_request_as_unavailable
 test_watcher_wakes_once_per_crossing_step_and_compaction
 test_watcher_honours_warn_and_step_overrides

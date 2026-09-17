@@ -2307,7 +2307,7 @@ function pendingReport(options) {
     + ids.map(id => `${id} | - | - | - | - | pending ingestion | - | - | -`).join('\n') + '\n'
 }
 
-const REPORT_HEADER = 'TASK | LAUNCH->PR | COST | TOKENS | ACTUAL MODEL | OUTCOME | CONTEXT | USAGE | CLASSES'
+const REPORT_HEADER = 'TASK | LAUNCH->PR | COST | TOKENS | ACTUAL MODEL | OUTCOME | CONTEXT | USAGE | CLASSES (tok est)'
 const CLASS_ORDER = ['read', 'search', 'edit', 'build', 'test', 'differential', 'git', 'other']
 
 const seconds = value => (value === null ? '-' : String(Math.round(Number(value) * 1000) / 1000))

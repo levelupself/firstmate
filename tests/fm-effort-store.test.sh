@@ -1189,7 +1189,7 @@ pass 'a codex rollout captures through the same attribution path'
 # --- reports: the class split per task and the timeline summary per task ------
 
 USAGE_REPORT=$("$STORE" report --sync) || fail 'usage report failed'
-assert_contains "$USAGE_REPORT" 'CONTEXT | USAGE | CLASSES' 'the cross-task header should carry the usage and class-split columns'
+assert_contains "$USAGE_REPORT" 'CONTEXT | USAGE | CLASSES (tok est)' 'the cross-task header should label class-split token estimates'
 USAGE_LINE=$(printf '%s\n' "$USAGE_REPORT" | grep '^940-tools ')
 assert_contains "$USAGE_LINE" '| 4 turns / 3 calls / 256 result tok est / 230 out tok / 57000 peak ctx |' \
   'the cross-task row should show turns, calls, estimated result tokens, output tokens, and peak context'
