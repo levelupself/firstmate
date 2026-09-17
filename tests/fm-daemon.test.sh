@@ -124,7 +124,10 @@ test_classify_check_and_unknown_escalate() {
   case "$out" in escalate\|*) ;; *) fail "unknown did not fail-safe escalate: $out" ;; esac
   out=$(classify_heartbeat)
   case "$out" in self\|*) ;; *) fail "heartbeat did not self-handle: $out" ;; esac
-  pass "check + unknown escalate; heartbeat self-handles"
+  is_wake_reason "context: t1 210k tokens (warn 200k)" || fail "a context reason is a wake"
+  out=$(classify_context "context: t1 210k tokens (warn 200k)")
+  case "$out" in "escalate|context: t1 210k tokens (warn 200k)") ;; *) fail "context did not escalate with its reason: $out" ;; esac
+  pass "check, context, and unknown escalate; heartbeat self-handles"
 }
 
 test_stale_transient_self_records_marker() {

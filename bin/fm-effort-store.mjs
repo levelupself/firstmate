@@ -35,7 +35,7 @@
 // bin/fm-effort-store.sh is the entry point and owns the CLI contract; run it
 // with --help. This file is invoked by that script and not directly.
 
-const SCHEMA_VERSION = 'fm-effort-store.v2'
+const SCHEMA_VERSION = 'fm-effort-store.v3'
 const CLASSIFIER_VERSION = 'fm-effort-classifier.v1'
 const V2_MARKER = '# schema=firstmate-effort-attribution-v2'
 const LEGACY_CAPTURE_COLUMNS = [
@@ -68,6 +68,7 @@ const fs = await import('node:fs')
 const path = await import('node:path')
 const crypto = await import('node:crypto')
 const { spawnSync } = await import('node:child_process')
+const { fileURLToPath } = await import('node:url')
 
 // --- small helpers ----------------------------------------------------------
 
@@ -910,7 +911,14 @@ CREATE TABLE task (
   api_calls           INTEGER,
   sessions            INTEGER,
   outcome             TEXT,
-  reverted            INTEGER CHECK (reverted IN (0, 1))
+  reverted            INTEGER CHECK (reverted IN (0, 1)),
+  -- The context signal captured from the task's own session records at
+  -- lifecycle capture: the largest prompt any request carried, the number of
+  -- context compactions, and the relaunches beyond the first launch. NULL for
+  -- a task captured before the signal existed or with no bound record.
+  peak_context_tokens INTEGER,
+  compactions         INTEGER,
+  restarts            INTEGER
 );
 
 -- Which sources were consulted for each task and what came back. A task absent
@@ -1397,7 +1405,7 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
     'findings', 'review_rounds', 'ask_user_count', 'gate_failures', 'failure_mode',
     'tokens_in', 'tokens_out', 'tokens_reasoning', 'tokens_cached_read',
     'tokens_cached_write', 'notional_cost_usd', 'api_calls', 'sessions',
-    'outcome', 'reverted',
+    'outcome', 'reverted', 'peak_context_tokens', 'compactions', 'restarts',
   ])
   const sourceInsert = insert(db, 'task_source', ['task_id', 'source', 'status', 'detail'])
   const roundInsert = insert(db, 'round_reason', ['task_id', 'round_index', 'reason', 'note'])
@@ -1482,6 +1490,9 @@ function writeTasks(db, tasks, usageByTask, gitResults, options) {
       bind(totals?.sessions),
       bind(provenOutcome),
       bind(annotation?.reverted ?? (gitResult.status === 'present' ? gitResult.reverted : null)),
+      bind(capturedCount(row?.peak_context_tokens)),
+      bind(capturedCount(row?.compactions)),
+      bind(capturedCount(row?.restarts)),
     )
 
     sourceInsert.run(task.taskId, 'raw', row ? 'present' : 'missing',
@@ -1554,7 +1565,33 @@ const CAPTURE_COLUMNS = [
   'started_at', 'ended_at', 'mode', 'backend', 'branch', 'pr_url',
   'pr_opened_at', 'merged_at', 'local_landed_at', 'teardown_at', 'outcome',
   'pipeline_run_id', 'findings', 'review_rounds', 'ask_user_count', 'gate_failures',
+  'peak_context_tokens', 'compactions', 'restarts',
 ]
+
+// The context signal at capture: bin/fm-context-watch.mjs reads the task's
+// stamped session records (bin/fm-task-session.mjs owns the receipts) while
+// they still exist. A task it cannot bind keeps the three fields empty, so a
+// harness without stamps or a record the store never wrote reads as missing
+// in the store rather than as zero. Forward-only: capture never derives these
+// for a task whose records are gone, and rebuild never backfills them.
+function readContextSignal(options, taskId) {
+  const reader = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fm-context-watch.mjs')
+  const result = spawnSync(process.execPath, [reader, 'read', taskId], {
+    encoding: 'utf8',
+    env: {...process.env, FM_STATE_OVERRIDE: options.stateDir, FM_DATA_OVERRIDE: options.dataDir},
+    timeout: 60000,
+    maxBuffer: 16 * 1024 * 1024,
+  })
+  if (result.error || result.status !== 0) return null
+  let signal
+  try { signal = JSON.parse(result.stdout) } catch { return null }
+  if (signal?.schema !== 'fm-context-watch.v1' || signal.task !== taskId) return null
+  return {
+    peak_context_tokens: capturedCount(signal.peak),
+    compactions: capturedCount(signal.compactions),
+    restarts: capturedCount(signal.restarts),
+  }
+}
 
 function resolvePipelineMetrics(pipeline, previous, identity) {
   if (pipeline === PIPELINE_METRICS_UNAVAILABLE) return null
@@ -1616,6 +1653,7 @@ function capture(options, taskId, argv) {
   const prUrl = meta?.pr ?? previous?.pr_url ?? mergeReceipt?.pr_url
   const pipeline = readPipelineMetrics(options.pipelineDbPath, {project, branch, prUrl})
   const processMetrics = resolvePipelineMetrics(pipeline, previous, {startedAt, project, branch, prUrl})
+  const contextSignal = readContextSignal(options, taskId)
   const row = {
     task: taskId,
     worktree: meta?.worktree ?? previous?.worktree,
@@ -1642,6 +1680,9 @@ function capture(options, taskId, argv) {
     review_rounds: processMetrics?.review_rounds,
     ask_user_count: processMetrics?.ask_user_count,
     gate_failures: processMetrics?.gate_failures,
+    peak_context_tokens: contextSignal?.peak_context_tokens ?? previous?.peak_context_tokens,
+    compactions: contextSignal?.compactions ?? previous?.compactions,
+    restarts: contextSignal?.restarts ?? previous?.restarts,
   }
   for (const column of CAPTURE_COLUMNS) row[column] = String(row[column] ?? '')
   fs.mkdirSync(path.dirname(options.rawFile), {recursive: true})
@@ -2002,7 +2043,10 @@ function storeCurrent(options) {
   try {
     db = new DatabaseSync(options.dbPath, {readOnly: true})
     const digest = db.prepare("SELECT value FROM store_meta WHERE key = 'raw_digest'").get()?.value
-    return digest === rawDigest(readTextFile(options.rawFile))
+    const schema = db.prepare("SELECT value FROM store_meta WHERE key = 'schema_version'").get()?.value
+    // A store published by an older schema is stale even with an unchanged raw
+    // layer: its task table lacks the newer columns a report reads.
+    return schema === SCHEMA_VERSION && digest === rawDigest(readTextFile(options.rawFile))
   } catch {
     return false
   } finally {
@@ -2021,8 +2065,8 @@ function pendingReport(options) {
     .filter(id => !options.taskId || id === options.taskId)
   if (!ids.length) return null
   return 'Store behind append log or queued evidence; pending ingestion. Run report --sync to wait.\n'
-    + 'TASK | LAUNCH->PR | COST | TOKENS | ACTUAL MODEL | OUTCOME\n'
-    + ids.map(id => `${id} | - | - | - | - | pending ingestion`).join('\n') + '\n'
+    + 'TASK | LAUNCH->PR | COST | TOKENS | ACTUAL MODEL | OUTCOME | CONTEXT\n'
+    + ids.map(id => `${id} | - | - | - | - | pending ingestion | -`).join('\n') + '\n'
 }
 
 function report(dbPath, taskId) {
@@ -2031,7 +2075,7 @@ function report(dbPath, taskId) {
   const filter = taskId ? 'WHERE task_id = ?' : ''
   const statement = db.prepare(`
     SELECT task_id, launch_to_pr_seconds, notional_cost_usd, tokens_in, tokens_out,
-      outcome,
+      outcome, peak_context_tokens, compactions, restarts,
       (SELECT group_concat(model, ', ') FROM (
         SELECT model FROM task_model WHERE task_model.task_id = task.task_id ORDER BY provider, model
       )) AS actual_models
@@ -2039,13 +2083,36 @@ function report(dbPath, taskId) {
     ORDER BY task_id
   `)
   const rows = taskId ? statement.all(taskId) : statement.all()
-  const lines = ['TASK | LAUNCH->PR | COST | TOKENS | ACTUAL MODEL | OUTCOME']
+  const lines = ['TASK | LAUNCH->PR | COST | TOKENS | ACTUAL MODEL | OUTCOME | CONTEXT']
   for (const row of rows) {
     const cost = row.notional_cost_usd === null ? '-' : `$${Number(row.notional_cost_usd).toFixed(4)}`
     const tokens = row.tokens_in === null || row.tokens_out === null ? '-' : `${row.tokens_in} in / ${row.tokens_out} out`
-    lines.push(`${row.task_id} | ${durationText(row.launch_to_pr_seconds)} | ${cost} | ${tokens} | ${row.actual_models || '-'} | ${row.outcome || '-'}`)
+    const context = row.peak_context_tokens === null || row.compactions === null || row.restarts === null
+      ? '-' : `${row.peak_context_tokens} peak / ${row.compactions} compactions / ${row.restarts} restarts`
+    lines.push(`${row.task_id} | ${durationText(row.launch_to_pr_seconds)} | ${cost} | ${tokens} | ${row.actual_models || '-'} | ${row.outcome || '-'} | ${context}`)
   }
   if (!taskId) {
+    // Outcome by compaction bucket: the correlation the signal exists for. A
+    // task with no captured count is its own bucket so an older row never
+    // reads as "never compacted".
+    const buckets = db.prepare(`
+      SELECT CASE WHEN compactions IS NULL THEN 'unknown'
+                  WHEN compactions = 0 THEN '0'
+                  WHEN compactions = 1 THEN '1'
+                  ELSE '2+' END AS bucket,
+        COALESCE(outcome, 'none') AS outcome, COUNT(*) AS tasks
+      FROM task
+      GROUP BY bucket, outcome
+      ORDER BY bucket, outcome
+    `).all()
+    const byBucket = new Map([['0', []], ['1', []], ['2+', []], ['unknown', []]])
+    for (const row of buckets) byBucket.get(row.bucket).push(row)
+    const bucketText = [...byBucket].map(([bucket, rows]) => {
+      const total = rows.reduce((sum, row) => sum + row.tasks, 0)
+      const outcomes = rows.map(row => `${row.outcome} ${row.tasks}`).join(', ')
+      return `${bucket}: ${total} task${total === 1 ? '' : 's'}${outcomes ? ` (${outcomes})` : ''}`
+    })
+    lines.push(`COMPACTIONS ${bucketText.join(' | ')}`)
     const aggregate = db.prepare(`
       SELECT COUNT(*) AS tasks,
         COUNT(launch_to_pr_seconds) AS pr_tasks,

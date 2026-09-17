@@ -50,6 +50,16 @@
 //     assistant.message.model, ignoring "<synthetic>" rows). The requested
 //     model is deliberately not an input here: the caller compares.
 //
+//     Each session also reports the context signal the record carries:
+//     context_tokens is the prompt size of the last request at the slice
+//     (claude: input_tokens + cache_creation + cache_read of the last assistant
+//     usage; codex: last_token_usage.input_tokens of the last token_count),
+//     context_peak_tokens is the largest such figure seen, and compactions
+//     counts context compactions (claude: rows with isCompactSummary true;
+//     codex: rollout items of type compacted). The same fold
+//     (foldContext) is exported for bin/fm-context-watch.mjs, which reads
+//     only the tail of a live record, so both readers share one parser.
+//
 //   fm-model-bench-analyze.mjs independence <arm>=<dir> [<arm>=<dir>]...
 //
 //     Byte-compares every file under each arm directory against the same
@@ -86,6 +96,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 function usage() {
   const src = readFileSync(new URL(import.meta.url), 'utf8').split('\n');
@@ -114,7 +125,7 @@ function iso(ms) {
 
 // --- record loading ---------------------------------------------------------
 
-function readJsonl(file) {
+export function readJsonl(file) {
   const rows = [];
   const text = readFileSync(file, 'utf8');
   let lineNo = 0;
@@ -133,11 +144,11 @@ function readJsonl(file) {
   return rows;
 }
 
-function claudeProjectDir(workspace) {
+export function claudeProjectDir(workspace) {
   return workspace.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
-function discoverRecords(harness, workspace, root, launchedAtMs, priorSet) {
+export function discoverRecords(harness, workspace, root, launchedAtMs, priorSet) {
   const found = [];
   if (harness === 'codex') {
     if (!existsSync(root)) return found;
@@ -254,7 +265,7 @@ function sessionStartMs(harness, rows) {
 // first_ms, last_ms, malformed}. usage_points are cumulative for codex and
 // per-request for claude; the slicer knows which.
 
-function foldCodex(rows, file) {
+export function foldCodex(rows, file) {
   const meta = rows.find((r) => r && r.type === 'session_meta');
   if (!meta || !meta.payload) die(`${file}: no session_meta record; not a codex rollout`);
   const cwd = meta.payload.cwd;
@@ -321,7 +332,7 @@ function foldCodex(rows, file) {
   };
 }
 
-function normaliseCodexUsage(u) {
+export function normaliseCodexUsage(u) {
   const input = num(u.input_tokens);
   const output = num(u.output_tokens);
   return {
@@ -347,7 +358,7 @@ function claudeIsPrompt(r) {
   return c.some((b) => b && b.type === 'text');
 }
 
-function foldClaude(rows, file) {
+export function foldClaude(rows, file) {
   const firstCwd = rows.find((r) => r && typeof r.cwd === 'string');
   if (!firstCwd) die(`${file}: no record carries a cwd; not a claude session transcript`);
   const cwd = firstCwd.cwd;
@@ -416,13 +427,59 @@ function foldClaude(rows, file) {
   };
 }
 
-function normaliseClaudeUsage(u) {
+export function normaliseClaudeUsage(u) {
   const fresh = num(u.input_tokens);
   const write = num(u.cache_creation_input_tokens);
   const read = num(u.cache_read_input_tokens);
   const output = num(u.output_tokens);
   const input = fresh + write + read;
   return { input, cached_input: read, cache_write: write, output, reasoning_output: 0, total: input + output };
+}
+
+// --- context fold -----------------------------------------------------------
+//
+// The per-row context signal shared by the session fold above and the live
+// tail reader (bin/fm-context-watch.mjs). A row either carries the prompt size
+// of one request, marks a compaction, or is irrelevant. The fold is
+// incremental: pass the previous result as the seed to continue it over a
+// record's newly appended rows.
+
+export function contextRow(harness, r) {
+  if (!r || r.__malformed) return null;
+  if (harness === 'claude') {
+    if (r.type !== 'assistant' || !r.message || typeof r.message !== 'object') return null;
+    const u = r.message.usage;
+    if (!u || typeof u !== 'object') return null;
+    return normaliseClaudeUsage(u).input;
+  }
+  if (r.type !== 'event_msg' || !r.payload || r.payload.type !== 'token_count') return null;
+  const last = r.payload.info && r.payload.info.last_token_usage;
+  if (!last || typeof last !== 'object') return null;
+  return num(last.input_tokens);
+}
+
+export function isCompactionRow(harness, r) {
+  if (!r || r.__malformed) return false;
+  if (harness === 'claude') return r.isCompactSummary === true;
+  return r.type === 'compacted';
+}
+
+export function foldContext(harness, rows, seed) {
+  const out = {
+    context: seed && Number.isFinite(seed.context) ? seed.context : null,
+    peak: seed && Number.isFinite(seed.peak) ? seed.peak : 0,
+    compactions: seed && Number.isFinite(seed.compactions) ? seed.compactions : 0,
+    malformed: 0,
+  };
+  for (const r of rows) {
+    if (r && r.__malformed) { out.malformed += 1; continue; }
+    if (isCompactionRow(harness, r)) { out.compactions += 1; continue; }
+    const context = contextRow(harness, r);
+    if (context === null) continue;
+    out.context = context;
+    if (context > out.peak) out.peak = context;
+  }
+  return out;
 }
 
 // --- slicing ----------------------------------------------------------------
@@ -483,6 +540,7 @@ function sessionCommand(argv) {
     if (folded.cwd !== workspace) {
       die(`${file}: record cwd is '${folded.cwd}', not the arm's worktree '${workspace}'; refusing to attribute another directory's session to this arm`);
     }
+    folded.rows = rows;
     sessions.push(folded);
   }
 
@@ -581,6 +639,19 @@ function sessionCommand(argv) {
   const hasUsage = harness === 'codex'
     ? sessions.some((s) => s.usage_points.some((p) => within(p.ms)))
     : requests > 0;
+  // The context signal is a property of the main transcript: a sidechain has
+  // its own context window and never compacts the arm's. Sessions are folded
+  // in record order, so the last main record's final request is the context.
+  let contextFold = null;
+  for (const s of sessions) {
+    if (s.sidechain) continue;
+    const sliced = s.rows.filter((r) => {
+      if (!r || r.__malformed) return false;
+      const ms = Date.parse(r.timestamp || '');
+      return !Number.isFinite(ms) || within(ms);
+    });
+    contextFold = foldContext(harness, sliced, contextFold);
+  }
   const out = {
     schema: 'fm-model-bench-session.v1',
     harness,
@@ -601,6 +672,9 @@ function sessionCommand(argv) {
     last_record_at: lastMs === null ? null : iso(lastMs),
     wall_ms: firstMs === null || lastMs === null ? null : Math.max(0, lastMs - firstMs),
     usage: hasUsage ? { ...usage, requests: harness === 'claude' ? requests : undefined } : null,
+    context_tokens: contextFold ? contextFold.context : null,
+    context_peak_tokens: contextFold ? contextFold.peak : null,
+    compactions: contextFold ? contextFold.compactions : null,
     usage_source: harness === 'codex'
       ? 'codex rollout event_msg token_count info.total_token_usage at the slice'
       : 'claude transcript assistant message.usage summed once per requestId up to the slice',
@@ -791,18 +865,23 @@ function renderCommand(argv) {
 }
 
 // --- main -------------------------------------------------------------------
+//
+// Runs only when invoked directly; an importer (bin/fm-context-watch.mjs)
+// gets the exported folds without a CLI dispatch.
 
-const [mode, ...rest] = process.argv.slice(2);
-switch (mode) {
-  case 'session': sessionCommand(rest); break;
-  case 'independence': independenceCommand(rest); break;
-  case 'newest-record': newestRecordCommand(rest); break;
-  case 'render': renderCommand(rest); break;
-  case '-h':
-  case '--help':
-  case undefined:
-    process.stdout.write(`${usage()}\n`);
-    process.exit(mode === undefined ? 2 : 0);
-    break;
-  default: die(`unknown mode: ${mode}`);
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const [mode, ...rest] = process.argv.slice(2);
+  switch (mode) {
+    case 'session': sessionCommand(rest); break;
+    case 'independence': independenceCommand(rest); break;
+    case 'newest-record': newestRecordCommand(rest); break;
+    case 'render': renderCommand(rest); break;
+    case '-h':
+    case '--help':
+    case undefined:
+      process.stdout.write(`${usage()}\n`);
+      process.exit(mode === undefined ? 2 : 0);
+      break;
+    default: die(`unknown mode: ${mode}`);
+  }
 }

@@ -146,6 +146,12 @@ EOF
   cat > "$home/state/usage-cache/ship-task.json" <<'JSON'
 {"schema":"fm-task-usage.v2","id":"ship-task","harness":"claude","actual_models":["Opus 5"],"tokens":{"input":1,"output":2,"cache_read":3,"cache_write":4},"cost_usd":0.5,"calls":6,"sessions":1,"duration_seconds":60}
 JSON
+  # The watcher's per-task context cache (bin/fm-context-watch.mjs tick) is the
+  # snapshot's only context source; a task the watcher has not read yet carries
+  # nulls, never zeros.
+  cat > "$home/state/ship-task.context-watch" <<'JSON'
+{"schema":"fm-context-watch.v1","task":"ship-task","harness":"claude","launches":2,"ledger_size":10,"records":[],"refusal":null,"bind_attempted":0,"context":214500,"peak":231000,"compactions":1,"restarts":1,"source":"/nowhere/ship-task.jsonl","updated":"2026-07-07T00:00:00Z"}
+JSON
 }
 
 test_empty_fleet_json() {
@@ -188,7 +194,14 @@ test_fixture_snapshot_json() {
       and .usage.schema == "fm-task-usage.v2"
       and .usage.stale == true
       and .usage.actual_models == ["Opus 5"]
-  ' >/dev/null || fail "ship task state, PR, body, and stale event hints wrong"
+      and .context_tokens == 214500
+      and .context_peak_tokens == 231000
+      and .compactions == 1
+  ' >/dev/null || fail "ship task state, PR, body, stale event hints, and context signal wrong"
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "scout-task")
+    | .context_tokens == null and .context_peak_tokens == null and .compactions == null
+  ' >/dev/null || fail "a task with no context cache must carry null context fields, got $(printf '%s' "$out" | jq -c '.tasks[] | select(.id == "scout-task") | {context_tokens,context_peak_tokens,compactions}')"
   printf '%s' "$out" | jq -e '
     .tasks[] | select(.id == "scout-task")
     | .paths.report.present == true
@@ -934,8 +947,8 @@ test_view_renders_snapshot() {
     || fail "fleet view priority order is wrong: $view"
   assert_contains "$view" "IN FLIGHT (3)" \
     "dispatched work should include working and unreadable runtime state"
-  assert_contains "$view" "• ship-task · Ship Task" \
-    "view should render the active task"
+  assert_contains "$view" "• ship-task · Ship Task · ctx 215k · c1" \
+    "view should render the active task with its context size and compaction count"
   inflight_section=$(printf '%s\n' "$view" | sed -n '/^IN FLIGHT/,/^BLOCKED/p')
   assert_not_contains "$inflight_section" "secondmate-task" \
     "a parked task must never appear under IN FLIGHT"

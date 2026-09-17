@@ -49,6 +49,11 @@
 #     bounded by FM_FLEET_USAGE_TIMEOUT (default 5s), with an existing per-task
 #     cache under state/usage-cache/ served (marked stale:true) when a call times
 #     out or fails, so total wait stays bounded by the slowest single call.
+#     context_tokens, context_peak_tokens, and compactions are the live context
+#     signal read from the watcher's per-task cache state/<id>.context-watch
+#     (bin/fm-context-watch.mjs owns the fields); each is null until the
+#     watcher has read that task's session record, and always null for
+#     secondmates. Additive fields keep the schema id stable.
 #   scout_reports[]: present data/<id>/report.md pointers.
 #   main_inventory: {valid,reason,orphan_in_flight[],unstructured_current_count} -
 #     main-home current-inventory checks shared with secondmate_home_summary_json
@@ -654,6 +659,17 @@ usage_json_for_id() {  # <id> <harness> <collected-dir>
   jq -n --arg harness "$harness" '{status:"unavailable",harness:$harness,actual_models:[],tokens:{input:0,output:0,cache_read:0,cache_write:0},cost_usd:0,calls:0}'
 }
 
+# The watcher's context cache for one task, reduced to the three snapshot
+# fields. An absent, unreadable, or foreign-schema cache yields nulls.
+context_json_for_id() {  # <id>
+  local file=$1
+  file="$STATE/$1.context-watch"
+  if [ -f "$file" ] && jq -e --arg id "$1" 'type == "object" and .schema == "fm-context-watch.v1" and .task == $id' "$file" >/dev/null 2>&1; then
+    jq -c '{context_tokens:(.context // null),context_peak_tokens:(.peak // null),compactions:(.compactions // null)}' "$file" 2>/dev/null && return 0
+  fi
+  printf '{"context_tokens":null,"context_peak_tokens":null,"compactions":null}'
+}
+
 task_json_lines() {
   local meta id kind harness mode yolo project worktree home projects backend target status_log report_path
   local remote_host remote_root remote_state remote_rc remote_home_present
@@ -785,16 +801,18 @@ task_json_lines() {
       home_json=$(jq -n '{path:null,present:false}')
     fi
     usage_json=null
+    context_json='{"context_tokens":null,"context_peak_tokens":null,"compactions":null}'
     if [ "$kind" != secondmate ]; then
       usage_json=$(usage_json_for_id "$id" "$harness" "$usage_tmp")
+      context_json=$(context_json_for_id "$id")
     fi
 
     scalar_json=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
       "$kind" "$harness" "$mode" "$yolo" "$project" "$worktree" "$home" "$projects" "$backend" "$target" "$pr" "$remote_host" "$remote_root" \
       | jq -Rn '[inputs] | {kind:.[0],harness:.[1],mode:.[2],yolo:.[3],project:.[4],worktree:.[5],home:.[6],projects:.[7],backend:.[8],target:.[9],pr:.[10],remote_host:.[11],remote_root:.[12]}') \
       || { echo "fm-fleet-snapshot: task metadata stream read failed for $id" >&2; return 1; }
-    printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
-      "$current_json" "$meta_json" "$status_json" "$report_json" "$worktree_json" "$home_json" "$open_decisions_json" "$scalar_json" "$usage_json" | jq -s \
+    printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+      "$current_json" "$meta_json" "$status_json" "$report_json" "$worktree_json" "$home_json" "$open_decisions_json" "$scalar_json" "$usage_json" "$context_json" | jq -s \
       --arg id "$id" \
       --arg pr_source "$pr_source" \
       --arg agent_alive "$agent_alive" \
@@ -813,6 +831,7 @@ task_json_lines() {
       | ($stream[6]) as $open_decisions
       | ($stream[7]) as $scalar
       | ($stream[8]) as $usage
+      | ($stream[9]) as $context
       | ($scalar.pr) as $pr
       | ($scalar.kind) as $kind
       | ($scalar.harness) as $harness
@@ -846,6 +865,9 @@ task_json_lines() {
         secondmate_projects:($projects | if . == "" then [] else split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(. != "")) end),
         current_state:($current_state + {observed_at:$observed_at,freshness:"fresh"}),
         usage:$usage,
+        context_tokens:$context.context_tokens,
+        context_peak_tokens:$context.context_peak_tokens,
+        compactions:$context.compactions,
         endpoint:{target:($target | if . == "" then null else . end),exists:$endpoint_exists,agent_alive:$agent_alive,
           status:(if $endpoint_exists == false then "absent"
                   elif $agent_alive == "alive" or $agent_alive == "dead" then $agent_alive
