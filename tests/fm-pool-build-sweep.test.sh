@@ -390,3 +390,251 @@ for protection in tracked nonignored; do
   assert_present "$wt/.oracle-work/scratch.jar" 'return failed to protect mixed scratch root'
 done
 pass 'tracked and nonignored scratch roots remain protected'
+
+# Pool budget wake: after a scheduled run, a project pool whose ignored
+# footprint exceeds FM_POOL_TOTAL_BUDGET_GB gets one registered watcher check
+# that surfaces exactly one wake per distinct over-budget total.
+CHECK="$FM_HOME/state/pool-footprint.check.sh"
+CHECKPOINT="$ROOT/bin/fm-watch-checkpoint.sh"
+printf '%s\n' fm-pr-check-migration-scan-v1 > "$FM_HOME/state/.pr-check-migration-scan-v1"
+printf '%s\n' fm-pr-check-migration-v1 > "$FM_HOME/state/.pr-check-migration-v1"
+chmod 0600 "$FM_HOME/state/.pr-check-migration-scan-v1" "$FM_HOME/state/.pr-check-migration-v1"
+scheduled_sweep() {  # <total-budget-gb>
+  rm -f "$FM_HOME/state/.pool-build-sweep.last"
+  FM_POOL_TOTAL_BUDGET_GB="$1" "$SWEEP" --scheduled > "$TMP_ROOT/scheduled.out" 2>&1 \
+    || fail "scheduled sweep failed: $(cat "$TMP_ROOT/scheduled.out")"
+}
+check_output() {
+  [ -f "$CHECK" ] || { printf ''; return 0; }
+  bash "$CHECK"
+}
+printf '.oracle-work/\n' >> "$PROJECT/.git/info/exclude"
+for name in fat-a fat-b fat-c thin; do
+  wt="$TMP_ROOT/pool/$name/rust"
+  git -C "$PROJECT" worktree add -q --detach "$wt"
+  mkdir -p "$wt/.oracle-work"
+  case "$name" in
+    fat-a) size=262144 ;;
+    fat-b) size=131072 ;;
+    fat-c) size=65536 ;;
+    *) size=1024 ;;
+  esac
+  head -c "$size" /dev/zero | tr '\0' x > "$wt/.oracle-work/blob.bin"
+done
+node - "$TMP_ROOT" <<'JS'
+const fs=require('fs'), root=process.argv[2];
+const entries=['fat-a','fat-b','fat-c','thin'].map(name=>({name,path:`${root}/pool/${name}/rust`,status:'available',lease_id:'',processes:[]}));
+fs.writeFileSync(`${root}/inventory.json`,JSON.stringify(entries));
+JS
+scheduled_sweep 0.0001
+assert_present "$CHECK" 'over-budget pool did not write its watcher check'
+assert_present "$FM_HOME/state/pool-footprint.check-trust" 'pool footprint check was not registered'
+first=$(check_output)
+[ -n "$first" ] || fail 'registered check printed nothing for an over-budget pool'
+[ "$(printf '%s\n' "$first" | wc -l)" -eq 1 ] || fail "check printed more than one line: $first"
+assert_contains "$first" 'rust' 'wake does not name the project'
+for name in fat-a fat-b fat-c; do
+  assert_contains "$first" "$TMP_ROOT/pool/$name/rust" "wake omits top copy $name"
+done
+assert_not_contains "$first" "$TMP_ROOT/pool/thin/rust" 'wake lists more than the top three copies'
+[ -z "$(check_output)" ] || fail 'check repeated the wake for an unchanged total'
+scheduled_sweep 0.0001
+[ -z "$(check_output)" ] || fail 'a rerun with an unchanged total produced a second wake'
+pass 'scheduled sweep surfaces one wake per over-budget pool total'
+
+# The watcher itself trusts the registered check and surfaces the line once.
+rm -f "$FM_HOME/state/.pool-footprint-surfaced"
+FM_HOME="$FM_HOME" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=1 "$CHECKPOINT" --seconds 8 \
+  > "$TMP_ROOT/checkpoint.out" 2> "$TMP_ROOT/checkpoint.err" || fail "watcher checkpoint did not wake: $(cat "$TMP_ROOT/checkpoint.out" "$TMP_ROOT/checkpoint.err")"
+assert_contains "$(cat "$TMP_ROOT/checkpoint.out")" 'check:' 'watcher did not surface the pool footprint check'
+assert_contains "$(cat "$TMP_ROOT/checkpoint.out")" "$TMP_ROOT/pool/fat-a/rust" 'watcher wake omits the largest copy'
+# Drain and acknowledge that wake as a handling turn would, so the next
+# checkpoint has no queued wake to resurface and can only wake on a repeat.
+drained=$(FM_HOME="$FM_HOME" "$ROOT/bin/fm-wake-drain.sh" 2> "$TMP_ROOT/drain.err")
+assert_contains "$drained" "$TMP_ROOT/pool/fat-a/rust" 'queued wake omits the largest copy'
+sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$TMP_ROOT/drain.err")
+generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$TMP_ROOT/drain.err")
+FM_HOME="$FM_HOME" "$ROOT/bin/fm-wake-drain.sh" --ack-through "$sequence" --recovery-generation "$generation" > /dev/null
+rc=0
+FM_HOME="$FM_HOME" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=1 "$CHECKPOINT" --seconds 3 \
+  > "$TMP_ROOT/checkpoint2.out" 2> "$TMP_ROOT/checkpoint2.err" || rc=$?
+[ "$rc" -eq 124 ] || fail "watcher repeated the pool footprint wake: $(cat "$TMP_ROOT/checkpoint2.out")"
+pass 'watcher surfaces the registered pool footprint check exactly once'
+
+# A changed total is a new wake; dropping under budget clears the record so a
+# later crossing surfaces again.
+head -c 65536 /dev/zero | tr '\0' x > "$TMP_ROOT/pool/thin/rust/.oracle-work/more.bin"
+scheduled_sweep 0.0001
+second=$(check_output)
+[ -n "$second" ] || fail 'a changed over-budget total did not produce a new wake'
+[ "$second" != "$first" ] || fail 'changed total repeated the earlier wake line'
+scheduled_sweep 1000
+[ -z "$(check_output)" ] || fail 'an under-budget pool still woke firstmate'
+scheduled_sweep 0.0001
+[ -n "$(check_output)" ] || fail 'a pool crossing the budget again did not wake firstmate'
+pass 'pool budget wake follows the total: new total, silence under budget, wake on re-crossing'
+
+for name in fat-a fat-b fat-c thin; do
+  case "$name" in
+    fat-a) size=1048576 ;;
+    fat-b) size=262144 ;;
+    fat-c) size=131072 ;;
+    thin) size=1024 ;;
+  esac
+  rm -f "$TMP_ROOT/pool/$name/rust/.oracle-work/more.bin"
+  head -c "$size" /dev/zero > "$TMP_ROOT/pool/$name/rust/.oracle-work/blob.bin"
+done
+scheduled_sweep 0.0001
+before=$(check_output)
+head -c 4096 /dev/zero >> "$TMP_ROOT/pool/thin/rust/.oracle-work/blob.bin"
+scheduled_sweep 0.0001
+after=$(check_output)
+[ -n "$after" ] || fail 'exact byte increase hidden by rounding did not wake'
+[ "$before" = "$after" ] || fail 'fixture failed to keep the rounded display unchanged'
+[ -z "$(check_output)" ] || fail 'exact total woke twice'
+mv "$TMP_ROOT/pool/fat-a/rust/.oracle-work/blob.bin" "$TMP_ROOT/swapped-blob"
+mv "$TMP_ROOT/pool/fat-b/rust/.oracle-work/blob.bin" "$TMP_ROOT/pool/fat-a/rust/.oracle-work/blob.bin"
+mv "$TMP_ROOT/swapped-blob" "$TMP_ROOT/pool/fat-b/rust/.oracle-work/blob.bin"
+scheduled_sweep 0.0001
+[ -z "$(check_output)" ] || fail 'redistributing an unchanged total repeated the wake'
+[ "$(head -n 1 "$FM_HOME/state/pool-footprint.over-budget")" != "$after" ] || fail 'fixture failed to change the top-copy display'
+pass 'wake identity uses exact bytes independently of rounding and top-copy distribution'
+
+ln -s "$PROJECT" "$TMP_ROOT/project-alias"
+for name in thin fat-c fat-b fat-a; do
+  printf '%s\t%s\n' "$TMP_ROOT/project-alias" "$TMP_ROOT/pool/$name/rust"
+done | FM_POOL_TOTAL_BUDGET_GB=0.0001 "$ROOT/bin/fm-pool-footprint.sh" --pool-audit > "$TMP_ROOT/alias-audit.out"
+[ -z "$(check_output)" ] || fail 'canonical project alias or inventory order repeated the wake'
+pass 'canonical project identity survives aliases and inventory reordering'
+
+index=$(git -C "$TMP_ROOT/pool/thin/rust" rev-parse --git-path index)
+printf 'broken index\n' > "$index"
+rm -f "$FM_HOME/state/.pool-build-sweep.last"
+FM_POOL_TOTAL_BUDGET_GB=0.0001 "$SWEEP" --scheduled > "$TMP_ROOT/broken-sweep.out" 2>&1 || true
+broken=$(check_output)
+assert_contains "$broken" 'could not measure' 'audit silently accepted a failed ignored listing'
+assert_contains "$broken" "$TMP_ROOT/pool/thin/rust" 'audit did not name the unmeasurable copy'
+rm -f "$FM_HOME/state/.pool-build-sweep.last"
+FM_POOL_TOTAL_BUDGET_GB=0.0001 "$SWEEP" --scheduled > "$TMP_ROOT/broken-sweep.out" 2>&1 || true
+[ -z "$(check_output)" ] || fail 'unchanged measurement failure repeated the wake'
+pass 'scheduled audit surfaces failed ignored listings exactly once'
+
+node - "$TEST_INVENTORY" <<'JS'
+const fs=require('fs'), file=process.argv[2], rows=JSON.parse(fs.readFileSync(file));
+rows.sort((a,b)=>Number(b.name==='thin')-Number(a.name==='thin'));
+fs.writeFileSync(file,JSON.stringify(rows));
+JS
+rm -f "$FM_HOME/state/.pool-build-sweep.last"
+FM_POOL_TOTAL_BUDGET_GB=0.0001 "$SWEEP" --scheduled > "$TMP_ROOT/first-broken.out" 2>&1 || true
+[ -z "$(check_output)" ] || fail 'a corrupt first copy changed the audit of later copies'
+head -c 65536 /dev/zero >> "$TMP_ROOT/pool/fat-a/rust/.oracle-work/blob.bin"
+rm -f "$FM_HOME/state/.pool-build-sweep.last"
+FM_POOL_TOTAL_BUDGET_GB=0.0001 "$SWEEP" --scheduled > "$TMP_ROOT/first-broken.out" 2>&1 || true
+growth=$(check_output)
+assert_contains "$growth" "$TMP_ROOT/pool/fat-a/rust" 'growth after a corrupt first copy was omitted'
+assert_contains "$growth" 'could not measure' 'corrupt first copy lost its failure state'
+[ -z "$(check_output)" ] || fail 'growth behind a corrupt first copy woke twice'
+pass 'a corrupt first copy does not hide later copies or their growth'
+
+mkdir -p "$FM_HOME/projects/other"
+printf '%s\n' '- other [no-mistakes] - fixture' >> "$FM_HOME/data/projects.md"
+export TEST_CAPTURE_LOG="$TMP_ROOT/capture-order.log"
+export TEST_REAL_GIT
+TEST_REAL_GIT=$(command -v git)
+cat > "$TMP_ROOT/fakebin/git" <<'EOF'
+#!/usr/bin/env bash
+printf 'copy:%s\n' "$*" >> "$TEST_CAPTURE_LOG"
+exec "$TEST_REAL_GIT" "$@"
+EOF
+cat > "$TMP_ROOT/fakebin/treehouse" <<'EOF'
+#!/usr/bin/env bash
+[ "$*" = 'status --json' ] || exit 1
+printf 'inventory:%s\n' "$PWD" >> "$TEST_CAPTURE_LOG"
+if [ -f "$PWD/inventory-unavailable" ]; then
+  printf 'not-json\n'
+elif [ "${PWD##*/}" = other ]; then
+  printf '[]\n'
+else
+  cat "$TEST_INVENTORY"
+fi
+EOF
+chmod +x "$TMP_ROOT/fakebin/git" "$TMP_ROOT/fakebin/treehouse"
+: > "$TEST_CAPTURE_LOG"
+rm -f "$FM_HOME/state/.pool-build-sweep.last"
+FM_POOL_TOTAL_BUDGET_GB=0.0001 "$SWEEP" --scheduled > "$TMP_ROOT/capture-order.out" 2>&1 || true
+expected=$(printf 'inventory:%s\ninventory:%s' "$PROJECT" "$FM_HOME/projects/other")
+[ "$(head -n 2 "$TEST_CAPTURE_LOG")" = "$expected" ] || fail 'cleanup started before every project inventory was captured'
+[ -z "$(check_output)" ] || fail 'an empty additional pool repeated an unchanged wake'
+pass 'every registered project inventory is captured before cleanup starts'
+
+touch "$FM_HOME/projects/other/inventory-unavailable"
+rm -f "$FM_HOME/state/.pool-build-sweep.last"
+FM_POOL_TOTAL_BUDGET_GB=0.0001 "$SWEEP" --scheduled > "$TMP_ROOT/unavailable.out" 2>&1 || true
+unavailable=$(check_output)
+assert_contains "$unavailable" 'could not read inventory' 'unreadable project inventory was silently omitted'
+assert_contains "$unavailable" "$FM_HOME/projects/other" 'inventory failure omitted its project identity'
+rm -f "$FM_HOME/state/.pool-build-sweep.last"
+FM_POOL_TOTAL_BUDGET_GB=0.0001 "$SWEEP" --scheduled > "$TMP_ROOT/unavailable.out" 2>&1 || true
+[ -z "$(check_output)" ] || fail 'unchanged unavailable inventory woke twice'
+rm "$FM_HOME/projects/other/inventory-unavailable"
+rm -f "$FM_HOME/state/.pool-build-sweep.last"
+FM_POOL_TOTAL_BUDGET_GB=0.0001 "$SWEEP" --scheduled > "$TMP_ROOT/recovered.out" 2>&1 || true
+recovered=$(check_output)
+assert_not_contains "$recovered" 'could not read inventory' 'recovered inventory kept its failure state'
+pass 'inventory failure is durable, deduplicated, and cleared after recovery'
+rm "$TMP_ROOT/fakebin/git"
+
+record="$FM_HOME/state/pool-footprint.over-budget"
+cp "$record" "$TMP_ROOT/snapshot-old"
+old_line=$(head -n 1 "$record")
+head -c 65536 /dev/zero >> "$TMP_ROOT/pool/fat-a/rust/.oracle-work/blob.bin"
+rm -f "$FM_HOME/state/.pool-build-sweep.last"
+FM_POOL_TOTAL_BUDGET_GB=0.0001 "$SWEEP" --scheduled > "$TMP_ROOT/snapshot-next.out" 2>&1 || true
+new_line=$(head -n 1 "$record")
+[ "$old_line" != "$new_line" ] || fail 'snapshot fixture did not change the display'
+mv "$record" "$TMP_ROOT/snapshot-next"
+mv "$TMP_ROOT/snapshot-old" "$record"
+rm "$FM_HOME/state/.pool-footprint-surfaced"
+mkdir "$TMP_ROOT/snapshot-bin"
+export TEST_SNAPSHOT_RECORD="$record" TEST_SNAPSHOT_NEXT="$TMP_ROOT/snapshot-next"
+export TEST_SNAPSHOT_REPLACED="$TMP_ROOT/snapshot-replaced"
+export TEST_REAL_CAT TEST_REAL_SED TEST_REAL_HEAD
+TEST_REAL_CAT=$(command -v cat)
+TEST_REAL_SED=$(command -v sed)
+TEST_REAL_HEAD=$(command -v head)
+for tool in cat sed head; do
+  cat > "$TMP_ROOT/snapshot-bin/$tool" <<'EOF'
+#!/usr/bin/env bash
+case "${0##*/}" in
+  cat) real=$TEST_REAL_CAT ;;
+  sed) real=$TEST_REAL_SED ;;
+  head) real=$TEST_REAL_HEAD ;;
+esac
+output=$("$real" "$@") || exit $?
+for arg in "$@"; do
+  if [ "$arg" = "$TEST_SNAPSHOT_RECORD" ] && [ -f "$TEST_SNAPSHOT_NEXT" ]; then
+    mv "$TEST_SNAPSHOT_NEXT" "$TEST_SNAPSHOT_RECORD"
+    touch "$TEST_SNAPSHOT_REPLACED"
+    break
+  fi
+done
+printf '%s\n' "$output"
+EOF
+  chmod +x "$TMP_ROOT/snapshot-bin/$tool"
+done
+snapshot_first=$(PATH="$TMP_ROOT/snapshot-bin:$PATH" bash "$CHECK")
+assert_present "$TEST_SNAPSHOT_REPLACED" 'record replacement was not exercised during check execution'
+[ "$snapshot_first" = "$old_line" ] || fail 'check mixed old dedupe keys with a new display'
+[ "$(check_output)" = "$new_line" ] || fail 'new snapshot did not produce exactly its own wake'
+[ -z "$(check_output)" ] || fail 'record replacement repeated the new total'
+pass 'atomic record replacement cannot mix snapshot keys and display'
+
+quoted_home="$TMP_ROOT/home's \$cache"
+mkdir -p "$quoted_home/state"
+printf '%s\t%s\n' "$PROJECT" "$TMP_ROOT/pool/fat-a/rust" | \
+  FM_HOME="$quoted_home" FM_POOL_TOTAL_BUDGET_GB=0.0001 "$ROOT/bin/fm-pool-footprint.sh" --pool-audit > "$TMP_ROOT/quoted-audit.out"
+assert_present "$quoted_home/state/pool-footprint.check-trust" 'quoted-home check was not registered'
+quoted_wake=$(bash "$quoted_home/state/pool-footprint.check.sh") || fail 'quoted-home check failed to execute'
+assert_contains "$quoted_wake" "$TMP_ROOT/pool/fat-a/rust" 'quoted-home check lost its budget alert'
+[ -z "$(bash "$quoted_home/state/pool-footprint.check.sh")" ] || fail 'quoted-home check repeated its wake'
+pass 'generated check safely handles apostrophes, spaces, and dollar signs in home paths'

@@ -67,10 +67,33 @@
 # the retired home. Removing a leased home releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
-# Usage: fm-teardown.sh <task-id> [--force]
+# Usage: fm-teardown.sh <task-id> [--force] [--footprint-override --reason <text>]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
 #   when the captain has explicitly said to discard the work.
+#   --footprint-override --reason <text> returns a copy whose ignored footprint
+#   is still over FM_POOL_COPY_BUDGET_GB after the return prune, appending the
+#   reason to state/teardown.log; the flag is refused without a reason.
+#
+# Footprint post-condition (footprint-gate): once the landed-work, run-abort, and
+# process-reap steps have passed, a Treehouse task copy is pruned through the
+# return rule table and its remaining ignored footprint is measured through
+# bin/fm-pool-footprint-lib.sh (git's ignored listing summed with du, symlinks
+# not followed). A copy over FM_POOL_COPY_BUDGET_GB (default 12 decimal GB,
+# docs/configuration.md) is neither returned to the pool nor retired: teardown
+# prints `REFUSED: copy over footprint budget` with its ten largest ignored
+# paths and exits non-zero before teardown_at= is stamped, so the record still
+# binds the copy for inspection. Every Treehouse return attempt also applies
+# the gate, including direct and nested children during forced retirement.
+# A refused child retains its records without a deletion fallback. --force never skips
+# this gate; --footprint-override --reason <text> bypasses only the
+# over-budget refusal, not prune, measurement, or log-write failures. Each
+# accepted over-budget gate override is appended to state/teardown.log as one
+# `<utc> footprint-override task=<id> worktree=<path> footprint_bytes=<n>
+# budget_bytes=<n> reason=<text>` line. state/teardown.log is append-only
+# private evidence that no script reads back. The gate skips its own prune,
+# but never its measurement, while a git index lock is present, because the
+# return path below owns lock patience; rerun teardown once the lock clears.
 #
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
@@ -181,12 +204,43 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-build-output-lib.sh
+. "$SCRIPT_DIR/fm-build-output-lib.sh"
+# shellcheck source=bin/fm-pool-footprint-lib.sh
+. "$SCRIPT_DIR/fm-pool-footprint-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
 fi
 ID=$1
-FORCE=${2:-}
+shift
+FORCE=
+FOOTPRINT_OVERRIDE=0
+FOOTPRINT_REASON=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --force) FORCE=--force ;;
+    --footprint-override) FOOTPRINT_OVERRIDE=1 ;;
+    --reason)
+      [ "$#" -gt 1 ] && [ -n "$2" ] || { echo "error: --reason requires a non-empty text" >&2; exit 2; }
+      FOOTPRINT_REASON=$2
+      shift
+      ;;
+    *) echo "error: invalid teardown option: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+if [ "$FOOTPRINT_OVERRIDE" -eq 1 ] && [ -z "$FOOTPRINT_REASON" ]; then
+  echo "error: --footprint-override requires --reason <text>; the reason is recorded in state/teardown.log" >&2
+  exit 2
+fi
+if [ "$FOOTPRINT_OVERRIDE" -eq 0 ] && [ -n "$FOOTPRINT_REASON" ]; then
+  echo "error: --reason is accepted only with --footprint-override" >&2
+  exit 2
+fi
+case "$FOOTPRINT_REASON" in
+  *$'\n'*|*$'\r'*) echo "error: --reason must be a single line" >&2; exit 2 ;;
+esac
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 CONTROL_LOCK="$STATE/.control-$ID.lock"
@@ -1113,6 +1167,7 @@ fi
 # Compatibility alias used by the safety-check wait path and older call sites.
 STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS
 TEARDOWN_TREEHOUSE_LOCK_REFUSED=2
+TEARDOWN_FOOTPRINT_REFUSED=5
 TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED=3
 TEARDOWN_PROCEVENT_RESTORE_FAILED=4
 
@@ -1185,14 +1240,14 @@ teardown_treehouse_return_attempt() {
       printf "fatal: Unable to create '%s': File exists.\n" "$lock" >&2
       return 128
     fi
-    "$SCRIPT_DIR/fm-pool-build-sweep.sh" --return-copy "$dir" || return 1
   fi
+  teardown_footprint_gate "$dir" || return "$TEARDOWN_FOOTPRINT_REFUSED"
   ( cd "$cd_dir" && treehouse return --force "$dir" )
 }
 
 teardown_treehouse_return() {
   local dir=$1 cd_dir=$2 label=$3 post_cleanup_check=${4:-} prune=${5:-}
-  local out lock attempt=0 max_retries lock_desc
+  local out lock attempt=0 max_retries lock_desc return_rc
 
   if [ -n "$prune" ]; then
     prune=$("$SCRIPT_DIR/fm-pool-build-sweep.sh" --return-copy "$dir" --dry-run) || return 1
@@ -1203,7 +1258,10 @@ teardown_treehouse_return() {
   if out=$( teardown_treehouse_return_attempt "$dir" "$cd_dir" "$prune" 2>&1 ); then
     [ -n "$out" ] && printf '%s\n' "$out"
     return 0
+  else
+    return_rc=$?
   fi
+  [ "$return_rc" -ne "$TEARDOWN_FOOTPRINT_REFUSED" ] || { printf '%s\n' "$out" >&2; return "$return_rc"; }
   [ -n "$out" ] && printf '%s\n' "$out" >&2
 
   if ! treehouse_return_is_index_lock_error "$out"; then
@@ -1229,7 +1287,10 @@ teardown_treehouse_return() {
       [ -n "$out" ] && printf '%s\n' "$out"
       echo "teardown: $label return succeeded on retry; lock cleared on its own" >&2
       return 0
+    else
+      return_rc=$?
     fi
+    [ "$return_rc" -ne "$TEARDOWN_FOOTPRINT_REFUSED" ] || { printf '%s\n' "$out" >&2; return "$return_rc"; }
     [ -n "$out" ] && printf '%s\n' "$out" >&2
 
     if ! treehouse_return_is_index_lock_error "$out"; then
@@ -1256,7 +1317,10 @@ teardown_treehouse_return() {
         [ -n "$out" ] && printf '%s\n' "$out"
         echo "teardown: $label return succeeded after stale-lock cleanup" >&2
         return 0
+      else
+        return_rc=$?
       fi
+      [ "$return_rc" -ne "$TEARDOWN_FOOTPRINT_REFUSED" ] || { printf '%s\n' "$out" >&2; return "$return_rc"; }
       [ -n "$out" ] && printf '%s\n' "$out" >&2
       echo "teardown: $label return still failing after stale-lock cleanup" >&2
       return 1
@@ -1267,6 +1331,44 @@ teardown_treehouse_return() {
   fi
 
   echo "teardown: $label return failed: git index.lock signature persisted across ${max_retries} retries (waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s each) even after the lock file disappeared" >&2
+  return 1
+}
+
+# teardown_footprint_gate <worktree>: the footprint post-condition described in
+# the script header. Runs the return prune first (unless a git index lock is
+# present), then measures what the prune left behind.
+teardown_footprint_gate() {
+  local wt=$1 budget total lock
+  budget=$(fm_pool_copy_budget_bytes) || return 1
+  if lock=$(worktree_git_lock_path "$wt") && [ -e "$lock" ]; then
+    echo "teardown: git lock $lock is present; measuring the footprint of $wt without its return prune" >&2
+  else
+    "$SCRIPT_DIR/fm-pool-build-sweep.sh" --return-copy "$wt" || {
+      echo "REFUSED: return prune failed for worktree $wt; preserving the copy and task state." >&2
+      return 1
+    }
+  fi
+  total=$(fm_pool_footprint_bytes "$wt") || {
+    echo "REFUSED: cannot measure the ignored footprint of worktree $wt; preserving the copy and task state." >&2
+    return 1
+  }
+  [ "$total" -gt "$budget" ] || return 0
+  if [ "$FOOTPRINT_OVERRIDE" -eq 1 ]; then
+    printf '%s footprint-override task=%s worktree=%s footprint_bytes=%s budget_bytes=%s reason=%s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ID" "$wt" "$total" "$budget" "$FOOTPRINT_REASON" \
+      >> "$STATE/teardown.log" || {
+      echo "REFUSED: cannot record the footprint override in $STATE/teardown.log; preserving the copy and task state." >&2
+      return 1
+    }
+    echo "teardown: footprint override accepted for $wt ($(fm_pool_footprint_human "$total") of ignored output against a $(fm_pool_footprint_gb "$budget") GB budget): $FOOTPRINT_REASON" >&2
+    return 0
+  fi
+  {
+    echo "REFUSED: copy over footprint budget: worktree $wt still holds $(fm_pool_footprint_human "$total") of ignored output after the return prune (FM_POOL_COPY_BUDGET_GB=$(fm_pool_footprint_gb "$budget") GB)."
+    echo "The copy stays out of the pool and task $ID keeps its record; nothing was changed. Largest ignored paths:"
+    fm_pool_footprint_report_lines "$wt" 10
+    echo "Remove or relocate that output and rerun, or rerun with --footprint-override --reason '<why>' to return it anyway."
+  } >&2
   return 1
 }
 
@@ -2421,7 +2523,7 @@ cleanup_firstmate_home_children() {
           :
         else
           child_return_rc=$?
-          if [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LOCK_REFUSED" ]; then
+          if [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LOCK_REFUSED" ] || [ "$child_return_rc" -eq "$TEARDOWN_FOOTPRINT_REFUSED" ]; then
             return "$child_return_rc"
           fi
           safe_rm_rf_child_worktree "$child_wt" "$child_proj"
@@ -2575,6 +2677,13 @@ fi
 # pruned code root. Best effort - a sweep failure never blocks this teardown.
 "$SCRIPT_DIR/fm-remote-job-reap-orphans.sh" >&2 || true
 
+# Footprint post-condition (see script header): prune, then refuse to return a
+# Treehouse copy that is still over budget. Runs before any stamp or removal so
+# a refusal leaves the record binding the copy exactly as it was.
+if [ "$BACKEND" != orca ] && [ "$KIND" != secondmate ] && [ -d "$WT" ]; then
+  teardown_footprint_gate "$WT" || exit 1
+fi
+
 # A Herdr close may reposition shared workspace order, so the whole
 # destructive sequence below (worktree return, pane close, record removal)
 # runs under the named-session presentation lock, acquired BEFORE anything is
@@ -2667,8 +2776,6 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
     post_lock_cleanup_check=validate_worktree_teardown_safety
   fi
   # Only reproducible ignored output qualifies; landed work was checked above.
-  # shellcheck source=bin/fm-build-output-lib.sh
-  . "$SCRIPT_DIR/fm-build-output-lib.sh"
   teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" prune || {
     echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
     exit 1

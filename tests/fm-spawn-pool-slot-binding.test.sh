@@ -12,6 +12,10 @@
 #   2. With no unbound free copy, the spawn stops and names the owning task.
 #   3. A copy bound only by a torn-down record (teardown_at= stamped, or the
 #      record removed) is accepted exactly as before.
+#   4. A free copy whose ignored footprint exceeds FM_POOL_COPY_BUDGET_GB is
+#      pruned before it is entered; one still over budget after the prune is
+#      never handed to the new worker, and the spawn steers to a clean copy or
+#      refuses naming the bloated ones.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -193,7 +197,11 @@ new_case() {  # <name> <id> <other-id>
 
   git init --quiet -b main "$proj"
   printf 'base\n' > "$proj/README.md"
-  git -C "$proj" add README.md
+  # Ignored build output and scratch let the footprint gate cases below bloat
+  # a copy with prunable (target/) and unprunable (scratch/) content.
+  printf 'target/\nscratch/\n' > "$proj/.gitignore"
+  printf '[package]\nname = "proj"\nversion = "0.1.0"\n' > "$proj/Cargo.toml"
+  git -C "$proj" add README.md .gitignore Cargo.toml
   git -C "$proj" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial
   git clone --quiet --bare "$proj" "$dir/origin.git"
   git -C "$proj" remote add origin "file://$dir/origin.git"
@@ -372,10 +380,111 @@ test_empty_inventory_with_bound_copies_acquires_fresh() {
   pass "fm-spawn: an empty pool inventory with bound records acquires a fresh copy"
 }
 
+# --- footprint pre-condition ---------------------------------------------------
+
+bloat() {  # <copy> <ignored-subdir> <bytes>
+  mkdir -p "$1/$2"
+  head -c "$3" /dev/zero | tr '\0' x > "$1/$2/blob"
+}
+
+release_binding() {  # <case-dir> <other-id>
+  echo 'teardown_at=2026-09-11T00:00:00Z' >> "$1/home/state/$2.meta"
+}
+
+test_over_budget_free_copy_is_pruned_then_acquired() {
+  local dir id=psb-fresh-g other=psb-torn-g handout out rc
+  dir=$(new_case pruned "$id" "$other")
+  handout="$dir/pool/7/proj"
+  release_binding "$dir" "$other"
+  bloat "$handout" target 65536
+  out=$(FM_POOL_COPY_BUDGET_GB=0.00001 run_spawn "$dir" "$id" "$dir/proj" --mode no-mistakes --yolo off); rc=$?
+  expect_code 0 "$rc" "a free copy that the return prune brings under budget must be acquired"$'\n'"$out"
+  assert_absent "$handout/target" "the over-budget copy was not pruned before acquisition"
+  assert_grep 'treehouse get' "$dir/fake/keys" "a pool whose free copies all fit the budget acquires through treehouse get"
+  assert_grep "worktree=$handout" "$dir/home/state/$id.meta" "the new task's record does not name the pruned copy"
+  pass "fm-spawn: an over-budget free copy is pruned and entered once it fits the budget"
+}
+
+test_unprunable_over_budget_copy_is_skipped_for_a_clean_one() {
+  local dir id=psb-fresh-h other=psb-torn-h bloated free out rc
+  dir=$(new_case unprunable "$id" "$other")
+  bloated="$dir/pool/7/proj"
+  free="$dir/pool/3/proj"
+  release_binding "$dir" "$other"
+  bloat "$bloated" scratch 65536
+  out=$(FM_POOL_COPY_BUDGET_GB=0.00001 run_spawn "$dir" "$id" "$dir/proj" --mode no-mistakes --yolo off); rc=$?
+  expect_code 0 "$rc" "a spawn with one bloated and one clean free copy must take the clean one"$'\n'"$out"
+  assert_no_grep 'treehouse get' "$dir/fake/keys" \
+    "the pane must not run treehouse get while the pool could hand out a bloated copy"
+  assert_grep 'treehouse enter 3' "$dir/fake/keys" "the pane did not enter the clean free copy by name"
+  assert_grep "worktree=$free" "$dir/home/state/$id.meta" "the new task's record does not name the clean copy"
+  assert_contains "$out" "$bloated" "the notice must name the bloated copy it refused"
+  assert_present "$bloated/scratch/blob" "spawn removed scratch the return prune does not own"
+  pass "fm-spawn: a copy still over budget after the prune is skipped for a clean free copy"
+}
+
+test_all_free_copies_over_budget_refuses_spawn() {
+  local dir id=psb-fresh-i other=psb-torn-i seven three out rc
+  dir=$(new_case allbloated "$id" "$other")
+  seven="$dir/pool/7/proj"
+  three="$dir/pool/3/proj"
+  release_binding "$dir" "$other"
+  bloat "$seven" scratch 65536
+  bloat "$three" scratch 65536
+  out=$(FM_POOL_COPY_BUDGET_GB=0.00001 run_spawn "$dir" "$id" "$dir/proj" --mode no-mistakes --yolo off); rc=$?
+  [ "$rc" -ne 0 ] || fail "a pool with only bloated free copies must refuse the spawn"$'\n'"$out"
+  assert_contains "$out" "$seven" "the refusal must name the first bloated copy"
+  assert_contains "$out" "$three" "the refusal must name the second bloated copy"
+  assert_no_grep 'treehouse get' "$dir/fake/keys" "a refused spawn must never run treehouse get"
+  assert_no_grep 'treehouse enter' "$dir/fake/keys" "a refused spawn must not enter any copy"
+  assert_no_grep '^new-window ' "$dir/fake/tmux.log" "footprint refusal must happen before endpoint creation"
+  assert_absent "$dir/home/state/$id.meta" "a refused spawn must publish no record"
+  pass "fm-spawn: when every free copy stays over budget the spawn refuses naming them"
+}
+
+test_bound_copy_with_over_budget_free_copy_refuses() {
+  local dir id=psb-fresh-j other=psb-parked-j bound free before out rc
+  dir=$(new_case boundbloated "$id" "$other")
+  bound="$dir/pool/7/proj"
+  free="$dir/pool/3/proj"
+  before=$(git -C "$bound" rev-parse HEAD)
+  bloat "$free" scratch 65536
+  out=$(FM_POOL_COPY_BUDGET_GB=0.00001 run_spawn "$dir" "$id" "$dir/proj" --mode no-mistakes --yolo off); rc=$?
+  [ "$rc" -ne 0 ] || fail "a bound copy plus a bloated free copy must refuse"$'\n'"$out"
+  assert_contains "$out" "$other" "the refusal must name the task that still binds the copy"
+  assert_contains "$out" "$free" "the refusal must name the bloated free copy"
+  assert_no_grep 'treehouse enter' "$dir/fake/keys" "a refused spawn must not enter the bloated copy"
+  assert_bound_copy_untouched "$bound" "$other" "$before"
+  assert_absent "$dir/home/state/$id.meta" "a refused spawn must publish no record"
+  pass "fm-spawn: a bloated free copy never substitutes for a bound one"
+}
+
+test_failed_listing_refuses_spawn() {
+  local dir id=psb-failed-listing other=psb-torn-listing copy index out rc
+  dir=$(new_case failedlisting "$id" "$other")
+  release_binding "$dir" "$other"
+  for copy in "$dir/pool/7/proj" "$dir/pool/3/proj"; do
+    index=$(git -C "$copy" rev-parse --git-path index)
+    printf 'broken index\n' > "$index"
+  done
+  out=$(FM_POOL_COPY_BUDGET_GB=0.00001 run_spawn "$dir" "$id" "$dir/proj" --mode no-mistakes --yolo off); rc=$?
+  [ "$rc" -ne 0 ] || fail "spawn accepted failed ignored listings: $out"
+  assert_contains "$out" "$dir/pool/7/proj" 'refusal omitted the unmeasurable copy'
+  assert_no_grep '^new-window ' "$dir/fake/tmux.log" 'failed listing allowed endpoint creation'
+  assert_absent "$dir/home/state/$id.meta" 'failed listing published a task record'
+  pass 'spawn refuses free copies with failed ignored listings'
+}
+
+test_failed_listing_refuses_spawn
+
 test_bound_by_live_record_steers_to_free_copy
 test_bound_by_live_record_with_no_free_copy_refuses
 test_unreadable_inventory_with_bound_copies_refuses
 test_bound_only_by_torn_down_record_is_accepted
 test_empty_inventory_with_bound_copies_acquires_fresh
+test_over_budget_free_copy_is_pruned_then_acquired
+test_unprunable_over_budget_copy_is_skipped_for_a_clean_one
+test_all_free_copies_over_budget_refuses_spawn
+test_bound_copy_with_over_budget_free_copy_refuses
 
 echo "# all fm-spawn-pool-slot-binding tests passed"

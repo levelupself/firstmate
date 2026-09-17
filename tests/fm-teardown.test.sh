@@ -640,6 +640,194 @@ SH
   done
 }
 
+# Footprint post-condition: after the return prune, a copy whose ignored
+# footprint still exceeds FM_POOL_COPY_BUDGET_GB is neither returned to the
+# pool nor retired; the refusal names the largest paths and leaves every
+# record intact. --footprint-override --reason <text> proceeds and logs why.
+make_footprint_case() {  # <name> <ignored-blob-bytes> [cargo]
+  local name=$1 bytes=$2 cargo=${3:-} case_dir
+  case_dir=$(make_case "footprint-$name")
+  write_meta "$case_dir" local-only ship
+  printf 'target/\nscratch/\n' > "$case_dir/wt/.gitignore"
+  [ -z "$cargo" ] || touch "$case_dir/wt/Cargo.toml"
+  git -C "$case_dir/wt" add .
+  git -C "$case_dir/wt" commit -qm 'project manifest'
+  add_fork_with_pushed_branch "$case_dir"
+  if [ -n "$cargo" ]; then
+    mkdir "$case_dir/wt/target"
+    head -c "$bytes" /dev/zero | tr '\0' x > "$case_dir/wt/target/build-blob"
+  else
+    mkdir "$case_dir/wt/scratch"
+    head -c "$bytes" /dev/zero | tr '\0' x > "$case_dir/wt/scratch/blob"
+  fi
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_FAKE_TREEHOUSE_LOG"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+  : > "$case_dir/treehouse.log"
+  printf '%s\n' "$case_dir"
+}
+
+run_footprint_teardown() {  # <case-dir> [args...]
+  local case_dir=$1; shift
+  FM_FAKE_TREEHOUSE_LOG="$case_dir/treehouse.log" FM_POOL_COPY_BUDGET_GB=0.00001 \
+    run_teardown "$case_dir" "$@" > "$case_dir/stdout" 2> "$case_dir/stderr"
+}
+
+test_footprint_gate_refuses_over_budget_copy() {
+  local case_dir rc=0 err
+  case_dir=$(make_footprint_case over 65536)
+  run_footprint_teardown "$case_dir" || rc=$?
+  err=$(cat "$case_dir/stderr")
+  [ "$rc" -ne 0 ] || fail "an over-budget copy was returned to the pool"$'\n'"$err"
+  assert_contains "$err" 'REFUSED: copy over footprint budget' 'refusal shape missing'
+  assert_contains "$err" "$case_dir/wt/scratch/blob" 'refusal did not name the offending path'
+  assert_present "$case_dir/wt/scratch/blob" 'refused teardown removed ignored scratch'
+  assert_present "$case_dir/state/task-x1.meta" 'refused teardown retired the task record'
+  assert_no_grep '^teardown_at=' "$case_dir/state/task-x1.meta" \
+    'refused teardown stamped teardown_at on a copy it kept out of the pool'
+  assert_no_grep 'return' "$case_dir/treehouse.log" 'refused teardown still returned the copy'
+  pass 'footprint gate: an over-budget copy is refused with its largest paths and every record intact'
+}
+
+test_footprint_gate_retires_under_budget_copy() {
+  local case_dir rc=0
+  case_dir=$(make_footprint_case under 1024)
+  run_footprint_teardown "$case_dir" || rc=$?
+  expect_code 0 "$rc" "an under-budget copy must be returned"$'\n'"$(cat "$case_dir/stderr")"
+  assert_absent "$case_dir/state/task-x1.meta" 'under-budget teardown left the task record'
+  assert_grep 'return --force' "$case_dir/treehouse.log" 'under-budget copy was not returned'
+  pass 'footprint gate: an under-budget copy is returned and its record retired'
+}
+
+test_footprint_gate_measures_after_return_prune() {
+  local case_dir rc=0
+  case_dir=$(make_footprint_case pruned 65536 cargo)
+  run_footprint_teardown "$case_dir" || rc=$?
+  expect_code 0 "$rc" "prunable build output must not count against the budget"$'\n'"$(cat "$case_dir/stderr")"
+  assert_absent "$case_dir/wt/target" 'return prune did not run before the footprint measurement'
+  assert_absent "$case_dir/state/task-x1.meta" 'pruned copy was not retired'
+  pass 'footprint gate: the return prune runs before the measurement'
+}
+
+test_footprint_override_proceeds_and_logs_reason() {
+  local case_dir rc=0
+  case_dir=$(make_footprint_case override 65536)
+  run_footprint_teardown "$case_dir" --footprint-override --reason 'captain keeps the warm cache' || rc=$?
+  expect_code 0 "$rc" "the override must return the copy"$'\n'"$(cat "$case_dir/stderr")"
+  assert_absent "$case_dir/state/task-x1.meta" 'override did not retire the task record'
+  assert_grep 'return --force' "$case_dir/treehouse.log" 'override did not return the copy'
+  assert_grep 'footprint-override' "$case_dir/state/teardown.log" 'override was not logged'
+  assert_grep 'captain keeps the warm cache' "$case_dir/state/teardown.log" 'override reason was not logged'
+  assert_grep 'task=task-x1' "$case_dir/state/teardown.log" 'override log does not name the task'
+  pass 'footprint gate: --footprint-override --reason proceeds and records the reason'
+
+  case_dir=$(make_footprint_case override-noreason 65536)
+  rc=0
+  run_footprint_teardown "$case_dir" --footprint-override || rc=$?
+  [ "$rc" -ne 0 ] || fail 'an override without a reason was accepted'
+  assert_present "$case_dir/state/task-x1.meta" 'a rejected override retired the task record'
+  assert_no_grep 'return' "$case_dir/treehouse.log" 'a rejected override returned the copy'
+  pass 'footprint gate: --footprint-override without --reason is rejected before any change'
+}
+
+test_footprint_failed_listing_refuses() {
+  local case_dir index rc=0 output
+  case_dir=$(make_footprint_case failed-listing 1024)
+  index=$(git -C "$case_dir/wt" rev-parse --git-path index)
+  printf 'broken index\n' > "$index"
+  output=$("$ROOT/bin/fm-pool-footprint.sh" measure "$case_dir/wt" 2> "$case_dir/measure.err") || rc=$?
+  [ "$rc" -ne 0 ] && [ -z "$output" ] || fail 'failed listing was accepted as a zero footprint'
+  rc=0
+  "$ROOT/bin/fm-pool-footprint.sh" report "$case_dir/wt" > "$case_dir/report" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail 'report accepted a failed listing'
+  rc=0
+  touch "$index.lock"
+  run_footprint_teardown "$case_dir" --force || rc=$?
+  [ "$rc" -ne 0 ] || fail 'forced teardown accepted a corrupt index'
+  assert_contains "$(cat "$case_dir/stderr")" 'cannot measure' 'measurement failure did not reach teardown'
+  assert_present "$case_dir/state/task-x1.meta" 'measurement failure retired the record'
+  assert_no_grep 'return' "$case_dir/treehouse.log" 'measurement failure returned the copy'
+  pass 'failed ignored listing refuses measurement, reporting, and forced teardown'
+}
+
+test_footprint_literal_paths() {
+  local case_dir path output expected total baseline escaped link_size rc=0
+  case_dir=$(make_footprint_case literal-paths 1024)
+  baseline=$("$ROOT/bin/fm-pool-footprint.sh" measure "$case_dir/wt")
+  path=$'scratch/é "quote"\tback\\slash\n9999999'
+  mv "$case_dir/wt/scratch/blob" "$case_dir/wt/$path"
+  total=$("$ROOT/bin/fm-pool-footprint.sh" measure "$case_dir/wt") || fail 'literal child path could not be measured'
+  [ "$baseline" = "$total" ] || fail 'newline in a filename changed its measured size'
+  output=$("$ROOT/bin/fm-pool-footprint.sh" report "$case_dir/wt") || fail 'literal child path could not be reported'
+  printf -v escaped '%q' "$case_dir/wt/$path"
+  assert_contains "$output" "$escaped" 'report lost the literal child path'
+  path=$'scratch-é\t"quoted"\n7777777'
+  mv "$case_dir/wt/scratch" "$case_dir/wt/$path"
+  printf 'scratch*/\n' >> "$case_dir/wt/.gitignore"
+  git -C "$case_dir/wt" add .gitignore
+  git -C "$case_dir/wt" commit -qm 'ignore literal scratch names'
+  expected=$(du -sk "$case_dir/wt/$path")
+  expected=${expected%%$'\t'*}
+  total=$("$ROOT/bin/fm-pool-footprint.sh" measure "$case_dir/wt") || fail 'literal Git entry could not be measured'
+  [ "$total" -eq "$((expected * 1024))" ] || fail 'literal Git entry has the wrong footprint'
+  ln -s "$case_dir/wt/$path" "$case_dir/wt/scratch-link"
+  printf 'scratch-link\n' >> "$case_dir/wt/.gitignore"
+  link_size=$(du -sk "$case_dir/wt/scratch-link")
+  link_size=${link_size%%$'\t'*}
+  total=$("$ROOT/bin/fm-pool-footprint.sh" measure "$case_dir/wt") || fail 'symlink entry could not be measured'
+  [ "$total" -eq "$(((expected + link_size) * 1024))" ] || fail 'measurement followed a symlink'
+  rm "$case_dir/wt/scratch-link"
+  run_footprint_teardown "$case_dir" --force || rc=$?
+  expect_code 0 "$rc" "literal under-budget paths blocked teardown: $(cat "$case_dir/stderr")"
+  pass 'measurement and reports preserve literal Git and child paths without following symlinks'
+}
+
+test_footprint_forced_descendants() {
+  local case_dir home child_state child_wt nested rc
+  for nested in no yes; do
+    case_dir=$(make_footprint_case "child-$nested" 1024)
+    write_meta "$case_dir" local-only secondmate
+    configure_secondmate_with_tmux_children "$case_dir"
+    home="$case_dir/secondmate-home"
+    child_state="$home/state"
+    child_wt="$case_dir/child-a-wt"
+    if [ "$nested" = yes ]; then
+      mkdir -p "$home/nested/state" "$home/nested/data" "$home/nested/config" "$home/nested/projects"
+      printf '%s\n' nested-sm > "$home/nested/.fm-secondmate-home"
+      mv "$home/state/child-a.meta" "$home/state/child-a.status" "$home/nested/state/"
+      child_state="$home/nested/state"
+      fm_write_meta "$home/state/nested-sm.meta" \
+        "window=firstmate:fm-nested-sm" "endpoint_task_id=nested-sm" \
+        "worktree=$case_dir/wt" "project=$case_dir/project" \
+        "kind=secondmate" "mode=local-only" "home=$home/nested"
+    fi
+    printf 'scratch/\n' > "$child_wt/.gitignore"
+    mkdir -p "$child_wt/scratch"
+    head -c 65536 /dev/zero > "$child_wt/scratch/blob"
+    rc=0
+    run_footprint_teardown "$case_dir" --force || rc=$?
+    [ "$rc" -ne 0 ] || fail 'forced retirement returned an over-budget descendant'
+    assert_contains "$(cat "$case_dir/stderr")" 'REFUSED: copy over footprint budget' 'descendant bypassed footprint gate'
+    assert_present "$child_wt/scratch/blob" 'refusal fell through to child deletion'
+    assert_present "$child_state/child-a.meta" 'refusal retired child metadata'
+    assert_present "$child_state/child-a.status" 'refusal retired child status'
+    assert_present "$case_dir/state/task-x1.meta" 'refusal retired parent metadata'
+    assert_no_grep "return --force $child_wt" "$case_dir/treehouse.log" 'refused child was returned'
+    if [ "$nested" = yes ]; then
+      assert_present "$home/state/nested-sm.meta" 'refusal retired nested parent metadata'
+    fi
+    rc=0
+    run_footprint_teardown "$case_dir" --force --footprint-override --reason 'retain descendant cache' || rc=$?
+    expect_code 0 "$rc" "descendant override failed: $(cat "$case_dir/stderr")"
+    assert_grep "return --force $child_wt" "$case_dir/treehouse.log" 'override did not return descendant'
+    assert_grep 'retain descendant cache' "$case_dir/state/teardown.log" 'descendant override reason was not logged'
+  done
+  pass 'forced retirement gates direct and nested descendants and preserves records on refusal'
+}
+
 test_local_only_fork_remote_allows() {
   local case_dir rc
   case_dir=$(make_case fork-allow)
@@ -3399,6 +3587,16 @@ EOF
   pass "the run abort and the leaked-process reap both complete before the destructive worktree return"
 }
 
+if [ "${1:-}" = --footprint ]; then
+  test_footprint_gate_refuses_over_budget_copy
+  test_footprint_gate_retires_under_budget_copy
+  test_footprint_gate_measures_after_return_prune
+  test_footprint_override_proceeds_and_logs_reason
+  test_footprint_failed_listing_refuses
+  test_footprint_literal_paths
+  test_footprint_forced_descendants
+  exit 0
+fi
 if [ "${1:-}" = --build-output ]; then
   test_build_output_pruning
   test_stale_index_lock_cleanup_rechecks_dirty_worktree
@@ -3406,6 +3604,13 @@ if [ "${1:-}" = --build-output ]; then
   exit 0
 fi
 test_build_output_pruning
+test_footprint_gate_refuses_over_budget_copy
+test_footprint_gate_retires_under_budget_copy
+test_footprint_gate_measures_after_return_prune
+test_footprint_override_proceeds_and_logs_reason
+test_footprint_failed_listing_refuses
+test_footprint_literal_paths
+test_footprint_forced_descendants
 
 test_local_only_fork_remote_allows
 test_teardown_preserves_open_pr_poll_when_compatible
