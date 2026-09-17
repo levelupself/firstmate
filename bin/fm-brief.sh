@@ -490,7 +490,7 @@ $SEARCH_GUIDANCE
    treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
    For a long foreground job whose output goes to a file instead of the screen (a full test suite,
    a long build), put the file it keeps writing on your \`working:\` line as a whole-word
-   \`long-run=<absolute path>\` token: while that file keeps changing, firstmate treats your quiet
+   \`$FM_CLASSIFY_LONG_RUN_TOKEN=<absolute path>\` token: while that file keeps changing, firstmate treats your quiet
    pane as alive instead of a possible wedge; once it stops changing, the usual wedge check resumes.
 5. $OBSTACLE_RULE
 6. If a decision belongs to a human (product choices, destructive actions),
@@ -657,7 +657,7 @@ $SUITE_GUIDANCE
    cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
    For a long foreground job whose output goes to a file instead of the screen (a full test suite,
    a long build), put the file it keeps writing on your \`working:\` line as a whole-word
-   \`long-run=<absolute path>\` token, e.g. \`working: full suite under way, ~2h long-run=/tmp/suite.log\`:
+   \`$FM_CLASSIFY_LONG_RUN_TOKEN=<absolute path>\` token, e.g. \`working: full suite under way, ~2h $FM_CLASSIFY_LONG_RUN_TOKEN=/tmp/suite.log\`:
    while that file keeps changing, firstmate treats your quiet pane as alive instead of a possible
    wedge; once it stops changing, or if it is never written, the usual wedge check resumes.
 7. $OBSTACLE_RULE

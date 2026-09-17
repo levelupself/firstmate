@@ -1703,6 +1703,17 @@ test_status_long_run_artifact_classifier() {
   got=$(status_long_run_artifact 'working [key=suite]: long-run=/var/log/run.log started') \
     || fail "long-run token after a keyed working verb not recognized"
   [ "$got" = /var/log/run.log ] || fail "keyed long-run artifact path not extracted: $got"
+  got=$(status_long_run_artifact 'working: suite running long-run=/tmp/suite.log, ~2h') \
+    || fail "long-run token followed by a comma not recognized"
+  [ "$got" = /tmp/suite.log ] || fail "trailing comma was not stripped from the artifact path: $got"
+  got=$(status_long_run_artifact 'working: suite running; log at long-run=/tmp/suite.log.') \
+    || fail "long-run token ending a sentence not recognized"
+  [ "$got" = /tmp/suite.log ] || fail "trailing period was not stripped from the artifact path: $got"
+  got=$(status_long_run_artifact 'working: long-run=/tmp/suite.log; ETA 2h') \
+    || fail "long-run token followed by a semicolon not recognized"
+  [ "$got" = /tmp/suite.log ] || fail "trailing semicolon was not stripped from the artifact path: $got"
+  status_long_run_artifact 'working: long-run=/. hmm' \
+    && fail "a token whose path is only punctuation yielded an artifact"
   status_long_run_artifact 'working: see xlong-run=/tmp/x for the run' \
     && fail "token embedded in a longer word false-matched"
   status_long_run_artifact 'working: long-run=relative/path.log' \
@@ -1771,8 +1782,28 @@ test_busy_pane_declared_long_run_with_live_artifact_collapses_wedge_ladder() {
   pass "a busy worker past the turn-age bound whose declared long-run artifact is still being written is absorbed and its wedge ladder collapses"
 }
 
+# Priming round shared by the no-relief cases: with the wedge timer absent, the
+# first poll past the bound starts it and records the triage label explaining
+# why the declaration gave no relief (mirroring the ladder tests above), then
+# the watcher is stopped and its interrupted cycle acknowledged.
+long_run_prime_no_relief() {  # <dir> <window> <key>
+  local dir=$1 window=$2 key=$3 state pid
+  state="$dir/state"
+  rm -f "$state/.stale-since-$key"
+  PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
+    FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$dir/prime.out" &
+  pid=$!
+  if ! wait_numeric_file "$state/.stale-since-$key" 100; then
+    reap "$pid"; fail "the no-relief long-run priming round did not start the wedge timer: $(cat "$dir/prime.out")"
+  fi
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional long-run priming stop"
+  [ ! -s "$dir/prime.out" ] || fail "the no-relief long-run priming round printed a wake reason: $(cat "$dir/prime.out")"
+}
+
 test_busy_pane_declared_long_run_with_quiet_artifact_still_escalates() {
-  local dir state fakebin out window key artifact pid
+  local dir state fakebin out window key artifact pid triage
   window="test:fm-busy-long-run-quiet"
   artifact="$TMP_ROOT/long-run-quiet.log"
   printf 'ok - 1\n' > "$artifact"
@@ -1783,7 +1814,15 @@ test_busy_pane_declared_long_run_with_quiet_artifact_still_escalates() {
   dir=$LR_DIR
   state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
   key=$(printf '%s' "$window" | tr ':/.' '___')
+  triage="$state/.watch-triage.log"
 
+  long_run_prime_no_relief "$dir" "$window" "$key"
+  grep -F "declared long-run artifact $artifact quiet" "$triage" >/dev/null \
+    || fail "the triage log does not name the quiet declared artifact: $(cat "$triage" 2>/dev/null)"
+  grep -E "declared long-run artifact [^ ]+ quiet [0-9]+s" "$triage" >/dev/null \
+    || fail "the triage log does not record how long the declared artifact has been quiet: $(cat "$triage" 2>/dev/null)"
+
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
     FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
@@ -1791,24 +1830,31 @@ test_busy_pane_declared_long_run_with_quiet_artifact_still_escalates() {
   wait_for_exit "$pid" 100 || fail "a declared long-run artifact that stopped changing suppressed the wedge escalation: $(cat "$out")"
   grep -F "stale: $window" "$out" >/dev/null || fail "quiet-artifact escalation did not print the stale wake"
   grep -F "escalation 3" "$out" >/dev/null || fail "quiet-artifact escalation did not continue the existing ladder: $(cat "$out")"
-  pass "a declared long-run artifact that stopped changing gives no relief: the busy turn-age bound escalates exactly as before"
+  grep -F "declared long-run artifact" "$out" >/dev/null && fail "the declared artifact leaked into the wake reason: $(cat "$out")"
+  pass "a declared long-run artifact that stopped changing gives no relief: the busy turn-age bound escalates exactly as before and the triage log names the quiet artifact"
 }
 
 test_busy_pane_declared_long_run_with_missing_artifact_still_escalates() {
-  local dir state fakebin out window pid
+  local dir state fakebin out window key pid
   window="test:fm-busy-long-run-missing"
   long_run_case busy-long-run-missing busy-long-run-missing "$window" \
     "working: full suite under way; long-run=$TMP_ROOT/never-created.log"
   dir=$LR_DIR
   state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
 
+  long_run_prime_no_relief "$dir" "$window" "$key"
+  grep -F "declared long-run artifact $TMP_ROOT/never-created.log missing" "$state/.watch-triage.log" >/dev/null \
+    || fail "the triage log does not name the missing declared artifact: $(cat "$state/.watch-triage.log" 2>/dev/null)"
+
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
     FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_for_exit "$pid" 100 || fail "a declared long-run artifact that does not exist suppressed the wedge escalation: $(cat "$out")"
   grep -F "possible wedge" "$out" >/dev/null || fail "missing-artifact escalation did not flag a possible wedge"
-  pass "a long-run declaration naming a file that was never written is an assertion without evidence and gives no relief"
+  pass "a long-run declaration naming a file that was never written is an assertion without evidence and gives no relief, and the triage log names it as missing"
 }
 
 test_busy_pane_long_run_declaration_superseded_by_later_status_line() {

@@ -352,12 +352,14 @@ busy_turn_over_age() {  # <task>
 # the evidence; a missing artifact, or one quiet for a full wedge threshold,
 # fails this exactly as if nothing had been declared, so a wedged job whose log
 # stopped growing escalates no later than one wedge threshold after an
-# undeclared one would. Sets LONG_RUN_ARTIFACT and LONG_RUN_AGE for the caller's
-# triage line. Cheap (one status-file tail and one stat), so the busy-bound path
-# may evaluate it every poll.
+# undeclared one would. Sets LONG_RUN_ARTIFACT (empty when nothing is declared)
+# and LONG_RUN_AGE (empty when the artifact is missing) for the caller's triage
+# line. Cheap (one status-file tail and one stat), so the busy-bound path may
+# evaluate it every poll.
 long_run_alive() {  # <task>
   local task=$1
   LONG_RUN_ARTIFACT=$(status_long_run_artifact "$(last_status_line "$STATE/$task.status")") || return 1
+  LONG_RUN_AGE=''
   [ -f "$LONG_RUN_ARTIFACT" ] || return 1
   LONG_RUN_AGE=$(age_of "$LONG_RUN_ARTIFACT")
   [ "$LONG_RUN_AGE" -lt "$STALE_ESCALATE_SECS" ]
@@ -368,11 +370,22 @@ long_run_alive() {  # <task>
 # BUSY_TURN_MAX_SECS with no completed turn routes through wedge_timer_check
 # unless its declared long-run artifact is provably still being written; every
 # other busy or not-yet-stable pane resets the pending escalation bookkeeping.
+# A declaration that gave no relief is named in the wedge timer's triage label
+# (missing, or quiet for how long) so the triage log tells a mis-declared worker
+# from an undeclared one; the wake reason itself is unchanged.
 busy_bound_check() {  # <window> <task> <busy-now> <since-file> <escalation-count-file>
-  local win=$1 task=$2 busy=$3 ssf=$4 ewf=$5
+  local win=$1 task=$2 busy=$3 ssf=$4 ewf=$5 label
   if [ "$busy" -eq 0 ] && busy_turn_over_age "$task"; then
     if ! long_run_alive "$task"; then
-      wedge_timer_check "$win" "$ssf" "busy (no completed turn)" "$ewf"
+      label="busy (no completed turn)"
+      if [ -n "$LONG_RUN_ARTIFACT" ]; then
+        if [ -n "$LONG_RUN_AGE" ]; then
+          label="busy (no completed turn; declared long-run artifact $LONG_RUN_ARTIFACT quiet ${LONG_RUN_AGE}s)"
+        else
+          label="busy (no completed turn; declared long-run artifact $LONG_RUN_ARTIFACT missing)"
+        fi
+      fi
+      wedge_timer_check "$win" "$ssf" "$label" "$ewf"
       return 0
     fi
     if [ -e "$ssf" ] || [ -e "$ewf" ]; then
