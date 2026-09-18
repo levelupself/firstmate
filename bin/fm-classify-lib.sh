@@ -61,6 +61,20 @@ FM_CLASSIFY_CAPTAIN_RE_DEFAULT='done:|needs-decision:|blocked:|failed:|PR ready|
 # drift between the two consumers. FM_CLASSIFY_PAUSED_VERB overrides it.
 FM_CLASSIFY_PAUSED_VERB_DEFAULT='paused'
 
+# The declared long-foreground-job token. A crew whose latest status line is a
+# nonterminal working: note carrying, anywhere in its note, the whole-word token
+#   long-run=<absolute path>
+# names the file its long foreground job (a full test suite, a long build) keeps
+# writing while its screen stays quiet. The token is a POINTER TO EVIDENCE, not an
+# assertion: the watcher's busy-turn bound (bin/fm-watch.sh long_run_alive) relaxes
+# only while that file is actually still changing, so a job whose artifact stops
+# growing, or that names a file never written, escalates exactly as an undeclared
+# one. Only the working verb carries it, and only the LAST status line counts: a
+# later line without the token supersedes the declaration. Paths containing
+# whitespace are unsupported (the token must be one word). This constant is the one
+# definition of the token; the ship and scout brief scaffolds teach it to workers.
+FM_CLASSIFY_LONG_RUN_TOKEN='long-run'
+
 # Bounded re-surface cadence for a declared pause or a dead-agent captain hold.
 # Far longer than the wedge threshold (FM_STALE_ESCALATE_SECS, default 240s), it
 # avoids nagging a deliberate wait while ensuring a forgotten hold cannot rot
@@ -142,6 +156,39 @@ status_is_paused_or_captain_held() {  # <status-line>
   [ -n "$line" ] || return 1
   verb=$(status_line_verb "$line")
   [ "$verb" = "${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}" ]
+}
+
+# Print the artifact path a working: status line declares with the long-run=<path>
+# token (FM_CLASSIFY_LONG_RUN_TOKEN); 1 with no output when the line is not a
+# working: line, carries no whole-word token, or names a relative path. Trailing
+# prose punctuation (, ; . :) after the path is not part of it, so a declaration
+# written mid-sentence still names the file. A pure read of the line: liveness of
+# the named file is the watcher's judgement, never this parser's.
+status_long_run_artifact() {  # <status-line> -> declared absolute path
+  local line=$1 note word path
+  [ -n "$line" ] || return 1
+  [ "$(status_line_verb "$line")" = working ] || return 1
+  note=$(status_line_note "$line")
+  while [ -n "$note" ]; do
+    note=${note#"${note%%[![:space:]]*}"}
+    word=${note%%[[:space:]]*}
+    note=${note#"$word"}
+    case "$word" in
+      "$FM_CLASSIFY_LONG_RUN_TOKEN"=/?*)
+        path=${word#*=}
+        while :; do
+          case "$path" in
+            *[,\;.:]) path=${path%?} ;;
+            *) break ;;
+          esac
+        done
+        [ "$path" != / ] || return 1
+        printf '%s' "$path"
+        return 0
+        ;;
+    esac
+  done
+  return 1
 }
 
 # --- durable keyed decisions ------------------------------------------------

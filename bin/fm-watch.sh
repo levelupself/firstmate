@@ -40,6 +40,10 @@
 #                          count, and demand-deep-inspection marker, for human
 #                          inspection only - never an automatic interrupt,
 #                          signal, or restart of the worker or its tool process.
+#                          A busy pane whose latest working: line declares a
+#                          long-run=<path> artifact stays off that timer only
+#                          while the file itself keeps changing within
+#                          STALE_ESCALATE_SECS (long_run_alive).
 #   check: <script>: <out> authenticated check output, always actionable
 #   check: process-event result captured: <keys>
 #                          a durably captured process-to-event result is queued
@@ -172,6 +176,12 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # an automatic interrupt, signal, or restart. A completed turn touches
 # turn-ended and resets the age. Set generously above any legitimate interval
 # between completed turns, including long tool calls, builds, or test runs.
+# A worker whose long foreground job legitimately outlives this bound (a full
+# test suite writing to a log for hours) declares the file that job keeps
+# writing on its latest working: line (fm-classify-lib.sh's long-run=<path>
+# token); long_run_alive below then keeps the pane off the wedge timer for
+# exactly as long as that file keeps changing within STALE_ESCALATE_SECS, so
+# relief rests on the artifact's own mtime, never on the declaration.
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated.
@@ -334,6 +344,55 @@ busy_turn_over_age() {  # <task>
   f="$STATE/$task.turn-ended"
   [ -e "$f" ] || f="$STATE/$task.meta"
   [ "$(age_of "$f")" -ge "$BUSY_TURN_MAX_SECS" ]
+}
+
+# long_run_alive: 0 iff <task>'s latest status line declares a long foreground
+# job's artifact (fm-classify-lib.sh status_long_run_artifact) AND that file was
+# modified within the last STALE_ESCALATE_SECS. The declaration only points at
+# the evidence; a missing artifact, or one quiet for a full wedge threshold,
+# fails this exactly as if nothing had been declared, so a wedged job whose log
+# stopped growing escalates no later than one wedge threshold after an
+# undeclared one would. Sets LONG_RUN_ARTIFACT (empty when nothing is declared)
+# and LONG_RUN_AGE (empty when the artifact is missing) for the caller's triage
+# line. Cheap (one status-file tail and one stat), so the busy-bound path may
+# evaluate it every poll.
+long_run_alive() {  # <task>
+  local task=$1
+  LONG_RUN_ARTIFACT=$(status_long_run_artifact "$(last_status_line "$STATE/$task.status")") || return 1
+  LONG_RUN_AGE=''
+  [ -f "$LONG_RUN_ARTIFACT" ] || return 1
+  LONG_RUN_AGE=$(age_of "$LONG_RUN_ARTIFACT")
+  [ "$LONG_RUN_AGE" -lt "$STALE_ESCALATE_SECS" ]
+}
+
+# busy_bound_check: the one busy-pane bound decision, shared by both the
+# stable-hash and new-hash branches of the stale loop. A busy pane past
+# BUSY_TURN_MAX_SECS with no completed turn routes through wedge_timer_check
+# unless its declared long-run artifact is provably still being written; every
+# other busy or not-yet-stable pane resets the pending escalation bookkeeping.
+# A declaration that gave no relief is named in the wedge timer's triage label
+# (missing, or quiet for how long) so the triage log tells a mis-declared worker
+# from an undeclared one; the wake reason itself is unchanged.
+busy_bound_check() {  # <window> <task> <busy-now> <since-file> <escalation-count-file>
+  local win=$1 task=$2 busy=$3 ssf=$4 ewf=$5 label
+  if [ "$busy" -eq 0 ] && busy_turn_over_age "$task"; then
+    if ! long_run_alive "$task"; then
+      label="busy (no completed turn)"
+      if [ -n "$LONG_RUN_ARTIFACT" ]; then
+        if [ -n "$LONG_RUN_AGE" ]; then
+          label="busy (no completed turn; declared long-run artifact $LONG_RUN_ARTIFACT quiet ${LONG_RUN_AGE}s)"
+        else
+          label="busy (no completed turn; declared long-run artifact $LONG_RUN_ARTIFACT missing)"
+        fi
+      fi
+      wedge_timer_check "$win" "$ssf" "$label" "$ewf"
+      return 0
+    fi
+    if [ -e "$ssf" ] || [ -e "$ewf" ]; then
+      triage_log "absorbed busy (declared long run, $LONG_RUN_ARTIFACT written ${LONG_RUN_AGE}s ago) timer reset: $win"
+    fi
+  fi
+  rm -f "$ssf" "$ewf"
 }
 
 # Absorb a stale pane under a declared external-wait pause (paused:) or a
@@ -1183,13 +1242,10 @@ EOF
         fi
       else
         # Pane busy or not yet stably stale: reset pending escalation bookkeeping,
-        # unless a genuinely busy pane has gone too long with no completed turn -
-        # then route it through the same wedge timer instead of erasing it.
-        if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
-          wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf"
-        else
-          rm -f "$ssf" "$ewf"
-        fi
+        # unless a genuinely busy pane has gone too long with no completed turn
+        # and shows no live declared long-run artifact - then route it through
+        # the same wedge timer instead of erasing it.
+        busy_bound_check "$w" "$task" "$busy_now" "$ssf" "$ewf"
         if [ -e "$pf" ] && { [ "$n" -ge 2 ] || ! status_is_paused_or_captain_held "$(last_status_line "$STATE/$(window_to_task "$w" "$STATE").status")"; }; then
           clear_pause_tracking "$w"
         fi
@@ -1197,11 +1253,7 @@ EOF
     else
       printf '%s' "$h" > "$hf"
       echo 0 > "$cf"
-      if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
-        wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf"
-      else
-        rm -f "$ssf" "$ewf"
-      fi
+      busy_bound_check "$w" "$task" "$busy_now" "$ssf" "$ewf"
       task=$(window_to_task "$w" "$STATE")
       if ! afk_present && status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")" && [ "$busy_now" -ne 0 ]; then
         case "$(pause_state_class "$w" "$task")" in
