@@ -44,10 +44,27 @@
 # so the failure is loud. A live cycle already present means re-arm attaches - do
 # not start a second watcher.
 #
+# Confirmation budget: a fresh child must claim the lock and beat within
+# FM_ARM_CONFIRM_TIMEOUT seconds, and an explicit value is exact. When it is
+# unset, Git Bash/MSYS keeps a flat 30s because its fork cost dominates the
+# watcher's required pre-lock migration, while every other host starts from 10s
+# and scales with load, because a child forked while the run queue is several
+# times deeper than the core count can take far longer than 10s to reach its
+# first beat even with nothing holding the lock: the default is 10s multiplied
+# by the one-minute load average over the online core count, rounded down,
+# never below 10s and never above 45s. The load average is read once, at the
+# attempt, from FM_ARM_LOADAVG_PATH (default /proc/loadavg) and the core count
+# from FM_ARM_NPROC (default nproc or getconf _NPROCESSORS_ONLN); a host where
+# either is unreadable keeps the flat 10s. Adapters that bound an arm attempt
+# with their own readiness timeout must stay above the 45s cap plus the one
+# rounding second the confirmation loop adds.
+#
 # Every observed watcher cycle appends one tab-separated lifecycle record to
 # state/.watch-cycle-exits.log. The arm layer owns that bounded ledger; it records
 # arm/watcher identities, timestamps, exit/signal classification, beacon age,
-# lock identity before and after close, and successor disposition. The separate
+# lock identity before and after close, the confirmation budget this arm used
+# with the one-minute load average read at the attempt, and successor
+# disposition. The separate
 # state/.watch-triage.log remains exclusively the watcher's absorbed-wake debug
 # log and is never written here.
 #
@@ -71,14 +88,46 @@ BEAT="$STATE/.last-watcher-beat"
 GRACE=${FM_GUARD_GRACE:-300}
 # How long to wait for a freshly forked watcher to acquire the lock and beat,
 # not counting time a PR check migration holds the watcher lock (see the
-# confirmation loop). Git Bash/MSYS pays a much higher fork cost while the
-# watcher completes its required pre-lock migration, so its bounded default
-# covers that cold start.
+# confirmation loop). The header's "Confirmation budget" paragraph owns the
+# load-scaling rule these helpers implement.
 case "${OSTYPE:-}" in
-  msys*|mingw*|cygwin*) ARM_CONFIRM_DEFAULT=30 ;;
-  *) ARM_CONFIRM_DEFAULT=10 ;;
+  msys*|mingw*|cygwin*) ARM_CONFIRM_DEFAULT=30; ARM_CONFIRM_LOAD_SCALED=0 ;;
+  *) ARM_CONFIRM_DEFAULT=10; ARM_CONFIRM_LOAD_SCALED=1 ;;
 esac
-CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-$ARM_CONFIRM_DEFAULT}
+ARM_CONFIRM_LOADED_MAX=45
+# The one-minute load average as printed by the host, or "none".
+arm_load1() {
+  local path=${FM_ARM_LOADAVG_PATH:-/proc/loadavg} load
+  load=$(cut -d' ' -f1 "$path" 2>/dev/null | head -n 1)
+  case "$load" in
+    ''|*[!0-9.]*|.|*.*.*) printf 'none' ;;
+    *) printf '%s' "$load" ;;
+  esac
+}
+arm_nproc() {
+  local n=${FM_ARM_NPROC:-}
+  [ -n "$n" ] || n=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+  case "$n" in
+    ''|*[!0-9]*|0) printf '' ;;
+    *) printf '%s' "$n" ;;
+  esac
+}
+arm_confirm_default() {
+  local load1=$1 cores whole budget
+  [ "$ARM_CONFIRM_LOAD_SCALED" -eq 1 ] || { printf '%s' "$ARM_CONFIRM_DEFAULT"; return; }
+  cores=$(arm_nproc)
+  if [ "$load1" = none ] || [ -z "$cores" ]; then
+    printf '%s' "$ARM_CONFIRM_DEFAULT"
+    return
+  fi
+  whole=${load1%%.*}
+  budget=$(( ARM_CONFIRM_DEFAULT * whole / cores ))
+  [ "$budget" -ge "$ARM_CONFIRM_DEFAULT" ] || budget=$ARM_CONFIRM_DEFAULT
+  [ "$budget" -le "$ARM_CONFIRM_LOADED_MAX" ] || budget=$ARM_CONFIRM_LOADED_MAX
+  printf '%s' "$budget"
+}
+CONFIRM_LOAD1=$(arm_load1)
+CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-$(arm_confirm_default "$CONFIRM_LOAD1")}
 # Poll interval while attached to an existing healthy watcher.
 ATTACH_POLL=${FM_ARM_ATTACH_POLL:-0.5}
 CYCLE_LOG="$STATE/.watch-cycle-exits.log"
@@ -153,7 +202,7 @@ cycle_log_append() {
     sleep 0.02
     i=$((i + 1))
   done
-  printf 'arm_pid=%s\twatcher_pid=%s\torigin=%s\tstarted_at=%s\tended_at=%s\texit_code=%s\tsignal=%s\treason=%s\tbeacon_age=%s\tlock_before=%s\tlock_after=%s\tsuccessor=%s\n' \
+  printf 'arm_pid=%s\twatcher_pid=%s\torigin=%s\tstarted_at=%s\tended_at=%s\texit_code=%s\tsignal=%s\treason=%s\tbeacon_age=%s\tlock_before=%s\tlock_after=%s\tconfirm_budget=%s\tload1=%s\tsuccessor=%s\n' \
     "$ARM_PID" \
     "$(cycle_clean_field "$cycle_watcher_pid")" \
     "$(cycle_clean_field "$cycle_origin")" \
@@ -165,6 +214,8 @@ cycle_log_append() {
     "$beacon_age" \
     "$(cycle_clean_field "$cycle_lock_before")" \
     "$(cycle_clean_field "$lock_after")" \
+    "$(cycle_clean_field "$CONFIRM_TIMEOUT")" \
+    "$(cycle_clean_field "$CONFIRM_LOAD1")" \
     "$(cycle_clean_field "$successor")" >> "$CYCLE_LOG" 2>/dev/null || true
 
   size=$(wc -c < "$CYCLE_LOG" 2>/dev/null | tr -d '[:space:]')
