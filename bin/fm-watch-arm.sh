@@ -113,7 +113,7 @@ arm_nproc() {
   esac
 }
 arm_confirm_default() {
-  local load1=$1 cores whole budget
+  local load1=$1 cores whole frac centi budget
   [ "$ARM_CONFIRM_LOAD_SCALED" -eq 1 ] || { printf '%s' "$ARM_CONFIRM_DEFAULT"; return; }
   cores=$(arm_nproc)
   if [ "$load1" = none ] || [ -z "$cores" ]; then
@@ -121,7 +121,11 @@ arm_confirm_default() {
     return
   fi
   whole=${load1%%.*}
-  budget=$(( ARM_CONFIRM_DEFAULT * whole / cores ))
+  frac=${load1#"$whole"}
+  frac=${frac#.}00
+  frac=${frac:0:2}
+  centi=$(( 10#${whole:-0} * 100 + 10#$frac ))
+  budget=$(( ARM_CONFIRM_DEFAULT * centi / (100 * cores) ))
   [ "$budget" -ge "$ARM_CONFIRM_DEFAULT" ] || budget=$ARM_CONFIRM_DEFAULT
   [ "$budget" -le "$ARM_CONFIRM_LOADED_MAX" ] || budget=$ARM_CONFIRM_LOADED_MAX
   printf '%s' "$budget"

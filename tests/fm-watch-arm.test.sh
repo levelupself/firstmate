@@ -899,7 +899,8 @@ test_loaded_host_extends_the_default_confirmation_budget() {
 
 test_confirmation_budget_bounds_and_explicit_override() {
   # The scaling is bounded on both sides: an idle host keeps the flat base, a
-  # deeply loaded host stops at the cap, and an explicit FM_ARM_CONFIRM_TIMEOUT
+  # small-core host scales on the fractional load rather than its integer part,
+  # a deeply loaded host stops at the cap, and an explicit FM_ARM_CONFIRM_TIMEOUT
   # stays exact regardless of load.
   local dir home state fakebin armout row
   dir=$(make_case confirm-budget-bounds)
@@ -913,6 +914,14 @@ test_confirmation_budget_bounds_and_explicit_override() {
   case "$row" in
     *"	confirm_budget=10	load1=3.20	"*) ;;
     *) fail "idle host did not keep the flat 10s budget: $row" ;;
+  esac
+
+  state="$dir/state-small-core"; armout="$dir/arm-small-core.out"; mkdir -p "$state"
+  close_one_cycle_row "$home" "$state" "$fakebin" "$armout" "$(arm_load_env "$dir" 2.90 1)"
+  row=$(last_cycle_row "$state")
+  case "$row" in
+    *"	confirm_budget=29	load1=2.90	"*) ;;
+    *) fail "single-core host did not scale on the fractional load: $row" ;;
   esac
 
   state="$dir/state-capped"; armout="$dir/arm-capped.out"; mkdir -p "$state"
