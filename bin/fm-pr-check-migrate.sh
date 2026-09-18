@@ -6,6 +6,9 @@
 # registered custom checks remain armed, and every other task poll is
 # quarantined for private review. A current X-mode shim is preserved by exact
 # content, while the recognized older byte-static shim is refreshed in place.
+# The scan runs under state/.watch.lock: a live watcher is paused first, a
+# sibling migration's recorded hold is waited for (bounded by
+# FM_WATCHER_STALE_GRACE), and any other live holder refuses.
 # Usage: fm-pr-check-migrate.sh [--checks-safe]
 set -u
 
@@ -256,51 +259,103 @@ x_shim_locked_scan_needed() {
 
 # Marker short-circuits apply only when generated artifact identities are current.
 # Otherwise watcher exclusion comes before every check scan and state mutation.
-if ! x_shim_locked_scan_needed; then
-  migration_complete && exit 0
-  [ "$ALLOW_INCOMPLETE_REPAIRS" -eq 1 ] && scan_complete && exit 0
-fi
+locked_scan_unnecessary() {
+  x_shim_locked_scan_needed && return 1
+  migration_complete && return 0
+  [ "$ALLOW_INCOMPLETE_REPAIRS" -eq 1 ] && scan_complete
+}
+locked_scan_unnecessary && exit 0
 
 # shellcheck source=bin/fm-wake-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 
 stopped_watcher=0
-pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
-if fm_pid_alive "$pid"; then
-  if ! fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$pid" "$FM_HOME"; then
-    echo "PR_CHECK_MIGRATION: watcher ownership is ambiguous; review state/.watch.lock before rearming polls" >&2
+# A sibling migration for this home (another watcher start, a PR check
+# registration, or bootstrap) holds the same lock while it runs. Its live
+# non-watcher pid is not ambiguous ownership: wait for it, bounded by the same
+# grace a live watcher lock gets before re-arm errors, then re-evaluate. A holder
+# that just acquired the lock has the mid-acquire settle grace to record who it
+# is before it counts as unknown. An unknown live holder still refuses.
+SIBLING_WAIT=${FM_WATCHER_STALE_GRACE:-${FM_GUARD_GRACE:-300}}
+settle_grace=$(fm_lock_settle_grace)
+sibling_deadline=
+# wait_behind_sibling_hold <live-pid>
+# Sleeps briefly when <live-pid> holds the watcher lock as a recorded migration
+# for this home, or has not yet recorded who it is inside the settle grace, so
+# the caller retries. Every such wait in this process shares one deadline of
+# SIBLING_WAIT seconds; past it the wait exits with the sibling diagnostic.
+# Returns 1 for any other holder so the caller applies its own rule.
+wait_behind_sibling_hold() {
+  local pid=$1 now
+  if ! fm_migration_lock_matches_pid "$STATE" "$pid" "$FM_HOME"; then
+    [ -z "$(fm_lock_role "$WATCH_LOCK" 2>/dev/null || true)" ] || return 1
+    [ "$(fm_path_age "$WATCH_LOCK")" -lt "$settle_grace" ] || return 1
+  fi
+  now=$(date +%s)
+  [ -n "$sibling_deadline" ] || sibling_deadline=$((now + SIBLING_WAIT))
+  if [ "$now" -ge "$sibling_deadline" ]; then
+    echo "PR_CHECK_MIGRATION: a concurrent PR check migration has held the watcher lock for over ${SIBLING_WAIT}s; review state/.watch.lock before rearming polls" >&2
     exit 1
   fi
-  kill -TERM "$pid" 2>/dev/null || {
-    echo "PR_CHECK_MIGRATION: watcher could not be paused; review state/.watch.lock before rearming polls" >&2
-    exit 1
-  }
-  stopped_watcher=1
-  i=0
-  while [ "$i" -lt 100 ] && fm_pid_alive "$pid"; do
-    sleep 0.05
-    i=$((i + 1))
-  done
-  if fm_pid_alive "$pid"; then
-    echo "PR_CHECK_MIGRATION: watcher did not pause; review state/.watch.lock before rearming polls" >&2
-    exit 1
+  sleep 0.1
+}
+while :; do
+  pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+  fm_pid_alive "$pid" || break
+  if fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$pid" "$FM_HOME"; then
+    # A sibling that finished since the short-circuit above may have handed the
+    # lock to this watcher already; its validated markers leave nothing to pause for.
+    locked_scan_unnecessary && exit 0
+    kill -TERM "$pid" 2>/dev/null || {
+      echo "PR_CHECK_MIGRATION: watcher could not be paused; review state/.watch.lock before rearming polls" >&2
+      exit 1
+    }
+    stopped_watcher=1
+    i=0
+    while [ "$i" -lt 100 ] && fm_pid_alive "$pid"; do
+      sleep 0.05
+      i=$((i + 1))
+    done
+    if fm_pid_alive "$pid"; then
+      echo "PR_CHECK_MIGRATION: watcher did not pause; review state/.watch.lock before rearming polls" >&2
+      exit 1
+    fi
+    break
   fi
+  wait_behind_sibling_hold "$pid" && continue
+  # A holder that released between the pid read and the checks above is not
+  # unknown; re-read the lock instead of refusing on its half-removed record.
+  [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "$pid" ] || continue
+  echo "PR_CHECK_MIGRATION: watcher ownership is ambiguous; review state/.watch.lock before rearming polls" >&2
+  exit 1
+done
+# The sibling this process waited for may have finished the work; its validated
+# markers make another locked scan unnecessary.
+if [ -n "$sibling_deadline" ] && locked_scan_unnecessary; then
+  exit 0
 fi
 
 lock_held=0
 i=0
-while [ "$i" -lt 100 ]; do
+while :; do
   if fm_lock_try_acquire "$WATCH_LOCK"; then
     lock_held=1
+    fm_migration_lock_annotate "$WATCH_LOCK" "$FM_HOME" \
+      || echo "PR_CHECK_MIGRATION: migration hold could not be recorded; a concurrent migration may refuse instead of waiting" >&2
     break
   fi
   # A concurrent migration may have completed while this process waited.
   # Its validated marker proves the old watcher crossed the boundary, so this
   # process can continue to the normal watcher singleton instead of competing
   # with the newly started watcher for a second migration lock.
-  if migration_complete && ! x_shim_locked_scan_needed; then
-    exit 0
+  locked_scan_unnecessary && exit 0
+  # A sibling that won the lock after the resolution above broke on a free
+  # lock is still a sibling: it may hold the lock for a whole scan, so the
+  # bounded retry budget below applies only to a watcher or unknown holder.
+  if fm_pid_alive "${FM_LOCK_HELD_PID:-}" && wait_behind_sibling_hold "$FM_LOCK_HELD_PID"; then
+    continue
   fi
+  [ "$i" -lt 100 ] || break
   sleep 0.05
   i=$((i + 1))
 done

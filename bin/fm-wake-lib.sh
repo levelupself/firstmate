@@ -109,6 +109,39 @@ fm_watcher_lock_matches_pid() {
   FM_WATCHER_MATCHED_IDENTITY=$lock_identity
 }
 
+# fm_migration_lock_annotate <lockdir> <home>
+# Records that the PR check migration running in this process holds <lockdir>
+# for <home>, so a concurrent migration or arm can tell the hold from an unknown
+# live holder and wait for it. It never writes watcher-path: the hold must keep
+# failing fm_watcher_lock_matches_pid because a migration is not a watcher.
+fm_migration_lock_annotate() {
+  local lockdir=$1 home=$2 mypid identity
+  # Resolve the pid before any command substitution: $() forks a subshell whose
+  # BASHPID is not this frame's pid.
+  mypid=${BASHPID:-$$}
+  [ "$(cat "$lockdir/pid" 2>/dev/null || true)" = "$mypid" ] || return 1
+  identity=$(fm_pid_identity "$mypid") || return 1
+  [ -n "$identity" ] || return 1
+  printf '%s\n' "$home" > "$lockdir/fm-home" || return 1
+  printf '%s\n' "$identity" > "$lockdir/pid-identity" || return 1
+  fm_lock_set_role "$lockdir" migration
+}
+
+# fm_migration_lock_matches_pid <state> <pid> [home]
+# True when <state>/.watch.lock records a PR check migration hold for <home>
+# whose recorded identity still matches live <pid>, so a reused pid never passes.
+fm_migration_lock_matches_pid() {
+  local state=$1 pid=$2 home=${3:-$FM_HOME} lockdir lock_home lock_identity current_identity
+  lockdir="$state/.watch.lock"
+  [ "$(fm_lock_role "$lockdir" 2>/dev/null || true)" = migration ] || return 1
+  lock_home=$(cat "$lockdir/fm-home" 2>/dev/null || true)
+  lock_identity=$(cat "$lockdir/pid-identity" 2>/dev/null || true)
+  [ "$lock_home" = "$home" ] || return 1
+  [ -n "$lock_identity" ] || return 1
+  current_identity=$(fm_pid_identity "$pid") || return 1
+  [ "$current_identity" = "$lock_identity" ]
+}
+
 FM_WATCHER_HEALTHY_PID=
 FM_WATCHER_HEALTHY_IDENTITY=
 fm_watcher_healthy() {
@@ -301,7 +334,7 @@ fm_lock_clean_known_files() {
 fm_lock_set_role() {
   local lockdir=$1 role=$2 current pid back
   case "$role" in
-    autoarm|terminal-check) : ;;
+    autoarm|terminal-check|migration) : ;;
     *) return 1 ;;
   esac
   current=${BASHPID:-$$}
@@ -444,13 +477,20 @@ fm_lock_remove_path() {
   rmdir "$lockdir" 2>/dev/null
 }
 
+# fm_lock_settle_grace
+# Seconds a freshly created lock may go without recording its holder before it
+# counts as abandoned or unknown: FM_LOCK_STALE_AFTER, never below 2.
+fm_lock_settle_grace() {
+  local grace=$FM_LOCK_STALE_AFTER
+  [ "$grace" -lt 2 ] && grace=2
+  echo "$grace"
+}
+
 fm_lock_mid_acquire_is_fresh() {
-  local lockdir=$1 pid=$2 mid_acquire_stale
+  local lockdir=$1 pid=$2
   case "$pid" in
     ''|*[!0-9]*)
-      mid_acquire_stale=$FM_LOCK_STALE_AFTER
-      [ "$mid_acquire_stale" -lt 2 ] && mid_acquire_stale=2
-      [ "$(fm_path_age "$lockdir")" -lt "$mid_acquire_stale" ]
+      [ "$(fm_path_age "$lockdir")" -lt "$(fm_lock_settle_grace)" ]
       return
       ;;
   esac

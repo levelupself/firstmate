@@ -48,6 +48,16 @@ file_mode() {
   fi
 }
 
+path_age() {
+  local mtime
+  if [ "$(uname)" = Darwin ]; then
+    mtime=$(stat -f %m "$1")
+  else
+    mtime=$(stat -c %Y "$1")
+  fi
+  echo $(( $(date +%s) - mtime ))
+}
+
 state_snapshot() {
   local state=$1 file
   (
@@ -1034,6 +1044,244 @@ SH
   ! kill -0 "$older_pid" 2>/dev/null || fail "no-check migration left the older watcher running"
   assert_valid_migration_marker "$state/.pr-check-migration-v1"
   pass "migration pauses older watchers and acquires exclusion before its first scan or marker"
+}
+
+# launch_gated_migration <dir> <name> [acquire-delay-seconds]
+# Runs a real migration in the background whose under-lock scan blocks on
+# "$dir/<name>.release", so a concurrent process can observe a sibling migration
+# holding the watcher lock for as long as the test needs. Sets GATED_PID;
+# "$dir/<name>.gate" appears once this migration is under the lock, and
+# "$dir/<name>.attempts" gains one line per lock acquisition attempt this
+# migration makes while another process holds the lock. An acquire delay
+# stretches the window between the migration's last look at a free lock and
+# its claim, so two launches can race for the same free lock.
+GATED_PID=
+launch_gated_migration() {
+  local dir=$1 name=$2 acquire_delay=${3:-0} gatebin state
+  state="$dir/home/state"
+  gatebin="$dir/gatebin-$name"
+  mkdir -p "$gatebin"
+  # Lock acquisition itself calls basename before any pid is claimed, and a
+  # migration retrying behind another holder calls it once per attempt; only a
+  # call made by the recorded holder (directly or through a command
+  # substitution) is this migration's under-lock scan.
+  cat > "$gatebin/basename" <<SH
+#!/usr/bin/env bash
+holder=
+read -r holder 2>/dev/null < '$state/.watch.lock/pid' || holder=
+if [ -z "\$holder" ]; then
+  [ '$acquire_delay' = 0 ] || sleep '$acquire_delay'
+else
+  p=\$PPID
+  depth=0
+  mine=0
+  while [ "\$depth" -lt 3 ] && [ "\$p" -gt 1 ] 2>/dev/null; do
+    if [ "\$p" = "\$holder" ]; then
+      mine=1
+      : > '$dir/$name.gate'
+      while [ ! -e '$dir/$name.release' ]; do sleep 0.02; done
+      break
+    fi
+    if [ -r "/proc/\$p/stat" ]; then
+      read -r _ _ _ p _ < "/proc/\$p/stat"
+    else
+      p=\$(ps -o ppid= -p "\$p" 2>/dev/null | tr -d ' ')
+    fi
+    depth=\$((depth + 1))
+  done
+  [ "\$mine" = 1 ] || echo "\$holder" >> '$dir/$name.attempts'
+fi
+exec '$REAL_BASENAME' "\$@"
+SH
+  chmod +x "$gatebin/basename"
+  FM_HOME="$dir/home" PATH="$gatebin:$BASE_PATH" "$MIGRATE" > "$dir/$name.out" 2> "$dir/$name.err" &
+  GATED_PID=$!
+}
+
+# await_gated_migration <dir> <name> <pid> [timeout-seconds]
+# Waits until the launched migration <pid> is under the lock at its scan.
+await_gated_migration() {
+  local dir=$1 name=$2 pid=$3 timeout=${4:-5} state i=0 limit
+  state="$dir/home/state"
+  limit=$((timeout * 20))
+  while [ "$i" -lt "$limit" ] && [ ! -e "$dir/$name.gate" ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -e "$dir/$name.gate" ] || fail "gated migration $name never reached its under-lock scan"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] \
+    || fail "gated migration $name did not hold the watcher lock at its scan"
+}
+
+# start_gated_migration <dir> <name>
+# Launches a gated migration and returns once it holds the lock at its scan.
+start_gated_migration() {
+  launch_gated_migration "$1" "$2"
+  await_gated_migration "$1" "$2" "$GATED_PID"
+}
+
+test_migration_waits_for_sibling_migration() {
+  local dir state sibling_pid rc i
+  dir=$(make_case migration-sibling-wait)
+  state="$dir/home/state"
+  write_ambiguous_poll "$dir"
+  start_gated_migration "$dir" sibling
+  sibling_pid=$GATED_PID
+
+  # A second migration for the same home must wait for the sibling instead of
+  # reading its live, non-watcher hold as ambiguous ownership. The sibling holds
+  # the lock past the mid-acquire settle grace (FM_LOCK_STALE_AFTER floors at
+  # 2s), so only its recorded migration hold can keep the second one waiting.
+  set +e
+  FM_HOME="$dir/home" FM_LOCK_STALE_AFTER=0 PATH="$BASE_PATH" "$MIGRATE" --checks-safe \
+    > "$dir/second.out" 2> "$dir/second.err" &
+  local second_pid=$!
+  set -e
+  sleep 3
+  [ "$(path_age "$state/.watch.lock")" -ge 2 ] \
+    || fail "sibling hold did not outlive the settle grace before the wait was checked"
+  kill -0 "$second_pid" 2>/dev/null \
+    || fail "second migration gave up while a sibling migration held the lock: $(cat "$dir/second.err")"
+  kill -0 "$sibling_pid" 2>/dev/null || fail "second migration disturbed the sibling migration"
+  : > "$dir/sibling.release"
+  set +e
+  wait "$sibling_pid"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "sibling migration failed: $(cat "$dir/sibling.err")"
+  set +e
+  wait "$second_pid"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "second migration failed after the sibling released: $(cat "$dir/second.err")"
+  [ ! -s "$dir/second.err" ] || fail "second migration reported a diagnostic: $(cat "$dir/second.err")"
+  assert_valid_migration_marker "$state/.pr-check-migration-v1"
+  [ ! -e "$state/.watch.lock" ] || fail "sibling wait left the watcher lock held"
+  pass "a concurrent migration waits for a sibling migration holding the watcher lock"
+}
+
+test_migration_sibling_wait_is_bounded() {
+  local dir state sibling_pid rc
+  dir=$(make_case migration-sibling-timeout)
+  state="$dir/home/state"
+  write_ambiguous_poll "$dir"
+  start_gated_migration "$dir" sibling
+  sibling_pid=$GATED_PID
+  # The grace exceeds the 2s settle floor: an unrecorded holder would surface as
+  # ambiguous ownership at 2s, so only a recorded sibling reaches the bounded
+  # sibling diagnostic at 3s.
+  set +e
+  FM_HOME="$dir/home" FM_WATCHER_STALE_GRACE=3 FM_LOCK_STALE_AFTER=0 PATH="$BASE_PATH" "$MIGRATE" --checks-safe \
+    > "$dir/second.out" 2> "$dir/second.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "second migration succeeded while a sibling still held the lock"
+  assert_grep 'PR_CHECK_MIGRATION: a concurrent PR check migration has held the watcher lock' "$dir/second.err" \
+    "bounded sibling wait did not name the concurrent migration"
+  assert_no_grep 'ownership is ambiguous' "$dir/second.err" \
+    "bounded sibling wait misreported the sibling as ambiguous ownership"
+  [ "$(path_age "$state/.watch.lock")" -ge 3 ] \
+    || fail "bounded sibling wait gave up before the watcher stale grace elapsed"
+  kill -0 "$sibling_pid" 2>/dev/null || fail "bounded sibling wait killed the sibling migration"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$sibling_pid" ] \
+    || fail "bounded sibling wait disturbed the sibling's lock"
+  : > "$dir/sibling.release"
+  wait "$sibling_pid" || fail "sibling migration failed after release: $(cat "$dir/sibling.err")"
+  pass "a concurrent migration stops waiting for a sibling after the watcher stale grace"
+}
+
+test_concurrent_migrations_on_free_lock_both_complete() {
+  local dir state first_pid second_pid winner loser winner_name loser_name rc i attempts
+  dir=$(make_case migration-free-lock-race)
+  state="$dir/home/state"
+  write_ambiguous_poll "$dir"
+  # Both migrations look at a free lock before either claims it, so the loser
+  # of the claim is already past holder resolution when the winner takes the
+  # lock and holds it for a whole scan. The winner keeps holding until the
+  # loser has retried more than the 100 attempts of the fixed acquisition
+  # budget, which at 50ms apart is longer than the 5s that budget spanned.
+  launch_gated_migration "$dir" first 2
+  first_pid=$GATED_PID
+  launch_gated_migration "$dir" second 2
+  second_pid=$GATED_PID
+  i=0
+  while [ "$i" -lt 200 ] && [ ! -e "$dir/first.gate" ] && [ ! -e "$dir/second.gate" ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  if [ -e "$dir/first.gate" ]; then
+    winner=$first_pid; winner_name=first; loser=$second_pid; loser_name=second
+  elif [ -e "$dir/second.gate" ]; then
+    winner=$second_pid; winner_name=second; loser=$first_pid; loser_name=first
+  else
+    fail "neither concurrent migration reached its under-lock scan"
+  fi
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$winner" ] \
+    || fail "winning migration did not hold the watcher lock at its scan"
+  i=0
+  attempts=0
+  while [ "$i" -lt 1200 ] && [ "$attempts" -le 110 ] && kill -0 "$loser" 2>/dev/null; do
+    sleep 0.1
+    # The attempts file appears only once the loser retries; a redirection
+    # failure is the shell's own error, so silence the group rather than wc.
+    attempts=$({ wc -l < "$dir/$loser_name.attempts"; } 2>/dev/null || echo 0)
+    i=$((i + 1))
+  done
+  kill -0 "$loser" 2>/dev/null \
+    || fail "losing migration gave up after $attempts attempts while the winner held the lock: $(cat "$dir/$loser_name.err")"
+  [ "$attempts" -gt 110 ] || fail "losing migration made only $attempts acquisition attempts behind the winner"
+  kill -0 "$winner" 2>/dev/null || fail "losing migration disturbed the winner's hold"
+  : > "$dir/$winner_name.release"
+  set +e
+  wait "$winner"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "winning migration failed: $(cat "$dir/$winner_name.err")"
+  # The loser either runs its own scan under the lock or stands down on the
+  # winner's validated markers; both are completions without a diagnostic.
+  i=0
+  while [ "$i" -lt 200 ] && [ ! -e "$dir/$loser_name.gate" ] && kill -0 "$loser" 2>/dev/null; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ ! -e "$dir/$loser_name.gate" ] || : > "$dir/$loser_name.release"
+  set +e
+  wait "$loser"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "losing migration failed after the winner released: $(cat "$dir/$loser_name.err")"
+  [ ! -s "$dir/$winner_name.err" ] || fail "winning migration reported a diagnostic: $(cat "$dir/$winner_name.err")"
+  [ ! -s "$dir/$loser_name.err" ] || fail "losing migration reported a diagnostic: $(cat "$dir/$loser_name.err")"
+  assert_valid_migration_marker "$state/.pr-check-migration-v1"
+  [ ! -e "$state/.watch.lock" ] || fail "concurrent migrations left the watcher lock held"
+  pass "two migrations racing for a free lock both complete when the winner holds it past the acquisition budget"
+}
+
+test_migration_refuses_unknown_live_lock_holder() {
+  local dir state holder rc
+  dir=$(make_case migration-unknown-holder)
+  state="$dir/home/state"
+  write_ambiguous_poll "$dir"
+  sleep 300 &
+  holder=$!
+  mkdir "$state/.watch.lock"
+  printf '%s\n' "$holder" > "$state/.watch.lock/pid"
+  # Older than the mid-acquire settle grace: this holder had time to record who
+  # it is and never did, so it is neither a watcher nor a sibling migration.
+  touch -t 200001010000 "$state/.watch.lock"
+  set +e
+  FM_HOME="$dir/home" PATH="$BASE_PATH" "$MIGRATE" --checks-safe > "$dir/migrate.out" 2> "$dir/migrate.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "migration proceeded past an unknown live lock holder"
+  assert_grep 'PR_CHECK_MIGRATION: watcher ownership is ambiguous' "$dir/migrate.err" \
+    "unknown live holder was not reported as ambiguous ownership"
+  kill -0 "$holder" 2>/dev/null || fail "migration killed an unknown live lock holder"
+  [ "$(cat "$state/.watch.lock/pid")" = "$holder" ] || fail "migration disturbed an unknown holder's lock"
+  [ ! -e "$state/.pr-check-migration-v1" ] || fail "migration published a marker without exclusion"
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  pass "migration still refuses an unknown live watcher-lock holder"
 }
 
 test_migration_initializes_fresh_state() {
@@ -3513,6 +3761,10 @@ test_concurrent_watcher_sees_only_complete_publication
 test_postrename_poll_validation_revokes_and_retries
 test_migration_initializes_fresh_state
 test_migration_excludes_older_watcher_before_scan
+test_migration_waits_for_sibling_migration
+test_migration_sibling_wait_is_bounded
+test_concurrent_migrations_on_free_lock_both_complete
+test_migration_refuses_unknown_live_lock_holder
 test_private_artifact_paths_refuse_symlinks_and_directories
 test_marker_and_diagnostic_rename_fail_closed
 test_postrename_marker_and_diagnostic_validation_retries

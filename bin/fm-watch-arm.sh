@@ -69,9 +69,11 @@ WATCH_LOCK="$STATE/.watch.lock"
 BEAT="$STATE/.last-watcher-beat"
 # "Fresh" reuses the guard's threshold so there is one definition of liveness.
 GRACE=${FM_GUARD_GRACE:-300}
-# How long to wait for a freshly forked watcher to acquire the lock and beat.
-# Git Bash/MSYS pays a much higher fork cost while the watcher completes its
-# required pre-lock migration, so its bounded default covers that cold start.
+# How long to wait for a freshly forked watcher to acquire the lock and beat,
+# not counting time a PR check migration holds the watcher lock (see the
+# confirmation loop). Git Bash/MSYS pays a much higher fork cost while the
+# watcher completes its required pre-lock migration, so its bounded default
+# covers that cold start.
 case "${OSTYPE:-}" in
   msys*|mingw*|cygwin*) ARM_CONFIRM_DEFAULT=30 ;;
   *) ARM_CONFIRM_DEFAULT=10 ;;
@@ -546,8 +548,24 @@ owned_child_finished() {
 # until the child gives up. Only then print the honest line.
 # date(1) exposes whole seconds. Keep the configured confirmation budget from
 # collapsing when startup begins just before the next second boundary.
+# While a PR check migration holds the watcher lock (the child's own, or a
+# sibling the child's migration is waiting behind), the child cannot claim the
+# lock, so the budget counts from that migration's release instead of the fork.
+# That extension stops at a ceiling of GRACE past the original budget: a
+# migration wedged under the lock still ends here as a confirmation timeout
+# rather than an open-ended wait that leaves the home silently unsupervised.
+migration_holds_watch_lock() {
+  local pid
+  pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+  fm_pid_alive "$pid" && fm_migration_lock_matches_pid "$STATE" "$pid" "$FM_HOME"
+}
+limit=$(( $(date +%s) + CONFIRM_TIMEOUT + GRACE + 1 ))
 deadline=$(( $(date +%s) + CONFIRM_TIMEOUT + 1 ))
 while :; do
+  if migration_holds_watch_lock; then
+    pushed=$(( $(date +%s) + CONFIRM_TIMEOUT + 1 ))
+    [ "$pushed" -gt "$limit" ] || deadline=$pushed
+  fi
   if healthy_watcher; then
     if [ "$HEALTHY_PID" = "$child" ]; then
       cycle_refresh_lock_before
