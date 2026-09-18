@@ -87,6 +87,18 @@ wait_for() {  # <file> [tries]
   return 1
 }
 
+wait_exists() {  # <path> [tries]: an empty marker counts
+  local f=$1 n=${2:-100}
+  for _ in $(seq 1 "$n"); do [ -e "$f" ] && return 0; sleep 0.1; done
+  return 1
+}
+
+wait_gone() {  # <path> [tries]
+  local f=$1 n=${2:-100}
+  for _ in $(seq 1 "$n"); do [ -e "$f" ] || return 0; sleep 0.1; done
+  return 1
+}
+
 hold_source_lock() {  # <source-id> <ready-file> <release-file>
   local id=$1 ready=$2 release=$3 parent=$$
   FM_HOME="$TMP_ROOT/lock-helper-home" bash -c '
@@ -410,11 +422,19 @@ if [ -e "$HSELF/state/.wake-queue" ] && grep -q 'procevent selfann self-src 1' "
 fi
 out=$(pe_adapter "$HSELF" reconcile)
 assert_contains "$out" "published=0" "reconcile re-announced a capture its adapter already acknowledged"
+# That reconcile also restarts the still-registered, unowned source in the
+# background. Let that generation apply its own capture and release its claim
+# before the failing start below, so the two never race for ownership.
+assert_contains "$out" "started=1" "reconcile did not restart the registered self-announcing source"
+wait_exists "$HSELF/state/procevent-inbox/self-src.2.handled" \
+  || fail "the reconcile-started self-announcing generation never applied its capture"
+wait_gone "$FM_PROCEVENT_CLAIM_ROOT/self-src.claim" \
+  || fail "the reconcile-started self-announcing generation never released its claim"
 : > "$HSELF/state/selfann-fail"
 out=$(pe_adapter "$HSELF" start self-src 2>&1)
 assert_contains "$out" "not-autohandled: self-src" "a failed self-announcing application was reported as applied"
-assert_absent "$HSELF/state/procevent-inbox/self-src.2.handled" "a failed self-announcing application was acknowledged anyway"
-assert_contains "$(wake_payloads "$HSELF")" "procevent selfann self-src 2" \
+assert_absent "$HSELF/state/procevent-inbox/self-src.3.handled" "a failed self-announcing application was acknowledged anyway"
+assert_contains "$(wake_payloads "$HSELF")" "procevent selfann self-src 3" \
   "a capture the self-announcing adapter could not apply lost its check-wake announcement"
 rm -f "$HSELF/state/selfann-fail"
 pass "a self-announcing adapter applies quietly and still publishes what it could not apply"
