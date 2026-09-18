@@ -287,16 +287,18 @@ test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
   append_wake "$state" check startup-network 'check: startup-network'
 
   start_rearm_arm "$home" "$state" "$fakebin" "$armout"
-  sleep 0.25
-  if is_live_non_zombie "$ARM_PID"; then
-    # End the fixture through an ordinary actionable status transition so this
-    # failing pre-fix path leaves no child behind.
-    printf 'done: fixture cleanup\n' > "$state/cleanup.status"
-    wait_for_exit "$ARM_PID" 80 || true
-    fail "re-arm stayed live instead of surfacing durable wakes and the still-open remote decision"
+  # A re-arm that recovers the durable queue exits on its watcher's first cycle,
+  # which on a loaded host can land a few seconds after the started line; a
+  # re-arm that ignores the queue has no reason to exit at all.
+  if wait_for_exit "$ARM_PID" 100; then
+    status=0
+  else
+    status=$?
   fi
-  wait "$ARM_PID"
-  status=$?
+  # wait_for_exit terminates a still-live arm at its limit, and the arm's own
+  # trap retires its child, so this failing pre-fix path leaves no child behind.
+  [ "$status" -ne 124 ] \
+    || fail "re-arm stayed live instead of surfacing durable wakes and the still-open remote decision"
   expect_code 0 "$status" "re-arm re-surface wake must close successfully"
   grep -F 'check: rearm-resurface' "$armout" >/dev/null \
     || fail "re-arm did not report the durable recovery wake: $(cat "$armout")"
@@ -797,6 +799,157 @@ test_downtime_marker_does_not_follow_symlink() {
   pass "watch-arm: downtime marker publication does not follow symlinks"
 }
 
+# Point the arm's load reader at a fixture instead of the host: a loadavg file
+# in /proc/loadavg format plus an explicit core count. Never generate real load.
+arm_load_env() {  # <dir> <load1> <nproc>
+  printf '%s 0.00 0.00 1/1 1\n' "$2" > "$1/loadavg"
+  printf 'FM_ARM_LOADAVG_PATH=%s FM_ARM_NPROC=%s' "$1/loadavg" "$3"
+}
+
+# A fake uname that stalls once, only when the watcher (not the arm) calls it:
+# the watcher resolves uname while sourcing, before it can claim the lock or
+# beat, so this simulates a fork that reaches its first beat late without any
+# real host load. A second watcher call, and every arm call, is instant.
+install_slow_once_uname() {  # <fakebin> <marker> <seconds>
+  cat > "$1/uname" <<'SH'
+#!/usr/bin/env bash
+if [ -e "$FM_FAKE_UNAME_SLOW_MARK" ] \
+  && ps -o args= -p "$PPID" 2>/dev/null | grep -q 'fm-watch\.sh'; then
+  rm -f "$FM_FAKE_UNAME_SLOW_MARK"
+  sleep "$FM_FAKE_UNAME_SLOW_SECONDS"
+fi
+printf 'Linux\n'
+SH
+  chmod +x "$1/uname"
+  export FM_FAKE_UNAME_SLOW_MARK="$2" FM_FAKE_UNAME_SLOW_SECONDS="$3"
+  : > "$2"
+}
+
+last_cycle_row() {  # <state>
+  tail -n 1 "$1/.watch-cycle-exits.log" 2>/dev/null || true
+}
+
+# Start a fresh arm with the given load fixture, let it confirm its watcher, then
+# stop the watcher so the arm closes one lifecycle row for inspection.
+close_one_cycle_row() {  # <home> <state> <fakebin> <arm-out> <load-env-string> [extra-env]
+  local home=$1 state=$2 fakebin=$3 armout=$4 load_env=$5 extra=${6:-} watcher_pid i
+  # shellcheck disable=SC2086
+  env $load_env $extra PATH="$fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
+    FM_POLL=5 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH_ARM" > "$armout" &
+  ARM_PID=$!
+  i=0
+  while [ "$i" -lt 100 ] && ! grep -q '^watcher: started ' "$armout" 2>/dev/null; do
+    is_live_non_zombie "$ARM_PID" || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -q '^watcher: started ' "$armout" || fail "arm did not start a watcher: $(cat "$armout")"
+  watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  kill -TERM "$watcher_pid" 2>/dev/null || fail "could not stop fixture watcher"
+  wait "$ARM_PID" 2>/dev/null || true
+}
+
+test_loaded_host_extends_the_default_confirmation_budget() {
+  # Two consecutive Stop-owned arms timed out at load1 65-77 on 16 cores: the
+  # watcher forked but did not beat within the flat 10s default, nothing held
+  # the lock, and supervision went blind. The default must scale with
+  # load1/cores so a merely slow start still confirms; the ledger row must
+  # record the budget and the load so a future timeout is diagnosable alone.
+  local dir home state fakebin armout mark load_env row watcher_pid started
+  dir=$(make_case loaded-confirm-budget)
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  mark="$dir/slow-once"
+  mkdir -p "$home/data"
+  load_env=$(arm_load_env "$dir" 64.50 16)
+  # 64.5/16 = 4.03x -> 10s * 4 = 40s budget; the watcher stalls 12s before its
+  # first beat, past the flat 10s plus its rounding second, inside the 40s.
+  install_slow_once_uname "$fakebin" "$mark" 12
+  started=$(date +%s)
+  # shellcheck disable=SC2086
+  env $load_env PATH="$fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
+    FM_POLL=5 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH_ARM" > "$armout" &
+  ARM_PID=$!
+  while is_live_non_zombie "$ARM_PID" && ! grep -q '^watcher: ' "$armout" 2>/dev/null; do
+    [ $(( $(date +%s) - started )) -lt 60 ] || break
+    sleep 0.2
+  done
+  unset FM_FAKE_UNAME_SLOW_MARK FM_FAKE_UNAME_SLOW_SECONDS
+  [ ! -e "$mark" ] || fail "the slow-once uname stall was never exercised by the watcher"
+  [ $(( $(date +%s) - started )) -ge 11 ] \
+    || fail "watcher confirmed inside the flat budget, so the extension was not exercised"
+  grep -q '^watcher: started pid=' "$armout" \
+    || fail "loaded-host arm did not confirm a slow but healthy watcher: $(cat "$armout")"
+  ! grep -qF 'watcher: FAILED' "$armout" \
+    || fail "loaded-host arm gave up on a slow but healthy watcher: $(cat "$armout")"
+  watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  kill -TERM "$watcher_pid" 2>/dev/null || fail "could not stop fixture watcher"
+  wait "$ARM_PID" 2>/dev/null || true
+  row=$(last_cycle_row "$state")
+  case "$row" in
+    *"	confirm_budget=40	load1=64.50	"*) ;;
+    *) fail "ledger row does not record the load-scaled budget and load1: $row" ;;
+  esac
+  pass "watch-arm: loaded host extends the default confirmation budget and records it"
+}
+
+test_confirmation_budget_bounds_and_explicit_override() {
+  # The scaling is bounded on both sides: an idle host keeps the flat base, a
+  # small-core host scales on the fractional load rather than its integer part,
+  # a deeply loaded host stops at the cap, and an explicit FM_ARM_CONFIRM_TIMEOUT
+  # stays exact regardless of load.
+  local dir home state fakebin armout row
+  dir=$(make_case confirm-budget-bounds)
+  home="$dir/home"
+  fakebin="$dir/fakebin"
+  mkdir -p "$home/data"
+
+  state="$dir/state-idle"; armout="$dir/arm-idle.out"; mkdir -p "$state"
+  close_one_cycle_row "$home" "$state" "$fakebin" "$armout" "$(arm_load_env "$dir" 3.20 16)"
+  row=$(last_cycle_row "$state")
+  case "$row" in
+    *"	confirm_budget=10	load1=3.20	"*) ;;
+    *) fail "idle host did not keep the flat 10s budget: $row" ;;
+  esac
+
+  state="$dir/state-small-core"; armout="$dir/arm-small-core.out"; mkdir -p "$state"
+  close_one_cycle_row "$home" "$state" "$fakebin" "$armout" "$(arm_load_env "$dir" 2.90 1)"
+  row=$(last_cycle_row "$state")
+  case "$row" in
+    *"	confirm_budget=29	load1=2.90	"*) ;;
+    *) fail "single-core host did not scale on the fractional load: $row" ;;
+  esac
+
+  state="$dir/state-capped"; armout="$dir/arm-capped.out"; mkdir -p "$state"
+  close_one_cycle_row "$home" "$state" "$fakebin" "$armout" "$(arm_load_env "$dir" 120.00 16)"
+  row=$(last_cycle_row "$state")
+  case "$row" in
+    *"	confirm_budget=45	load1=120.00	"*) ;;
+    *) fail "deeply loaded host did not stop at the 45s cap: $row" ;;
+  esac
+
+  state="$dir/state-explicit"; armout="$dir/arm-explicit.out"; mkdir -p "$state"
+  close_one_cycle_row "$home" "$state" "$fakebin" "$armout" "$(arm_load_env "$dir" 120.00 16)" FM_ARM_CONFIRM_TIMEOUT=7
+  row=$(last_cycle_row "$state")
+  case "$row" in
+    *"	confirm_budget=7	load1=120.00	"*) ;;
+    *) fail "explicit FM_ARM_CONFIRM_TIMEOUT was not kept exact under load: $row" ;;
+  esac
+
+  state="$dir/state-unreadable"; armout="$dir/arm-unreadable.out"; mkdir -p "$state"
+  close_one_cycle_row "$home" "$state" "$fakebin" "$armout" "FM_ARM_LOADAVG_PATH=$dir/missing FM_ARM_NPROC=16"
+  row=$(last_cycle_row "$state")
+  case "$row" in
+    *"	confirm_budget=10	load1=none	"*) ;;
+    *) fail "unreadable load average did not keep the flat budget with load1=none: $row" ;;
+  esac
+  pass "watch-arm: confirmation budget keeps its floor, cap, and explicit override"
+}
+
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
@@ -811,3 +964,5 @@ test_markerless_legacy_queue_is_recovered_on_arm
 test_handling_window_close_keeps_the_acknowledgement_valid
 test_moved_generation_acknowledgement_is_self_healing
 test_downtime_marker_does_not_follow_symlink
+test_loaded_host_extends_the_default_confirmation_budget
+test_confirmation_budget_bounds_and_explicit_override

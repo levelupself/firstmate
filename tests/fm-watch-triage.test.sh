@@ -121,6 +121,17 @@ record_pi_busy() {  # <state-dir> <id>
     --source pi-ext --event agent-start
 }
 
+# Wait up to <limit> 0.1s ticks for <file> to contain the fixed string.
+wait_file_contains() {  # <file> <fixed-string> [limit]
+  local file=$1 needle=$2 limit=${3:-30} i=0
+  while [ "$i" -lt "$limit" ]; do
+    grep -qF -- "$needle" "$file" 2>/dev/null && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
 # Wait up to <limit> 0.1s ticks for <file> to hold an integer >= <n>.
 wait_count_at_least() {  # <file> <n> [limit]
   local file=$1 n=$2 limit=${3:-30} i=0 value
@@ -1796,6 +1807,11 @@ long_run_prime_no_relief() {  # <dir> <window> <key>
   pid=$!
   if ! wait_numeric_file "$state/.stale-since-$key" 100; then
     reap "$pid"; fail "the no-relief long-run priming round did not start the wedge timer: $(cat "$dir/prime.out")"
+  fi
+  # The watcher writes the timer first and names the declaration in the triage
+  # log only afterwards, so a reap on the timer alone can cut the line short.
+  if ! wait_file_contains "$state/.watch-triage.log" "timer reset: $window" 100; then
+    reap "$pid"; fail "the no-relief long-run priming round did not name its declaration in the triage log: $(cat "$state/.watch-triage.log" 2>/dev/null)"
   fi
   reap "$pid"
   ack_stopped_cycle "$state" || fail "could not acknowledge the intentional long-run priming stop"
