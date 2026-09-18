@@ -883,10 +883,15 @@ pr=https://github.com/o/r/pull/9
   start_gated_migration "$dir" sibling
   migrate_pid=$GATED_PID
 
-  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" &
+  # The budget restarts on the migration's release, so after it the child must
+  # finish its own migration, claim the lock, and beat inside CONFIRM_TIMEOUT
+  # to CONFIRM_TIMEOUT+1 seconds; a 1s budget is too tight for that on a loaded
+  # machine, while the hold below still outlasts the budget plus its second of
+  # slack, so only the extension can keep this arm alive.
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=4 "$WATCH_ARM" > "$armout" &
   armpid=$!
   # Hold the lock well past the confirmation budget.
-  sleep 3
+  sleep 7
   is_live_non_zombie "$armpid" || fail "arm gave up while a sibling migration held the lock: $(cat "$armout")"
   ! grep -qF 'watcher: FAILED' "$armout" || fail "arm reported FAILED behind a sibling migration: $(cat "$armout")"
   : > "$dir/sibling.release"
