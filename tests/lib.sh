@@ -34,6 +34,13 @@ FM_TEST_LIB_SOURCED=1
 # strips this to verify real refusal.
 export FM_GATE_REFUSE_BYPASS=1
 
+# Spawns driven by this suite start no real agent, so the load and memory of
+# the machine running the suite are no evidence about them: pin fm-spawn.sh's
+# host capacity guard thresholds far outside any real reading. The guard's own
+# suite, tests/fm-spawn-capacity.test.sh, unsets both and reads a fake /proc.
+export FM_SPAWN_MAX_LOAD=${FM_SPAWN_MAX_LOAD:-1000000}
+export FM_SPAWN_MIN_MEM_GB=${FM_SPAWN_MIN_MEM_GB:-0.001}
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034

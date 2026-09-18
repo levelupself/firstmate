@@ -134,6 +134,11 @@ After each scheduled hourly sweep, `bin/fm-pool-footprint.sh --pool-audit` sums 
 An unreadable project inventory or unmeasurable copy remains an explicit audit failure and wakes once while unchanged, while failures cleaning individual copies do not omit other captured copies from the audit.
 Once all pools fit and no audit failures remain, the alert resets so a later crossing wakes again; this alert does not evict output or enforce a live disk quota.
 The three scripts' headers own the exact refusal, override, record, and check mechanics; `tests/fm-teardown.test.sh`, `tests/fm-spawn-pool-slot-binding.test.sh`, and `tests/fm-pool-build-sweep.test.sh` cover the gates.
+Every spawn that would start an agent on this host also passes a host capacity guard, because an unbounded fleet sharing a fixed-memory host with concurrent builds has been OOM-killed as a whole.
+`FM_SPAWN_MAX_LOAD` (default 60) is the highest 1-minute load average a spawn may proceed under, `FM_SPAWN_MIN_MEM_GB` (default 12 decimal GB) is the least `MemAvailable` it may proceed with, and `FM_SPAWN_MAX_ACTIVE` (default 12) is the most active direct reports one home may run at once, counting a record as active only while its agent is not positively gone and its last status event is neither done nor failed, so a finished worker waiting on its merge never blocks a new one.
+The load and memory readings come from the kernel's `/proc/loadavg` and `/proc/meminfo`; a host without them is bounded by the active-worker cap alone and says so, and an invalid threshold stops the spawn rather than defaulting.
+A refusal names the measured value and the threshold, happens before any endpoint, copy, or record exists, and leaves the task queued for the identical command to retry once the host has room; the count is per home, so a secondmate's own crewmates are bounded by its home's cap while the host readings bound the machine as a whole.
+The [`fm-spawn.sh` header](../bin/fm-spawn.sh) owns the guard's mechanics and `tests/fm-spawn-capacity.test.sh` covers it.
 New spawns choose the backend in this order: an explicit `--backend` flag that current authority for that exact task alone has authorized (a present captain instruction or the task's own accepted brief; never later-task precedent by analogy), then `FM_BACKEND`, then the first non-empty line of local gitignored `config/backend`, then runtime auto-detection from `$TMUX`, `HERDR_ENV=1`, or cmux runtime signals, then default `tmux`.
 If more than one runtime marker is present, detection resolves innermost-first: `$TMUX` is checked before `HERDR_ENV=1`, which is checked before cmux's primary `CMUX_WORKSPACE_ID` marker and its documented fallback signals - tmux or herdr started from inside a cmux terminal is the innermost, currently-executing layer, while cmux itself (a terminal application, not a nestable multiplexer) is always checked last.
 See [`docs/cmux-backend.md`](cmux-backend.md#runtime-detection) for why cmux can be selected when `CMUX_WORKSPACE_ID` is absent.
@@ -683,7 +688,7 @@ FM_STATE_OVERRIDE=       # alternate state dir, mainly for tests
 FM_DATA_OVERRIDE=        # alternate data dir, mainly for tests
 FM_PROJECTS_OVERRIDE=    # alternate projects dir, mainly for tests
 FM_CONFIG_OVERRIDE=      # alternate config dir, mainly for tests
-FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity reads in fm-wake-lib.sh and fm-teardown.sh, mainly for tests
+FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity reads (fm-wake-lib.sh, fm-cursor-lib.sh, fm-teardown.sh) and the fm-spawn.sh host capacity guard's loadavg and meminfo readings, mainly for tests
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)
@@ -707,6 +712,9 @@ FM_INACTIVE_RECONCILE_SECS=900  # 60..1800-second watcher cadence and inactivity
 FM_INACTIVE_RECONCILE_BUDGET_SECS=10  # 1..30-second aggregate bound per inactive-outcome scan
 FM_POOL_COPY_BUDGET_GB=12   # decimal GB of ignored output one pooled copy may hold at teardown return and spawn entry; see "Runtime backend"
 FM_POOL_TOTAL_BUDGET_GB=80  # decimal GB of ignored output one project's pool may hold before the scheduled sweep wakes firstmate once per distinct total
+FM_SPAWN_MAX_LOAD=60        # highest 1-minute load average a spawn may start an agent under; see "Runtime backend"
+FM_SPAWN_MIN_MEM_GB=12      # least decimal GB of MemAvailable a spawn may start an agent with
+FM_SPAWN_MAX_ACTIVE=12      # most active direct reports one home may run at once, counting live workers whose last status event is neither done nor failed
 FM_CHECK_INTERVAL=300   # seconds between slow checks (authenticated merge polls, custom checks, or Relay dispatch)
 FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
 FM_PROCEVENT_MAX_OUTPUT_BYTES=1048576   # bound on one captured process-to-event result
