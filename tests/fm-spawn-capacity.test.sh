@@ -17,6 +17,8 @@
 #      host has room again, so a refused spawn never loses the task.
 #   5. An invalid threshold stops the spawn rather than defaulting; a host with
 #      no Linux-compatible /proc is still bounded by the active-worker cap.
+#   6. A recovery relaunch passes the same guard before it touches the recorded
+#      endpoint, and the relaunched task's own record is not counted against it.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -38,9 +40,11 @@ trap capacity_cleanup EXIT
 # A tmux stub whose pane is a fake pool client. `list-windows` answers from
 # the case's windows file, so a record whose window is listed there exists and
 # one whose window is absent is authoritatively missing; `pane_current_command`
-# answers from the case's pane-cmd file (default bash), so a listed window reads
-# as a live agent when that file names one. `treehouse get` moves the pane into
-# the copy the fake pool hands out, exactly as the real pool does.
+# answers from the case's pane-cmd.<window> file when one exists, else from its
+# pane-cmd file (default bash), so a listed window reads as a live agent when
+# the file that covers it names one and as agent-free when it names a shell.
+# `treehouse get` moves the pane into the copy the fake pool hands out, exactly
+# as the real pool does.
 make_tmux_stub() {  # <case-dir>
   local fb="$1/fakebin"
   mkdir -p "$fb"
@@ -74,11 +78,20 @@ case "${1:-}" in
     exit 0
     ;;
   display-message)
+    target=
+    prev=
+    for a in "$@"; do
+      [ "$prev" != -t ] || target=$a
+      prev=$a
+    done
+    window=${target#*:}
     for a in "$@"; do
       case "$a" in
         *pane_current_path*) pane_cwd; printf '\n'; exit 0 ;;
         *pane_current_command*)
-          if [ -f "$D/pane-cmd" ]; then cat "$D/pane-cmd"; else printf 'bash\n'; fi
+          if [ -n "$window" ] && [ -f "$D/pane-cmd.$window" ]; then cat "$D/pane-cmd.$window"
+          elif [ -f "$D/pane-cmd" ]; then cat "$D/pane-cmd"
+          else printf 'bash\n'; fi
           exit 0
           ;;
         *pane_pid*) printf '2147483646\n'; exit 0 ;;
@@ -320,11 +333,45 @@ test_invalid_threshold_stops_the_spawn() {
   [ "$rc" -ne 0 ] || fail "FM_SPAWN_MAX_ACTIVE=0 must stop the spawn rather than default"$'\n'"$out"
   assert_contains "$out" 'FM_SPAWN_MAX_ACTIVE' "the error must name the invalid variable"
   assert_refused_before_anything_durable "$dir" "$id" "$out"
+  out=$(run_spawn "$dir" FM_SPAWN_MAX_ACTIVE=12abc "$id" "$dir/proj" --mode no-mistakes --yolo off); rc=$?
+  [ "$rc" -ne 0 ] || fail "FM_SPAWN_MAX_ACTIVE=12abc must stop the spawn rather than disable the cap"$'\n'"$out"
+  assert_contains "$out" 'FM_SPAWN_MAX_ACTIVE' "the error must name the invalid variable"
+  assert_refused_before_anything_durable "$dir" "$id" "$out"
   out=$(run_spawn "$dir" FM_SPAWN_MIN_MEM_GB=lots "$id" "$dir/proj" --mode no-mistakes --yolo off); rc=$?
   [ "$rc" -ne 0 ] || fail "FM_SPAWN_MIN_MEM_GB=lots must stop the spawn rather than default"$'\n'"$out"
   assert_contains "$out" 'FM_SPAWN_MIN_MEM_GB' "the error must name the invalid variable"
   assert_refused_before_anything_durable "$dir" "$id" "$out"
   pass "fm-spawn: an invalid capacity threshold stops the spawn naming the variable"
+}
+
+test_relaunch_is_bounded_by_the_active_cap_excluding_its_own_record() {
+  local dir id=cap-relaunch-a out rc
+  dir=$(new_case relaunch "$id")
+  printf 'codex\n' > "$dir/fake/pane-cmd"
+  # The task being relaunched: its record and window survive, but its pane
+  # holds only a shell, so it is positively agent-free (relaunch's precondition).
+  write_record "$dir" "$id" 'working: implementing'
+  git -C "$dir/proj" worktree add --quiet -b "task-$id" "$dir/elsewhere/$id"
+  printf '%s' "$dir/elsewhere/$id" > "$dir/fake/cwd"
+  printf 'bash\n' > "$dir/fake/pane-cmd.fm-$id"
+  write_record "$dir" cap-relaunch-busy 'working: implementing'
+  cp "$dir/home/state/$id.meta" "$dir/$id.meta.before"
+  out=$(run_spawn "$dir" FM_SPAWN_MAX_ACTIVE=1 "$id" --relaunch); rc=$?
+  [ "$rc" -ne 0 ] || fail "one other live working record must refuse a relaunch under FM_SPAWN_MAX_ACTIVE=1"$'\n'"$out"
+  assert_contains "$out" 'FM_SPAWN_MAX_ACTIVE=1' "the relaunch refusal must name the cap"
+  assert_contains "$out" 'has 1 active direct reports (cap-relaunch-busy)' \
+    "the relaunch refusal must count only the other live worker, never the relaunched task's own record"
+  assert_no_grep '^new-window ' "$dir/fake/tmux.log" \
+    "a refused relaunch must create no endpoint"$'\n'"$out"
+  assert_no_grep '^send-keys ' "$dir/fake/tmux.log" \
+    "a refused relaunch must send nothing to the recorded endpoint"$'\n'"$out"
+  cmp -s "$dir/$id.meta.before" "$dir/home/state/$id.meta" \
+    || fail "a refused relaunch must leave the task's record exactly as it was"
+  out=$(run_spawn "$dir" FM_SPAWN_MAX_ACTIVE=2 "$id" --relaunch); rc=$?
+  assert_not_contains "$out" 'host capacity' \
+    "one other live worker under FM_SPAWN_MAX_ACTIVE=2 must leave room for the relaunch"$'\n'"$out"
+  expect_code 0 "$rc" "the admitted relaunch must succeed"$'\n'"$out"
+  pass "fm-spawn: a relaunch is refused by the active-worker cap naming it and excluding the relaunched task's own record"
 }
 
 test_host_without_proc_is_still_bounded_by_the_active_cap() {
@@ -349,6 +396,7 @@ test_load_guard_refuses_and_names_the_reading
 test_load_guard_honors_configured_threshold
 test_memory_guard_refuses_and_names_the_reading
 test_invalid_threshold_stops_the_spawn
+test_relaunch_is_bounded_by_the_active_cap_excluding_its_own_record
 test_host_without_proc_is_still_bounded_by_the_active_cap
 
 echo "# all fm-spawn-capacity tests passed"

@@ -1365,8 +1365,8 @@ SPAWN_TASK_LOCK_HELD=1
 spawn_capacity_positive_int() {  # <env-name> <default>
   local name=$1 value=${!1:-$2}
   case "$value" in
-    [1-9]|[1-9][0-9]*) printf '%s\n' "$value" ;;
-    *) echo "error: $name must be a positive integer, got '$value'" >&2; return 1 ;;
+    ''|*[!0-9]*|0*) echo "error: $name must be a positive integer, got '$value'" >&2; return 1 ;;
+    *) printf '%s\n' "$value" ;;
   esac
 }
 
