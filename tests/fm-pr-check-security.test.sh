@@ -27,6 +27,7 @@ REAL_STAT=$(command -v stat)
 REAL_CHMOD=$(command -v chmod)
 REAL_BASENAME=$(command -v basename)
 REAL_NODE=$(command -v node)
+REAL_CMP=$(command -v cmp)
 
 ack_watcher_cycle() {  # <state>
   local state=$1 err sequence generation
@@ -758,7 +759,7 @@ test_gitlab_records_forge_open_time() {
 run_watcher_bounded() {
   local home=$1 fakebin=$2 check_interval=${FM_TEST_CHECK_INTERVAL:-0} watch_root=${FM_TEST_WATCH_ROOT:-$ROOT}
   shift 2
-  perl -e 'my $pid=fork; die unless defined $pid; if (!$pid) { exec @ARGV } local $SIG{ALRM}=sub { kill "TERM", $pid; waitpid $pid, 0; exit 124 }; alarm 10; waitpid $pid, 0; alarm 0; exit($? >> 8)' \
+  perl -e 'my $pid=fork; die unless defined $pid; if (!$pid) { exec @ARGV } local $SIG{ALRM}=sub { kill "TERM", $pid; waitpid $pid, 0; exit 124 }; alarm 60; waitpid $pid, 0; alarm 0; exit($? >> 8)' \
     env FM_TEST_GH_AXI_LOG="$home/../gh-axi.log" FM_TEST_GLAB_LOG="$home/../glab.log" FM_HOME="$home" FM_ROOT_OVERRIDE="$watch_root" FM_CHECK_INTERVAL="$check_interval" FM_CHECK_TIMEOUT=1 \
       FM_POLL=0.02 FM_HEARTBEAT=999999 FM_SIGNAL_GRACE=0 PATH="$fakebin:$BASE_PATH" "$WATCH" "$@"
 }
@@ -3740,6 +3741,119 @@ test_gitlab_merged_poll_retires() {
   pass "GitHub and GitLab exact merged results share one retirement path"
 }
 
+# A counting cmp shim: the per-record poll validation compares every armed
+# check against the template with cmp, so its invocation count is a public
+# observation of whether the validation ran, without reading any source.
+install_counting_cmp() {  # <fakebin> <count-log>
+  cat > "$1/cmp" <<'SH'
+#!/usr/bin/env bash
+printf 'cmp\n' >> "$FM_TEST_CMP_LOG"
+exec "$FM_TEST_REAL_CMP" "$@"
+SH
+  chmod +x "$1/cmp"
+  export FM_TEST_CMP_LOG="$2" FM_TEST_REAL_CMP="$REAL_CMP"
+  : > "$2"
+}
+
+cmp_count() {  # <count-log>
+  wc -l < "$1" | tr -d '[:space:]'
+}
+
+run_checks_safe_migration() {  # <dir> <label>
+  local dir=$1 label=$2 rc
+  set +e
+  FM_HOME="$dir/home" PATH="$dir/fakebin:$BASE_PATH" \
+    "$MIGRATE" --checks-safe > "$dir/$label.out" 2> "$dir/$label.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "$label --checks-safe migration failed: $(cat "$dir/$label.err")"
+}
+
+test_unchanged_check_set_short_circuits_per_record_validation() {
+  # Every watcher arm runs the --checks-safe migration first, and on a home
+  # with ~50 armed polls that per-record validation was measured at 25-45s
+  # under fleet load: the whole confirmation budget. When no record moved
+  # since the last full validation, the migration must recognize the
+  # byte-identical set and skip the per-record work; any change to the set,
+  # or a tampered record, must bring the full validation back.
+  local dir state fakebin log n id url first second third fourth fifth
+  dir=$(make_case check-set-fingerprint)
+  state="$dir/home/state"
+  fakebin="$dir/fakebin"
+  log="$dir/cmp.log"
+  n=0
+  for id in task-a task-b task-c task-d task-e task-f; do
+    n=$((n + 1))
+    url="https://github.com/o/r/pull/$n"
+    write_poll_meta "$state" "$id" "$url"
+    seed_canonical_poll "$dir" "$id" "$url"
+  done
+  install_counting_cmp "$fakebin" "$log"
+
+  run_checks_safe_migration "$dir" first
+  first=$(cmp_count "$log")
+  [ "$first" -ge "$n" ] \
+    || fail "first migration validated fewer records than armed (cmp calls=$first, records=$n)"
+
+  : > "$log"
+  run_checks_safe_migration "$dir" second
+  second=$(cmp_count "$log")
+  [ "$second" -eq 0 ] \
+    || fail "unchanged check set was validated per record again (cmp calls=$second)"
+
+  # A new registration changes the set: the next run validates the record
+  # that moved, and only that record, so a PR event never costs a full pass.
+  n=$((n + 1))
+  url="https://github.com/o/r/pull/$n"
+  write_poll_meta "$state" task-g "$url"
+  seed_canonical_poll "$dir" task-g "$url"
+  : > "$log"
+  run_checks_safe_migration "$dir" third
+  third=$(cmp_count "$log")
+  [ "$third" -ge 1 ] \
+    || fail "a new record was not validated (cmp calls=$third)"
+  [ "$third" -lt "$n" ] \
+    || fail "one new record forced a full per-record pass (cmp calls=$third, records=$n)"
+
+  # A byte-identical rerun short-circuits again after the set settles.
+  : > "$log"
+  run_checks_safe_migration "$dir" fourth
+  fourth=$(cmp_count "$log")
+  [ "$fourth" -eq 0 ] \
+    || fail "settled check set was validated per record again (cmp calls=$fourth)"
+
+  # A defective certification record is ignored, never trusted: the whole set
+  # is validated again and a fresh record replaces it.
+  printf 'garbage\n' > "$state/.pr-check-set-fingerprint"
+  chmod 0644 "$state/.pr-check-set-fingerprint"
+  : > "$log"
+  run_checks_safe_migration "$dir" defective
+  [ "$(cmp_count "$log")" -ge "$n" ] \
+    || fail "a defective certification record short-circuited validation (cmp calls=$(cmp_count "$log"), records=$n)"
+  : > "$log"
+  run_checks_safe_migration "$dir" recertified
+  [ "$(cmp_count "$log")" -eq 0 ] \
+    || fail "the set was not recertified after a defective record (cmp calls=$(cmp_count "$log"))"
+
+  # A tampered record must never hide behind the short-circuit: the validation
+  # runs again, notices the broken registration, and rebuilds the canonical
+  # poll from its validated metadata instead of leaving the tampered bytes armed.
+  printf 'tampered\n' >> "$state/task-c.pr-poll-registration"
+  ! fm_pr_poll_artifacts_valid "$state" task-c "$POLL" \
+    || fail "the tamper fixture did not invalidate the registration"
+  : > "$log"
+  run_checks_safe_migration "$dir" fifth
+  fifth=$(cmp_count "$log")
+  [ "$fifth" -ge 1 ] \
+    || fail "a tampered record was short-circuited past validation (cmp calls=$fifth)"
+  ! grep -q '^tampered$' "$state/task-c.pr-poll-registration" \
+    || fail "tampered registration bytes survived the migration"
+  fm_pr_poll_artifacts_valid "$state" task-c "$POLL" \
+    || fail "tampered poll was not rebuilt into an authenticated canonical poll"
+  unset FM_TEST_CMP_LOG FM_TEST_REAL_CMP
+  pass "an unchanged check set skips per-record validation; only a moved or tampered record is revalidated"
+}
+
 test_parser_matrix
 test_landing_evidence_and_registration
 
@@ -3783,3 +3897,4 @@ test_bootstrap_isolates_incomplete_poll_migration
 test_custom_snapshot_cleanup_on_signal
 test_returned_custom_check_descendants_are_drained
 test_teardown_removes_poll_artifacts
+test_unchanged_check_set_short_circuits_per_record_validation

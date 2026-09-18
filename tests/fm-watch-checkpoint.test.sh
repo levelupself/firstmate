@@ -21,10 +21,18 @@ test_quiet_checkpoint_exits_124_cleanly() {
   home=$(make_home quiet)
   out="$home/out.txt"
   err="$home/err.txt"
+  # The checkpoint must outlast the watcher's startup so its quiet exit is
+  # observed from a running cycle: on a loaded host the startup to the first
+  # beacon takes seconds (docs/configuration.md FM_ARM_CONFIRM_TIMEOUT), and a
+  # watcher stopped between its lock claim and its cleanup trap leaves a
+  # dead-pid lock that this case would misread as a live one.
+  printf '%s\n' fm-pr-check-migration-scan-v1 > "$home/state/.pr-check-migration-scan-v1"
+  printf '%s\n' fm-pr-check-migration-v1 > "$home/state/.pr-check-migration-v1"
+  chmod 0600 "$home/state/.pr-check-migration-scan-v1" "$home/state/.pr-check-migration-v1"
   status=0
-  FM_HOME="$home" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 "$CHECKPOINT" --seconds 1 >"$out" 2>"$err" || status=$?
+  FM_HOME="$home" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 "$CHECKPOINT" --seconds 6 >"$out" 2>"$err" || status=$?
   expect_code 124 "$status" "quiet checkpoint exit"
-  assert_contains "$(cat "$out")" "checkpoint: no actionable wake within 1s" "quiet checkpoint line missing"
+  assert_contains "$(cat "$out")" "checkpoint: no actionable wake within 6s" "quiet checkpoint line missing"
   assert_absent "$home/state/.watch.lock/pid" "watch lock pid survived quiet checkpoint timeout"
   pass "quiet checkpoint exits 124 with a clean checkpoint line and no live lock"
 }

@@ -2,7 +2,8 @@
 # fm-timing-lib.sh - the single owner of the deferred network stage's elapsed-time
 # instrumentation.
 #
-# Sourced, never executed.
+# Sourced, never executed. Its millisecond clock, fm_timing_now_ms, is also
+# the one the watcher startup profile in bin/fm-watch-arm.sh uses.
 #
 # WHY THIS EXISTS. The deferred stage (bin/fm-startup-network.sh) publishes one
 # aggregate started/finished pair, so a run that took a minute could not be

@@ -6,6 +6,9 @@
 # registered custom checks remain armed, and every other task poll is
 # quarantined for private review. A current X-mode shim is preserved by exact
 # content, while the recognized older byte-static shim is refreshed in place.
+# An armed check whose fingerprint the last validation certified is trusted
+# without per-record work (bin/fm-check-lib.sh owns that contract), so a
+# watcher start on an unchanged home costs O(1) process spawns here.
 # The scan runs under state/.watch.lock: a live watcher is paused first, a
 # sibling migration's recorded hold is waited for (bounded by
 # FM_WATCHER_STALE_GRACE), and any other live holder refuses.
@@ -79,18 +82,62 @@ scan_marker_content_valid() {
   [ "$value" = "$SCAN_MARKER_VALUE" ]
 }
 
+# One armed check's own validation, independent of any fingerprint.
+check_authenticated() {
+  local check=$1 id
+  if [ "$(basename "$check")" = x-watch.check.sh ] \
+    && fmx_poll_shim_valid "$check" "$FM_HOME" "$FM_ROOT"; then
+    return 0
+  fi
+  id=$(basename "$check" .check.sh)
+  fm_custom_check_registered "$STATE" "$id" && return 0
+  fm_pr_poll_artifacts_valid "$STATE" "$id" "$TEMPLATE"
+}
+
+# Records whose fingerprint the last full validation certified are still
+# authenticated without per-record work; bin/fm-check-lib.sh owns the
+# fingerprint contract, including the before/after agreement that makes the
+# record safe to publish outside the watcher lock. Every other record is
+# validated here, and the ids that pass join the certified set so the next run
+# revalidates only what moved, even after a run in which some record failed.
 current_checks_authenticated() {
-  local check id
+  local before after recorded certified check id status=0 line after_line
+  local -a passed=()
+  before=$(fm_check_set_fingerprint "$STATE" "$TEMPLATE" "$FM_HOME" "$FM_ROOT") || before=
+  recorded=$(fm_check_set_fingerprint_read "$STATE") || recorded=
+  certified=$(fm_check_set_fingerprint_certified_ids "$before" "$recorded")
   for check in "$STATE"/*.check.sh; do
     [ -e "$check" ] || [ -L "$check" ] || continue
-    if [ "$(basename "$check")" = x-watch.check.sh ] \
-      && fmx_poll_shim_valid "$check" "$FM_HOME" "$FM_ROOT"; then
-      continue
+    id=${check##*/}
+    id=${id%.check.sh}
+    case "$certified" in
+      "$id"|"$id"$'\n'*|*$'\n'"$id"|*$'\n'"$id"$'\n'*) continue ;;
+    esac
+    if check_authenticated "$check"; then
+      passed+=("$id")
+    else
+      status=1
     fi
-    id=$(basename "$check" .check.sh)
-    fm_custom_check_registered "$STATE" "$id" && continue
-    fm_pr_poll_artifacts_valid "$STATE" "$id" "$TEMPLATE" || return 1
   done
+  # Nothing newly validated leaves the record as it is.
+  [ -n "$before" ] && [ "${#passed[@]}" -gt 0 ] || return "$status"
+  after=$(fm_check_set_fingerprint "$STATE" "$TEMPLATE" "$FM_HOME" "$FM_ROOT") || return "$status"
+  [ "$after" = "$before" ] || return "$status"
+  # Keep the recorded context line and only the lines of certified or newly
+  # passed ids, so a record that failed is never certified by this run.
+  line=${after%%$'\n'*}
+  while IFS= read -r after_line; do
+    case "$after_line" in context=*|'') continue ;; esac
+    id=${after_line%%$'\t'*}
+    case "$certified" in
+      "$id"|"$id"$'\n'*|*$'\n'"$id"|*$'\n'"$id"$'\n'*) line="$line"$'\n'"$after_line"; continue ;;
+    esac
+    case " ${passed[*]-} " in
+      *" $id "*) line="$line"$'\n'"$after_line" ;;
+    esac
+  done <<< "$after"
+  fm_check_set_fingerprint_record "$STATE" "$line" || true
+  return "$status"
 }
 
 private_migration_boundaries_valid() {
