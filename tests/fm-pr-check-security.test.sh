@@ -1222,7 +1222,9 @@ test_concurrent_migrations_on_free_lock_both_complete() {
   attempts=0
   while [ "$i" -lt 1200 ] && [ "$attempts" -le 110 ] && kill -0 "$loser" 2>/dev/null; do
     sleep 0.1
-    attempts=$(wc -l < "$dir/$loser_name.attempts" 2>/dev/null || echo 0)
+    # The attempts file appears only once the loser retries; a redirection
+    # failure is the shell's own error, so silence the group rather than wc.
+    attempts=$({ wc -l < "$dir/$loser_name.attempts"; } 2>/dev/null || echo 0)
     i=$((i + 1))
   done
   kill -0 "$loser" 2>/dev/null \
