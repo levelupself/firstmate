@@ -279,6 +279,26 @@ stopped_watcher=0
 SIBLING_WAIT=${FM_WATCHER_STALE_GRACE:-${FM_GUARD_GRACE:-300}}
 settle_grace=$(fm_lock_settle_grace)
 sibling_deadline=
+# wait_behind_sibling_hold <live-pid>
+# Sleeps briefly when <live-pid> holds the watcher lock as a recorded migration
+# for this home, or has not yet recorded who it is inside the settle grace, so
+# the caller retries. Every such wait in this process shares one deadline of
+# SIBLING_WAIT seconds; past it the wait exits with the sibling diagnostic.
+# Returns 1 for any other holder so the caller applies its own rule.
+wait_behind_sibling_hold() {
+  local pid=$1 now
+  if ! fm_migration_lock_matches_pid "$STATE" "$pid" "$FM_HOME"; then
+    [ -z "$(fm_lock_role "$WATCH_LOCK" 2>/dev/null || true)" ] || return 1
+    [ "$(fm_path_age "$WATCH_LOCK")" -lt "$settle_grace" ] || return 1
+  fi
+  now=$(date +%s)
+  [ -n "$sibling_deadline" ] || sibling_deadline=$((now + SIBLING_WAIT))
+  if [ "$now" -ge "$sibling_deadline" ]; then
+    echo "PR_CHECK_MIGRATION: a concurrent PR check migration has held the watcher lock for over ${SIBLING_WAIT}s; review state/.watch.lock before rearming polls" >&2
+    exit 1
+  fi
+  sleep 0.1
+}
 while :; do
   pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
   fm_pid_alive "$pid" || break
@@ -302,17 +322,7 @@ while :; do
     fi
     break
   fi
-  if fm_migration_lock_matches_pid "$STATE" "$pid" "$FM_HOME" \
-    || [ "$(fm_path_age "$WATCH_LOCK")" -lt "$settle_grace" ]; then
-    now=$(date +%s)
-    [ -n "$sibling_deadline" ] || sibling_deadline=$((now + SIBLING_WAIT))
-    if [ "$now" -ge "$sibling_deadline" ]; then
-      echo "PR_CHECK_MIGRATION: a concurrent PR check migration has held the watcher lock for over ${SIBLING_WAIT}s; review state/.watch.lock before rearming polls" >&2
-      exit 1
-    fi
-    sleep 0.1
-    continue
-  fi
+  wait_behind_sibling_hold "$pid" && continue
   # A holder that released between the pid read and the checks above is not
   # unknown; re-read the lock instead of refusing on its half-removed record.
   [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "$pid" ] || continue
@@ -327,7 +337,7 @@ fi
 
 lock_held=0
 i=0
-while [ "$i" -lt 100 ]; do
+while :; do
   if fm_lock_try_acquire "$WATCH_LOCK"; then
     lock_held=1
     fm_migration_lock_annotate "$WATCH_LOCK" "$FM_HOME" \
@@ -339,6 +349,13 @@ while [ "$i" -lt 100 ]; do
   # process can continue to the normal watcher singleton instead of competing
   # with the newly started watcher for a second migration lock.
   locked_scan_unnecessary && exit 0
+  # A sibling that won the lock after the resolution above broke on a free
+  # lock is still a sibling: it may hold the lock for a whole scan, so the
+  # bounded retry budget below applies only to a watcher or unknown holder.
+  if fm_pid_alive "${FM_LOCK_HELD_PID:-}" && wait_behind_sibling_hold "$FM_LOCK_HELD_PID"; then
+    continue
+  fi
+  [ "$i" -lt 100 ] || break
   sleep 0.05
   i=$((i + 1))
 done
