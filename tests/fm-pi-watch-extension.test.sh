@@ -72,36 +72,244 @@ export const Type = {
 JS
 }
 
-test_tracked_extension_present_and_self_hashing() {
-  local text expected_config_source
-  expected_config_source="config_dir=\\\"\${FM_CONFIG_OVERRIDE:-\$FM_HOME/config}\\\""
-  assert_present "$EXT" "tracked Pi primary watcher extension is missing"
-  text=$(cat "$EXT")
-  assert_contains "$text" "fm_watch_arm_pi" "tracked extension missing tool name"
-  assert_contains "$text" "fm-watch-arm-pi" "tracked extension missing command name"
-  assert_contains "$text" "fm-watch-arm.sh" "tracked extension missing watcher arm"
-  assert_contains "$text" ".pi-watch-extension-loaded" "tracked extension missing loaded marker"
-  assert_contains "$text" 'createHash("sha256").update(readFileSync(extensionFile)).digest("hex")' "tracked extension does not self-hash its own content for extensionVersion"
-  assert_contains "$text" 'fileURLToPath(import.meta.url)' "tracked extension does not self-locate via import.meta.url"
-  assert_contains "$text" 'type LockOwnership = "owned" | "missing" | "other"' "tracked extension does not distinguish missing lock from another owner"
-  assert_contains "$text" "readFileSync(\`\${state}/.lock\`" "tracked extension does not read the effective session lock"
-  assert_contains "$text" 'return pidAlive(lockPid) ? "other" : "missing"' "tracked extension does not allow a pre-lock load marker"
-  assert_contains "$text" 'spawnSync("ps", ["-l", "-p", pid]' "tracked extension lacks the Cygwin-compatible parent lookup"
-  assert_contains "$text" 'if (lockOwnership() === "other") return' "tracked extension overwrites another live session marker"
-  assert_contains "$text" "writeFileSync(marker, \`\${extensionVersion}\\n\${process.pid}\\n\`)" "tracked extension does not write the content version and process marker"
-  assert_contains "$text" "const config = process.env.FM_CONFIG_OVERRIDE" "tracked extension missing effective config resolution"
-  assert_contains "$text" "FM_CONFIG_OVERRIDE: config" "tracked extension does not pass the effective config to the watcher arm"
-  assert_contains "$text" "FM_WATCH_ARM_SCRIPT: armScript" "tracked extension does not pass the effective watcher arm script"
-  assert_contains "$text" "$expected_config_source" "tracked extension does not source the effective x-mode config"
-  assert_contains "$text" "exec \\\"\$FM_WATCH_ARM_SCRIPT\\\" --restart" "tracked extension does not restart into a Pi-owned watcher child"
-  assert_contains "$text" 'label: "Arm firstmate watcher"' "tracked extension tool is missing its human-readable label"
-  assert_contains "$text" 'parameters: Type.Object({})' "tracked extension tool is not using Pi's canonical TypeBox schema"
-  assert_contains "$text" 'content: [{ type: "text", text: result.message }]' "tracked extension tool is missing Pi text content"
-  assert_contains "$text" 'details: result' "tracked extension tool is missing structured result details"
-  assert_contains "$text" 'ctx.ui.notify' "tracked extension command does not notify through Pi's UI"
-  assert_contains "$text" 'process.once("exit", cleanupOnProcessExit)' "tracked extension lacks clean-process-exit cleanup"
-  assert_not_contains "$text" "[ -f config/x-mode.env ]" "tracked extension kept a repo-relative x-mode config path"
-  pass "Pi primary watcher extension is tracked, self-hashing, and self-locating"
+test_pi_load_marker_records_self_hash_and_pid() {
+  local repo home plugin out status
+  repo="$TMP_ROOT/pi-load-marker-root"
+  home="$TMP_ROOT/pi-load-marker-home"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  # The fixture copy deliberately differs from the tracked file by one trailing
+  # comment. A marker that matches the copy and not the tracked file proves the
+  # extension hashes the file it was actually loaded from.
+  printf '// fixture-only trailing comment\n' >> "$plugin"
+  out=$(PLUGIN="$plugin" TRACKED="$EXT" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" node --input-type=module 2>&1 <<'EOF'
+import { createHash } from "node:crypto";
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const sha256 = (file) => `sha256:${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
+const marker = `${process.env.FM_HOME}/state/.pi-watch-extension-loaded`;
+const handlers = new Map();
+const pi = {
+  on(name, handler) {
+    handlers.set(name, handler);
+  },
+  registerCommand() {},
+  registerTool() {},
+  sendUserMessage: async () => {},
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+const expected = `${sha256(process.env.PLUGIN)}\n${process.pid}\n`;
+const assertMarker = (label) => {
+  const content = readFileSync(marker, "utf8");
+  if (content !== expected) {
+    throw new Error(`${label}: load marker mismatch: ${JSON.stringify(content)} expected ${JSON.stringify(expected)}`);
+  }
+  if (content.startsWith(sha256(process.env.TRACKED))) {
+    throw new Error(`${label}: load marker hashed the tracked file instead of the loaded copy`);
+  }
+};
+assertMarker("extension load");
+unlinkSync(marker);
+handlers.get("session_start")();
+assertMarker("session_start");
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "Pi extension must record its own content hash and process id in the load marker"
+  [ -z "$out" ] || fail "Pi load-marker test printed output: $out"
+  pass "Pi extension load marker records the loaded content hash and process id"
+}
+
+test_pi_load_marker_respects_lock_ownership() {
+  local repo home plugin out status
+  repo="$TMP_ROOT/pi-load-marker-lock-root"
+  home="$TMP_ROOT/pi-load-marker-lock-home"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" node --input-type=module 2>&1 <<'EOF'
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
+
+const lock = `${process.env.FM_HOME}/state/.lock`;
+const marker = `${process.env.FM_HOME}/state/.pi-watch-extension-loaded`;
+const pi = { on() {}, registerCommand() {}, registerTool() {}, sendUserMessage: async () => {} };
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const load = () => mod.default(pi);
+
+// A session loads its extensions before bin/fm-session-start.sh takes the
+// lock, so an absent or dead lock must still record the load.
+if (existsSync(lock)) unlinkSync(lock);
+load();
+if (!existsSync(marker)) throw new Error("absent lock: extension did not record its load");
+unlinkSync(marker);
+writeFileSync(lock, "999999\n");
+load();
+if (!existsSync(marker)) throw new Error("dead lock holder: extension did not record its load");
+unlinkSync(marker);
+
+// A live lock held outside this process tree belongs to another session; its
+// marker must be left alone, whether absent or already written.
+const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+try {
+  writeFileSync(lock, `${other.pid}\n`);
+  load();
+  if (existsSync(marker)) throw new Error("live other holder: extension wrote a load marker into another session");
+  const foreign = "sha256:foreign\n424242\n";
+  writeFileSync(marker, foreign);
+  load();
+  if (readFileSync(marker, "utf8") !== foreign) throw new Error("live other holder: extension overwrote another live session marker");
+} finally {
+  other.kill("SIGTERM");
+}
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "Pi extension must record its load only when no other live session holds the lock"
+  [ -z "$out" ] || fail "Pi load-marker lock test printed output: $out"
+  pass "Pi extension load marker yields to another live session and survives a missing lock"
+}
+
+# run_pi_arm_env_probe <name> <config-override>
+#   Arm once through the tool with a stub watcher arm that records how it was
+#   launched into "$TMP_ROOT/pi-arm-env-<name>.log". The extension runs with no
+#   FM_ROOT_OVERRIDE so the arm script path comes from its own location, and a
+#   repo-relative config/x-mode.env is planted as a decoy that the arm child
+#   must never source. An empty <config-override> leaves FM_CONFIG_OVERRIDE
+#   unset for the extension.
+run_pi_arm_env_probe() {
+  local name=$1 config_override=$2 repo home plugin log bus out status
+  repo="$TMP_ROOT/pi-arm-env-$name-root"
+  home="$TMP_ROOT/pi-arm-env-$name-home"
+  log="$TMP_ROOT/pi-arm-env-$name.log"
+  bus="$TMP_ROOT/pi-arm-env-$name.bus"
+  mkdir -p "$repo/bin" "$repo/config" "$home/state" "$home/config"
+  fm_checkpoint_bus "$bus"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  printf 'export FM_XMODE_PROBE=repo-relative-decoy\n' > "$repo/config/x-mode.env"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+{
+  printf 'args=%s\n' "$*"
+  printf 'home=%s\n' "${FM_HOME:-}"
+  printf 'config=%s\n' "${FM_CONFIG_OVERRIDE:-}"
+  printf 'script=%s\n' "${FM_WATCH_ARM_SCRIPT:-}"
+  printf 'probe=%s\n' "${FM_XMODE_PROBE:-unset}"
+} > "${FM_ARM_LOG:?}"
+printf 'armed %s\n' "$$" > "${FM_CHECKPOINT_BUS:?}"
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_CONFIG_OVERRIDE="$config_override" FM_ARM_LOG="$log" FM_CHECKPOINT_BUS="$bus" FM_CHECKPOINT_MODULE="$CHECKPOINT_MODULE" node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const { openCheckpointBus, waitForExit } = await import(pathToFileURL(process.env.FM_CHECKPOINT_MODULE).href);
+const bus = openCheckpointBus(process.env.FM_CHECKPOINT_BUS);
+let tool = null;
+const pi = {
+  on() {},
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async () => {},
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+if (!tool) throw new Error("Pi watch tool was not registered");
+const result = await tool.execute("tool-call-env", {}, undefined, undefined, {});
+if (result.details?.ok !== true) throw new Error(`arm did not start: ${JSON.stringify(result.details)}`);
+const armPid = await bus.reached("armed");
+await waitForExit(armPid, "arm probe exit");
+await bus.waitForNoFixtures();
+bus.close();
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "Pi arm probe ($name) must launch the stub watcher arm"
+  [ -z "$out" ] || fail "Pi arm probe ($name) printed output: $out"
+  assert_grep "args=--restart" "$log" "Pi arm child ($name) was not launched with --restart"
+  assert_grep "home=$home" "$log" "Pi arm child ($name) did not receive the effective FM_HOME"
+  assert_grep "script=$repo/bin/fm-watch-arm.sh" "$log" "Pi arm child ($name) did not receive the arm script located from the extension file"
+  assert_no_grep "probe=repo-relative-decoy" "$log" "Pi arm child ($name) sourced a repo-relative x-mode config"
+}
+
+test_pi_arm_child_receives_effective_config() {
+  local override_config default_home
+  override_config="$TMP_ROOT/pi-arm-env-override-config"
+  mkdir -p "$override_config"
+  printf 'export FM_XMODE_PROBE=override-config\n' > "$override_config/x-mode.env"
+  run_pi_arm_env_probe override "$override_config"
+  assert_grep "config=$override_config" "$TMP_ROOT/pi-arm-env-override.log" "Pi arm child did not receive FM_CONFIG_OVERRIDE"
+  assert_grep "probe=override-config" "$TMP_ROOT/pi-arm-env-override.log" "Pi arm child did not source x-mode.env from the effective config"
+
+  default_home="$TMP_ROOT/pi-arm-env-default-home"
+  mkdir -p "$default_home/config"
+  printf 'export FM_XMODE_PROBE=home-config\n' > "$default_home/config/x-mode.env"
+  run_pi_arm_env_probe default ""
+  assert_grep "config=$default_home/config" "$TMP_ROOT/pi-arm-env-default.log" "Pi arm child did not fall back to the FM_HOME config"
+  assert_grep "probe=home-config" "$TMP_ROOT/pi-arm-env-default.log" "Pi arm child did not source x-mode.env from the FM_HOME config"
+  pass "Pi arm child restarts the located arm script with the effective config and x-mode environment"
+}
+
+test_pi_lock_ownership_survives_ps_o_refusal() {
+  local repo home plugin fakebin real_ps out status
+  repo="$TMP_ROOT/pi-ps-fallback-root"
+  home="$TMP_ROOT/pi-ps-fallback-home"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  fakebin=$(fm_fakebin "$TMP_ROOT/pi-ps-fallback")
+  real_ps=$(command -v ps)
+  # Cygwin ps has no -o. Refuse it so only the -l fallback can walk the parent
+  # chain from this process up to the lock holder.
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+[ "\$1" != "-o" ] || exit 1
+exec "$real_ps" "\$@"
+SH
+  chmod +x "$fakebin/ps"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PATH="$fakebin:$PATH" PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+let tool = null;
+const pi = {
+  on() {},
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async () => {},
+};
+// The lock names the parent of this process, so ownership is provable only
+// through a parent lookup.
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.ppid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+if (!tool) throw new Error("Pi watch tool was not registered");
+const result = await tool.execute("tool-call-ps", {}, undefined, undefined, {});
+if (result.details?.ok !== true || !result.details.message.includes("started Pi extension arm child")) {
+  throw new Error(`parent-held lock was not recognized as owned: ${JSON.stringify(result.details)}`);
+}
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "Pi extension must resolve lock ownership through ps -l when ps -o is unavailable"
+  [ -z "$out" ] || fail "Pi ps-fallback test printed output: $out"
+  pass "Pi extension resolves a parent-held lock through the ps -l fallback"
 }
 
 test_spawn_template_mentions_pi_watch_placeholder() {
@@ -2765,7 +2973,10 @@ EOF
   pass "OpenCode healthy arm output does not suppress the turn-end guard"
 }
 
-test_tracked_extension_present_and_self_hashing
+test_pi_load_marker_records_self_hash_and_pid
+test_pi_load_marker_respects_lock_ownership
+test_pi_arm_child_receives_effective_config
+test_pi_lock_ownership_survives_ps_o_refusal
 test_spawn_template_mentions_pi_watch_placeholder
 test_pi_extension_reports_external_healthy_watcher
 test_pi_tool_returns_agent_tool_result
