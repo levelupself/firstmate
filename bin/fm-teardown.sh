@@ -78,13 +78,18 @@
 # Copy-binding check (copy-binding): a record binds its worktree= for other
 # tasks only until this script stamps teardown_at= into it, and this task's own
 # release of the copy is proved by either of two signals: copy_returned_at=,
-# stamped immediately after a successful treehouse return, or a release event
+# written immediately after a successful treehouse return, or a release event
 # for this task and worktree in the allocation ledger (bin/fm-worktree-
 # allocation.sh released), which this script writes only after that same
 # return and which retained records written before copy_returned_at= existed
-# already carry. teardown_at= precedes the return, so a return that fails
-# after the stamp leaves neither signal and the rerun retries it. A task torn
-# down EARLY (its PR still open
+# already carry. Either signal counts only when it is not older than the
+# record's incarnation_at=: bin/fm-spawn.sh rewrites that stamp on every
+# recovery (--reacquire-worktree, --reattach-worktree) and carries the older
+# keys along, so a release that predates the current incarnation proves
+# nothing about the copy this incarnation holds; a record without
+# incarnation_at= is bounded by nothing. teardown_at= precedes the return, so
+# a return that fails after the stamp leaves neither signal and the rerun
+# retries it. A task torn down EARLY (its PR still open
 # under an armed merge poll) keeps its record for that poll while its copy goes
 # back to the pool, and the pool may hand that same copy to another task before
 # the PR merges (observed 2026-09-18: the post-merge rerun trusted the stale
@@ -104,7 +109,11 @@
 # `copy already returned; detached at trunk; ...` (whether the pool inventory
 # confirmed it free or could not be read), retires only this task's own
 # records (meta, launch receipt, merge poll, check, context watch, busy state,
-# per-task temp), closes no pane, and exits 0. In that records-only mode a
+# per-task temp), closes only this task's own recorded endpoint (the recorded
+# target, window fm-<task-id>, zellij tab, or herdr session and pane - an
+# identity that is per task and never the other task's, so the close is a
+# no-op once the early cleanup already ran it), and exits 0. In that
+# records-only mode a
 # pruned backlog row is judged on durable landed-work evidence alone
 # (fm-backlog-integrity.sh landed-evidence), never on the copy's HEAD or
 # branch, so another task's work can neither refuse nor authorize this task's
@@ -1580,19 +1589,48 @@ teardown_copy_records_only() {  # <why>
 # teardown_copy_ledger_released: does the allocation ledger hold this task's
 # release of $WT? That event is written only after a successful treehouse
 # return, so it proves the release for records that predate copy_returned_at=.
-teardown_copy_ledger_released() {
+teardown_copy_ledger_released() {  # [since]
   local project
   project=$(meta_value "$META" allocation_project)
   [ -n "$project" ] || project=$PROJ
-  "$SCRIPT_DIR/fm-worktree-allocation.sh" released "$ID" "$project" "$WT" 2>/dev/null
+  "$SCRIPT_DIR/fm-worktree-allocation.sh" released "$ID" "$project" "$WT" "$@" 2>/dev/null
+}
+
+# teardown_copy_release_bound: the record's incarnation_at= when it is a
+# canonical UTC stamp, else nothing. A release signal older than this bound
+# belongs to an earlier incarnation of the task and does not count.
+teardown_copy_release_bound() {
+  local since
+  since=$(meta_value "$META" incarnation_at)
+  case "$since" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) printf '%s\n' "$since" ;;
+    *) return 1 ;;
+  esac
+}
+
+# teardown_copy_released: has this task released $WT during its current
+# incarnation? True on a copy_returned_at= marker not older than the bound, or
+# on a ledger release at or after it.
+teardown_copy_released() {
+  local since marker
+  since=$(teardown_copy_release_bound) || since=
+  marker=$(meta_value "$META" copy_returned_at)
+  if [ -n "$marker" ]; then
+    if [ -z "$since" ] || [ "$marker" = "$since" ] || [ "$marker" \> "$since" ]; then
+      return 0
+    fi
+  fi
+  if [ -n "$since" ]; then
+    teardown_copy_ledger_released "$since"
+  else
+    teardown_copy_ledger_released
+  fi
 }
 
 teardown_copy_binding_check() {
   local branch other='' holder='' released=0 occupant pool_free=''
   inspectable_git_worktree "$WT" || return 0
-  if grep -q '^copy_returned_at=' "$META" 2>/dev/null || teardown_copy_ledger_released; then
-    released=1
-  fi
+  ! teardown_copy_released || released=1
   branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=
   other=$(teardown_copy_other_binder) || other=
   if [ -n "$other" ]; then
@@ -2978,7 +3016,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
     echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
     exit 1
   }
-  teardown_meta_set_once_locked copy_returned_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  teardown_meta_replace_locked copy_returned_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     || { echo "error: could not record the copy return for $ID; retaining task state" >&2; exit 1; }
 fi
 
@@ -3015,9 +3053,10 @@ if [ "$BACKEND" = herdr ] \
   fi
 fi
 
-if [ "$TEARDOWN_COPY_RECORDS_ONLY" = 1 ]; then
-  : # the early cleanup already closed this task's endpoint; records-only leaves every pane alone
-elif [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
+# The endpoint closed here is this task's own recorded identity, never the
+# copy's current holder's, so records-only mode closes it too (a no-op when
+# the early cleanup already did).
+if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   # The presentation lock was acquired before the worktree return above; a
   # contended lock already refused this teardown while everything was intact.
   if teardown_herdr_session_lock_held "$HERDR_PRESENTATION_SESSION"; then

@@ -3,12 +3,16 @@
 # <project-id>.jsonl): initialize records the tracking boundary, acquire and
 # release append one event each for a task's hold on a worktree, and released
 # is a read-only query that answers whether the ledger already holds a release
-# event for exactly that task and worktree after its latest acquire. The query
-# exits 0 only on such a release; a missing, unreadable, or malformed ledger,
-# a hold with no release, or a release that predates the latest acquire all
-# exit 1. bin/fm-teardown.sh writes the release only after a successful
-# treehouse return, so a recorded release is durable proof that the task
-# returned that copy, and the query never writes the ledger or takes its lock.
+# event for exactly that task and worktree after its latest acquire, and, when
+# a since timestamp is given, at or after that timestamp. The query exits 0
+# only on such a release; a missing, unreadable, or malformed ledger, a hold
+# with no release, a release that predates the latest acquire, or one older
+# than since all exit 1, and a malformed since exits 2. bin/fm-teardown.sh
+# passes the record's incarnation_at= as since so a release from an earlier
+# incarnation never vouches for the copy the current one holds.
+# bin/fm-teardown.sh writes the release only after a successful treehouse
+# return, so a recorded release is durable proof that the task returned that
+# copy, and the query never writes the ledger or takes its lock.
 set -u
 
 COMMAND=${1:-}
@@ -34,7 +38,7 @@ case "$COMMAND" in
     ;;
   release) ;;
   released) ;;
-  *) echo "fm-worktree-allocation: usage: $0 initialize <project> <timestamp> <complete|incomplete> [worktree ...] | acquire|release <task-id> <project> <worktree> <timestamp> [fresh|reused] | released <task-id> <project> <worktree>" >&2; exit 2 ;;
+  *) echo "fm-worktree-allocation: usage: $0 initialize <project> <timestamp> <complete|incomplete> [worktree ...] | acquire|release <task-id> <project> <worktree> <timestamp> [fresh|reused] | released <task-id> <project> <worktree> [since]" >&2; exit 2 ;;
 esac
 if [ "$COMMAND" = initialize ]; then
   [ -n "$PROJECT" ] && [ -n "$EVENT_AT" ] || exit 2
@@ -49,16 +53,16 @@ LEDGER_DIR="$DATA/worktree-allocations"
 LEDGER="$LEDGER_DIR/$PROJECT_ID.jsonl"
 if [ "$COMMAND" = released ]; then
   [ -f "$LEDGER" ] && [ ! -L "$LEDGER" ] || exit 1
-  exec node - "$LEDGER" "$TASK_ID" "$PROJECT" "$WORKTREE" <<'NODE'
+  exec node - "$LEDGER" "$TASK_ID" "$PROJECT" "$WORKTREE" "$EVENT_AT" <<'NODE'
 const fs = require('fs')
-const [file, taskId, project, worktree] = process.argv.slice(2)
+const [file, taskId, project, worktree, since] = process.argv.slice(2)
 const projectIdentity = String(project).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 const identity = String(worktree).replace(/\\/g, '/').replace(/^\/+/, '').replace(/[-/_]+/g, '/').replace(/\/+$/, '').toLowerCase()
 const canonical = value => {
   const time = Date.parse(value)
   return Number.isFinite(time) && new Date(time).toISOString().replace('.000Z', 'Z') === value ? value : null
 }
-if (!taskId || !projectIdentity || !identity) process.exit(2)
+if (!taskId || !projectIdentity || !identity || (since && !canonical(since))) process.exit(2)
 let records
 try {
   records = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
@@ -74,7 +78,8 @@ for (const record of records.slice(1)) {
 }
 const events = records.slice(1)
 const acquireIndex = events.findLastIndex(record => record.event === 'acquire' && record.task_id === taskId && record.identity === identity)
-const released = events.slice(acquireIndex + 1).some(record => record.event === 'release' && record.task_id === taskId && record.identity === identity)
+const released = events.slice(acquireIndex + 1).some(record => record.event === 'release' && record.task_id === taskId
+  && record.identity === identity && (!since || Date.parse(record.event_at) >= Date.parse(since)))
 process.exit(released ? 0 : 1)
 NODE
 fi

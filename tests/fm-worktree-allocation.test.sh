@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Behavioral coverage for bin/fm-worktree-allocation.sh's read-only `released`
 # query: it answers 0 only when the ledger holds a release for exactly that
-# task and worktree after its latest acquire, never writes the ledger, and
-# never reads a missing, malformed, or foreign ledger as released.
+# task and worktree after its latest acquire (and at or after the optional
+# since bound), never writes the ledger, and never reads a missing, malformed,
+# or foreign ledger as released.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -72,6 +73,30 @@ test_released_follows_the_ledger_events() {
   pass "released answers from the task's own release after its latest acquire without writing the ledger"
 }
 
+test_released_since_bound_excludes_older_releases() {
+  local case_dir rc proj wt
+  case_dir=$(make_case since)
+  proj="$case_dir/project"
+  wt="$case_dir/wt"
+  alloc "$case_dir" initialize "$proj" 2026-09-17T18:00:00Z complete || fail "initialize failed"
+  alloc "$case_dir" acquire task-a "$proj" "$wt" 2026-09-17T19:00:00Z reused >/dev/null || fail "acquire failed"
+  alloc "$case_dir" release task-a "$proj" "$wt" 2026-09-17T20:00:00Z || fail "release failed"
+
+  rc=0; alloc "$case_dir" released task-a "$proj" "$wt" 2026-09-17T19:30:00Z || rc=$?
+  expect_code 0 "$rc" "released: a release after since must read as released"
+  rc=0; alloc "$case_dir" released task-a "$proj" "$wt" 2026-09-17T20:00:00Z || rc=$?
+  expect_code 0 "$rc" "released: a release exactly at since must read as released"
+  rc=0; alloc "$case_dir" released task-a "$proj" "$wt" 2026-09-17T20:00:01Z || rc=$?
+  expect_code 1 "$rc" "released: a release older than since must not read as released"
+  rc=0; alloc "$case_dir" released task-a "$proj" "$wt" 2026-09-18T01:00:00Z || rc=$?
+  expect_code 1 "$rc" "released: a release from before a later incarnation must not read as released"
+  rc=0; alloc "$case_dir" released task-a "$proj" "$wt" "not a timestamp" || rc=$?
+  expect_code 2 "$rc" "released: a malformed since must be a usage error"
+  rc=0; alloc "$case_dir" released task-a "$proj" "$wt" 2026-09-17T20:00:00 || rc=$?
+  expect_code 2 "$rc" "released: a non-canonical since must be a usage error"
+  pass "released honors the since bound so only releases at or after it count"
+}
+
 test_released_refuses_malformed_and_missing_arguments() {
   local case_dir rc proj wt ledger
   case_dir=$(make_case malformed)
@@ -103,4 +128,5 @@ test_released_refuses_malformed_and_missing_arguments() {
 }
 
 test_released_follows_the_ledger_events
+test_released_since_bound_excludes_older_releases
 test_released_refuses_malformed_and_missing_arguments
