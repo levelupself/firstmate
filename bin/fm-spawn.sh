@@ -1005,7 +1005,6 @@ spawn_abort_cleanup() {
       || echo "warning: could not detach '$REACQUIRE_CHECKED_OUT_WT' from fm/$ID after the failed reacquire; detach it by hand before retrying" >&2
     REACQUIRE_CHECKED_OUT_WT=
   fi
-  spawn_release_abandoned_lease
   if [ "$REATTACH_META_PUBLISHED" = 1 ] && [ -f "$REATTACH_META_PRIOR" ]; then
     if mv -f -- "$REATTACH_META_PRIOR" "$STATE/$ID.meta"; then
       REATTACH_META_PUBLISHED=0
@@ -1120,6 +1119,11 @@ spawn_abort_cleanup() {
     CONFIG_INHERIT_LOCK_HELD=0
     fm_lock_release "$CONFIG_INHERIT_LOCK" || true
   fi
+  # Last, after every endpoint cleanup above: the pane's shell may already sit
+  # inside the leased copy, and `treehouse return` terminates the processes it
+  # finds there, which would take the endpoint out from under a cleanup that
+  # still has to verify it.
+  spawn_release_abandoned_lease
   return "$status"
 }
 trap spawn_abort_cleanup EXIT
