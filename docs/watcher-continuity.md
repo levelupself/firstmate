@@ -67,7 +67,7 @@ A matching PID and identity lets an attached arm report the delivered reason and
 Only a cycle with no matching delivery record emits `watcher: FAILED - cycle ended without an actionable reason` and exits nonzero.
 
 The arm layer appends one tab-separated record per observed cycle to `state/.watch-cycle-exits.log`.
-Each record includes arm and watcher PIDs, start and end timestamps, exit code and signal, classified reason, beacon age, lock identity before and after close, the confirmation budget used with the one-minute load average read at the attempt, successor disposition, and the started watcher's startup profile.
+Each record includes arm and watcher PIDs, start and end timestamps, exit code and signal, classified reason, beacon age, lock identity before and after close, the confirmation budget used with the one-minute load average read at the attempt, the started watcher's startup profile, and successor disposition as the last field.
 That profile names the cumulative milliseconds from the fork to each phase the watcher reached - its main entry, the PR check migration's return, the singleton claim, and its first beacon - so a confirmation timeout names the slow phase from the row alone; `bin/fm-watch-arm.sh`'s header owns the field format.
 The file is size-capped through `FM_WATCH_CYCLE_LOG_MAX_BYTES` and `FM_WATCH_CYCLE_LOG_KEEP_LINES`.
 `state/.watch-triage.log` remains only the watcher's bounded absorbed-wake debug log and carries no lifecycle semantics.
