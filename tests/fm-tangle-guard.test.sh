@@ -150,7 +150,7 @@ test_brief_assertion_precedes_branch() {
 
 # --- GUARD 1b: fm-spawn isolation abort -------------------------------------
 
-# A fake tmux that reports FM_FAKE_PANE_PATH as the post-`treehouse get` pane cwd
+# A fake tmux that reports FM_FAKE_PANE_PATH as the post-`treehouse enter` pane cwd
 # (so the spawn's worktree-resolution loop resolves to a path we control), names
 # the session on '#S', and swallows window ops. Echoes the fakebin dir.
 make_spawn_fakebin() {
@@ -171,7 +171,7 @@ exit 0
 SH
   chmod +x "$fakebin/tmux"
   fm_fake_pane_shell "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
+  fm_fake_treehouse_lease "$fakebin"
   printf '%s\n' "$fakebin"
 }
 
@@ -252,7 +252,7 @@ exit 0
 SH
   chmod +x "$fakebin/tmux"
   fm_fake_pane_shell "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
+  fm_fake_treehouse_lease "$fakebin"
   printf '%s\n' "$fakebin"
 }
 
@@ -297,9 +297,10 @@ test_spawn_tmux_window_construction() {
   assert_grep "set-window-option -t @spawnwid allow-rename off" "$rec" \
     "must disable allow-rename on the spawned window"
 
-  # Bug 2 fix (b): treehouse-get and the worktree wait loop target the stable id.
-  assert_grep "send-keys -t @spawnwid treehouse get Enter" "$rec" \
-    "treehouse get must be sent to the stable window id"
+  # Bug 2 fix (b): the pool entry and the worktree wait loop target the stable
+  # id (the copy is leased by the spawn itself; the pane only enters it).
+  assert_grep "send-keys -t @spawnwid treehouse enter 1 Enter" "$rec" \
+    "treehouse enter must be sent to the stable window id"
   assert_grep "display-message -p -t @spawnwid #{pane_current_path}" "$rec" \
     "the worktree wait loop must query the stable window id, not the name"
 

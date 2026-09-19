@@ -54,6 +54,8 @@ set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/pool-helpers.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/pool-helpers.sh"
 fm_git_identity fmtest fmtest@example.invalid
 
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
@@ -3674,8 +3676,8 @@ early_teardown_open_pr_task() {  # <case-dir>
   grep -q '^teardown_at=' "$case_dir/state/task-x1.meta" \
     || fail "early teardown did not stamp teardown_at= into the retained record"
   [ -f "$case_dir/state/task-x1.pr-poll" ] || fail "early teardown did not retain the merge poll"
-  assert_grep "return --force $case_dir/wt" "$case_dir/treehouse.log" \
-    "early teardown did not return the copy to the pool"
+  grep -E -- "return --force (--if-lease-id [^ ]+ )?$case_dir/wt" "$case_dir/treehouse.log" >/dev/null \
+    || fail "early teardown did not return the copy to the pool"
   [ -z "$(git -C "$case_dir/wt" symbolic-ref --quiet --short HEAD 2>/dev/null)" ] \
     || fail "early teardown left the copy on a named branch"
 }
@@ -4362,6 +4364,228 @@ test_footprint_failed_listing_refuses
 test_footprint_literal_paths
 test_footprint_forced_descendants
 
+# --- pool-lease copy binding --------------------------------------------------
+#
+# A record spawned with the pool's durable per-task lease carries pool_lease_id=
+# (bin/fm-spawn.sh). The pool's own inventory then decides whether the copy is
+# still this task's: the same lease proceeds and the return is pinned to it;
+# a released or re-leased copy under a stamped record retires records-only;
+# under a live record it is a lease inconsistency refused by name. These cases
+# run against the stateful fake pool in tests/pool-helpers.sh, whose return
+# honours --if-lease-id exactly as treehouse does.
+
+# add_lease_pool_treehouse <case-dir> <lease-id>: the fake pool holds the copy
+# under <lease-id> for task-x1, and task-x1's record carries that lease.
+add_lease_pool_treehouse() {  # <case-dir> <lease-id>
+  local case_dir=$1 lease=$2
+  mkdir -p "$case_dir/fake"
+  : > "$case_dir/fake/treehouse.log"
+  fm_fake_pool_write_treehouse "$case_dir/fakebin"
+  fm_fake_pool_inventory "$(fm_fake_pool_entry 1 "$case_dir/wt" leased '[]' "$lease" task-x1)" \
+    > "$case_dir/fake/status.json"
+  printf 'pool_lease_id=%s\n' "$lease" >> "$case_dir/state/task-x1.meta"
+  export FM_FAKE_DIR="$case_dir/fake"
+  # The suite's log path, so the shared assertions keep reading one file.
+  ln -sf "$case_dir/fake/treehouse.log" "$case_dir/treehouse.log"
+}
+
+pool_lease_of() {  # <case-dir>
+  fm_fake_pool_field "$FM_FAKE_DIR/status.json" "$1/wt" lease_id
+}
+
+test_lease_bound_record_returns_its_copy_under_its_own_lease() {
+  local case_dir rc
+  case_dir=$(make_case lease-own-return)
+  write_meta "$case_dir" no-mistakes ship
+  add_logging_tmux "$case_dir"
+  seed_allocation_acquire "$case_dir"
+  add_lease_pool_treehouse "$case_dir" lease-x1-aaaa
+  add_compatible_tasks_axi "$case_dir"
+  rc=0
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+  unset FM_FAKE_DIR
+  expect_code 0 "$rc" "lease-own-return: the forced cleanup should succeed: $(cat "$case_dir/output")"
+  assert_grep "return --force --if-lease-id lease-x1-aaaa $case_dir/wt" "$case_dir/fake/treehouse.log" \
+    "lease-own-return: the copy was not returned under the task's own lease: $(cat "$case_dir/fake/treehouse.log")"
+  [ "$(fm_fake_pool_field "$case_dir/fake/status.json" "$case_dir/wt" status)" = available ] \
+    || fail "lease-own-return: the pool still holds the lease after cleanup"
+  assert_absent "$case_dir/state/task-x1.meta" "lease-own-return: the record was not retired"
+  FM_DATA_OVERRIDE="$case_dir/data" FM_STATE_OVERRIDE="$case_dir/state" \
+    "$ROOT/bin/fm-worktree-allocation.sh" holder "$case_dir/project" "$case_dir/wt" > "$case_dir/holder" \
+    || fail "lease-own-return: the ledger could not be read after cleanup"
+  [ ! -s "$case_dir/holder" ] \
+    || fail "lease-own-return: the ledger still names a holder after the return: $(cat "$case_dir/holder")"
+  pass "a lease-bound record returns its copy under its own lease and releases the ledger only after"
+}
+
+test_early_torn_down_lease_record_retires_records_only_when_the_pool_re_leased_its_copy() {
+  local case_dir rc head_before meta_before
+  case_dir=$(make_case lease-reheld-copy)
+  write_meta "$case_dir" no-mistakes ship
+  add_logging_tmux "$case_dir"
+  seed_allocation_acquire "$case_dir"
+  add_lease_pool_treehouse "$case_dir" lease-x1-bbbb
+  early_teardown_open_pr_task "$case_dir"
+  [ -z "$(pool_lease_of "$case_dir")" ] || fail "lease-reheld-copy: early cleanup did not release the lease"
+  # The pool leases the released copy to task-x2, exactly as a later spawn does.
+  (cd "$case_dir/project" && PATH="$case_dir/fakebin:$PATH" treehouse get --lease --lease-holder task-x2 >/dev/null 2>&1) \
+    || fail "lease-reheld-copy: the fake pool could not lease the copy to the second task"
+  release_copy_to_second_task "$case_dir"
+  head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
+  meta_before=$(cat "$case_dir/state/task-x2.meta")
+  : > "$case_dir/state/task-x1.context-watch"
+  : > "$case_dir/fake/treehouse.log"
+  : > "$case_dir/tmux.log"
+  mark_open_pr_task_merged "$case_dir"
+
+  rc=0
+  FM_FAKE_TASKS_SHOW_STATE="done" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+  unset FM_FAKE_DIR
+  if ! kill -0 "$SECOND_TASK_PID" 2>/dev/null; then
+    fail "lease-reheld-copy: the second task's live worker process was killed by the first task's teardown"
+  fi
+  kill -KILL "$SECOND_TASK_PID" 2>/dev/null || true
+  expect_code 0 "$rc" "lease-reheld-copy: retiring the merged early-torn-down record should succeed records-only: $(cat "$case_dir/output")"
+  assert_reheld_copy_untouched_and_records_retired "$case_dir" lease-reheld-copy "$head_before" "$meta_before"
+  assert_contains "$(cat "$case_dir/output")" "lease-x1-bbbb" \
+    "lease-reheld-copy: the records-only notice must name the lease that was released"
+  [ "$(fm_fake_pool_field "$case_dir/fake/status.json" "$case_dir/wt" lease_holder)" = task-x2 ] \
+    || fail "lease-reheld-copy: the second task's lease was disturbed"
+  pass "a merged early-torn-down lease record retires records-only when the pool re-leased its copy"
+}
+
+test_early_torn_down_lease_record_retires_records_only_when_its_lease_is_gone() {
+  local case_dir rc
+  case_dir=$(make_case lease-released-copy)
+  write_meta "$case_dir" no-mistakes ship
+  add_logging_tmux "$case_dir"
+  seed_allocation_acquire "$case_dir"
+  add_lease_pool_treehouse "$case_dir" lease-x1-cccc
+  early_teardown_open_pr_task "$case_dir"
+  : > "$case_dir/fake/treehouse.log"
+  : > "$case_dir/tmux.log"
+  mark_open_pr_task_merged "$case_dir"
+  rc=0
+  FM_FAKE_TASKS_SHOW_STATE="done" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+  unset FM_FAKE_DIR
+  expect_code 0 "$rc" "lease-released-copy: retiring the merged record should succeed records-only: $(cat "$case_dir/output")"
+  assert_grep "copy already returned; its pool lease lease-x1-cccc was released" "$case_dir/output" \
+    "lease-released-copy: teardown did not report the released lease: $(cat "$case_dir/output")"
+  assert_no_grep "return" "$case_dir/fake/treehouse.log" \
+    "lease-released-copy: the released copy was returned again"
+  assert_absent "$case_dir/state/task-x1.meta" "lease-released-copy: the record was not retired"
+  pass "a merged early-torn-down lease record whose lease is already released never touches the copy again"
+}
+
+test_live_lease_record_whose_lease_the_pool_no_longer_holds_refuses_by_name() {
+  local case_dir rc head_before flag
+  case_dir=$(make_case lease-live-mismatch)
+  write_meta "$case_dir" no-mistakes ship
+  add_logging_tmux "$case_dir"
+  seed_allocation_acquire "$case_dir"
+  add_lease_pool_treehouse "$case_dir" lease-x1-dddd
+  # The pool now holds the copy for task-x2 under a different lease while
+  # task-x1's record is still live: an inconsistency, never a cleanup.
+  fm_fake_pool_inventory "$(fm_fake_pool_entry 1 "$case_dir/wt" leased '[]' lease-x2-eeee task-x2)" \
+    > "$case_dir/fake/status.json"
+  head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
+  for flag in "" --force; do
+    : > "$case_dir/fake/treehouse.log"
+    : > "$case_dir/tmux.log"
+    rc=0
+    # shellcheck disable=SC2086 # an empty flag must vanish, not pass as ""
+    run_teardown "$case_dir" $flag > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+    [ "$rc" -ne 0 ] || fail "lease-live-mismatch${flag:+ ($flag)}: a live record whose lease the pool no longer holds must refuse: $(cat "$case_dir/output")"
+    assert_grep "REFUSED: copy $case_dir/wt is leased by the pool to task-x2 (lease lease-x2-eeee), not under task task-x1's recorded lease lease-x1-dddd" "$case_dir/output" \
+      "lease-live-mismatch${flag:+ ($flag)}: the refusal must name both leases: $(cat "$case_dir/output")"
+    assert_no_grep "return" "$case_dir/fake/treehouse.log" "lease-live-mismatch${flag:+ ($flag)}: the copy was returned"
+    [ ! -s "$case_dir/tmux.log" ] || fail "lease-live-mismatch${flag:+ ($flag)}: an endpoint was touched: $(cat "$case_dir/tmux.log")"
+    [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] || fail "lease-live-mismatch${flag:+ ($flag)}: the copy's HEAD moved"
+    assert_present "$case_dir/state/task-x1.meta" "lease-live-mismatch${flag:+ ($flag)}: the record was removed"
+  done
+  # A live record whose lease simply vanished is the same inconsistency.
+  fm_fake_pool_inventory "$(fm_fake_pool_entry 1 "$case_dir/wt" available)" > "$case_dir/fake/status.json"
+  : > "$case_dir/fake/treehouse.log"
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+  unset FM_FAKE_DIR
+  [ "$rc" -ne 0 ] || fail "lease-live-mismatch (released): a live record whose lease vanished must refuse: $(cat "$case_dir/output")"
+  assert_grep "REFUSED: the pool holds no lease on copy $case_dir/wt, yet task task-x1's live record still binds it under lease lease-x1-dddd" "$case_dir/output" \
+    "lease-live-mismatch (released): the refusal must name the vanished lease: $(cat "$case_dir/output")"
+  assert_no_grep "return" "$case_dir/fake/treehouse.log" "lease-live-mismatch (released): the copy was returned"
+  pass "a live lease record whose lease the pool no longer holds is refused by name, --force included"
+}
+
+test_lease_record_refuses_when_the_pool_inventory_is_unreadable() {
+  local case_dir rc
+  case_dir=$(make_case lease-unreadable-pool)
+  write_meta "$case_dir" no-mistakes ship
+  add_logging_tmux "$case_dir"
+  seed_allocation_acquire "$case_dir"
+  add_lease_pool_treehouse "$case_dir" lease-x1-ffff
+  rc=0
+  FM_FAKE_STATUS_FAIL=1 run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+  unset FM_FAKE_DIR
+  [ "$rc" -ne 0 ] || fail "lease-unreadable-pool: an unreadable inventory must refuse a lease-bound cleanup: $(cat "$case_dir/output")"
+  assert_grep "REFUSED: task task-x1's record binds copy $case_dir/wt under pool lease lease-x1-ffff, but the pool inventory" "$case_dir/output" \
+    "lease-unreadable-pool: the refusal must name the lease and the inventory: $(cat "$case_dir/output")"
+  assert_no_grep "return" "$case_dir/fake/treehouse.log" "lease-unreadable-pool: the copy was returned"
+  assert_present "$case_dir/state/task-x1.meta" "lease-unreadable-pool: the record was removed"
+  pass "a lease-bound record refuses cleanup while the pool cannot answer for its lease"
+}
+
+test_lease_record_with_a_malformed_recorded_lease_refuses_and_returns_nothing() {
+  local case_dir rc head_before flag recorded label
+  case_dir=$(make_case lease-malformed-record)
+  write_meta "$case_dir" no-mistakes ship
+  add_logging_tmux "$case_dir"
+  seed_allocation_acquire "$case_dir"
+  add_lease_pool_treehouse "$case_dir" lease-x1-gggg
+  add_compatible_tasks_axi "$case_dir"
+  head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
+  # The pool holds the copy under exactly the lease the record was spawned
+  # with, but the record's own copy of it is one bin/fm-spawn.sh could never
+  # have written: a CR (a CRLF hand edit), a tab, or nothing at all. Each is a
+  # lease-bound record whose lease cannot be trusted, never a pre-lease one.
+  for recorded in $'lease-x1-gggg\r' $'lease-x1\tgggg' ''; do
+    case "$recorded" in
+      *$'\r'*) label=cr ;;
+      *$'\t'*) label=tab ;;
+      *) label=empty ;;
+    esac
+    printf 'pool_lease_id=%s\n' "$recorded" >> "$case_dir/state/task-x1.meta"
+    for flag in "" --force; do
+      : > "$case_dir/fake/treehouse.log"
+      : > "$case_dir/tmux.log"
+      rc=0
+      # shellcheck disable=SC2086 # an empty flag must vanish, not pass as ""
+      run_teardown "$case_dir" $flag > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+      [ "$rc" -ne 0 ] || fail "lease-malformed-record ($label${flag:+ $flag}): a malformed recorded lease must refuse: $(cat "$case_dir/output")"
+      assert_grep "REFUSED: task task-x1's record binds copy $case_dir/wt under a pool lease, but its recorded pool_lease_id= is not a lease" "$case_dir/output" \
+        "lease-malformed-record ($label${flag:+ $flag}): the refusal must name the untrusted lease: $(cat "$case_dir/output")"
+      [ ! -s "$case_dir/fake/treehouse.log" ] \
+        || fail "lease-malformed-record ($label${flag:+ $flag}): the pool was touched: $(cat "$case_dir/fake/treehouse.log")"
+      [ ! -s "$case_dir/tmux.log" ] || fail "lease-malformed-record ($label${flag:+ $flag}): an endpoint was touched: $(cat "$case_dir/tmux.log")"
+      [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] || fail "lease-malformed-record ($label${flag:+ $flag}): the copy's HEAD moved"
+      assert_present "$case_dir/state/task-x1.meta" "lease-malformed-record ($label${flag:+ $flag}): the record was removed"
+      [ "$(pool_lease_of "$case_dir")" = lease-x1-gggg ] \
+        || fail "lease-malformed-record ($label${flag:+ $flag}): the pool's lease was disturbed"
+    done
+  done
+  unset FM_FAKE_DIR
+  pass "a lease-bound record whose recorded lease is malformed refuses by name, --force included, and returns nothing"
+}
+
+
 test_local_only_fork_remote_allows
 test_teardown_preserves_open_pr_poll_when_compatible
 test_teardown_without_backlog_reports_and_proceeds
@@ -4439,6 +4663,12 @@ test_persistent_scan_refuses_after_bounded_retries
 test_process_exit_during_identity_lookup_does_not_refuse
 test_run_abort_precedes_process_reap_precedes_worktree_removal
 test_early_torn_down_record_never_resets_a_copy_reheld_by_another_task
+test_lease_bound_record_returns_its_copy_under_its_own_lease
+test_early_torn_down_lease_record_retires_records_only_when_the_pool_re_leased_its_copy
+test_early_torn_down_lease_record_retires_records_only_when_its_lease_is_gone
+test_live_lease_record_whose_lease_the_pool_no_longer_holds_refuses_by_name
+test_lease_record_refuses_when_the_pool_inventory_is_unreadable
+test_lease_record_with_a_malformed_recorded_lease_refuses_and_returns_nothing
 test_untracked_early_torn_down_record_retires_records_only_when_the_ledger_names_another_holder
 test_early_torn_down_record_retires_when_its_returned_copy_sits_free
 test_early_torn_down_record_refuses_when_the_pool_inventory_is_unreadable

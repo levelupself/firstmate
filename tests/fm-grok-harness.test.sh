@@ -27,7 +27,8 @@ exit 0
 SH
   chmod +x "$fakebin/tmux"
   fm_fake_pane_shell "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse gh-axi gh
+  fm_fake_exit0 "$fakebin" gh-axi gh
+  fm_fake_treehouse_lease "$fakebin"
   printf '%s\n' "$fakebin"
 }
 
@@ -110,8 +111,8 @@ EOF
 
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     GROK_HOME="$grok_home" PATH="$fakebin:$PATH" \
-    "$TEARDOWN" "$id" --force >/dev/null 2>&1 \
-    || fail "grok teardown failed"
+    "$TEARDOWN" "$id" --force >"$case_dir/teardown.out" 2>&1 \
+    || fail "grok teardown failed: $(cat "$case_dir/teardown.out")"
 
   assert_absent "$wt/.fm-grok-turnend" "grok pointer survived teardown"
   assert_absent "$grok_home/hooks/fm-turn-end.d/$token" "grok auth token survived teardown"

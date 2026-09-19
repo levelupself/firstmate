@@ -11,7 +11,8 @@
 #      unbound free copy instead and the bound copy is untouched.
 #   2. With no unbound free copy, the spawn stops and names the owning task.
 #   3. A copy bound only by a torn-down record (teardown_at= stamped, or the
-#      record removed) is accepted exactly as before.
+#      record removed) is accepted exactly as before, through the pool's own
+#      per-task lease.
 #   4. A free copy whose ignored footprint exceeds FM_POOL_COPY_BUDGET_GB is
 #      pruned before it is entered; one still over budget after the prune is
 #      never handed to the new worker, and the spawn steers to a clean copy or
@@ -20,6 +21,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/pool-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/pool-helpers.sh"
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-pool-slot-binding)
@@ -34,121 +37,21 @@ binding_cleanup() {
 }
 trap binding_cleanup EXIT
 
-# A tmux stub whose pane is a fake pool client: `treehouse get` moves the pane
-# into the copy the fake pool would hand out AND refreshes that copy to
-# origin's default branch, exactly as the real pool does on acquisition;
-# `treehouse enter <name>` moves the pane into that named copy and changes
-# nothing. `pwd -P > file` answers from the pane's current directory.
+# The fake pool: tests/pool-helpers.sh models the lease exactly as treehouse
+# does, and its tmux stub's pane enters a copy by name. The legacy interactive
+# `treehouse get` the stub still models is what a bound copy used to be lost
+# to; the spawn path under test never sends it any more.
 make_tmux_stub() {  # <case-dir>
-  local fb="$1/fakebin"
-  mkdir -p "$fb"
-  cat > "$fb/tmux" <<'SH'
-#!/usr/bin/env bash
-set -u
-D=$FM_FAKE_DIR
-printf '%s\n' "$*" >> "$D/tmux.log"
-pane_cwd() { [ ! -f "$D/cwd" ] || cat "$D/cwd"; }
-case "${1:-}" in
-  has-session|new-session|set-window-option) exit 0 ;;
-  list-windows)
-    [ ! -f "$D/windows" ] || cat "$D/windows"
-    exit 0
-    ;;
-  new-window)
-    cwd=
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        -c) cwd=${2:-}; shift 2 ;;
-        -n) printf '%s\n' "${2:-}" >> "$D/windows"; shift 2 ;;
-        *) shift ;;
-      esac
-    done
-    printf '%s' "$cwd" > "$D/cwd"
-    printf '@41\n'
-    exit 0
-    ;;
-  kill-window)
-    : > "$D/windows"
-    exit 0
-    ;;
-  display-message)
-    for a in "$@"; do
-      case "$a" in
-        *pane_current_path*) pane_cwd; printf '\n'; exit 0 ;;
-        *pane_current_command*) printf 'bash\n'; exit 0 ;;
-        *pane_pid*) printf '2147483646\n'; exit 0 ;;
-      esac
-    done
-    printf 'firstmate\n'
-    exit 0
-    ;;
-  send-keys)
-    shift
-    literal=0
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        -t) shift 2 ;;
-        -l) literal=1; shift ;;
-        *) break ;;
-      esac
-    done
-    text=${1:-}
-    if [ "$literal" = 1 ]; then
-      printf '%s\n' "$text" >> "$D/literal"
-      exit 0
-    fi
-    printf '%s\n' "$text" >> "$D/keys"
-    case "$text" in
-      'treehouse get')
-        handout=$(cat "$D/pool-get")
-        printf '%s' "$handout" > "$D/cwd"
-        if git -C "$handout" remote get-url origin >/dev/null 2>&1; then
-          git -C "$handout" checkout -q --detach refs/remotes/origin/main
-        else
-          git -C "$handout" checkout -q --detach main
-        fi
-        ;;
-      'treehouse enter '*)
-        name=${text#treehouse enter }
-        awk -F '\t' -v n="$name" '$1 == n { print $2 }' "$D/pool-slots" | tr -d '\n' > "$D/cwd"
-        ;;
-      'pwd -P > '*)
-        ( cd "$(pane_cwd)" && eval "$text" ) || true
-        ;;
-    esac
-    exit 0
-    ;;
-esac
-exit 0
-SH
-  chmod +x "$fb/tmux"
-  cat > "$fb/sleep" <<'SH'
-#!/usr/bin/env bash
-exit 0
-SH
-  chmod +x "$fb/sleep"
+  fm_fake_pool_write_tmux "$1/fakebin"
 }
 
-# The treehouse binary fm-spawn calls directly answers only `status --json`,
-# from the inventory the case owns.
 make_treehouse_stub() {  # <case-dir>
-  cat > "$1/fakebin/treehouse" <<'SH'
-#!/usr/bin/env bash
-set -u
-D=$FM_FAKE_DIR
-printf '%s\n' "$*" >> "$D/treehouse.log"
-[ "${1:-}" = status ] || exit 1
-[ -f "$D/status.json" ] || exit 1
-cat "$D/status.json"
-exit 0
-SH
-  chmod +x "$1/fakebin/treehouse"
+  fm_fake_pool_write_treehouse "$1/fakebin"
 }
 
 # pool_entry <name> <path> <status> [processes-json]
 pool_entry() {
-  printf '{"name":"%s","path":"%s","status":"%s","lease_id":"","lease_holder":"","leased_at":null,"processes":%s}' \
-    "$1" "$2" "$3" "${4:-[]}"
+  fm_fake_pool_entry "$@"
 }
 
 # write_meta_for <home> <id> <worktree> <project> [extra-line...]
@@ -216,9 +119,8 @@ new_case() {  # <name> <id> <other-id>
   printf '# brief for %s\n\nDelivery contract: mode=no-mistakes\n' "$id" > "$home/data/$id/brief.md"
   fm_test_backlog_ensure_queue "$home" "$id"
   write_meta_for "$home" "$other" "$bound" "$proj"
-  printf '%s\n' "$bound" > "$dir/fake/pool-get"
-  printf '7\t%s\n3\t%s\n' "$bound" "$free" > "$dir/fake/pool-slots"
-  printf '[%s,%s]\n' "$(pool_entry 3 "$free" available)" "$(pool_entry 7 "$bound" available)" \
+  # Copy 7 is listed first, so the pool would hand it out first.
+  printf '[%s,%s]\n' "$(pool_entry 7 "$bound" available)" "$(pool_entry 3 "$free" available)" \
     > "$dir/fake/status.json"
   TASK_TMPS+=("/tmp/fm-$id")
   printf '%s\n' "$dir"
@@ -231,6 +133,20 @@ run_spawn() {  # <case-dir> <args...>
   env -u HERDR_ENV -u TMUX PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
     FM_BACKEND=tmux FM_SPAWN_NO_GUARD=1 FM_SPAWN_CWD_PROOF_POLLS=1 \
     "$SPAWN" "$@" 2>&1
+}
+
+# assert_leased_through_pool <case-dir> <id> <copy>: the ordinary acquisition
+# is the pool's own lease under the task id, recorded in the task's record.
+assert_leased_through_pool() {  # <case-dir> <id> <copy>
+  local dir=$1 id=$2 copy=$3 lease
+  assert_grep "get --lease --lease-holder $id" "$dir/fake/treehouse.log" \
+    "the copy was not acquired through the pool's per-task lease"
+  lease=$(fm_fake_pool_field "$dir/fake/status.json" "$copy" lease_id)
+  [ -n "$lease" ] || fail "the pool does not lease '$copy' after the spawn"
+  [ "$(fm_fake_pool_field "$dir/fake/status.json" "$copy" lease_holder)" = "$id" ] \
+    || fail "the pool leases '$copy' to '$(fm_fake_pool_field "$dir/fake/status.json" "$copy" lease_holder)', not $id"
+  assert_grep "pool_lease_id=$lease" "$dir/home/state/$id.meta" "the record does not carry the pool's lease"
+  assert_no_grep 'treehouse get' "$dir/fake/keys" "the pane must never run the interactive treehouse get"
 }
 
 assert_bound_copy_untouched() {  # <bound> <other> <head-before>
@@ -336,7 +252,7 @@ test_bound_only_by_torn_down_record_is_accepted() {
   echo 'teardown_at=2026-09-11T00:00:00Z' >> "$dir/home/state/$other.meta"
   out=$(run_spawn "$dir" "$id" "$dir/proj" --mode no-mistakes --yolo off); rc=$?
   expect_code 0 "$rc" "a copy bound only by a torn-down record must be accepted"$'\n'"$out"
-  assert_grep 'treehouse get' "$dir/fake/keys" "the pane should acquire through the pool as before"
+  assert_leased_through_pool "$dir" "$id" "$bound"
   meta="$dir/home/state/$id.meta"
   assert_grep "worktree=$bound" "$meta" "the new task's record does not name the copy the pool handed out"
   [ "$(git -C "$bound" rev-parse HEAD)" = "$(git -C "$bound" rev-parse origin/main)" ] \
@@ -363,17 +279,17 @@ test_empty_inventory_with_bound_copies_acquires_fresh() {
   fresh="$dir/pool/9/proj"
   # The pool directory was lost (a host reboot wiped it): the parked task's
   # record still names its copy, but the pool is empty and reads as such, so
-  # `treehouse get` can only create a fresh copy - nothing bound can be
-  # handed out. Reading a clean empty inventory as unreadable would deadlock
-  # every spawn behind records whose copies no longer exist.
+  # the lease can only create a fresh copy - nothing bound can be handed out.
+  # Reading a clean empty inventory as unreadable would deadlock every spawn
+  # behind records whose copies no longer exist.
   git -C "$dir/proj" worktree remove --force "$bound"
   git -C "$dir/proj" worktree add --quiet --detach "$fresh"
-  printf '%s\n' "$fresh" > "$dir/fake/pool-get"
+  printf '9\t%s\n' "$fresh" > "$dir/fake/pool-fresh"
   printf '[]\n' > "$dir/fake/status.json"
   out=$(run_spawn "$dir" "$id" "$dir/proj" --mode no-mistakes --yolo off); rc=$?
   expect_code 0 "$rc" "an empty pool inventory must not be mistaken for an unreadable one"$'\n'"$out"
   assert_contains "$out" "spawned $id" "spawn did not report success"
-  assert_grep 'treehouse get' "$dir/fake/keys" "an empty pool is acquired through the ordinary treehouse get"
+  assert_leased_through_pool "$dir" "$id" "$fresh"
   meta="$dir/home/state/$id.meta"
   assert_grep "worktree=$fresh" "$meta" "the new task's record does not name the fresh copy the pool created"
   assert_no_grep "worktree=$bound" "$meta" "the new task's record names the lost copy"
@@ -400,7 +316,7 @@ test_over_budget_free_copy_is_pruned_then_acquired() {
   out=$(FM_POOL_COPY_BUDGET_GB=0.00001 run_spawn "$dir" "$id" "$dir/proj" --mode no-mistakes --yolo off); rc=$?
   expect_code 0 "$rc" "a free copy that the return prune brings under budget must be acquired"$'\n'"$out"
   assert_absent "$handout/target" "the over-budget copy was not pruned before acquisition"
-  assert_grep 'treehouse get' "$dir/fake/keys" "a pool whose free copies all fit the budget acquires through treehouse get"
+  assert_leased_through_pool "$dir" "$id" "$handout"
   assert_grep "worktree=$handout" "$dir/home/state/$id.meta" "the new task's record does not name the pruned copy"
   pass "fm-spawn: an over-budget free copy is pruned and entered once it fits the budget"
 }

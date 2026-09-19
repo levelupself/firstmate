@@ -49,7 +49,8 @@
 #   named path is an isolated worktree root on branch fm/<task-id>, and
 #   `treehouse status --json` names that copy - matched by resolved directory,
 #   so a pool root spelled through a symlink still counts - exactly once with
-#   no lease and no process this spawn cannot claim. Every one of those is
+#   no lease or this task's own lease (pool-lease below) and no process this
+#   spawn cannot claim. Every one of those is
 #   re-proved once the replacement endpoint exists and before anything durable
 #   is published, so the facts have to hold at publication rather than merely
 #   when first read.
@@ -73,11 +74,12 @@
 #   endpoint and create a replacement directly in an existing directory.
 #        fm-spawn.sh <task-id> --reacquire-worktree [--harness <name>] [--model <name>] [--effort <level>]
 #   --reacquire-worktree is the recovery for the case --reattach-worktree
-#   cannot serve: the task's recorded copy was TAKEN - handed to another task
-#   by the pool and refreshed, so no retained copy holds the work - while the
-#   task's branch fm/<task-id> survived in the shared repository with its
-#   commits. It acquires a fresh pooled copy through the ordinary fresh-spawn
-#   endpoint path on the task's recorded backend (tmux or herdr, the backends
+#   cannot serve: the task's recorded copy was TAKEN - a pre-lease copy handed
+#   to another task by the pool and refreshed, or a copy an early cleanup
+#   returned, so no retained copy holds the work - while the task's branch
+#   fm/<task-id> survived in the shared repository with its commits. It
+#   leases a fresh pooled copy (pool-lease below) through the ordinary
+#   fresh-spawn endpoint path on the task's recorded backend (tmux or herdr, the backends
 #   with a recovery-grade agent-state classifier), refreshes that copy exactly
 #   as a fresh spawn would, checks fm/<task-id> out there at its current head,
 #   and republishes the endpoint plus worktree binding atomically with the
@@ -96,38 +98,59 @@
 #   endpoint exists removes it, restores the prior record byte-for-byte, and
 #   detaches the fresh copy from the branch again. The fresh acquisition
 #   records an ordinary allocation-ledger acquire at the time it happened.
-#   Fresh ship and scout spawns never take a pooled copy another task record
-#   in this home still binds. `treehouse get` hands out any clean copy with no
-#   process inside it and no durable lease, and checks it out at origin's
-#   default branch as it does so; the pool remembers an interactive
-#   acquisition only by the acquiring shell's pid, so after that shell exits
-#   or the host reboots a parked task's committed, clean copy reads as
-#   available again while state/<id>.meta still binds it. A record binds its
-#   worktree= until bin/fm-teardown.sh stamps teardown_at= into it (only after
-#   its landed-work test) or removes it. Before the pane runs `treehouse get`,
-#   this script reads `treehouse status --json` for the project whenever any
-#   other live record of the same project binds a copy: if the pool would
-#   hand out a bound copy, the pane runs `treehouse enter <name>` into an
-#   unbound available copy instead (then detaches it so the base refresh
-#   moves no branch), and when no unbound copy is available the spawn stops
-#   naming the owning task. An unreadable inventory while bound copies exist
-#   is a refusal, not a guess. A successfully read empty inventory allows
-#   ordinary acquisition of a fresh copy even when records bind lost copies.
-#   Whatever copy the pane lands in is checked
-#   again against every live record before anything is launched or recorded.
+#   Pool lease (pool-lease): every pooled copy a fresh ship or scout spawn or
+#   a --reacquire-worktree takes is acquired by this script itself with
+#   `treehouse get --lease --lease-holder <task-id> --json` (treehouse 2.1.0,
+#   the bootstrap floor, which also ships `return --if-lease-id`). The pool
+#   reserves a clean copy, checks it out at origin's default branch, and marks
+#   it leased in its own persistent state, where it stays - never handed out
+#   by a later get, never removed by prune, whether or not a process is inside
+#   - until bin/fm-teardown.sh returns it under that exact lease after its
+#   landed-work test. The lease identity is recorded as pool_lease_id= in
+#   state/<id>.meta; --relaunch and --reattach-worktree carry it (a retained
+#   copy leased to this task id is accepted, one leased to anyone else is
+#   refused), a reacquire records its new lease, and a spawn that fails
+#   anywhere after leasing and before its record binds the copy returns the
+#   lease under that identity so no pool slot is left leased to a task with no
+#   record of it. The pane never runs the interactive `treehouse get`; it
+#   enters the leased copy by its pool name with `treehouse enter <name>`,
+#   which touches no pool state. This closes the pre-lease race in which the
+#   pool remembered an interactive acquisition only by the acquiring shell's
+#   pid, so a finished or parked task's clean copy read as available again
+#   between the worker's exit and cleanup, or after a host reboot, while
+#   state/<id>.meta still bound it.
+#   Fresh ship and scout spawns additionally never take a pooled copy another
+#   task record in this home still binds. A record binds its worktree= until
+#   bin/fm-teardown.sh stamps teardown_at= into it (only after its landed-work
+#   test) or removes it. Before leasing, this script reads `treehouse status
+#   --json` for the project whenever any other live record of the same
+#   project binds a copy: a copy the pool would hand out while a pre-lease
+#   record still binds it (a leased copy is skipped by the pool itself) means
+#   the pane is steered with `treehouse enter <name>` into an unbound
+#   available copy instead (then detaches it so the base refresh moves no
+#   branch), and when no unbound copy is available the spawn stops naming the
+#   owning task. A steered copy carries no pool lease, because the pool
+#   chooses which copy a lease takes; it is protected by its record binding
+#   and this cross-check alone, exactly as every copy was before leases. An
+#   unreadable inventory while bound copies exist is a refusal, not a guess.
+#   A successfully read empty inventory allows an ordinary lease of a fresh
+#   copy even when records bind lost copies. Whatever copy the pane lands in
+#   is checked again against every live record before anything is launched
+#   or recorded.
 #   Footprint pre-condition (footprint-gate): before any pooled copy is
 #   entered, every free unbound copy the inventory reports is measured through
 #   bin/fm-pool-footprint-lib.sh; one over FM_POOL_COPY_BUDGET_GB (default 12
 #   decimal GB, docs/configuration.md) is pruned through the return rule table
 #   (it is unowned by definition) and re-measured, and one still over budget is
-#   never handed to the new worker. When every free copy fits, `treehouse get`
-#   runs unchanged; when some free copy is still over budget, the pane is
-#   steered into the first copy that fits with `treehouse enter <name>` and
-#   the refused copies are named; when none fits, the spawn stops naming
-#   them. An inventory that cannot be read while nothing is bound keeps the
-#   ordinary acquisition, because the pool then reports nothing to measure and
-#   `treehouse get` itself cannot hand out a copy the same binary cannot list;
-#   an unmeasurable free copy counts as over budget.
+#   never handed to the new worker. When every free copy fits, the ordinary
+#   lease runs unchanged; when some free copy is still over budget, the pane
+#   is steered into the first copy that fits with `treehouse enter <name>`
+#   (unleased, as above) and the refused copies are named; when none fits,
+#   the spawn stops naming them. An inventory that cannot be read while
+#   nothing is bound keeps the ordinary acquisition, because the pool then
+#   reports nothing to measure and the lease itself cannot hand out a copy
+#   the same binary cannot list; an unmeasurable free copy counts as over
+#   budget.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -158,7 +181,7 @@
 #   then tmux.
 #   Spawn-capable backends are the reference tmux adapter and experimental
 #   herdr, zellij, orca, and cmux. Orca owns both the task worktree and
-#   terminal, so ship/scout Orca spawns do not run treehouse get; cmux is a
+#   terminal, so ship/scout Orca spawns take no pool lease; cmux is a
 #   session provider only, exactly like herdr/zellij, so it does. An
 #   auto-detected herdr or cmux spawn prints a loud stderr notice;
 #   auto-detected tmux stays silent; zellij and orca are never auto-detected.
@@ -896,9 +919,14 @@ REATTACH_META_PUBLISHED=0
 REATTACH_WIRING_BACKUP=
 REATTACH_PANE_PID=
 REATTACH_DISPLACED_WT=
+REATTACH_OWN_LEASE_ID=
 REACQUIRE_RETIRE_ENDPOINT=
 REACQUIRE_BRANCH_HEAD=
 REACQUIRE_CHECKED_OUT_WT=
+SPAWN_POOL_LEASE_ID=
+SPAWN_POOL_LEASE_PATH=
+SPAWN_POOL_LEASE_RETURN_ON_ABORT=0
+SPAWN_POOL_LEASE_LEDGER_ACQUIRED=0
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
 
@@ -916,6 +944,33 @@ parse_orca_worktree_result() {
     ORCA_TERMINAL=${rest#*$'\t'}
   else
     ORCA_TERMINAL=
+  fi
+}
+
+# spawn_release_abandoned_lease: a spawn that leased a pooled copy and then
+# failed before its record bound that copy returns the lease, so a refused
+# launch never leaves a pool slot leased to a task that has no record of it
+# (prune never removes a leased copy, so such a slot would be lost until
+# someone noticed). The copy holds nothing of the task's yet: get refreshed it
+# to origin's default branch and no agent has run there, and a reacquire's
+# branch checkout was already detached above with the branch ref intact. The
+# return is pinned to the exact lease this spawn took, so a copy the pool has
+# since re-leased is never touched, and a ledger acquire this spawn wrote is
+# paired with its release so the firstmate-side mirror stays consistent.
+spawn_release_abandoned_lease() {
+  local released_at
+  [ "$SPAWN_POOL_LEASE_RETURN_ON_ABORT" = 1 ] || return 0
+  SPAWN_POOL_LEASE_RETURN_ON_ABORT=0
+  if (cd "$PROJ_ABS" && treehouse return --force --if-lease-id "$SPAWN_POOL_LEASE_ID" "$SPAWN_POOL_LEASE_PATH") >/dev/null 2>&1; then
+    if [ "$SPAWN_POOL_LEASE_LEDGER_ACQUIRED" = 1 ]; then
+      SPAWN_POOL_LEASE_LEDGER_ACQUIRED=0
+      released_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      "$SCRIPT_DIR/fm-worktree-allocation.sh" release "$ID" "$PROJ_ABS_REAL" "$SPAWN_POOL_LEASE_PATH" "$released_at" \
+        || echo "warning: could not record the release of '$SPAWN_POOL_LEASE_PATH' in the allocation ledger after the failed spawn of $ID" >&2
+    fi
+    echo "notice: returned pool copy '$SPAWN_POOL_LEASE_PATH' (leased to $ID for this spawn) to the pool after the failure" >&2
+  else
+    echo "warning: pool copy '$SPAWN_POOL_LEASE_PATH' is still leased to $ID (lease $SPAWN_POOL_LEASE_ID) after the failed spawn and could not be returned; release it with: (cd '$PROJ_ABS' && treehouse return --force --if-lease-id '$SPAWN_POOL_LEASE_ID' '$SPAWN_POOL_LEASE_PATH')" >&2
   fi
 }
 
@@ -1064,6 +1119,11 @@ spawn_abort_cleanup() {
     CONFIG_INHERIT_LOCK_HELD=0
     fm_lock_release "$CONFIG_INHERIT_LOCK" || true
   fi
+  # Last, after every endpoint cleanup above: the pane's shell may already sit
+  # inside the leased copy, and `treehouse return` terminates the processes it
+  # finds there, which would take the endpoint out from under a cleanup that
+  # still has to verify it.
+  spawn_release_abandoned_lease
   return "$status"
 }
 trap spawn_abort_cleanup EXIT
@@ -2278,15 +2338,17 @@ real_path_or_raw() {  # <path>
 # --- pooled-copy ownership cross-check ---------------------------------------
 #
 # `treehouse get` hands out any clean copy that has no process inside it and no
-# durable lease, and checks it out at origin's default branch as it does so. The
-# pool remembers an interactive acquisition only by the acquiring shell's pid,
-# so a host reboot (or any exit of that shell) turns a parked task's clean,
-# committed copy back into an available one while this home's state/<id>.meta
-# still binds it - and the pool cannot be told to skip a copy. The cross-check
-# therefore runs BEFORE the acquisition: every copy another task record still
-# binds is identified, and if the pool would hand any of them out, the pane is
-# steered into an unbound free copy with `treehouse enter <name>` instead of
-# letting `get` choose. A record binds its copy until teardown stamps
+# durable lease, and checks it out at origin's default branch as it does so. A
+# copy leased under a task id (pool-lease, script header) is skipped by the pool
+# itself; a copy a pre-lease record or a steered acquisition binds is not, because
+# the pool remembered an interactive acquisition only by the acquiring shell's
+# pid, so a host reboot (or any exit of that shell) turns such a parked task's
+# clean, committed copy back into an available one while this home's
+# state/<id>.meta still binds it - and the pool cannot be told to skip a copy.
+# The cross-check therefore runs BEFORE the acquisition: every copy another
+# task record still binds is identified, and if the pool would hand any of
+# them out, the pane is steered into an unbound free copy with `treehouse
+# enter <name>` instead of letting `get` choose. A record binds its copy until teardown stamps
 # teardown_at= into it (bin/fm-teardown.sh does so only after its landed-work
 # test) or removes it; a status log or report alone binds nothing.
 
@@ -2370,13 +2432,89 @@ spawn_footprint_admit() {  # <path>
 }
 
 # spawn_plan_pool_acquisition: decides how the pane acquires its copy. Sets
-# SPAWN_POOL_ACQUIRE to the exact pane command and, for a steered acquisition,
-# SPAWN_POOL_ENTER_PATH to the copy it must land in. Every free unbound copy
-# passes the footprint pre-condition; the ordinary `treehouse get` runs only
-# when no bound copy could be handed out and every free copy fits the budget.
-SPAWN_POOL_ACQUIRE='treehouse get'
+# SPAWN_POOL_ACQUIRE to the exact pane command and SPAWN_POOL_ENTER_PATH to the
+# copy it must land in. Every free unbound copy passes the footprint
+# pre-condition first (spawn_plan_pool_steer). When no bound copy could be
+# handed out and every free copy fits the budget, this script itself takes the
+# pool's durable per-task lease (spawn_lease_pool_copy) and the pane only
+# enters the leased copy by name; a steered acquisition into a chosen free copy
+# remains the fallback for the two cases the lease cannot serve, because the
+# pool chooses which copy a lease takes.
+SPAWN_POOL_ACQUIRE=
 SPAWN_POOL_ENTER_PATH=
+SPAWN_POOL_STEERED=0
 spawn_plan_pool_acquisition() {
+  spawn_plan_pool_steer || return 1
+  [ "$SPAWN_POOL_STEERED" = 1 ] || spawn_lease_pool_copy
+}
+
+# spawn_lease_pool_copy: the ordinary acquisition. `treehouse get --lease
+# --lease-holder <task-id> --json` reserves a clean copy, refreshes it to
+# origin's default branch, and marks it leased in the pool's own persistent
+# state, where it stays until bin/fm-teardown.sh's successful return releases
+# it: never handed out by a later get, never removed by prune, whether or not
+# a process is inside. The lease identity is recorded as pool_lease_id= in
+# state/<id>.meta and pins every later return to this exact acquisition. The
+# pool's name for the copy is read back from the inventory so the pane can
+# `treehouse enter` it (enter opens the shell without touching pool state),
+# and from the moment the lease exists a failure anywhere before the record
+# binds it returns the lease (spawn_release_abandoned_lease).
+spawn_lease_pool_copy() {
+  local lease_out lease_err parsed rows name lease_path lease_real row_name row_path
+  lease_err=$(mktemp "${TMPDIR:-/tmp}/fm-spawn-lease.XXXXXX") || return 1
+  if ! lease_out=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "$ID" --json 2>"$lease_err"); then
+    echo "error: the pool could not lease a copy of '$PROJ_ABS' to task $ID; refusing to spawn without the pool's own binding. treehouse said: $(tr '\n' ' ' < "$lease_err")" >&2
+    rm -f "$lease_err"
+    return 1
+  fi
+  rm -f "$lease_err"
+  parsed=$(FM_SPAWN_LEASE="$lease_out" node - "$ID" <<'NODE'
+let lease
+try { lease = JSON.parse(process.env.FM_SPAWN_LEASE || '') } catch { process.exit(1) }
+const clean = value => typeof value === 'string' && value !== '' && !/[\t\r\n]/.test(value)
+if (!lease || !clean(lease.path) || !lease.path.startsWith('/') || !clean(lease.lease_id)
+    || lease.lease_holder !== process.argv[2]) process.exit(1)
+process.stdout.write(`${lease.path}\t${lease.lease_id}\n`)
+NODE
+  ) || {
+    echo "error: the pool's lease answer for task $ID could not be read as a copy leased to $ID; refusing to spawn. Inspect 'treehouse status --json' in '$PROJ_ABS' for a copy leased to $ID and return it if one exists. Answer was: $lease_out" >&2
+    return 1
+  }
+  lease_path=${parsed%%$'\t'*}
+  SPAWN_POOL_LEASE_ID=${parsed#*$'\t'}
+  SPAWN_POOL_LEASE_PATH=$lease_path
+  SPAWN_POOL_LEASE_RETURN_ON_ABORT=1
+  rows=$(spawn_pool_inventory_rows) || {
+    echo "error: the pool leased '$lease_path' to task $ID but its inventory could not be read back to name that copy; refusing to spawn" >&2
+    return 1
+  }
+  # Both sides resolved, as the reattach proofs do: the pool spells a copy's
+  # path as its root was spelled, which may run through a symlink.
+  lease_real=$(real_path_or_raw "$lease_path")
+  name=
+  while IFS=$'\t' read -r row_name row_path _; do
+    [ -n "$row_path" ] || continue
+    [ "$(real_path_or_raw "$row_path")" = "$lease_real" ] || continue
+    name=$row_name
+    break
+  done <<ROWS
+$rows
+ROWS
+  [ -n "$name" ] || {
+    echo "error: the pool leased '$lease_path' to task $ID but its inventory does not list that copy; refusing to spawn into a copy the pool cannot name" >&2
+    return 1
+  }
+  SPAWN_POOL_ACQUIRE="treehouse enter $name"
+  SPAWN_POOL_ENTER_PATH=$lease_path
+}
+
+# spawn_plan_pool_steer: the pre-lease half of the plan. Sets
+# SPAWN_POOL_STEERED=1 with SPAWN_POOL_ACQUIRE and SPAWN_POOL_ENTER_PATH when
+# the pane must be steered into a chosen free copy instead of leasing (a
+# legacy bound copy the pool would otherwise hand out, or an over-budget free
+# copy); a steered copy carries no pool lease and is protected by its record
+# binding and this cross-check alone, exactly as every copy was before leases.
+spawn_plan_pool_steer() {
   local bound rows owner path name status lease procs hazard='' hazard_owner='' candidate='' candidate_name='' free='' bloated=''
   bound=$(spawn_bound_worktrees "$PROJ_ABS_REAL")
   if ! rows=$(spawn_pool_inventory_rows); then
@@ -2425,6 +2563,7 @@ ROWS
     echo "notice: the pool would hand out '$hazard', which task $hazard_owner still binds; steering $ID into free copy $candidate_name ('$candidate') instead and leaving $hazard_owner's copy untouched" >&2
     SPAWN_POOL_ACQUIRE="treehouse enter $candidate_name"
     SPAWN_POOL_ENTER_PATH=$candidate
+    SPAWN_POOL_STEERED=1
     return 0
   fi
   [ -n "$bloated" ] || return 0
@@ -2435,6 +2574,7 @@ ROWS
   echo "notice: the pool could hand out an over-budget copy ($bloated ); steering $ID into free copy $candidate_name ('$candidate') instead" >&2
   SPAWN_POOL_ACQUIRE="treehouse enter $candidate_name"
   SPAWN_POOL_ENTER_PATH=$candidate
+  SPAWN_POOL_STEERED=1
 }
 
 # spawn_refuse_bound_worktree <path> <source>: the post-acquisition half of the
@@ -2616,7 +2756,10 @@ reattach_pid_is_ours() {  # <pid>
 # Treehouse's own inventory is the ownership authority: it reports every process
 # whose working directory is inside a pooled copy, which is exactly how a
 # surviving agent, shell, or build would show up. The copy must appear exactly
-# once, carry no lease, and list no process this spawn cannot claim as its own.
+# once, carry either no lease or this task's own lease (the durable per-task
+# lease a spawn takes under the task id, which survives the endpoint it lost
+# and travels with the new binding as pool_lease_id=), and list no process
+# this spawn cannot claim as its own; a lease held by anyone else is a refusal.
 # Parsed with node rather than jq, because jq is not a required tool for the
 # tmux backend this path runs on and a missing parser must not read as a clean
 # inventory. Treehouse reports each copy's path as the pool root was spelled,
@@ -2629,7 +2772,7 @@ reattach_verify_owner_free() {  # <phase>
     echo "error: treehouse could not report the pool holding '$WT' ($phase); refusing to guess whether task $ID's retained copy is in use" >&2
     return 1
   }
-  verdict=$(FM_REATTACH_INVENTORY="$inventory" node - "$(real_path_or_raw "$WT")" <<'NODE'
+  verdict=$(FM_REATTACH_INVENTORY="$inventory" node - "$(real_path_or_raw "$WT")" "$ID" <<'NODE'
 const fs = require('fs')
 const realPathOrRaw = path => {
   if (typeof path !== 'string') return null
@@ -2643,15 +2786,21 @@ const found = parsed.filter(entry => entry && realPathOrRaw(entry.path) === targ
 if (found.length !== 1) { process.stdout.write('ambiguous\n'); process.exit(0) }
 const entry = found[0]
 if (typeof entry.lease_id !== 'string') { process.stdout.write('unreadable\n'); process.exit(0) }
-if (entry.lease_id !== '') { process.stdout.write('leased\n'); process.exit(0) }
+if (entry.lease_id !== '' && /[\t\r\n]/.test(entry.lease_id)) { process.stdout.write('unreadable\n'); process.exit(0) }
+if (entry.lease_id !== '' && entry.lease_holder !== process.argv[3]) { process.stdout.write('leased\n'); process.exit(0) }
 if (!Array.isArray(entry.processes)) { process.stdout.write('unreadable\n'); process.exit(0) }
 const pids = entry.processes.map(item =>
   item && Number.isInteger(item.pid) && item.pid > 0 ? String(item.pid) : 'unreadable')
-process.stdout.write(['free', ...pids].join('\n') + '\n')
+process.stdout.write([entry.lease_id === '' ? 'free' : `own-lease\t${entry.lease_id}`, ...pids].join('\n') + '\n')
 NODE
   ) || verdict=unreadable
+  REATTACH_OWN_LEASE_ID=
   case "${verdict%%$'\n'*}" in
     free) ;;
+    own-lease$'\t'*)
+      REATTACH_OWN_LEASE_ID=${verdict%%$'\n'*}
+      REATTACH_OWN_LEASE_ID=${REATTACH_OWN_LEASE_ID#*$'\t'}
+      ;;
     leased)
       echo "error: retained copy '$WT' is leased to another holder ($phase); refusing to take task $ID's recovery through a copy someone else reserved" >&2
       return 1
@@ -2667,6 +2816,7 @@ NODE
   esac
   while IFS= read -r pid; do
     [ -n "$pid" ] && [ "$pid" != free ] || continue
+    case "$pid" in own-lease*) continue ;; esac
     reattach_pid_is_ours "$pid" && continue
     echo "error: retained copy '$WT' has a live process ($pid) that is not part of this recovery ($phase); refusing to put a second agent on task $ID's work" >&2
     return 1
@@ -2865,10 +3015,10 @@ case "$BACKEND" in
     # treehouse cd's into the worktree. WT_TARGET carries that stable id for the
     # rename-critical worktree-detection steps below; the persisted window= handle
     # stays $T (the name form), which is safe now that rename is disabled.
-    # A fresh spawn opens in the project and lets `treehouse get` move the pane
-    # into a pooled copy. A reattach has its copy already and must never run
-    # that acquisition, so the replacement pane opens directly in the retained
-    # copy. From here the two paths converge.
+    # A fresh spawn opens in the project and lets `treehouse enter` move the pane
+    # into the pooled copy this script leased or steered it to. A reattach has
+    # its copy already and must never run that acquisition, so the replacement
+    # pane opens directly in the retained copy. From here the two paths converge.
     REATTACH_ENDPOINT_CWD=$PROJ_ABS
     [ "$REATTACH" -eq 0 ] || [ "$REACQUIRE" -eq 1 ] || REATTACH_ENDPOINT_CWD=$WT
     WID=$(fm_backend_tmux_create_task "$SES" "$W" "$REATTACH_ENDPOINT_CWD") || exit 1
@@ -3383,7 +3533,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # A single read that already differs from PROJ_ABS_REAL is not proof the pane
   # settled there: on some tmux/WSL setups a brand-new window's pane_current_path
   # transiently reports an unrelated stale path (seen live as another real git
-  # checkout entirely) before the shell catches up with treehouse get's cd. That
+  # checkout entirely) before the shell catches up with treehouse enter's cd. That
   # stale path still passes the PROJ_ABS_REAL comparison and validate_spawn_worktree
   # below (it resolves to a real, distinct worktree top-level too), so accepting it
   # on one read alone silently records the wrong worktree= in state/<id>.meta. Require
@@ -3418,7 +3568,9 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   confirm_spawn_shell_cwd "$T"
   validate_spawn_worktree "$SPAWN_POOL_ACQUIRE" "$T"
   spawn_refuse_bound_worktree "$WT" "$SPAWN_POOL_ACQUIRE" || exit 1
-  [ -z "$SPAWN_POOL_ENTER_PATH" ] || spawn_detach_entered_copy "$WT" || exit 1
+  # A leased copy was refreshed by get itself; only a steered copy, entered
+  # exactly as it was, needs the get-equivalent detach.
+  [ "$SPAWN_POOL_STEERED" != 1 ] || spawn_detach_entered_copy "$WT" || exit 1
 fi
 # The base refresh resets the copy to origin's default branch. That is right for
 # a freshly allocated pooled copy and catastrophic for a retained one, which is
@@ -3457,17 +3609,25 @@ if [ "$RECOVERY" -eq 1 ]; then
     else
       SPAWN_WORKTREE_ALLOCATION=reused
     fi
-    SPAWN_WORKTREE_ALLOCATION=$("$SCRIPT_DIR/fm-worktree-allocation.sh" acquire \
-      "$ID" "$PROJ_ABS_REAL" "$WT" "$REACQUIRE_ACQUIRED_AT" "$SPAWN_WORKTREE_ALLOCATION") || SPAWN_WORKTREE_ALLOCATION=unknown
+    if SPAWN_WORKTREE_ALLOCATION=$("$SCRIPT_DIR/fm-worktree-allocation.sh" acquire \
+      "$ID" "$PROJ_ABS_REAL" "$WT" "$REACQUIRE_ACQUIRED_AT" "$SPAWN_WORKTREE_ALLOCATION"); then
+      [ "$SPAWN_POOL_LEASE_RETURN_ON_ABORT" != 1 ] || SPAWN_POOL_LEASE_LEDGER_ACQUIRED=1
+    else
+      SPAWN_WORKTREE_ALLOCATION=unknown
+    fi
   elif [ "$REATTACH" -eq 1 ]; then
     # A retained copy is by definition one the pool already created and this
     # task already used, so it is recorded as reused. No ledger event is
     # written: the allocation ledger measures pool allocation, and a recovery
     # allocates nothing - which also keeps a rolled-back reattach from leaving
-    # a durable trace behind. Teardown still releases this identity.
+    # a durable trace behind. Teardown still releases this identity. The lease
+    # the pool holds for this task on the retained copy, if any, was proved by
+    # reattach_verify_owner_free and travels with the new binding.
     SPAWN_WORKTREE_ALLOCATION=reused
+    SPAWN_POOL_LEASE_ID=$REATTACH_OWN_LEASE_ID
   else
     SPAWN_WORKTREE_ALLOCATION=$(fm_meta_get "$RELAUNCH_META" worktree_allocation)
+    SPAWN_POOL_LEASE_ID=$(fm_meta_get "$RELAUNCH_META" pool_lease_id)
   fi
 elif [ "$KIND" != secondmate ]; then
   SPAWNED_AT=$INCARNATION_AT
@@ -3479,8 +3639,12 @@ elif [ "$KIND" != secondmate ]; then
   else
     SPAWN_WORKTREE_ALLOCATION=reused
   fi
-  SPAWN_WORKTREE_ALLOCATION=$("$SCRIPT_DIR/fm-worktree-allocation.sh" acquire \
-    "$ID" "$PROJ_ABS_REAL" "$WT" "$SPAWNED_AT" "$SPAWN_WORKTREE_ALLOCATION") || SPAWN_WORKTREE_ALLOCATION=unknown
+  if SPAWN_WORKTREE_ALLOCATION=$("$SCRIPT_DIR/fm-worktree-allocation.sh" acquire \
+    "$ID" "$PROJ_ABS_REAL" "$WT" "$SPAWNED_AT" "$SPAWN_WORKTREE_ALLOCATION"); then
+    [ "$SPAWN_POOL_LEASE_RETURN_ON_ABORT" != 1 ] || SPAWN_POOL_LEASE_LEDGER_ACQUIRED=1
+  else
+    SPAWN_WORKTREE_ALLOCATION=unknown
+  fi
 else
   SPAWNED_AT=$INCARNATION_AT
 fi
@@ -3908,7 +4072,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree worktree_allocation allocation_project project harness kind mode yolo tasktmp spawned_at incarnation_at model effort env_file busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree worktree_allocation pool_lease_id allocation_project project harness kind mode yolo tasktmp spawned_at incarnation_at model effort env_file busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -3919,6 +4083,7 @@ preserve_relaunch_meta() {
   echo "endpoint_task_id=$ID"
   echo "worktree=$WT"
   [ -z "$SPAWN_WORKTREE_ALLOCATION" ] || echo "worktree_allocation=$SPAWN_WORKTREE_ALLOCATION"
+  [ -z "$SPAWN_POOL_LEASE_ID" ] || echo "pool_lease_id=$SPAWN_POOL_LEASE_ID"
   echo "allocation_project=$PROJ_ABS_REAL"
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
@@ -3968,6 +4133,10 @@ preserve_relaunch_meta() {
     echo "control_relaunch_tx=$FM_CONTROL_RELAUNCH_TX"
   fi
 } > "$SPAWN_META_PATH"
+# A fresh spawn's record is published the moment it is written: from here the
+# record binds the leased copy and only teardown releases it, so an abort no
+# longer returns the lease.
+[ "$RECOVERY" -eq 1 ] || SPAWN_POOL_LEASE_RETURN_ON_ABORT=0
 publish_recovery_meta() {
   SPAWN_META_PUBLISH_STARTED=1
   mv -f "$SPAWN_META_TMP" "$STATE/$ID.meta"
@@ -4246,6 +4415,7 @@ if [ "$REATTACH" -eq 1 ]; then
   # name it here and leave it alone.
   if [ "$REACQUIRE" -eq 1 ]; then
     REACQUIRE_CHECKED_OUT_WT=
+    SPAWN_POOL_LEASE_RETURN_ON_ABORT=0
     if [ -n "$reacquire_displaced_owner" ]; then
       echo "notice: task $ID was bound to '$REATTACH_DISPLACED_WT' before this recovery; that copy now belongs to task $reacquire_displaced_owner's record and was left untouched." >&2
     elif [ -n "$REATTACH_DISPLACED_WT" ] \

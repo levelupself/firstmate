@@ -664,6 +664,8 @@ SH
   # has to answer for that shell as well as for the reported pane path.
   fm_fake_pane_shell "$fakebin/tmux"
   fm_fake_exit0 "$fakebin" pi
+  # A crew/scout spawn leases its copy from the pool before the pane enters it.
+  fm_fake_treehouse_lease "$fakebin"
   # Session identity initialization executes Node even with the isolated PATH.
   ln -s "$(command -v node)" "$fakebin/node"
   printf '%s\n' "$fakebin"

@@ -214,6 +214,45 @@ SH
   done
 }
 
+# fm_fake_treehouse_lease <fakebin> [<copy-path>]: a stateless treehouse stub
+# for spawn fixtures whose pane fake already reports the copy's path. It leases
+# one fixed copy: `get --lease --lease-holder <holder> --json` answers with
+# that path under the fixed lease id fakelease0001 and the given holder,
+# `status --json` lists it as pool copy 1 held under that same lease (so a
+# teardown of the spawned record finds its lease in place), `get --help`
+# advertises --lease, and every other command (return included) exits 0. The path is FM_FAKE_LEASE_PATH when set, else
+# FM_FAKE_SHELL_CWD, else FM_FAKE_PANE_PATH, else <copy-path>, so the same
+# variables that steer a pane fake steer the pool answer. Fixtures that need
+# pool state across calls use tests/pool-helpers.sh instead.
+fm_fake_treehouse_lease() {
+  local fakebin=$1 default=${2:-}
+  cat > "$fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+set -u
+last=\$(cat "\$0.leased" 2>/dev/null || true)
+path=\${FM_FAKE_LEASE_PATH:-\${FM_FAKE_SHELL_CWD:-\${FM_FAKE_PANE_PATH:-\${last:-$default}}}}
+[ -z "\${FM_FAKE_TREEHOUSE_LOG:-}" ] || printf '%s\n' "\$*" >> "\$FM_FAKE_TREEHOUSE_LOG"
+case "\${1:-} \${2:-}" in
+  "get --help") printf '%s\n' 'Usage: treehouse get [--lease] [--lease-holder <holder>] [--json]'; exit 0 ;;
+  "status --json")
+    printf '[{"name":"1","path":"%s","status":"leased","lease_id":"fakelease0001","lease_holder":"task","leased_at":"2026-09-19T00:00:00Z","processes":[]}]\n' "\$path"
+    exit 0
+    ;;
+  "get --lease")
+    holder=
+    while [ \$# -gt 0 ]; do
+      case "\$1" in --lease-holder) holder=\${2:-}; shift 2 ;; *) shift ;; esac
+    done
+    printf '%s\n' "\$path" > "\$0.leased"
+    printf '{"path":"%s","lease_id":"fakelease0001","lease_holder":"%s","leased_at":"2026-09-19T00:00:00Z"}\n' "\$path" "\$holder"
+    exit 0
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
+}
+
 # fm_fake_version_tool <fakebin> <tool> <override-env-var> <default-version>
 # The stub answers `--version` with <override-env-var> when that variable is set
 # and non-empty, and with <default-version> otherwise; every other invocation

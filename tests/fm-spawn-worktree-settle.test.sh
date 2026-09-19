@@ -70,7 +70,7 @@ SH
   else
     fm_fake_pane_shell "$fakebin/tmux"
   fi
-  fm_fake_exit0 "$fakebin" treehouse
+  fm_fake_treehouse_lease "$fakebin"
   printf '%s\n' "$fakebin"
 }
 

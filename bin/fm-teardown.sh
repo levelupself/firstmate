@@ -83,7 +83,33 @@
 # post-merge rerun trusted the stale worktree= line, hard-reset the copy - by
 # then checked out on the other task's branch - and killed the live worker
 # inside it). So before anything reads, prunes, resets, kills inside, or
-# returns a Treehouse copy, teardown asks the worktree allocation ledger who
+# returns a Treehouse copy, teardown proves the copy is still this task's.
+# Pool lease (pool-lease): a record spawned with the pool's durable per-task
+# lease carries pool_lease_id= (bin/fm-spawn.sh's pool-lease section), and
+# for it the pool's own `treehouse status --json` inventory decides first.
+# The copy still held under exactly that lease is this task's: the check goes
+# on to the ledger and record rules below, the occupant read is skipped (the
+# lease and any process inside are this task's own), and the eventual
+# `treehouse return --force` is pinned with `--if-lease-id <lease>` so the
+# pool itself refuses the return - and nothing is reset - if the copy was
+# released or re-leased between the check and the return. A copy the pool no
+# longer holds under that lease is no longer this task's: with teardown_at=
+# already stamped (an early cleanup already released it) teardown retires
+# records-only, printing `copy already returned; held by <holder> under pool
+# lease <id> ...` or `copy already returned; its pool lease <id> was released
+# ...`; with a live record it is a lease inconsistency (the copy was returned
+# outside this task's cleanup) refused by name, --force included, with the
+# copy, its processes, and every record untouched. An unreadable inventory,
+# or one that does not list the copy, refuses a lease-bound cleanup until the
+# pool answers. The recorded lease is trusted only in the form
+# bin/fm-spawn.sh records it (non-empty, no tab, CR, or LF); a pool_lease_id=
+# line that fails that rule is a lease-bound record whose lease cannot be
+# trusted and is refused by name before anything else runs, never downgraded
+# to the pre-lease rules. A record without pool_lease_id= (spawned before
+# leases) keeps every pre-lease rule below unchanged and returns without a
+# lease precondition.
+# Every record is then keyed on the worktree allocation ledger, the
+# firstmate-side mirror of the pool's binding, which says who
 # holds it (bin/fm-worktree-allocation.sh holder: the task of the last acquire
 # of that copy not followed by that task's release; this script writes the
 # release only after a successful treehouse return, and only a fresh spawn or
@@ -589,6 +615,19 @@ BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
 WT=$(fm_meta_get "$META" worktree)
 PROJ=$(fm_meta_get "$META" project)
+# The pool's own binding for the copy: the durable per-task lease bin/fm-spawn.sh
+# took under this task id (pool-lease in the script header). Absent for a
+# record spawned before leases, which keeps every pre-lease path unchanged.
+POOL_LEASE_ID=$(fm_meta_get "$META" pool_lease_id)
+if grep -q '^pool_lease_id=' "$META" 2>/dev/null; then
+  case "$POOL_LEASE_ID" in
+    ''|*$'\t'*|*$'\r'*|*$'\n'*)
+      echo "REFUSED: task $ID's record binds copy ${WT:-<missing>} under a pool lease, but its recorded pool_lease_id= is not a lease bin/fm-spawn.sh could have recorded (empty, or containing a tab, CR, or LF), so the lease cannot be trusted." >&2
+      echo "Repair the pool_lease_id= line in $META from 'treehouse status --json' in ${PROJ:-<missing>} (the copy leased to task $ID), then rerun cleanup; nothing was touched. --force does not override this." >&2
+      exit 1
+      ;;
+  esac
+fi
 T_ORCA=
 [ "$BACKEND" != orca ] || T_ORCA=$T
 if [ "${FM_TEARDOWN_GUARD_DONE:-0}" != 1 ]; then
@@ -1295,7 +1334,7 @@ cleanup_stale_lock_for_safety_check() {
 # Return a worktree/home via `treehouse return --force`, tolerating a transient or
 # stale git index.lock left by a killed crew process. See the script header.
 teardown_treehouse_return_attempt() {
-  local dir=$1 cd_dir=$2 prune=$3 lock
+  local dir=$1 cd_dir=$2 prune=$3 lease_id=${4:-} lock
   if [ -n "$prune" ]; then
     lock=$(worktree_git_lock_path "$dir") || return 1
     if [ -e "$lock" ]; then
@@ -1304,11 +1343,18 @@ teardown_treehouse_return_attempt() {
     fi
   fi
   teardown_footprint_gate "$dir" || return "$TEARDOWN_FOOTPRINT_REFUSED"
-  ( cd "$cd_dir" && treehouse return --force "$dir" )
+  # A lease-bound copy is returned only under this task's exact lease: the
+  # pool itself refuses the return if the copy has since been released or
+  # re-leased, so no check-then-return window can reset someone else's copy.
+  if [ -n "$lease_id" ]; then
+    ( cd "$cd_dir" && treehouse return --force --if-lease-id "$lease_id" "$dir" )
+  else
+    ( cd "$cd_dir" && treehouse return --force "$dir" )
+  fi
 }
 
 teardown_treehouse_return() {
-  local dir=$1 cd_dir=$2 label=$3 post_cleanup_check=${4:-} prune=${5:-}
+  local dir=$1 cd_dir=$2 label=$3 post_cleanup_check=${4:-} prune=${5:-} lease_id=${6:-}
   local out lock attempt=0 max_retries lock_desc return_rc
 
   if [ -n "$prune" ]; then
@@ -1317,7 +1363,7 @@ teardown_treehouse_return() {
 
   # Capture stdout+stderr so non-lock failures stay visible and lock failures can
   # be matched by signature even when the lock file is already gone mid-check.
-  if out=$( teardown_treehouse_return_attempt "$dir" "$cd_dir" "$prune" 2>&1 ); then
+  if out=$( teardown_treehouse_return_attempt "$dir" "$cd_dir" "$prune" "$lease_id" 2>&1 ); then
     [ -n "$out" ] && printf '%s\n' "$out"
     return 0
   else
@@ -1345,7 +1391,7 @@ teardown_treehouse_return() {
     echo "teardown: $label return failed with transient git lock ($lock_desc); waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${max_retries})" >&2
     sleep "$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS"
 
-    if out=$( teardown_treehouse_return_attempt "$dir" "$cd_dir" "$prune" 2>&1 ); then
+    if out=$( teardown_treehouse_return_attempt "$dir" "$cd_dir" "$prune" "$lease_id" 2>&1 ); then
       [ -n "$out" ] && printf '%s\n' "$out"
       echo "teardown: $label return succeeded on retry; lock cleared on its own" >&2
       return 0
@@ -1375,7 +1421,7 @@ teardown_treehouse_return() {
           return 1
         fi
       fi
-      if out=$( teardown_treehouse_return_attempt "$dir" "$cd_dir" "$prune" 2>&1 ); then
+      if out=$( teardown_treehouse_return_attempt "$dir" "$cd_dir" "$prune" "$lease_id" 2>&1 ); then
         [ -n "$out" ] && printf '%s\n' "$out"
         echo "teardown: $label return succeeded after stale-lock cleanup" >&2
         return 0
@@ -1598,9 +1644,66 @@ teardown_copy_ledger_holder() {
   "$SCRIPT_DIR/fm-worktree-allocation.sh" holder "$project" "$WT" 2>/dev/null
 }
 
+# teardown_copy_pool_lease: the lease the pool currently holds on $WT, as
+# "<lease-id>\t<holder>" ("\t" when unleased). Returns 1 when the inventory
+# cannot be read or does not list the copy, which the caller treats as unknown.
+teardown_copy_pool_lease() {
+  local inventory wt_real
+  wt_real=$(canonical_existing_dir "$WT") || wt_real=$WT
+  inventory=$(cd "$PROJ" && treehouse status --json 2>/dev/null) || return 1
+  FM_TEARDOWN_POOL_INVENTORY="$inventory" FM_TEARDOWN_COPY="$wt_real" node - <<'NODE'
+const fs = require('fs')
+let parsed
+try { parsed = JSON.parse(process.env.FM_TEARDOWN_POOL_INVENTORY || '') } catch { process.exit(1) }
+if (!Array.isArray(parsed)) process.exit(1)
+const real = p => { try { return fs.realpathSync(p) } catch { return p } }
+const copy = real(process.env.FM_TEARDOWN_COPY)
+const entry = parsed.find(e => e && typeof e.path === 'string' && real(e.path) === copy)
+const clean = v => typeof v === 'string' && !/[\t\r\n]/.test(v)
+if (!entry || !clean(entry.lease_id) || (entry.lease_id !== '' && !clean(entry.lease_holder))) process.exit(1)
+process.stdout.write(`${entry.lease_id}\t${entry.lease_id === '' ? '' : entry.lease_holder}\n`)
+NODE
+}
+
+# teardown_copy_lease_check: the pool-lease half of the copy-binding check
+# (see the script header). Only for a record that carries pool_lease_id=.
+teardown_copy_lease_check() {
+  local lease pool_lease pool_holder
+  if ! lease=$(teardown_copy_pool_lease); then
+    echo "REFUSED: task $ID's record binds copy $WT under pool lease $POOL_LEASE_ID, but the pool inventory (treehouse status --json in $PROJ) cannot be read or does not list the copy, so whether the pool still holds that lease is unknown." >&2
+    echo "Rerun cleanup once the pool answers for the copy; nothing in it was touched." >&2
+    return 1
+  fi
+  pool_lease=${lease%%$'\t'*}
+  pool_holder=${lease#*$'\t'}
+  [ "$pool_lease" != "$POOL_LEASE_ID" ] || return 0
+  if grep -q '^teardown_at=' "$META" 2>/dev/null; then
+    if [ -n "$pool_lease" ]; then
+      teardown_copy_records_only "held by ${pool_holder:-another holder} under pool lease $pool_lease; this task's lease $POOL_LEASE_ID was released"
+    else
+      teardown_copy_records_only "its pool lease $POOL_LEASE_ID was released and the pool holds no lease on it"
+    fi
+    return 0
+  fi
+  if [ -n "$pool_lease" ]; then
+    echo "REFUSED: copy $WT is leased by the pool to ${pool_holder:-another holder} (lease $pool_lease), not under task $ID's recorded lease $POOL_LEASE_ID, yet task $ID has never released it (no teardown_at= in its record)." >&2
+  else
+    echo "REFUSED: the pool holds no lease on copy $WT, yet task $ID's live record still binds it under lease $POOL_LEASE_ID (no teardown_at= in its record), so the copy was returned outside this task's cleanup." >&2
+  fi
+  echo "That is a lease inconsistency; reconcile which task owns the copy before cleanup. --force does not override this." >&2
+  return 1
+}
+
 teardown_copy_binding_check() {
-  local branch other='' holder='' ledger_holder occupant
+  local branch other='' holder='' ledger_holder occupant lease_proved=0
   inspectable_git_worktree "$WT" || return 0
+  if [ -n "$POOL_LEASE_ID" ]; then
+    teardown_copy_lease_check || return 1
+    [ "$TEARDOWN_COPY_RECORDS_ONLY" != 1 ] || return 0
+    # The pool holds this task's own lease on the copy, so its lease and
+    # processes are this task's and the occupant read below is not consulted.
+    lease_proved=1
+  fi
   if ! ledger_holder=$(teardown_copy_ledger_holder); then
     echo "REFUSED: the worktree allocation ledger for $WT cannot be read, so which task holds the copy is unknown." >&2
     echo "Repair the project's ledger under data/worktree-allocations, then rerun cleanup." >&2
@@ -1625,7 +1728,7 @@ teardown_copy_binding_check() {
       fm/*) holder="task ${branch#fm/} (branch $branch is checked out)" ;;
     esac
   fi
-  if [ -z "$holder" ] && [ -z "$ledger_holder" ] && [ "$branch" != "fm/$ID" ]; then
+  if [ -z "$holder" ] && [ -z "$ledger_holder" ] && [ "$branch" != "fm/$ID" ] && [ "$lease_proved" -eq 0 ]; then
     if occupant=$(teardown_copy_pool_occupant); then
       [ -z "$occupant" ] || holder=$occupant
     elif grep -q '^teardown_at=' "$META" 2>/dev/null; then
@@ -2964,7 +3067,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
     post_lock_cleanup_check=validate_worktree_teardown_safety
   fi
   # Only reproducible ignored output qualifies; landed work was checked above.
-  teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" prune || {
+  teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" prune "$POOL_LEASE_ID" || {
     echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
     exit 1
   }

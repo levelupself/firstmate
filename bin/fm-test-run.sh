@@ -241,6 +241,7 @@ family_for_basename() {
     fm-herdr-session-cleanup.test.sh|fm-send-resolve-key.test.sh|fm-send-strict.test.sh|fm-spawn-batch.test.sh|\
     fm-spawn-dispatch-profile.test.sh|fm-spawn-reattach.test.sh|fm-spawn-env-file.test.sh|\
     fm-spawn-pool-slot-binding.test.sh|fm-spawn-reacquire.test.sh|fm-spawn-capacity.test.sh|\
+    fm-pool-lease.test.sh|\
     fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh|\
     fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' backend-dispatch

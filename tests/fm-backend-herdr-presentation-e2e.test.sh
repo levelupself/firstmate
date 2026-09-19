@@ -263,7 +263,10 @@ set -u
   done
   printf '\n'
 } >> "$TREEHOUSE_CALL_LOG"
-if [ -d "$POST_CREATE_ABORT_CONTROL" ] && [ "${1:-}" = get ]; then
+# The spawn leases its copy itself before any endpoint exists (and returns
+# that lease on abort); the pane-side enter is what must leave the pane where
+# it is, so the isolation check refuses with the workspace already created.
+if [ -d "$POST_CREATE_ABORT_CONTROL" ] && [ "${1:-}" = enter ]; then
   exit 0
 fi
 exec "$REAL_TREEHOUSE" "$@"
@@ -485,6 +488,7 @@ normalize_meta() {  # <meta>
     -e 's|^herdr_tab_id=.*$|herdr_tab_id=<herdr-container-id>|' \
     -e 's|^herdr_pane_id=.*$|herdr_pane_id=<herdr-container-id>|' \
     -e 's|^worktree_allocation=.*$|worktree_allocation=<allocation-lifecycle>|' \
+    -e 's|^pool_lease_id=.*$|pool_lease_id=<pool-lease>|' \
     -e 's|^spawned_at=.*$|spawned_at=<spawn-timestamp>|' \
     -e 's|^incarnation_at=.*$|incarnation_at=<incarnation-timestamp>|' \
     -e 's|^spawn_gen=.*$|spawn_gen=<spawn-incarnation>|' \
