@@ -108,8 +108,13 @@
 # and the copy is not on fm/<task-id>, the pool inventory (`treehouse status
 # --json` run from the project, parsed with node) is extra evidence: a lease,
 # live processes, or a non-available status reported inside it refuses by
-# name naming what the pool reports, while an unreadable or unlisted
-# inventory is not a refusal. When the ledger names this task as holder the
+# name naming what the pool reports. An unreadable, malformed, or unlisting
+# inventory never reads as free: for a record that already released the copy
+# (teardown_at= present) it is a refusal naming the inventory, to be rerun
+# once the pool answers, while a live record (no teardown_at=) on a named
+# non-task branch such as main or master keeps proceeding so existing
+# consumers that tear down such copies are unaffected. When the ledger names
+# this task as holder the
 # pool's lease and processes are this task's own (the pool reports every
 # leased copy in use with its agent inside), so the inventory is not
 # consulted and a detached or main-checked-out copy of a live task, or a
@@ -1604,8 +1609,12 @@ teardown_copy_binding_check() {
     esac
   fi
   if [ -z "$holder" ] && [ -z "$ledger_holder" ] && [ "$branch" != "fm/$ID" ]; then
-    if occupant=$(teardown_copy_pool_occupant) && [ -n "$occupant" ]; then
-      holder=$occupant
+    if occupant=$(teardown_copy_pool_occupant); then
+      [ -z "$occupant" ] || holder=$occupant
+    elif grep -q '^teardown_at=' "$META" 2>/dev/null; then
+      echo "REFUSED: copy $WT was already released by task $ID, the allocation ledger records no holder for it, and the pool inventory (treehouse status --json in $PROJ) cannot be read or does not list the copy, so it cannot be proved free." >&2
+      echo "Rerun cleanup once the pool answers for the copy; nothing in it was touched." >&2
+      return 1
     fi
   fi
   if [ -n "$holder" ]; then

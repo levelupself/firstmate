@@ -3643,7 +3643,8 @@ assert_tmux_kills_only_own_window() {  # <case-dir> <label>
 }
 
 # Seed the case's allocation ledger with task-x1's acquire of the copy so the
-# teardown's release, and the released query, have an acquire to follow.
+# teardown's release has an acquire to follow and the holder query names
+# task-x1 until that release is written.
 seed_allocation_acquire() {  # <case-dir> [acquired-at]
   local case_dir=$1 acquired_at=${2:-2026-09-17T19:00:00Z}
   printf '%s\n' 'worktree_allocation=reused' "allocation_project=$case_dir/project" \
@@ -3852,28 +3853,45 @@ test_early_torn_down_record_retires_when_its_returned_copy_sits_free() {
   pass "a merged early-torn-down record whose returned copy sits free at trunk retires on the ordinary path"
 }
 
-test_early_torn_down_record_retires_when_the_pool_inventory_is_unreadable() {
-  local case_dir rc
+test_early_torn_down_record_refuses_when_the_pool_inventory_is_unreadable() {
+  local case_dir rc head_before
   case_dir=$(make_case returned-copy-pool-unreadable)
   write_meta "$case_dir" no-mistakes ship
   add_pool_like_treehouse "$case_dir"
   add_logging_tmux "$case_dir"
   seed_allocation_acquire "$case_dir"
   early_teardown_open_pr_task "$case_dir"
+  head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
   : > "$case_dir/treehouse.log"
   : > "$case_dir/tmux.log"
   mark_open_pr_task_merged "$case_dir"
 
-  # The pool inventory does not list the copy: with no holder in the ledger
-  # that is not a refusal, and the copy is retired on the ordinary path.
+  # The copy was released, the ledger names no holder, and the pool inventory
+  # does not list the copy: nothing proves it free (a holder from another
+  # home sharing the pool would be invisible here), so teardown refuses.
   rc=0
   FM_FAKE_TASKS_SHOW_STATE="done" \
   FM_FAKE_TREEHOUSE_STATUS_JSON="[]" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
-  expect_code 0 "$rc" "returned-copy-pool-unreadable: retiring the merged early-torn-down record should succeed: $(cat "$case_dir/output")"
-  assert_own_copy_retired "$case_dir" returned-copy-pool-unreadable
-  pass "a merged early-torn-down record retires on the ordinary path when the pool inventory cannot be read"
+  [ "$rc" -ne 0 ] || fail "returned-copy-pool-unreadable: teardown reset a released copy the pool could not vouch for"
+  assert_grep "REFUSED" "$case_dir/stderr" \
+    "returned-copy-pool-unreadable: teardown did not refuse: $(cat "$case_dir/output")"
+  assert_grep "pool inventory" "$case_dir/stderr" \
+    "returned-copy-pool-unreadable: the refusal did not name the inventory: $(cat "$case_dir/stderr")"
+  assert_no_grep "copy already returned" "$case_dir/output" \
+    "returned-copy-pool-unreadable: an unreadable inventory selected records-only"
+  [ -z "$(git -C "$case_dir/wt" symbolic-ref --quiet --short HEAD 2>/dev/null)" ] \
+    || fail "returned-copy-pool-unreadable: the copy's branch changed"
+  [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] \
+    || fail "returned-copy-pool-unreadable: the copy's HEAD moved"
+  assert_no_grep "return" "$case_dir/treehouse.log" \
+    "returned-copy-pool-unreadable: the copy was returned without the pool vouching for it"
+  assert_no_grep "kill" "$case_dir/tmux.log" \
+    "returned-copy-pool-unreadable: a pane was killed"
+  assert_present "$case_dir/state/task-x1.meta" "returned-copy-pool-unreadable: the refusal removed the task record"
+  assert_present "$case_dir/state/task-x1.pr-poll" "returned-copy-pool-unreadable: the refusal removed the merge poll"
+  pass "a merged early-torn-down record refuses when the pool inventory cannot vouch for its released copy"
 }
 
 # A gh-axi fake that lets fm-backlog-integrity.sh's landed-evidence query
@@ -4152,9 +4170,11 @@ test_early_torn_down_record_reruns_while_its_pr_is_still_open() {
 
   # The PR is still open and the poll still armed: a rerun must keep the
   # record for that poll, which requires the retained record to still parse
-  # as valid poll metadata after the early teardown's own stamps.
+  # as valid poll metadata after the early teardown's own stamps. The pool
+  # lists the returned copy available, as the real pool does after a return.
   rc=0
-  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  FM_FAKE_TREEHOUSE_STATUS_JSON="[{\"name\":\"1\",\"path\":\"$case_dir/wt\",\"status\":\"available\",\"lease_id\":\"\",\"lease_holder\":\"\",\"processes\":[]}]" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
   expect_code 0 "$rc" "early-teardown-rerun-open-pr: the rerun under an open PR should succeed: $(cat "$case_dir/output")"
   assert_grep "remains In flight under its armed merge poll" "$case_dir/output" \
@@ -4257,7 +4277,7 @@ if [ "${1:-}" = --copy-binding ]; then
   test_early_torn_down_record_never_resets_a_copy_reheld_by_another_task
   test_untracked_early_torn_down_record_retires_records_only_when_the_ledger_names_another_holder
   test_early_torn_down_record_retires_when_its_returned_copy_sits_free
-  test_early_torn_down_record_retires_when_the_pool_inventory_is_unreadable
+  test_early_torn_down_record_refuses_when_the_pool_inventory_is_unreadable
   test_early_torn_down_record_with_pruned_row_never_judges_the_reheld_copy
   test_early_torn_down_record_refuses_by_name_when_the_pool_reports_its_copy_in_use
   test_early_torn_down_record_still_returns_its_own_unreturned_copy
@@ -4374,7 +4394,7 @@ test_run_abort_precedes_process_reap_precedes_worktree_removal
 test_early_torn_down_record_never_resets_a_copy_reheld_by_another_task
 test_untracked_early_torn_down_record_retires_records_only_when_the_ledger_names_another_holder
 test_early_torn_down_record_retires_when_its_returned_copy_sits_free
-test_early_torn_down_record_retires_when_the_pool_inventory_is_unreadable
+test_early_torn_down_record_refuses_when_the_pool_inventory_is_unreadable
 test_early_torn_down_record_with_pruned_row_never_judges_the_reheld_copy
 test_early_torn_down_record_refuses_by_name_when_the_pool_reports_its_copy_in_use
 test_early_torn_down_record_still_returns_its_own_unreturned_copy
