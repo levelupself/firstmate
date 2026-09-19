@@ -86,8 +86,9 @@
 # returns a Treehouse copy, teardown asks the worktree allocation ledger who
 # holds it (bin/fm-worktree-allocation.sh holder: the task of the last acquire
 # of that copy not followed by that task's release; this script writes the
-# release only after a successful treehouse return, and bin/fm-spawn.sh writes
-# a fresh acquire on every lease, recovery included). An unreadable or
+# release only after a successful treehouse return, and only a fresh spawn or
+# a --reacquire-worktree in bin/fm-spawn.sh writes a ledger acquire, while a
+# --reattach-worktree deliberately writes none). An unreadable or
 # malformed ledger is unknown, not free, and refuses. Records-only mode is
 # selected only by a two-part condition: this task's record carries
 # teardown_at= (it already ran a return) AND the ledger names another task as
@@ -95,7 +96,12 @@
 # task is a ledger inconsistency (a stale acquire the pool later re-leased
 # without a ledger write) and is refused by name on the ordinary path,
 # --force included, with the copy, its processes, its branch, and every
-# record untouched. In records-only mode teardown prints `copy already returned;
+# record untouched. Accepted residual: a record torn down early and later
+# reacquired into a copy whose last ledger acquire is a stale never-released
+# holder, when its own acquire write also failed at spawn, would read that
+# stale holder together with its carried-over teardown_at= and retire
+# records-only, which is accepted because it needs a reacquire plus a stale
+# holder plus a failed ledger write. In records-only mode teardown prints `copy already returned;
 # held by <holder-task-id>`, never reads, prunes, resets, reaps under, or
 # returns the copy, still closes THIS task's own recorded endpoint (the
 # recorded target, window fm-<task-id>, zellij tab, or herdr session and pane
