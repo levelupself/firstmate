@@ -92,9 +92,14 @@
 # that is not back on fm/<task-id> is never touched: teardown prints
 # `copy already returned; held by <holder>` (the other task, or what
 # `treehouse status --json` run from the project reports inside the copy) or
-# `copy already returned; detached at trunk and free`, retires only this
-# task's own records (meta, launch receipt, merge poll, check, context watch,
-# busy state, per-task temp), closes no pane, and exits 0. The one exception is
+# `copy already returned; detached at trunk; ...` (whether the pool inventory
+# confirmed it free or could not be read), retires only this task's own
+# records (meta, launch receipt, merge poll, check, context watch, busy state,
+# per-task temp), closes no pane, and exits 0. In that records-only mode a
+# pruned backlog row is judged on durable landed-work evidence alone
+# (fm-backlog-integrity.sh landed-evidence), never on the copy's HEAD or
+# branch, so another task's work can neither refuse nor authorize this task's
+# retirement. The one exception is
 # a released copy that sits detached off trunk while the pool reports it
 # free and no record binds it: that is an early return that never took
 # effect, and it is returned now; if the pool inventory cannot prove it free,
@@ -1055,7 +1060,7 @@ backlog_refresh_reminder() {
       return 1
     fi
     evidence=
-    if [ "$KIND" = ship ] && { [ -e "$WT" ] || [ -L "$WT" ]; }; then
+    if [ "$KIND" = ship ] && [ "$TEARDOWN_COPY_RECORDS_ONLY" != 1 ] && { [ -e "$WT" ] || [ -L "$WT" ]; }; then
       if [ -d "$WT" ] && {
         current_head_in_merged_pr "$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null)" \
           || content_in_default
@@ -1605,7 +1610,11 @@ teardown_copy_binding_check() {
       return 0
     fi
     if teardown_copy_at_trunk; then
-      teardown_copy_records_only "detached at trunk and free"
+      if [ "$pool_free" = 1 ]; then
+        teardown_copy_records_only "detached at trunk; the pool inventory confirms it free"
+      else
+        teardown_copy_records_only "detached at trunk; the pool inventory could not be read or does not list it"
+      fi
       return 0
     fi
     if [ "$pool_free" = 1 ]; then

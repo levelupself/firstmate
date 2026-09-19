@@ -3654,8 +3654,6 @@ early_teardown_open_pr_task() {  # <case-dir>
     || fail "early teardown left the copy on a named branch"
 }
 
-# Mark task-x1's PR merged the way the merge poll does, so the next teardown is
-# the ordinary post-merge retirement.
 # Mark task-x1's PR merged the way the merge poll and bin/fm-pr-merge.sh do:
 # merged_at= in the record plus the launch and merge receipts the effort
 # capture of a pr-merged outcome requires.
@@ -3766,11 +3764,124 @@ test_early_torn_down_record_retires_when_its_returned_copy_sits_free() {
     || fail "returned-copy-free: the free copy's HEAD moved"
   assert_no_grep "return" "$case_dir/treehouse.log" \
     "returned-copy-free: an already-returned free copy was returned again"
-  assert_grep "copy already returned" "$case_dir/output" \
-    "returned-copy-free: teardown did not report the copy as already returned: $(cat "$case_dir/output")"
+  assert_grep "copy already returned; detached at trunk; the pool inventory confirms it free" "$case_dir/output" \
+    "returned-copy-free: teardown did not report the pool-confirmed free copy: $(cat "$case_dir/output")"
   assert_absent "$case_dir/state/task-x1.meta" "returned-copy-free: the record was not retired"
   assert_absent "$case_dir/state/task-x1.pr-poll" "returned-copy-free: the merge poll was not retired"
   pass "a merged early-torn-down record retires records-only when its returned copy sits free in the pool"
+}
+
+test_early_torn_down_record_reports_an_unreadable_pool_for_a_copy_at_trunk() {
+  local case_dir rc head_before
+  case_dir=$(make_case returned-copy-pool-unreadable)
+  write_meta "$case_dir" no-mistakes ship
+  add_pool_like_treehouse "$case_dir"
+  add_logging_tmux "$case_dir"
+  early_teardown_open_pr_task "$case_dir"
+  head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
+  : > "$case_dir/treehouse.log"
+  mark_open_pr_task_merged "$case_dir"
+
+  # The pool inventory does not list the copy, so nothing proves it free; a
+  # copy resting at trunk is still records-only, but the reason must say so.
+  rc=0
+  FM_FAKE_TASKS_SHOW_STATE="done" \
+  FM_FAKE_TREEHOUSE_STATUS_JSON="[]" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+  expect_code 0 "$rc" "returned-copy-pool-unreadable: retiring the merged early-torn-down record should succeed"
+  [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] \
+    || fail "returned-copy-pool-unreadable: the copy's HEAD moved"
+  assert_no_grep "return" "$case_dir/treehouse.log" \
+    "returned-copy-pool-unreadable: a copy the pool could not vouch for was returned again"
+  assert_grep "copy already returned; detached at trunk; the pool inventory could not be read or does not list it" "$case_dir/output" \
+    "returned-copy-pool-unreadable: teardown claimed a pool-free proof it never obtained: $(cat "$case_dir/output")"
+  assert_no_grep "confirms it free" "$case_dir/output" \
+    "returned-copy-pool-unreadable: teardown reported the pool as confirming the copy free"
+  assert_absent "$case_dir/state/task-x1.meta" "returned-copy-pool-unreadable: the record was not retired"
+  pass "a merged early-torn-down record at trunk says when the pool inventory could not confirm it free"
+}
+
+# A gh-axi fake that lets fm-backlog-integrity.sh's landed-evidence query
+# verify task-x1's merge receipt against the forge (default branch main, merge
+# commit contained in it) while still reporting PR 7 merged.
+add_gh_axi_verifying_merge_receipt() {  # <case-dir>
+  local case_dir=$1
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = api ]; then
+  case "${4:-}" in
+    '{base_ref: .base.ref}') printf '%s\n' 'base_ref: main'; exit 0 ;;
+    '{default_branch: .default_branch}') printf '%s\n' 'default_branch: main'; exit 0 ;;
+    '{status: .status}') printf '%s\n' 'status: ahead'; exit 0 ;;
+  esac
+  exit 1
+fi
+case "${1:-} ${2:-}" in
+  "pr list")
+    printf '%s\n' "count: 1 (showing first 1)" "pull_requests[1]{number,state}:" "  7,merged" ; exit 0 ;;
+  "pr view")
+    printf '%s\n' "pull_request:" "  number: 7" "  state: merged" '  merged: "2026-06-26T00:00:00Z"' ; exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi"
+}
+
+test_early_torn_down_record_with_pruned_row_never_judges_the_reheld_copy() {
+  local case_dir rc head_before meta_before
+  case_dir=$(make_case reheld-copy-pruned-row)
+  write_meta "$case_dir" no-mistakes ship
+  add_pool_like_treehouse "$case_dir"
+  add_logging_tmux "$case_dir"
+  early_teardown_open_pr_task "$case_dir"
+  release_copy_to_second_task "$case_dir"
+  # The second task's own unlanded work now sits in the copy: judged as if it
+  # were task-x1's, it would look like unlanded work and refuse retirement.
+  wt_commit_file "$case_dir" exalted.txt "task-x2 unlanded work"
+  head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
+  meta_before=$(cat "$case_dir/state/task-x2.meta")
+  : > "$case_dir/treehouse.log"
+  : > "$case_dir/tmux.log"
+  mark_open_pr_task_merged "$case_dir"
+  add_gh_axi_verifying_merge_receipt "$case_dir"
+  # Retention pruned task-x1's backlog row and its poll artifacts no longer
+  # validate, so the absent-row path must decide on durable evidence.
+  rm "$case_dir/state/task-x1.check.sh"
+
+  rc=0
+  FM_FAKE_TASKS_SHOW_MISSING=1 \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+
+  if ! kill -0 "$SECOND_TASK_PID" 2>/dev/null; then
+    fail "reheld-copy-pruned-row: the second task's live worker process was killed by the first task's teardown"
+  fi
+  kill -KILL "$SECOND_TASK_PID" 2>/dev/null || true
+  expect_code 0 "$rc" "reheld-copy-pruned-row: the pruned-row retirement should rest on durable evidence, not the other task's copy: $(cat "$case_dir/output")"
+  assert_no_grep "no durable evidence proves its work landed" "$case_dir/output" \
+    "reheld-copy-pruned-row: the other task's unlanded work produced a misleading refusal"
+  assert_no_grep "verified-landed-worktree" "$case_dir/output" \
+    "reheld-copy-pruned-row: evidence was attributed from the other task's copy"
+  assert_grep "durable landed-work evidence (merged-pr)" "$case_dir/output" \
+    "reheld-copy-pruned-row: teardown did not retire on the merge receipt: $(cat "$case_dir/output")"
+  assert_grep "copy already returned; held by task-x2" "$case_dir/output" \
+    "reheld-copy-pruned-row: teardown did not report the copy as held by the other task"
+  [ "$(git -C "$case_dir/wt" symbolic-ref --quiet --short HEAD 2>/dev/null)" = fm/task-x2 ] \
+    || fail "reheld-copy-pruned-row: the copy is no longer on the second task's branch"
+  [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] \
+    || fail "reheld-copy-pruned-row: the copy's HEAD moved"
+  [ "$(cat "$case_dir/wt/exalted.txt")" = "task-x2 unlanded work" ] \
+    || fail "reheld-copy-pruned-row: the second task's work changed"
+  assert_no_grep "return" "$case_dir/treehouse.log" \
+    "reheld-copy-pruned-row: the copy was returned to the pool from under the second task"
+  assert_no_grep "kill" "$case_dir/tmux.log" \
+    "reheld-copy-pruned-row: a pane was killed: $(cat "$case_dir/tmux.log")"
+  [ "$(cat "$case_dir/state/task-x2.meta")" = "$meta_before" ] \
+    || fail "reheld-copy-pruned-row: the second task's record changed"
+  assert_absent "$case_dir/state/task-x1.meta" "reheld-copy-pruned-row: the first task's record was not retired"
+  assert_absent "$case_dir/state/task-x1.pr-poll" "reheld-copy-pruned-row: the merge poll was not retired"
+  pass "a pruned-row retirement of a merged early-torn-down record never judges the copy another task now holds"
 }
 
 test_early_torn_down_record_never_touches_a_copy_the_pool_reports_in_use() {
@@ -3992,6 +4103,8 @@ test_process_exit_during_identity_lookup_does_not_refuse
 test_run_abort_precedes_process_reap_precedes_worktree_removal
 test_early_torn_down_record_never_resets_a_copy_reheld_by_another_task
 test_early_torn_down_record_retires_when_its_returned_copy_sits_free
+test_early_torn_down_record_reports_an_unreadable_pool_for_a_copy_at_trunk
+test_early_torn_down_record_with_pruned_row_never_judges_the_reheld_copy
 test_early_torn_down_record_never_touches_a_copy_the_pool_reports_in_use
 test_early_torn_down_record_still_returns_its_own_unreturned_copy
 test_copy_on_another_tasks_branch_refuses_reset_by_name
