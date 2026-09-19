@@ -122,12 +122,69 @@ fm_check_set_sha256_stdin() {
   fi
 }
 
+# fm_check_set_fingerprint_id_lines <state> <kernel>
+# The subshell body of fm_check_set_fingerprint: reads the caller's members
+# and ids arrays and prints one "<digest>  <id>" line per id. Called only
+# inside a command substitution, since it exits on failure and removes its
+# scratch directory from an EXIT trap. It is a named function rather than an
+# inline $( ... ) body because stock macOS Bash 3.2 cannot parse a case
+# statement inside a command substitution, and the CI parse sweep runs every
+# bin script through that shell.
+fm_check_set_fingerprint_id_lines() {
+  local state=$1 kernel=$2 scratch raw member member_id member_digest i
+  local -a lines=()
+  scratch=$(mktemp -d "$state/.fm-check-set-fingerprint.XXXXXX") || exit 1
+  # shellcheck disable=SC2064 # $scratch must expand now: the subshell's EXIT trap fires after this function's locals are gone.
+  trap "rm -rf -- $(printf '%q' "$scratch")" EXIT
+  trap 'exit 1' HUP INT TERM
+  chmod 0700 "$scratch" 2>/dev/null || exit 1
+  raw=$(
+    if [ "$kernel" = Darwin ]; then
+      stat -f '%HT %Lp %u %d %i %l %z %m' "${members[@]}" || exit 1
+    else
+      stat -c '%F %a %u %d %i %h %s %Y' "${members[@]}" || exit 1
+    fi
+    if command -v shasum >/dev/null 2>&1; then
+      shasum -a 256 "${members[@]}" || exit 1
+    else
+      sha256sum "${members[@]}" || exit 1
+    fi
+  ) || exit 1
+  mapfile -t lines <<< "$raw"
+  [ "${#lines[@]}" -eq $(( 2 * ${#members[@]} )) ] || exit 1
+  i=0
+  while [ "$i" -lt "${#members[@]}" ]; do
+    member=${members[$i]##*/}
+    case "$member" in
+      *.check.sh) member_id=${member%.check.sh} ;;
+      *.pr-poll-registration) member_id=${member%.pr-poll-registration} ;;
+      *.pr-poll) member_id=${member%.pr-poll} ;;
+      *.meta) member_id=${member%.meta} ;;
+      *.check-trust) member_id=${member%.check-trust} ;;
+      *) exit 1 ;;
+    esac
+    member_digest=${lines[$(( ${#members[@]} + i ))]%% *}
+    [[ "$member_digest" =~ ^[0-9a-f]{64}$ ]] || exit 1
+    printf '%s %s %s\n' "$member" "${lines[$i]}" "$member_digest" >> "$scratch/$member_id" \
+      || exit 1
+    i=$((i + 1))
+  done
+  for member_id in "${ids[@]}"; do
+    [ -s "$scratch/$member_id" ] || exit 1
+  done
+  if command -v shasum >/dev/null 2>&1; then
+    (cd "$scratch" && shasum -a 256 -- *) || exit 1
+  else
+    (cd "$scratch" && sha256sum -- *) || exit 1
+  fi
+}
+
 # fm_check_set_fingerprint <state> <template> <home> <root>
 # Prints the fingerprint text of the current check set on stdout.
 fm_check_set_fingerprint() {
   local state=$1 template=$2 home=$3 root=$4 kernel check id member state_device
-  local context template_digest scratch raw line digest member_id member_digest text i
-  local -a members=() ids=() lines=()
+  local context template_digest line digest text
+  local -a members=() ids=()
   [ -d "$state" ] && [ ! -L "$state" ] || return 1
   kernel=$(uname)
   if [ "$kernel" = Darwin ]; then
@@ -160,51 +217,7 @@ fm_check_set_fingerprint() {
   # One stat pass and one digest pass over every member, read back
   # positionally so no path parsing is needed, then each id's lines are
   # gathered into a scratch file so a single digest pass names every id.
-  text=$(
-    scratch=$(mktemp -d "$state/.fm-check-set-fingerprint.XXXXXX") || exit 1
-    trap 'rm -rf -- "$scratch"' EXIT
-    trap 'exit 1' HUP INT TERM
-    chmod 0700 "$scratch" 2>/dev/null || exit 1
-    raw=$(
-      if [ "$kernel" = Darwin ]; then
-        stat -f '%HT %Lp %u %d %i %l %z %m' "${members[@]}" || exit 1
-      else
-        stat -c '%F %a %u %d %i %h %s %Y' "${members[@]}" || exit 1
-      fi
-      if command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "${members[@]}" || exit 1
-      else
-        sha256sum "${members[@]}" || exit 1
-      fi
-    ) || exit 1
-    mapfile -t lines <<< "$raw"
-    [ "${#lines[@]}" -eq $(( 2 * ${#members[@]} )) ] || exit 1
-    i=0
-    while [ "$i" -lt "${#members[@]}" ]; do
-      member=${members[$i]##*/}
-      case "$member" in
-        *.check.sh) member_id=${member%.check.sh} ;;
-        *.pr-poll-registration) member_id=${member%.pr-poll-registration} ;;
-        *.pr-poll) member_id=${member%.pr-poll} ;;
-        *.meta) member_id=${member%.meta} ;;
-        *.check-trust) member_id=${member%.check-trust} ;;
-        *) exit 1 ;;
-      esac
-      member_digest=${lines[$(( ${#members[@]} + i ))]%% *}
-      [[ "$member_digest" =~ ^[0-9a-f]{64}$ ]] || exit 1
-      printf '%s %s %s\n' "$member" "${lines[$i]}" "$member_digest" >> "$scratch/$member_id" \
-        || exit 1
-      i=$((i + 1))
-    done
-    for member_id in "${ids[@]}"; do
-      [ -s "$scratch/$member_id" ] || exit 1
-    done
-    if command -v shasum >/dev/null 2>&1; then
-      (cd "$scratch" && shasum -a 256 -- *) || exit 1
-    else
-      (cd "$scratch" && sha256sum -- *) || exit 1
-    fi
-  ) || return 1
+  text=$(fm_check_set_fingerprint_id_lines "$state" "$kernel") || return 1
   while IFS= read -r line; do
     digest=${line%% *}
     id=${line##*  }
