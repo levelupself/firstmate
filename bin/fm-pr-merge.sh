@@ -4,7 +4,23 @@
 # bin/fm-pr-check.sh, so teardown can verify landed work after squash merges.
 # A task whose volatile metadata is already gone is accepted only when the
 # backlog's Done history records the same canonical PR, or an earlier exact
-# merge receipt proves a retry of the same request.
+# merge receipt proves a retry of the same request. Done history is the live
+# Done section plus data/done-archive.md as bin/fm-backlog-tsv.sh reads them,
+# so a Done row that completed-history retention already pruned still
+# authorizes; a Done row naming a different PR, or no Done row, refuses. Such a
+# merge records authorization=done-history and, because no launch identity
+# exists, spawned_at= empty: the Done row's closing date is a merge-history
+# fact, not a launch time, and the lifecycle consumers that key on spawned_at
+# bind to a launch receipt this task no longer has. Its project checkout comes
+# from the project registry (data/projects.md) instead of the missing
+# metadata: exactly one registered clone under projects/ must carry a GitHub
+# remote for the PR's owner/repository, or the request is refused before any
+# provenance is written. The effort store's launch-bound merge capture is
+# skipped for such a merge because no lifecycle record can bind to it; the
+# backlog outcome, which accepts the already-Done row, and the Linear write
+# still run. A launch-bound receipt (authorization=live-meta) keeps its
+# spawned_at requirement exactly as before, and a Done-history receipt is never
+# rotated into history because it has no launch to rotate by.
 # Every accepted request writes a prepared data/pr-merges/<task-id>.receipt
 # before the forge mutation. A successful merge advances it to merged only
 # after the forge reports the merge commit on its current default branch;
@@ -38,6 +54,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
@@ -89,8 +106,24 @@ reject_repo_overrides() {
   done
 }
 
+done_history_matches_request() {
+  "$SCRIPT_DIR/fm-backlog-tsv.sh" "$DATA/backlog.md" "$DATA/done-archive.md" |
+    awk -F '\t' -v id="$ID" -v url="$URL" '
+      $1 == "done" && $2 == id && $4 == url { found = 1 }
+      END { exit(found ? 0 : 1) }
+    '
+}
+
 reject_repo_overrides "$@" || exit 1
-"$SCRIPT_DIR/fm-backlog-integrity.sh" check-row "$ID" --allow-absent || exit 1
+# A Done row that completed-history retention pruned into the archive is absent
+# from the live backlog but is still this task's Done history; every other
+# absent row keeps the preflight refusal.
+if [ "$("$SCRIPT_DIR/fm-backlog-integrity.sh" row-state "$ID" 2>/dev/null)" = absent ] \
+  && done_history_matches_request; then
+  :
+else
+  "$SCRIPT_DIR/fm-backlog-integrity.sh" check-row "$ID" --allow-absent || exit 1
+fi
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
@@ -133,10 +166,13 @@ receipt_matches_request() {
     || [ "$schema" = fm-pr-merge.v3 ] || [ "$schema" = fm-pr-merge.v4 ] || return 1
   [ "$(receipt_value task_id)" = "$ID" ] || return 1
   [ "$(receipt_value pr)" = "$URL" ] || return 1
-  printf '%s\n' "$(receipt_value spawned_at)" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' || return 1
-  [ -z "$CURRENT_SPAWNED_AT" ] || [ "$(receipt_value spawned_at)" = "$CURRENT_SPAWNED_AT" ] || return 1
   authorization=$(receipt_value authorization)
-  [ "$authorization" = live-meta ] || [ "$authorization" = done-record ] || return 1
+  [ "$authorization" = live-meta ] || [ "$authorization" = done-history ] || return 1
+  # A launch-bound receipt carries the launch time; a Done-history receipt may
+  # carry none because the task had no launch identity when it was accepted.
+  printf '%s\n' "$(receipt_value spawned_at)" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
+    || { [ "$authorization" = done-history ] && [ -z "$(receipt_value spawned_at)" ]; } || return 1
+  [ -z "$CURRENT_SPAWNED_AT" ] || [ "$(receipt_value spawned_at)" = "$CURRENT_SPAWNED_AT" ] || return 1
   prepared_epoch=$(receipt_value prepared_epoch)
   case "$prepared_epoch" in ''|*[!0-9]*) return 1 ;; esac
   phase=$(receipt_value phase)
@@ -185,14 +221,6 @@ receipt_matches_request() {
     [ -n "$(receipt_value project)" ] || return 1
     [ -z "$PROJECT" ] || [ "$(receipt_value project)" = "$PROJECT" ] || return 1
   fi
-}
-
-done_history_matches_request() {
-  "$SCRIPT_DIR/fm-backlog-tsv.sh" "$DATA/backlog.md" "$DATA/done-archive.md" |
-    awk -F '\t' -v id="$ID" -v url="$URL" '
-      $1 == "done" && $2 == id && $4 == url { found = 1 }
-      END { exit(found ? 0 : 1) }
-    '
 }
 
 write_provenance_receipt() {
@@ -244,6 +272,51 @@ write_provenance_receipt() {
   mv -f "$tmp" "$PROVENANCE_RECEIPT"
 }
 
+# Whether <checkout>'s remote <remote> names the PR's GitHub owner/repository.
+github_remote_matches_pr() {
+  local checkout=$1 remote=$2 remote_url slug
+  while IFS= read -r remote_url; do
+    case "$remote_url" in
+      https://github.com/*) slug=${remote_url#https://github.com/} ;;
+      git@github.com:*) slug=${remote_url#git@github.com:} ;;
+      ssh://git@github.com/*) slug=${remote_url#ssh://git@github.com/} ;;
+      *) continue ;;
+    esac
+    slug=${slug%.git}
+    if [ "${slug,,}" = "${PR_OWNER,,}/${PR_REPO,,}" ]; then
+      return 0
+    fi
+  done < <(git -C "$checkout" config --get-all "remote.$remote.url" 2>/dev/null || true)
+  return 1
+}
+
+# Print the one registered project clone whose GitHub remote names the PR's
+# owner/repository. Registry names come from data/projects.md exactly as
+# bin/fm-project-mode.sh reads them; a name that is not a plain directory
+# component, a missing clone, or a clone with no matching remote is skipped.
+# Zero or several matches fail: a Done record cannot pick between checkouts.
+registry_project_for_pr() {
+  local name checkout remote match matches=0
+  match=
+  [ -f "$DATA/projects.md" ] && [ ! -L "$DATA/projects.md" ] || return 1
+  while IFS= read -r name; do
+    case "$name" in ''|.|..|*/*|-*) continue ;; esac
+    checkout="$PROJECTS/$name"
+    [ -d "$checkout" ] || continue
+    git -C "$checkout" rev-parse --git-dir >/dev/null 2>&1 || continue
+    while IFS= read -r remote; do
+      [ -n "$remote" ] || continue
+      if github_remote_matches_pr "$checkout" "$remote"; then
+        matches=$((matches + 1))
+        match=$checkout
+        break
+      fi
+    done < <(git -C "$checkout" remote 2>/dev/null || true)
+  done < <(awk '$1 == "-" && $2 != "" { print $2 }' "$DATA/projects.md")
+  [ "$matches" -eq 1 ] || return 1
+  printf '%s\n' "$match"
+}
+
 AUTHORIZATION=
 if [ -e "$PROVENANCE_RECEIPT" ] || [ -L "$PROVENANCE_RECEIPT" ]; then
   if ! receipt_matches_request \
@@ -287,8 +360,14 @@ elif [ -f "$META" ] && [ ! -L "$META" ]; then
     exit 1
   }
   AUTHORIZATION=live-meta
+elif done_history_matches_request; then
+  PROJECT=$(registry_project_for_pr) || {
+    echo "error: no registered project clone matches $PR_OWNER/$PR_REPO; the Done record cannot supply a project checkout identity" >&2
+    exit 1
+  }
+  AUTHORIZATION=done-history
 else
-  echo "error: task metadata is unavailable and no launch-bound merge receipt exists" >&2
+  echo "error: task metadata is unavailable and no launch-bound merge receipt exists; Done history records no matching PR" >&2
   exit 1
 fi
 [ -n "$PROJECT" ] || {
@@ -336,23 +415,6 @@ load_post_merge_evidence() {
   done
 }
 
-github_remote_matches_pr() {
-  local remote=$1 remote_url slug
-  while IFS= read -r remote_url; do
-    case "$remote_url" in
-      https://github.com/*) slug=${remote_url#https://github.com/} ;;
-      git@github.com:*) slug=${remote_url#git@github.com:} ;;
-      ssh://git@github.com/*) slug=${remote_url#ssh://git@github.com/} ;;
-      *) continue ;;
-    esac
-    slug=${slug%.git}
-    if [ "${slug,,}" = "${PR_OWNER,,}/${PR_REPO,,}" ]; then
-      return 0
-    fi
-  done < <(git -C "$PROJECT" config --get-all "remote.$remote.url" 2>/dev/null || true)
-  return 1
-}
-
 sync_local_mirror() {
   local forge_fetch forge_remote forge_tip mirror_after mirror_before mirror_git_dir
   local mirror_path origin_url pack_output ref_update_output remote
@@ -397,7 +459,7 @@ sync_local_mirror() {
 
   while IFS= read -r remote; do
     [ -n "$remote" ] && [ "$remote" != origin ] || continue
-    if github_remote_matches_pr "$remote"; then
+    if github_remote_matches_pr "$PROJECT" "$remote"; then
       forge_remotes+=("$remote")
     fi
   done < <(git -C "$PROJECT" remote)
@@ -513,10 +575,16 @@ if [ -f "$META" ]; then
     exit 1
   }
 fi
-"$FM_ROOT/bin/fm-effort-store.sh" capture "$ID" --outcome pr-merged >/dev/null || {
-  echo "error: merged PR succeeded but its effort record could not be captured" >&2
-  exit 1
-}
+# The effort store binds a merge lifecycle record to the task's launch identity;
+# a Done-history merge has none, so there is no record it could capture.
+if [ "$AUTHORIZATION" = done-history ]; then
+  echo "effort: not captured; a Done-history merge has no launch identity to bind a lifecycle record to"
+else
+  "$FM_ROOT/bin/fm-effort-store.sh" capture "$ID" --outcome pr-merged >/dev/null || {
+    echo "error: merged PR succeeded but its effort record could not be captured" >&2
+    exit 1
+  }
+fi
 "$SCRIPT_DIR/fm-backlog-integrity.sh" landed "$ID" PR-merge --pr "$URL" || {
   echo "error: merged PR succeeded but the backlog outcome could not be recorded" >&2
   exit 1

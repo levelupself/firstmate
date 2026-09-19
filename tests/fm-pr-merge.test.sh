@@ -14,10 +14,15 @@
 #   (f) malformed PR URL fails fast without calling gh-axi
 #   (g) explicit merge method is not overridden by the default --squash
 #   (h) repo override args fail fast because the repo comes from the URL
-#   (i) a torn-down delivered task is authorized by its exact Done PR record
-#       and receives durable merge provenance
+#   (i) a torn-down delivered task is authorized by its exact Done PR record,
+#       whether that record is live or pruned into data/done-archive.md, with
+#       the project checkout recovered from the registry, and receives durable
+#       merge provenance carrying no launch identity
+#   (i2) a Done-history merge whose repository matches no registered clone is
+#       refused before any provenance is written
 #   (j) deleting metadata cannot authorize a different PR for a Done task
-#   (k) an exact prepared receipt remains retryable after Done history is pruned
+#   (k) an exact prepared receipt remains retryable after Done history is
+#       pruned, for both launch-bound and Done-history authorizations
 #   (l) conflicting concurrent requests serialize before authorization and only
 #       one task-to-PR provenance record can reach the forge
 #   (m) CI check reporting distinguishes passing, failing, and ABSENT while
@@ -233,9 +238,13 @@ SH
 
 run_pr_merge() {
   local case_dir=$1 rc; shift
+  # FM_HOME anchors the nested lifecycle scripts (backlog integrity's tasks-axi
+  # calls resolve .tasks.toml there) to the case, never to this checkout.
+  FM_HOME="$case_dir" \
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_DATA_OVERRIDE="$case_dir/data" \
+  FM_PROJECTS_OVERRIDE="$case_dir/projects" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
   FM_TEST_MERGE_COMMIT="$(sed -n '1p' "$case_dir/merge-commit" 2>/dev/null || true)" \
   PATH="$case_dir/fakebin:$PATH" \
@@ -506,17 +515,94 @@ test_merge_refuses_failing_and_absent_checks() {
   pass "fm-pr-merge refuses failing and absent CI checks before forge mutation"
 }
 
-test_torn_down_delivered_task_merges_with_durable_provenance() {
-  local case_dir fakebin rc
-  case_dir="$TMP_ROOT/torn-down-delivered"
-  fakebin="$case_dir/fakebin"
-  mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
+# A torn-down delivered task: no state/<id>.meta, no receipt, only the backlog's
+# Done history naming the PR. Registers one project whose clone carries a GitHub
+# remote for example/repo so the merge can recover the project checkout from the
+# registry instead of the missing meta. Echoes the case dir.
+make_done_history_case() {
+  local name=$1 case_dir
+  case_dir="$TMP_ROOT/$name"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$case_dir/fakebin" "$case_dir/projects"
   cp "$ROOT/.tasks.toml" "$case_dir/.tasks.toml"
   add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   : > "$case_dir/gh-axi.log"
+  printf '%s\n' '# Projects' '' \
+    '- repo [direct-PR] - Registered project for example/repo (added 2026-08-01)' \
+    '- other [no-mistakes] - Registered project for another forge repo (added 2026-08-01)' \
+    > "$case_dir/data/projects.md"
+  git init -q -b main "$case_dir/projects/repo"
+  git -C "$case_dir/projects/repo" remote add origin https://github.com/example/repo.git
+  git init -q -b main "$case_dir/projects/other"
+  git -C "$case_dir/projects/other" remote add origin https://github.com/example/other.git
+  printf '%s\n' "$case_dir"
+}
+
+test_torn_down_delivered_task_merges_with_durable_provenance() {
+  local case_dir receipt
+  case_dir=$(make_done_history_case torn-down-delivered)
+  receipt="$case_dir/data/pr-merges/delivered-x1.receipt"
   cat > "$case_dir/data/backlog.md" <<'MD'
 # Backlog
 
+## In flight
+
+## Queued
+
+## Done
+- [x] delivered-x1 - Delivered task https://github.com/example/repo/pull/21 (repo: repo) (kind: ship) (priority: 1) (merged 2026-08-18)
+MD
+
+  run_pr_merge "$case_dir" delivered-x1 https://github.com/example/repo/pull/21 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "torn-down-delivered: fm-pr-merge refused a task whose Done history names this PR: $(cat "$case_dir/stderr")"
+
+  grep -qxF 'pr merge 21 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "torn-down-delivered: gh-axi pr merge was not invoked"
+  assert_grep 'authorization=done-history' "$receipt" \
+    "torn-down-delivered: receipt did not record the Done-history authorization"
+  assert_grep 'phase=merged' "$receipt" \
+    "torn-down-delivered: durable receipt did not advance to merged"
+  grep -qxF 'spawned_at=' "$receipt" \
+    || fail "torn-down-delivered: a Done-history receipt must record no launch identity"
+  assert_grep "project=$case_dir/projects/repo" "$receipt" \
+    "torn-down-delivered: receipt did not recover the project checkout from the registry"
+  assert_absent "$case_dir/state/delivered-x1.meta" \
+    "torn-down-delivered: a Done-history merge must not resurrect task metadata"
+  pass "fm-pr-merge authorizes a torn-down delivered task from its exact Done PR record"
+}
+
+test_archived_done_record_authorizes_merge() {
+  local case_dir receipt
+  case_dir=$(make_done_history_case archived-done-record)
+  receipt="$case_dir/data/pr-merges/delivered-x1.receipt"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$case_dir/data/backlog.md"
+  cat > "$case_dir/data/done-archive.md" <<'MD'
+# Done archive
+
+## Archived 2026-08-20
+- [x] delivered-x1 - Delivered task https://github.com/example/repo/pull/21 (repo: repo) (kind: ship) (priority: 1) (merged 2026-08-18)
+MD
+
+  run_pr_merge "$case_dir" delivered-x1 https://github.com/example/repo/pull/21 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "archived-done-record: fm-pr-merge refused a task whose archived Done history names this PR: $(cat "$case_dir/stderr")"
+
+  grep -qxF 'pr merge 21 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "archived-done-record: gh-axi pr merge was not invoked"
+  assert_no_grep 'absent from the backlog' "$case_dir/stderr" \
+    "archived-done-record: the pruned Done row was reported as a missing backlog row"
+  assert_grep 'authorization=done-history' "$receipt" \
+    "archived-done-record: receipt did not record the Done-history authorization"
+  assert_grep 'phase=merged' "$receipt" \
+    "archived-done-record: durable receipt did not advance to merged"
+  pass "fm-pr-merge authorizes a merge from a Done record pruned into the archive"
+}
+
+test_done_history_without_registered_clone_refuses() {
+  local case_dir rc
+  case_dir=$(make_done_history_case done-history-no-clone)
+  rm -rf "$case_dir/projects/repo"
+  cat > "$case_dir/data/backlog.md" <<'MD'
 ## In flight
 
 ## Queued
@@ -531,11 +617,48 @@ MD
   rc=$?
   set -e
 
-  expect_code 1 "$rc" "torn-down-delivered: merge without launch identity should refuse"
-  [ ! -s "$case_dir/gh-axi.log" ] || fail "torn-down-delivered: gh-axi pr merge was invoked"
+  expect_code 1 "$rc" "done-history-no-clone: fm-pr-merge should refuse"
+  assert_grep 'no registered project clone matches example/repo' "$case_dir/stderr" \
+    "done-history-no-clone: refusal did not name the missing registered clone"
+  [ ! -s "$case_dir/gh-axi.log" ] || fail "done-history-no-clone: gh-axi pr merge was invoked"
   assert_absent "$case_dir/data/pr-merges/delivered-x1.receipt" \
-    "torn-down-delivered: an unbound merge receipt was created"
-  pass "fm-pr-merge refuses new provenance without launch identity"
+    "done-history-no-clone: a receipt was created without a project checkout identity"
+  pass "fm-pr-merge refuses a Done-history merge whose repository matches no registered clone"
+}
+
+test_done_history_prepared_receipt_retries_without_launch_identity() {
+  local case_dir receipt
+  case_dir=$(make_done_history_case done-history-retry)
+  receipt="$case_dir/data/pr-merges/delivered-x1.receipt"
+  mkdir -p "$case_dir/data/pr-merges"
+  cat > "$receipt" <<EOF
+schema=fm-pr-merge.v4
+task_id=delivered-x1
+pr=https://github.com/example/repo/pull/21
+repository=example/repo
+project=$case_dir/projects/repo
+default_branch=
+merge_commit=
+spawned_at=
+phase=prepared
+authorization=done-history
+prepared_epoch=1788000000
+merged_at=
+EOF
+
+  run_pr_merge "$case_dir" delivered-x1 https://github.com/example/repo/pull/21 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "done-history-retry: fm-pr-merge refused the exact prepared Done-history receipt: $(cat "$case_dir/stderr")"
+
+  grep -qxF 'pr merge 21 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "done-history-retry: gh-axi pr merge was not invoked"
+  assert_grep 'phase=merged' "$receipt" \
+    "done-history-retry: durable receipt did not advance to merged"
+  assert_grep 'authorization=done-history' "$receipt" \
+    "done-history-retry: durable receipt lost its original authorization"
+  grep -qxF 'spawned_at=' "$receipt" \
+    || fail "done-history-retry: retry invented a launch identity"
+  pass "fm-pr-merge retries an exact prepared Done-history receipt after Done history is pruned"
 }
 
 test_records_pr_and_head_before_merging() {
@@ -1107,7 +1230,7 @@ default_branch=
 merge_commit=
 spawned_at=2026-08-29T10:00:00Z
 phase=prepared
-authorization=done-record
+authorization=done-history
 prepared_epoch=1788000000
 merged_at=
 EOF
@@ -1120,7 +1243,7 @@ EOF
     || fail "prepared-retry: gh-axi pr merge was not invoked"
   assert_grep 'phase=merged' "$receipt" \
     "prepared-retry: durable receipt did not advance to merged"
-  assert_grep 'authorization=done-record' "$receipt" \
+  assert_grep 'authorization=done-history' "$receipt" \
     "prepared-retry: durable receipt lost its original authorization"
   assert_grep 'prepared_epoch=1788000000' "$receipt" \
     "prepared-retry: durable receipt lost the original preparation time"
@@ -1143,7 +1266,7 @@ pr=https://github.com/example/repo/pull/21
 project=$case_dir/project
 spawned_at=2026-08-29T10:00:00Z
 phase=prepared
-authorization=done-record
+authorization=done-history
 prepared_epoch=1788000000
 merged_at=
 repository=example/repo
@@ -1517,6 +1640,9 @@ test_post_merge_confirmation_exhaustion_remains_prepared
 test_unreadable_merge_state_refuses_before_merge
 test_extra_merge_args_forwarded
 test_torn_down_delivered_task_merges_with_durable_provenance
+test_archived_done_record_authorizes_merge
+test_done_history_without_registered_clone_refuses
+test_done_history_prepared_receipt_retries_without_launch_identity
 test_missing_meta_refuses_before_merge
 test_missing_meta_with_wrong_done_pr_refuses
 test_prepared_receipt_allows_same_pr_retry

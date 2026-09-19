@@ -1518,7 +1518,7 @@ function readMergeReceipt(dataDir, taskId, spawnedAt) {
       || (receipt.schema === 'fm-pr-merge.v4' && !receipt.project)
       || !/^https:\/\/github\.com\/(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]{0,37}[A-Za-z0-9])\/[A-Za-z0-9._-]{1,100}\/pull\/[1-9]\d*$/.test(receipt.pr || '')
       || receipt.spawned_at !== spawnedAt || receipt.phase !== 'merged'
-      || !['live-meta', 'done-record'].includes(receipt.authorization)) return null
+      || !['live-meta', 'done-history'].includes(receipt.authorization)) return null
   const epochTimestamp = (value, earliest) => {
     if (!/^(0|[1-9]\d*)$/.test(value || '')) return null
     const epoch = Number(value)
