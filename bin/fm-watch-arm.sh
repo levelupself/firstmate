@@ -63,8 +63,17 @@
 # state/.watch-cycle-exits.log. The arm layer owns that bounded ledger; it records
 # arm/watcher identities, timestamps, exit/signal classification, beacon age,
 # lock identity before and after close, the confirmation budget this arm used
-# with the one-minute load average read at the attempt, and successor
-# disposition. The separate
+# with the one-minute load average read at the attempt, the started watcher's
+# startup profile, and successor disposition, which stays the last field
+# because successor linking rewrites it in place. The startup= field lists
+# the cumulative milliseconds from the fork to each phase the child reached -
+# start (its main entry, after sourcing), migrate (the PR check migration
+# returned), lock (the singleton claimed), beat (its first liveness beacon) -
+# as "start:Nms,migrate:Nms,lock:Nms,beat:Nms", or "none" for an attached cycle
+# or a child that reached no phase. Missing later phases on a
+# confirmation-timeout row name where the budget ran out. The child writes the
+# phases into a private per-arm record (state/.watch-arm-phases.*) this arm
+# creates before the fork and removes with the cycle. The separate
 # state/.watch-triage.log remains exclusively the watcher's absorbed-wake debug
 # log and is never written here.
 #
@@ -156,6 +165,22 @@ lock_snapshot() {
   printf 'pid:%s|identity:%s' "$(cycle_clean_field "${pid:-none}")" "$(cycle_clean_field "${identity:-none}")"
 }
 
+# shellcheck source=bin/fm-timing-lib.sh
+. "$SCRIPT_DIR/fm-timing-lib.sh"
+# The started child's startup-phase record (header: startup= field); empty for an
+# attached cycle. Rendered once per row and removed with the child's output.
+child_phases=
+cycle_startup_field() {
+  local line name ms out=
+  [ -n "$child_phases" ] && [ -s "$child_phases" ] || { printf 'none'; return; }
+  while IFS='=' read -r name ms; do
+    case "$name" in start|migrate|lock|beat) ;; *) continue ;; esac
+    case "$ms" in ''|*[!0-9]*) continue ;; esac
+    out="${out:+$out,}$name:${ms}ms"
+  done < "$child_phases"
+  printf '%s' "${out:-none}"
+}
+
 WATCH_DELIVERY_LOG="$STATE/.watch-deliveries.log"
 WATCH_DELIVERY_LOCK="$STATE/.watch-deliveries.lock"
 
@@ -206,7 +231,7 @@ cycle_log_append() {
     sleep 0.02
     i=$((i + 1))
   done
-  printf 'arm_pid=%s\twatcher_pid=%s\torigin=%s\tstarted_at=%s\tended_at=%s\texit_code=%s\tsignal=%s\treason=%s\tbeacon_age=%s\tlock_before=%s\tlock_after=%s\tconfirm_budget=%s\tload1=%s\tsuccessor=%s\n' \
+  printf 'arm_pid=%s\twatcher_pid=%s\torigin=%s\tstarted_at=%s\tended_at=%s\texit_code=%s\tsignal=%s\treason=%s\tbeacon_age=%s\tlock_before=%s\tlock_after=%s\tconfirm_budget=%s\tload1=%s\tstartup=%s\tsuccessor=%s\n' \
     "$ARM_PID" \
     "$(cycle_clean_field "$cycle_watcher_pid")" \
     "$(cycle_clean_field "$cycle_origin")" \
@@ -220,6 +245,7 @@ cycle_log_append() {
     "$(cycle_clean_field "$lock_after")" \
     "$(cycle_clean_field "$CONFIRM_TIMEOUT")" \
     "$(cycle_clean_field "$CONFIRM_LOAD1")" \
+    "$(cycle_clean_field "$(cycle_startup_field)")" \
     "$(cycle_clean_field "$successor")" >> "$CYCLE_LOG" 2>/dev/null || true
 
   size=$(wc -c < "$CYCLE_LOG" 2>/dev/null | tr -d '[:space:]')
@@ -514,6 +540,14 @@ cleanup_child() {
     rm -f "$child_out" 2>/dev/null || true
   fi
 }
+# The phase record outlives cleanup_child on purpose: the confirmation-timeout
+# row is appended after the child is stopped and must still read it.
+discard_child_phases() {
+  if [ -n "$child_phases" ]; then
+    rm -f "$child_phases" 2>/dev/null || true
+  fi
+  child_phases=
+}
 
 # shellcheck disable=SC2329 # Invoked indirectly by the signal traps below.
 handle_arm_signal() {
@@ -525,6 +559,7 @@ handle_arm_signal() {
   fi
   cycle_log_append "$rc" "$signal" arm-interrupted none
   cleanup_child
+  discard_child_phases
   exit "$rc"
 }
 
@@ -536,6 +571,12 @@ child_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || {
   echo "watcher: FAILED - no live watcher with a fresh beacon"
   exit 1
 }
+# The startup profile is diagnostic: a record that cannot be created leaves the
+# row's startup= field at none rather than blocking the arm.
+child_phases=$(mktemp "$STATE/.watch-arm-phases.XXXXXX" 2>/dev/null) || child_phases=
+export FM_WATCH_PHASE_RECORD="$child_phases"
+FM_WATCH_FORK_MS=$(fm_timing_now_ms)
+export FM_WATCH_FORK_MS
 if [ -n "${FM_WATCH_PREDECESSOR_ARM_PID:-}" ]; then
   FM_WATCH_HANDLING_SUCCESSOR=1 "$WATCH" >"$child_out" &
 else
@@ -555,6 +596,7 @@ owned_child_finished() {
     rm -f "$child_out" 2>/dev/null || true
     child=
     child_out=
+    discard_child_phases
     return 0
   fi
 
@@ -565,6 +607,7 @@ owned_child_finished() {
       rm -f "$child_out" 2>/dev/null || true
       child=
       child_out=
+      discard_child_phases
       cycle_mark_predecessor_successor "attached:$HEALTHY_PID"
       report_attached
       cycle_begin "$HEALTHY_PID" attached "$HEALTHY_IDENTITY"
@@ -577,9 +620,11 @@ owned_child_finished() {
     child_out=
     if close_unobserved_cycle; then
       cycle_log_append "$rc" "$signal" clean-exit-delivered-wake none
+      discard_child_phases
       return 0
     fi
     cycle_log_append "$rc" "$signal" unexpected-clean-exit none
+    discard_child_phases
     return 1
   fi
 
@@ -593,6 +638,7 @@ owned_child_finished() {
   rm -f "$child_out" 2>/dev/null || true
   child=
   child_out=
+  discard_child_phases
   status=$rc
   [ "$status" -gt 0 ] || status=1
   return "$status"
@@ -628,6 +674,7 @@ while :; do
         cleanup_child
         wait "$child" 2>/dev/null || true
         cycle_log_append 1 none handling-handoff-failed none
+        discard_child_phases
         echo "watcher: FAILED - established successor could not inspect handling state"
         exit 1
       fi
@@ -665,5 +712,6 @@ cleanup_child
 wait "$child" 2>/dev/null
 rc=$?
 cycle_log_append "$rc" "$(cycle_signal_name "$rc")" confirmation-timeout none
+discard_child_phases
 echo "watcher: FAILED - no live watcher with a fresh beacon"
 exit 1

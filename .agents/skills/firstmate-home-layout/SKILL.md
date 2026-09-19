@@ -48,6 +48,7 @@ Task turn-end tokens and harness session bindings are firstmate-owned volatile s
 A task's Herdr presentation journal is quarantinable attempt and restart-binding state, never task or endpoint authority.
 The watcher executes only byte-identified trusted poll shims, validated private PR data, or registered custom checks bound to hash-validated private snapshots; it rejects every other state check without execution.
 PR-poll sidecars, registrations, retirement receipts, migration logs, and quarantine are private provenance, and quarantined checks are non-runnable.
+`state/.pr-check-set-fingerprint` is the migration's derived certification of the last validated check set, owned by [`bin/fm-check-lib.sh`](../../../bin/fm-check-lib.sh)'s fingerprint header, never authoritative, and safe to delete at the cost of one full per-record validation on the next watcher start.
 Registered process-event sources and condition-to-action watches are private, are written only by `bin/fm-procevent.sh` and `bin/fm-procevent-when.sh`, and keep supervision required until their owner retires them; captured source output stays in the private inbox and never in a wake line.
 Generated Relay, pending-reply, public-followup, usage-cache, and startup-network children remain private and are owned by their named scripts, section 14, or `docs/task-usage.md`.
 Effort ingestion queues, worker logs, capture locks, and the disposable git cache are owned by [`bin/fm-effort-store.sh`](../../../bin/fm-effort-store.sh)'s header.

@@ -41,6 +41,21 @@ run_case() {  # <case> <id>
     "$TEARDOWN" "$id" --force
 }
 
+# A teardown that completes finalizes deterministic effort through a detached
+# ingestion worker (bin/fm-effort-store.sh enqueue) that keeps writing under
+# the case's home/state/.effort-queue-* and home/data after the command returns.
+# Wait for that worker to exit before the case is judged and the fixture root
+# is removed, so cleanup never races a late write and reports a non-empty
+# directory. This is a hang guard on a detached process, not a latency bound.
+settle_effort_ingestion() {  # <case>
+  local dir=$1 db="$1/home/data/effort-store.sqlite" i=0
+  while pgrep -f "fm-effort-store.sh worker --db $db" >/dev/null 2>&1; do
+    [ "$i" -lt 600 ] || fail "detached effort ingestion worker for $dir did not exit within 60s"
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+
 assert_refused_without_mutation() {  # <case> <id> <description>
   local dir=$1 id=$2 description=$3 rc
   set +e
@@ -189,6 +204,7 @@ test_metadata_lock_serializes_destructive_cleanup() {
   rc=0
   wait "$teardown_pid" || rc=$?
   expect_code 0 "$rc" "teardown should complete after the metadata writer releases: $(cat "$dir/stderr")"
+  settle_effort_ingestion "$dir"
   assert_absent "$dir/home/state/$id.meta" \
     "serialized teardown left a task record that a completed writer could resurrect"
   pass "fm-teardown: destructive cleanup serializes with metadata writers"
@@ -409,6 +425,7 @@ SH
     PATH="$dir/fakebin:$PATH" "$TEARDOWN" "$target_id" --force \
     > "$dir/valid.out" 2> "$dir/valid.err" \
     || fail "isolated valid endpoint teardown failed: $(cat "$dir/valid.err")"
+  settle_effort_ingestion "$dir"
   isolated_tmux_window_exists "$dir" "$socket" "$session" "$target" \
     && fail "valid cleanup did not remove the exact target window"
   isolated_tmux_window_exists "$dir" "$socket" "$session" "$control" \

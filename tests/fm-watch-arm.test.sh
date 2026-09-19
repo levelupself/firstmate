@@ -950,6 +950,56 @@ test_confirmation_budget_bounds_and_explicit_override() {
   pass "watch-arm: confirmation budget keeps its floor, cap, and explicit override"
 }
 
+# Print the cumulative millisecond offset of one startup phase from a ledger row's
+# startup= field, or nothing when the phase is absent.
+startup_phase_ms() {  # <row> <phase>
+  local row=$1 phase=$2 field
+  field=${row##*	startup=}
+  field=",${field%%	*},"
+  case "$field" in
+    *",$phase:"*) field=${field##*",$phase:"}; field=${field%%,*}; printf '%s\n' "${field%ms}" ;;
+  esac
+}
+
+test_cycle_row_records_startup_phases() {
+  # Two consecutive arms timed out at load1 43 with nothing holding the lock
+  # while a cycle at load 71 five minutes earlier confirmed: the budget only
+  # sometimes covered the watcher's pre-beat startup, and the ledger could not
+  # say WHERE those seconds went. Every started cycle's row must carry the
+  # watcher's cumulative startup offsets - start, migrate, lock, beat - so a
+  # timeout names the slow phase on its own. The stall is simulated through the
+  # slow-once uname reader the watcher resolves before its main entry, never
+  # through host load.
+  local dir home state fakebin armout mark load_env row start migrate lock beat
+  dir=$(make_case startup-phases)
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  mark="$dir/slow-once"
+  mkdir -p "$home/data"
+  load_env=$(arm_load_env "$dir" 1.00 16)
+  install_slow_once_uname "$fakebin" "$mark" 2
+  close_one_cycle_row "$home" "$state" "$fakebin" "$armout" "$load_env"
+  unset FM_FAKE_UNAME_SLOW_MARK FM_FAKE_UNAME_SLOW_SECONDS
+  [ ! -e "$mark" ] || fail "the slow-once uname stall was never exercised by the watcher"
+  row=$(last_cycle_row "$state")
+  start=$(startup_phase_ms "$row" start)
+  migrate=$(startup_phase_ms "$row" migrate)
+  lock=$(startup_phase_ms "$row" lock)
+  beat=$(startup_phase_ms "$row" beat)
+  for value in "$start" "$migrate" "$lock" "$beat"; do
+    case "$value" in
+      ''|*[!0-9]*) fail "ledger row lacks a numeric start/migrate/lock/beat startup offset: $row" ;;
+    esac
+  done
+  [ "$start" -ge 2000 ] \
+    || fail "the 2s pre-entry stall is not visible in the start offset (${start}ms): $row"
+  [ "$start" -le "$migrate" ] && [ "$migrate" -le "$lock" ] && [ "$lock" -le "$beat" ] \
+    || fail "startup offsets are not cumulative in phase order: $row"
+  pass "watch-arm: a started cycle's ledger row names where startup time went"
+}
+
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
@@ -966,3 +1016,4 @@ test_moved_generation_acknowledgement_is_self_healing
 test_downtime_marker_does_not_follow_symlink
 test_loaded_host_extends_the_default_confirmation_budget
 test_confirmation_budget_bounds_and_explicit_override
+test_cycle_row_records_startup_phases

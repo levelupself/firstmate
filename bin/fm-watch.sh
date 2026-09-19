@@ -796,6 +796,26 @@ if [ "${BASH_SOURCE[0]}" != "$0" ]; then
   return 0
 fi
 
+# Startup profile for the arm's lifecycle ledger. When the arm that forked this
+# watcher names a record file in FM_WATCH_PHASE_RECORD, each phase below appends
+# "<phase>=<ms since the fork instant FM_WATCH_FORK_MS>" to it, so a
+# confirmation timeout can name the slow phase from the ledger row alone.
+# Diagnostic only: a failed append changes nothing, and an unset record file
+# makes every call a no-op. bin/fm-watch-arm.sh owns the file and the row field.
+# shellcheck source=bin/fm-timing-lib.sh
+. "$SCRIPT_DIR/fm-timing-lib.sh"
+startup_phase() {
+  local now
+  [ -n "${FM_WATCH_PHASE_RECORD:-}" ] || return 0
+  now=$(fm_timing_now_ms)
+  case "${FM_WATCH_FORK_MS:-}" in
+    ''|*[!0-9]*) ;;
+    *) now=$(( now - FM_WATCH_FORK_MS )); [ "$now" -ge 0 ] || now=0 ;;
+  esac
+  printf '%s=%s\n' "$1" "$now" >> "$FM_WATCH_PHASE_RECORD" 2>/dev/null || true
+}
+startup_phase start
+
 # Before acquiring the watcher lock or enumerating any runnable check, replace
 # or quarantine checks created by older versions. The migration compares bytes
 # and reads data only; it never invokes legacy check files through Bash.
@@ -803,6 +823,7 @@ fi
   echo "watcher: PR check migration blocked; refusing to execute state checks" >&2
   exit 1
 }
+startup_phase migrate
 
 # A PR check migration that won the lock in the instant after this watcher's
 # own migration returned releases it within its bounded run; wait for that
@@ -848,6 +869,7 @@ if ! acquire_watch_lock; then
   fi
   exit 0
 fi
+startup_phase lock
 WATCHER_RECOVERY_PENDING=0
 if [ -n "${FM_LOCK_RECOVERED_PID:-}" ]; then
   WATCHER_RECOVERY_PENDING=1
@@ -923,6 +945,8 @@ resurface_after_downtime() {
 
 if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" = 1 ]; then
   touch "$STATE/.last-watcher-beat"
+  _first_beat_recorded=1
+  startup_phase beat
   handling_wait=0
   while [ "$handling_wait" -lt 600 ]; do
     fm_recovery_marker_snapshot "$WATCHER_DOWNTIME_MARKER" || true
@@ -950,6 +974,10 @@ while :; do
   # Liveness beacon for fm-guard.sh: a fresh mtime here means a watcher is
   # alive. Supervision scripts warn when this goes stale with tasks in flight.
   touch "$STATE/.last-watcher-beat"
+  if [ "${_first_beat_recorded:-0}" -eq 0 ]; then
+    _first_beat_recorded=1
+    startup_phase beat
+  fi
 
   # Parent-owned secondmate pending-reply reconciliation: resolve correlated
   # parent reports, observe backend busy/idle turn completion, send one recovery
