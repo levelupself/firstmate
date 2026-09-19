@@ -674,6 +674,7 @@ while :; do
         cleanup_child
         wait "$child" 2>/dev/null || true
         cycle_log_append 1 none handling-handoff-failed none
+        discard_child_phases
         echo "watcher: FAILED - established successor could not inspect handling state"
         exit 1
       fi

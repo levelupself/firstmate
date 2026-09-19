@@ -126,7 +126,7 @@ fm_check_set_sha256_stdin() {
 # Prints the fingerprint text of the current check set on stdout.
 fm_check_set_fingerprint() {
   local state=$1 template=$2 home=$3 root=$4 kernel check id member state_device
-  local context template_digest scratch line digest name text i
+  local context template_digest scratch raw line digest member_id member_digest text i
   local -a members=() ids=() lines=()
   [ -d "$state" ] && [ ! -L "$state" ] || return 1
   kernel=$(uname)
@@ -160,48 +160,51 @@ fm_check_set_fingerprint() {
   # One stat pass and one digest pass over every member, read back
   # positionally so no path parsing is needed, then each id's lines are
   # gathered into a scratch file so a single digest pass names every id.
-  scratch=$(mktemp -d "$state/.fm-check-set-fingerprint.XXXXXX") || return 1
-  chmod 0700 "$scratch" 2>/dev/null || { rm -rf -- "$scratch"; return 1; }
   text=$(
-    if [ "$kernel" = Darwin ]; then
-      stat -f '%HT %Lp %u %d %i %l %z %m' "${members[@]}" || exit 1
-    else
-      stat -c '%F %a %u %d %i %h %s %Y' "${members[@]}" || exit 1
-    fi
+    scratch=$(mktemp -d "$state/.fm-check-set-fingerprint.XXXXXX") || exit 1
+    trap 'rm -rf -- "$scratch"' EXIT
+    trap 'exit 1' HUP INT TERM
+    chmod 0700 "$scratch" 2>/dev/null || exit 1
+    raw=$(
+      if [ "$kernel" = Darwin ]; then
+        stat -f '%HT %Lp %u %d %i %l %z %m' "${members[@]}" || exit 1
+      else
+        stat -c '%F %a %u %d %i %h %s %Y' "${members[@]}" || exit 1
+      fi
+      if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "${members[@]}" || exit 1
+      else
+        sha256sum "${members[@]}" || exit 1
+      fi
+    ) || exit 1
+    mapfile -t lines <<< "$raw"
+    [ "${#lines[@]}" -eq $(( 2 * ${#members[@]} )) ] || exit 1
+    i=0
+    while [ "$i" -lt "${#members[@]}" ]; do
+      member=${members[$i]##*/}
+      case "$member" in
+        *.check.sh) member_id=${member%.check.sh} ;;
+        *.pr-poll-registration) member_id=${member%.pr-poll-registration} ;;
+        *.pr-poll) member_id=${member%.pr-poll} ;;
+        *.meta) member_id=${member%.meta} ;;
+        *.check-trust) member_id=${member%.check-trust} ;;
+        *) exit 1 ;;
+      esac
+      member_digest=${lines[$(( ${#members[@]} + i ))]%% *}
+      [[ "$member_digest" =~ ^[0-9a-f]{64}$ ]] || exit 1
+      printf '%s %s %s\n' "$member" "${lines[$i]}" "$member_digest" >> "$scratch/$member_id" \
+        || exit 1
+      i=$((i + 1))
+    done
+    for member_id in "${ids[@]}"; do
+      [ -s "$scratch/$member_id" ] || exit 1
+    done
     if command -v shasum >/dev/null 2>&1; then
-      shasum -a 256 "${members[@]}" || exit 1
+      (cd "$scratch" && shasum -a 256 -- *) || exit 1
     else
-      sha256sum "${members[@]}" || exit 1
+      (cd "$scratch" && sha256sum -- *) || exit 1
     fi
-  ) || { rm -rf -- "$scratch"; return 1; }
-  mapfile -t lines <<< "$text"
-  [ "${#lines[@]}" -eq $(( 2 * ${#members[@]} )) ] || { rm -rf -- "$scratch"; return 1; }
-  i=0
-  while [ "$i" -lt "${#members[@]}" ]; do
-    name=${members[$i]##*/}
-    case "$name" in
-      *.check.sh) id=${name%.check.sh} ;;
-      *.pr-poll-registration) id=${name%.pr-poll-registration} ;;
-      *.pr-poll) id=${name%.pr-poll} ;;
-      *.meta) id=${name%.meta} ;;
-      *.check-trust) id=${name%.check-trust} ;;
-      *) rm -rf -- "$scratch"; return 1 ;;
-    esac
-    digest=${lines[$(( ${#members[@]} + i ))]%% *}
-    [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || { rm -rf -- "$scratch"; return 1; }
-    printf '%s %s %s\n' "$name" "${lines[$i]}" "$digest" >> "$scratch/$id" \
-      || { rm -rf -- "$scratch"; return 1; }
-    i=$((i + 1))
-  done
-  for id in "${ids[@]}"; do
-    [ -s "$scratch/$id" ] || { rm -rf -- "$scratch"; return 1; }
-  done
-  if command -v shasum >/dev/null 2>&1; then
-    text=$(cd "$scratch" && shasum -a 256 -- *) || { rm -rf -- "$scratch"; return 1; }
-  else
-    text=$(cd "$scratch" && sha256sum -- *) || { rm -rf -- "$scratch"; return 1; }
-  fi
-  rm -rf -- "$scratch"
+  ) || return 1
   while IFS= read -r line; do
     digest=${line%% *}
     id=${line##*  }

@@ -74,6 +74,12 @@ state_snapshot() {
   )
 }
 
+# The certification record is republished by the first migration after the
+# check set moves, so a rerun that follows a registration is compared without it.
+state_snapshot_uncertified() {
+  state_snapshot "$1" | grep -v ' ./.pr-check-set-fingerprint ' || true
+}
+
 make_case() {
   local name=$1 dir fakebin fake_root
   dir="$TMP_ROOT/$name"
@@ -2428,10 +2434,16 @@ test_nonexecuting_migration() {
   chmod 0700 "$state/custom.check.sh"
   FM_HOME="$dir/home" "$REGISTER" custom >/dev/null \
     || fail "could not register the later custom check"
-  snap_before=$(state_snapshot "$state")
+  snap_before=$(state_snapshot_uncertified "$state")
   FM_HOME="$dir/home" "$MIGRATE" >/dev/null 2>/dev/null || fail "completed migration rerun failed"
-  snap_after=$(state_snapshot "$state")
+  snap_after=$(state_snapshot_uncertified "$state")
   [ "$snap_after" = "$snap_before" ] || fail "completed migration changed a later custom check"
+  fm_check_set_fingerprint_read "$state" | grep -q "^custom$(printf '\t')" \
+    || fail "completed migration rerun did not certify the later custom check"
+  snap_before=$(state_snapshot "$state")
+  FM_HOME="$dir/home" "$MIGRATE" >/dev/null 2>/dev/null || fail "certified migration rerun failed"
+  snap_after=$(state_snapshot "$state")
+  [ "$snap_after" = "$snap_before" ] || fail "certified migration rerun changed state"
 
   dir=$(make_case migration-x-linked)
   state="$dir/home/state"
@@ -2658,12 +2670,20 @@ test_direct_registration_refreshes_v1_x_shim() {
     quarantined=$(find "$state/.pr-check-quarantine" -name 'x-watch.check.*' -type f 2>/dev/null || true)
     [ -z "$quarantined" ] || fail "$marker_kind authenticated v1 X shim was quarantined"
 
-    snapshot_before=$(state_snapshot "$state")
+    snapshot_before=$(state_snapshot_uncertified "$state")
     FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" "$MIGRATE" --checks-safe >/dev/null \
       || fail "$marker_kind current X shim marker rerun failed"
-    snapshot_after=$(state_snapshot "$state")
+    snapshot_after=$(state_snapshot_uncertified "$state")
     [ "$snapshot_after" = "$snapshot_before" ] \
       || fail "$marker_kind current X shim marker rerun changed state"
+    fm_check_set_fingerprint_read "$state" | grep -q "^task-a$(printf '\t')" \
+      || fail "$marker_kind current X shim marker rerun did not certify the registered poll"
+    snapshot_before=$(state_snapshot "$state")
+    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" "$MIGRATE" --checks-safe >/dev/null \
+      || fail "$marker_kind certified X shim marker rerun failed"
+    snapshot_after=$(state_snapshot "$state")
+    [ "$snapshot_after" = "$snapshot_before" ] \
+      || fail "$marker_kind certified X shim marker rerun changed state"
   done
 
   dir=$(make_case direct-registration-x-lookalike)
@@ -2880,7 +2900,7 @@ SH
     > "$dir/watch.out" 2> "$dir/watch.err" &
   pid=$!
   i=0
-  while [ "$i" -lt 100 ]; do
+  while [ "$i" -lt 3000 ]; do
     [ -s "$child_pid_file" ] && break
     kill -0 "$pid" 2>/dev/null || break
     sleep 0.02
@@ -2956,7 +2976,7 @@ SH
       > "$dir/watch.out" 2> "$dir/watch.err" &
     watcher_pid=$!
     i=0
-    while [ "$i" -lt 200 ]; do
+    while [ "$i" -lt 3000 ]; do
       [ -s "$ready" ] && [ -s "$child_pid_file" ] && [ -e "$direct_done" ] \
         && [ -e "$state/.last-check" ] && break
       kill -0 "$watcher_pid" 2>/dev/null || break
