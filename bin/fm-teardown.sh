@@ -76,56 +76,44 @@
 #   reason to state/teardown.log; the flag is refused without a reason.
 #
 # Copy-binding check (copy-binding): a record binds its worktree= for other
-# tasks only until this script stamps teardown_at= into it, and this task's own
-# release of the copy is proved by either of two signals: copy_returned_at=,
-# written immediately after a successful treehouse return, or a release event
-# for this task and worktree in the allocation ledger (bin/fm-worktree-
-# allocation.sh released), which this script writes only after that same
-# return and which retained records written before copy_returned_at= existed
-# already carry. Either signal counts only when it is not older than the
-# record's incarnation_at=: bin/fm-spawn.sh rewrites that stamp on every
-# recovery (--reacquire-worktree, --reattach-worktree) and carries the older
-# keys along, so a release that predates the current incarnation proves
-# nothing about the copy this incarnation holds; a record without
-# incarnation_at= is bounded by nothing. teardown_at= precedes the return, so
-# a return that fails after the stamp leaves neither signal and the rerun
-# retries it. A task torn down EARLY (its PR still open
-# under an armed merge poll) keeps its record for that poll while its copy goes
-# back to the pool, and the pool may hand that same copy to another task before
-# the PR merges (observed 2026-09-18: the post-merge rerun trusted the stale
-# worktree= line, hard-reset the copy - by then checked out on the other task's
-# branch - and killed the live worker inside it). So before anything reads,
-# prunes, resets, kills inside, or returns a Treehouse copy, teardown proves it
-# still belongs to THIS task: the copy is checked out on fm/<task-id> and no
-# other live record in this home (worktree= resolving to the same directory,
-# no teardown_at=) binds it. A copy held by another task - by such a record or
-# by a checked-out fm/<other-id> branch - is refused by name on a first
-# teardown, --force included, because that work is not this task's to discard.
-# Once this task has already released the copy (copy_returned_at= or a ledger
-# release present), a copy that is not back on fm/<task-id> is never touched:
-# teardown prints
-# `copy already returned; held by <holder>` (the other task, or what
-# `treehouse status --json` run from the project reports inside the copy) or
-# `copy already returned; detached at trunk; ...` (whether the pool inventory
-# confirmed it free or could not be read), retires only this task's own
+# tasks only until this script stamps teardown_at= into it. A task torn down
+# EARLY (its PR still open under an armed merge poll) keeps its record for
+# that poll while its copy goes back to the pool, and the pool may hand that
+# same copy to another task before the PR merges (observed 2026-09-18: the
+# post-merge rerun trusted the stale worktree= line, hard-reset the copy - by
+# then checked out on the other task's branch - and killed the live worker
+# inside it). So before anything reads, prunes, resets, kills inside, or
+# returns a Treehouse copy, teardown asks the worktree allocation ledger who
+# holds it (bin/fm-worktree-allocation.sh holder: the task of the last acquire
+# of that copy not followed by that task's release; this script writes the
+# release only after a successful treehouse return, and bin/fm-spawn.sh writes
+# a fresh acquire on every lease, recovery included). An unreadable or
+# malformed ledger is unknown, not free, and refuses. A holder that is another
+# task selects records-only mode: teardown prints `copy already returned;
+# held by <holder-task-id>`, never reads, prunes, resets, reaps under, or
+# returns the copy, still closes THIS task's own recorded endpoint (the
+# recorded target, window fm-<task-id>, zellij tab, or herdr session and pane
+# - an identity that is per task and never the other task's, so the close is
+# a no-op once the early cleanup already ran it), retires only this task's own
 # records (meta, launch receipt, merge poll, check, context watch, busy state,
-# per-task temp), closes only this task's own recorded endpoint (the recorded
-# target, window fm-<task-id>, zellij tab, or herdr session and pane - an
-# identity that is per task and never the other task's, so the close is a
-# no-op once the early cleanup already ran it), and exits 0. In that
-# records-only mode a
-# pruned backlog row is judged on durable landed-work evidence alone
-# (fm-backlog-integrity.sh landed-evidence), never on the copy's HEAD or
-# branch, so another task's work can neither refuse nor authorize this task's
-# retirement. The one exception is
-# a released copy that sits detached off trunk while the pool reports it
-# free and no record binds it: that is an early return that never took
-# effect, and it is returned now; if the pool inventory cannot prove it free,
-# teardown refuses. An unreleased copy that no other task holds - detached, or
-# on a branch that is not another task's fm/<other-id> - remains this task's
-# own, and the landed-work checks below decide whether it may be reset. A copy
-# that is not an inspectable git worktree (a scout scratch directory) skips
-# this check.
+# per-task temp), and exits 0; a pruned backlog row is then judged on durable
+# landed-work evidence alone (fm-backlog-integrity.sh landed-evidence), never
+# on the copy's HEAD or branch. When the ledger names this task or no one,
+# the copy is still this task's and the ordinary path runs, so a rerun after
+# a failed return simply retries the return. On that path a copy that another
+# live record in this home binds (worktree= resolving to the same directory,
+# no teardown_at=), or that is checked out on another task's fm/<other-id>
+# branch, is refused by name, --force included, because that work is not this
+# task's to discard; and when the copy is not on fm/<task-id>, the pool
+# inventory (`treehouse status --json` run from the project, parsed with
+# node) is extra evidence: a lease, live processes, or a non-available status
+# reported inside it refuses by name naming what the pool reports, while an
+# unreadable or unlisted inventory is not a refusal. The inventory never by
+# itself selects records-only. A copy that no other task holds - on
+# fm/<task-id>, detached, or on a branch that is not another task's
+# fm/<other-id> - remains this task's own, and the landed-work checks below
+# decide whether it may be reset. A copy that is not an inspectable git
+# worktree (a scout scratch directory) skips this check.
 #
 # Footprint post-condition (footprint-gate): once the landed-work, run-abort, and
 # process-reap steps have passed, a Treehouse task copy is pruned through the
@@ -1519,9 +1507,9 @@ validate_worktree_teardown_safety() {
 
 # Copy-binding check (copy-binding; see the script header). Decides, before
 # anything reads or resets the recorded Treehouse copy, whether that copy still
-# belongs to THIS task. Sets TEARDOWN_COPY_RECORDS_ONLY=1 when the task already
-# released the copy and something else now holds it, so the remainder of
-# teardown retires only this task's own records.
+# belongs to THIS task. Sets TEARDOWN_COPY_RECORDS_ONLY=1 when the allocation
+# ledger names another task as the copy's current holder, so the remainder of
+# teardown retires only this task's own records and endpoint.
 TEARDOWN_COPY_RECORDS_ONLY=0
 
 # teardown_copy_other_binder: the id of another record in this home that still
@@ -1572,121 +1560,54 @@ else if (entry.status !== 'available') process.stdout.write(`pool status ${entry
 NODE
 }
 
-# teardown_copy_at_trunk: is $WT's HEAD on the project's default branch, the
-# state a returned copy rests in?
-teardown_copy_at_trunk() {
-  local default
-  default=$(default_branch) || return 1
-  git -C "$WT" merge-base --is-ancestor HEAD "refs/remotes/origin/$default" 2>/dev/null \
-    || git -C "$WT" merge-base --is-ancestor HEAD "refs/heads/$default" 2>/dev/null
-}
-
 teardown_copy_records_only() {  # <why>
   echo "teardown: copy already returned; $1 - retiring only task $ID's records, leaving $WT and its processes untouched"
   TEARDOWN_COPY_RECORDS_ONLY=1
 }
 
-# teardown_copy_ledger_released: does the allocation ledger hold this task's
-# release of $WT? That event is written only after a successful treehouse
-# return, so it proves the release for records that predate copy_returned_at=.
-teardown_copy_ledger_released() {  # [since]
+# teardown_copy_ledger_holder: the task the allocation ledger records as the
+# current holder of $WT (see the script header). Prints that id, or nothing
+# when no task holds the copy, and returns 0; returns 1 when the ledger cannot
+# be read, which the caller treats as unknown.
+teardown_copy_ledger_holder() {
   local project
   project=$(meta_value "$META" allocation_project)
   [ -n "$project" ] || project=$PROJ
-  "$SCRIPT_DIR/fm-worktree-allocation.sh" released "$ID" "$project" "$WT" "$@" 2>/dev/null
-}
-
-# teardown_copy_release_bound: the record's incarnation_at= when it is a
-# canonical UTC stamp, else nothing. A release signal older than this bound
-# belongs to an earlier incarnation of the task and does not count.
-teardown_copy_release_bound() {
-  local since
-  since=$(meta_value "$META" incarnation_at)
-  case "$since" in
-    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) printf '%s\n' "$since" ;;
-    *) return 1 ;;
-  esac
-}
-
-# teardown_copy_released: has this task released $WT during its current
-# incarnation? True on a copy_returned_at= marker not older than the bound, or
-# on a ledger release at or after it.
-teardown_copy_released() {
-  local since marker
-  since=$(teardown_copy_release_bound) || since=
-  marker=$(meta_value "$META" copy_returned_at)
-  if [ -n "$marker" ]; then
-    if [ -z "$since" ] || [ "$marker" = "$since" ] || [ "$marker" \> "$since" ]; then
-      return 0
-    fi
-  fi
-  if [ -n "$since" ]; then
-    teardown_copy_ledger_released "$since"
-  else
-    teardown_copy_ledger_released
-  fi
+  "$SCRIPT_DIR/fm-worktree-allocation.sh" holder "$project" "$WT" 2>/dev/null
 }
 
 teardown_copy_binding_check() {
-  local branch other='' holder='' released=0 occupant pool_free=''
+  local branch other='' holder='' ledger_holder occupant
   inspectable_git_worktree "$WT" || return 0
-  ! teardown_copy_released || released=1
+  if ! ledger_holder=$(teardown_copy_ledger_holder); then
+    echo "REFUSED: the worktree allocation ledger for $WT cannot be read, so which task holds the copy is unknown." >&2
+    echo "Repair the project's ledger under data/worktree-allocations, then rerun cleanup." >&2
+    return 1
+  fi
+  if [ -n "$ledger_holder" ] && [ "$ledger_holder" != "$ID" ]; then
+    teardown_copy_records_only "held by $ledger_holder"
+    return 0
+  fi
   branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=
   other=$(teardown_copy_other_binder) || other=
   if [ -n "$other" ]; then
-    holder="$other (its record still binds the copy)"
+    holder="task $other (its record still binds the copy)"
   else
     case "$branch" in
       "fm/$ID") ;;
-      fm/*) holder="${branch#fm/} (branch $branch is checked out)" ;;
+      fm/*) holder="task ${branch#fm/} (branch $branch is checked out)" ;;
     esac
   fi
-  if [ "$branch" = "fm/$ID" ] && [ -z "$other" ]; then
-    return 0
+  if [ -z "$holder" ] && [ "$branch" != "fm/$ID" ]; then
+    if occupant=$(teardown_copy_pool_occupant) && [ -n "$occupant" ]; then
+      holder=$occupant
+    fi
   fi
   if [ -n "$holder" ]; then
-    if [ "$released" = 1 ]; then
-      teardown_copy_records_only "held by $holder"
-      return 0
-    fi
-    echo "REFUSED: copy $WT is held by task $holder, not by task $ID (expected branch fm/$ID)." >&2
-    echo "Resetting or returning it would destroy that task's session; reconcile which task owns the copy before cleanup. --force does not override this." >&2
+    echo "REFUSED: copy $WT is held by $holder, not by task $ID (expected branch fm/$ID)." >&2
+    echo "Resetting or returning it would destroy that holder's session; reconcile which task owns the copy before cleanup. --force does not override this." >&2
     return 1
   fi
-  if [ "$released" = 1 ]; then
-    # This task already returned the copy. Whatever is inside it now is not
-    # this task's work, so nothing here may be reset or killed unless the
-    # copy is provably still resting on this task's own unreturned state.
-    if occupant=$(teardown_copy_pool_occupant); then
-      if [ -n "$occupant" ]; then
-        teardown_copy_records_only "held by $occupant"
-        return 0
-      fi
-      pool_free=1
-    fi
-    if [ -n "$branch" ]; then
-      teardown_copy_records_only "now on branch $branch"
-      return 0
-    fi
-    if teardown_copy_at_trunk; then
-      if [ "$pool_free" = 1 ]; then
-        teardown_copy_records_only "detached at trunk; the pool inventory confirms it free"
-      else
-        teardown_copy_records_only "detached at trunk; the pool inventory could not be read or does not list it"
-      fi
-      return 0
-    fi
-    if [ "$pool_free" = 1 ]; then
-      echo "teardown: the early return of $WT did not take effect (detached off trunk, unbound, free in the pool); returning it now" >&2
-      return 0
-    fi
-    echo "REFUSED: copy $WT was already returned by task $ID but now sits detached off trunk, and the pool inventory cannot prove it free." >&2
-    echo "Run 'treehouse status --json' in $PROJ to see who holds it, then rerun cleanup." >&2
-    return 1
-  fi
-  # Still bound to this task and held by no one else: a detached copy, or one
-  # on a branch that is not another task's, is this task's own to clean up,
-  # and the landed-work checks below still decide whether it may be reset.
   return 0
 }
 
@@ -3016,8 +2937,6 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
     echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
     exit 1
   }
-  teardown_meta_replace_locked copy_returned_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    || { echo "error: could not record the copy return for $ID; retaining task state" >&2; exit 1; }
 fi
 
 WORKTREE_ALLOCATION=$(meta_value "$META" worktree_allocation)
