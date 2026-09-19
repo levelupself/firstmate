@@ -65,7 +65,7 @@ printf '%s\n' '{"overview":{"cost":0,"calls":0,"tokens":{"input":0,"output":0,"c
 SH
   chmod +x "$fakebin/tmux" "$fakebin/codeburn"
   fm_fake_pane_shell "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
+  fm_fake_treehouse_lease "$fakebin"
   cat > "$fakebin/timeout" <<'SH'
 #!/usr/bin/env bash
 shift
@@ -851,12 +851,24 @@ esac
 exit 0
 SH
   chmod +x "$FAKEBIN_DIR/tmux"
-  # The pool inventory the second pair's spawn reads before acquiring: the
-  # first pair's copy is in use, the second copy is free.
+  # The pool leases the first copy to the first pair and the second copy to
+  # the second pair, and its inventory lists both.
+  : > "$CASE_DIR/lease-count"
   cat > "$FAKEBIN_DIR/treehouse" <<SH
 #!/usr/bin/env bash
-[ "\${1:-}" = status ] || exit 0
-printf '%s\\n' '[{"name":"1","path":"$WT_DIR","status":"in-use","lease_id":"","lease_holder":"","leased_at":null,"processes":[{"pid":4242,"name":"bash"}]},{"name":"2","path":"$wt2","status":"available","lease_id":"","lease_holder":"","leased_at":null,"processes":[]}]'
+case "\${1:-} \${2:-}" in
+  "status --json")
+    printf '%s\\n' '[{"name":"1","path":"$WT_DIR","status":"available","lease_id":"","lease_holder":"","leased_at":null,"processes":[]},{"name":"2","path":"$wt2","status":"available","lease_id":"","lease_holder":"","leased_at":null,"processes":[]}]'
+    ;;
+  "get --lease")
+    printf x >> '$CASE_DIR/lease-count'
+    holder=
+    while [ \$# -gt 0 ]; do case "\$1" in --lease-holder) holder=\${2:-}; shift 2 ;; *) shift ;; esac; done
+    if [ "\$(wc -c < '$CASE_DIR/lease-count')" -le 1 ]; then path='$WT_DIR'; else path='$wt2'; fi
+    printf '{"path":"%s","lease_id":"fakelease%s","lease_holder":"%s","leased_at":"2026-09-19T00:00:00Z"}\\n' "\$path" "\$(wc -c < '$CASE_DIR/lease-count')" "\$holder"
+    ;;
+esac
+exit 0
 SH
   chmod +x "$FAKEBIN_DIR/treehouse"
 

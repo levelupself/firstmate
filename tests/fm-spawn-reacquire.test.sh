@@ -20,6 +20,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/pool-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/pool-helpers.sh"
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-reacquire)
@@ -34,115 +36,20 @@ reacquire_cleanup() {
 }
 trap reacquire_cleanup EXIT
 
-# The same pool-aware tmux stub tests/fm-spawn-pool-slot-binding.test.sh uses:
-# `treehouse get` enters the copy the fake pool would hand out and refreshes it,
-# `treehouse enter <name>` enters that copy untouched, and the launch literal
-# can be made to fail after the endpoint exists.
+# The same fake pool tests/fm-spawn-pool-slot-binding.test.sh uses
+# (tests/pool-helpers.sh): the spawn leases a copy from the pool itself,
+# `treehouse enter <name>` moves the pane into that copy untouched, and the
+# launch literal can be made to fail after the endpoint exists.
 make_tmux_stub() {  # <case-dir>
-  local fb="$1/fakebin"
-  mkdir -p "$fb"
-  cat > "$fb/tmux" <<'SH'
-#!/usr/bin/env bash
-set -u
-D=$FM_FAKE_DIR
-printf '%s\n' "$*" >> "$D/tmux.log"
-pane_cwd() { [ ! -f "$D/cwd" ] || cat "$D/cwd"; }
-case "${1:-}" in
-  has-session|new-session|set-window-option) exit 0 ;;
-  list-windows)
-    [ ! -f "$D/windows" ] || cat "$D/windows"
-    exit 0
-    ;;
-  new-window)
-    cwd=
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        -c) cwd=${2:-}; shift 2 ;;
-        -n) printf '%s\n' "${2:-}" >> "$D/windows"; shift 2 ;;
-        *) shift ;;
-      esac
-    done
-    printf '%s' "$cwd" > "$D/cwd"
-    printf '@41\n'
-    exit 0
-    ;;
-  kill-window)
-    printf '%s\n' "$*" >> "$D/killed"
-    : > "$D/windows"
-    exit 0
-    ;;
-  display-message)
-    for a in "$@"; do
-      case "$a" in
-        *pane_current_path*) pane_cwd; printf '\n'; exit 0 ;;
-        *pane_current_command*) printf '%s\n' "${FM_FAKE_PANE_COMMAND:-bash}"; exit 0 ;;
-        *pane_pid*) printf '2147483646\n'; exit 0 ;;
-      esac
-    done
-    printf 'firstmate\n'
-    exit 0
-    ;;
-  send-keys)
-    shift
-    literal=0
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        -t) shift 2 ;;
-        -l) literal=1; shift ;;
-        *) break ;;
-      esac
-    done
-    text=${1:-}
-    if [ "$literal" = 1 ]; then
-      printf '%s\n' "$text" >> "$D/literal"
-      [ -z "${FM_FAKE_LAUNCH_FAIL:-}" ] || case "$text" in *codex*) exit 1 ;; esac
-      exit 0
-    fi
-    printf '%s\n' "$text" >> "$D/keys"
-    case "$text" in
-      'treehouse get')
-        handout=$(cat "$D/pool-get")
-        printf '%s' "$handout" > "$D/cwd"
-        git -C "$handout" checkout -q --detach refs/remotes/origin/main
-        ;;
-      'treehouse enter '*)
-        name=${text#treehouse enter }
-        awk -F '\t' -v n="$name" '$1 == n { print $2 }' "$D/pool-slots" | tr -d '\n' > "$D/cwd"
-        ;;
-      'pwd -P > '*)
-        ( cd "$(pane_cwd)" && eval "$text" ) || true
-        ;;
-    esac
-    exit 0
-    ;;
-esac
-exit 0
-SH
-  chmod +x "$fb/tmux"
-  cat > "$fb/sleep" <<'SH'
-#!/usr/bin/env bash
-exit 0
-SH
-  chmod +x "$fb/sleep"
+  fm_fake_pool_write_tmux "$1/fakebin"
 }
 
 make_treehouse_stub() {  # <case-dir>
-  cat > "$1/fakebin/treehouse" <<'SH'
-#!/usr/bin/env bash
-set -u
-D=$FM_FAKE_DIR
-printf '%s\n' "$*" >> "$D/treehouse.log"
-[ "${1:-}" = status ] || exit 1
-[ -f "$D/status.json" ] || exit 1
-cat "$D/status.json"
-exit 0
-SH
-  chmod +x "$1/fakebin/treehouse"
+  fm_fake_pool_write_treehouse "$1/fakebin"
 }
 
 pool_entry() {  # <name> <path> <status> [processes-json]
-  printf '{"name":"%s","path":"%s","status":"%s","lease_id":"","lease_holder":"","leased_at":null,"processes":%s}' \
-    "$1" "$2" "$3" "${4:-[]}"
+  fm_fake_pool_entry "$@"
 }
 
 write_meta_for() {  # <home> <id> <worktree> <project>
@@ -215,8 +122,6 @@ new_case() {  # <name> <id> <holder>
   fm_test_backlog_ensure_queue "$home" "$id"
   write_meta_for "$home" "$id" "$taken" "$proj"
   write_meta_for "$home" "$holder" "$taken" "$proj"
-  printf '%s\n' "$free" > "$dir/fake/pool-get"
-  printf '9\t%s\n12\t%s\n' "$taken" "$free" > "$dir/fake/pool-slots"
   printf '[%s,%s]\n' "$(pool_entry 9 "$taken" in-use '[{"pid":4242,"name":"bash"}]')" \
     "$(pool_entry 12 "$free" available)" > "$dir/fake/status.json"
   TASK_TMPS+=("/tmp/fm-$id")
@@ -288,7 +193,6 @@ test_reacquire_avoids_bound_handout_and_closes_agent_free_endpoint() {
   # The pool believes copy 9 is free again and would hand it out first.
   printf '[%s,%s]\n' "$(pool_entry 9 "$taken" available)" "$(pool_entry 12 "$free" available)" \
     > "$dir/fake/status.json"
-  printf '%s\n' "$taken" > "$dir/fake/pool-get"
   # The recorded endpoint still exists with only a shell in it.
   printf 'fm-%s\n' "$id" > "$dir/fake/windows"
   out=$(run_spawn "$dir" "$id" --reacquire-worktree); rc=$?
@@ -419,8 +323,7 @@ case "$cmd $sub" in
     text=${4:-}
     printf '%s\n' "$text" >> "$FM_FAKE_DIR/keys"
     case "$text" in
-      'treehouse get') cat "$FM_FAKE_DIR/pool-get" > "$FM_FAKE_DIR/cwd"; git -C "$(cat "$FM_FAKE_DIR/cwd")" checkout -q --detach origin/main ;;
-      'treehouse enter '*) name=${text#treehouse enter }; awk -F '\t' -v n="$name" '$1==n {print $2}' "$FM_FAKE_DIR/pool-slots" > "$FM_FAKE_DIR/cwd" ;;
+      'treehouse enter '*) name=${text#treehouse enter }; node -e 'const e=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).find(x=>x.name===process.argv[2]); if (e) process.stdout.write(e.path)' "$FM_FAKE_DIR/status.json" "$name" > "$FM_FAKE_DIR/cwd" ;;
       'pwd -P > '*) (cd "$(cat "$FM_FAKE_DIR/cwd")" && eval "$text") ;;
     esac
     ;;

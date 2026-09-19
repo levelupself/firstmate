@@ -23,6 +23,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/pool-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/pool-helpers.sh"
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-capacity)
@@ -43,8 +45,8 @@ trap capacity_cleanup EXIT
 # answers from the case's pane-cmd.<window> file when one exists, else from its
 # pane-cmd file (default bash), so a listed window reads as a live agent when
 # the file that covers it names one and as agent-free when it names a shell.
-# `treehouse get` moves the pane into the copy the fake pool hands out, exactly
-# as the real pool does.
+# `treehouse enter <name>` moves the pane into that copy of the fake pool
+# (tests/pool-helpers.sh), which the spawn leased itself.
 make_tmux_stub() {  # <case-dir>
   local fb="$1/fakebin"
   mkdir -p "$fb"
@@ -117,10 +119,14 @@ case "${1:-}" in
     fi
     printf '%s\n' "$text" >> "$D/keys"
     case "$text" in
-      'treehouse get')
-        handout=$(cat "$D/pool-get")
-        printf '%s' "$handout" > "$D/cwd"
-        git -C "$handout" checkout -q --detach refs/remotes/origin/main
+      'treehouse enter '*)
+        name=${text#treehouse enter }
+        node -e '
+const fs = require("fs")
+const [file, name] = process.argv.slice(1)
+const e = JSON.parse(fs.readFileSync(file, "utf8")).find(x => x.name === name)
+if (e) process.stdout.write(e.path)
+' "$D/status.json" "$name" > "$D/cwd"
         ;;
       'pwd -P > '*)
         ( cd "$(pane_cwd)" && eval "$text" ) || true
@@ -137,16 +143,7 @@ SH
 exit 0
 SH
   chmod +x "$fb/sleep"
-  cat > "$fb/treehouse" <<'SH'
-#!/usr/bin/env bash
-set -u
-D=$FM_FAKE_DIR
-printf '%s\n' "$*" >> "$D/treehouse.log"
-[ "${1:-}" = status ] || exit 1
-cat "$D/status.json"
-exit 0
-SH
-  chmod +x "$fb/treehouse"
+  fm_fake_pool_write_treehouse "$fb"
 }
 
 # write_proc <case-dir> <load1> <mem-available-kb>: the fake kernel readings.
@@ -205,7 +202,6 @@ new_case() {  # <name> <id>
 
   printf '# brief for %s\n\nDelivery contract: mode=no-mistakes\n' "$id" > "$home/data/$id/brief.md"
   fm_test_backlog_ensure_queue "$home" "$id"
-  printf '%s\n' "$free" > "$dir/fake/pool-get"
   printf '[{"name":"3","path":"%s","status":"available","lease_id":"","lease_holder":"","leased_at":null,"processes":[]}]\n' \
     "$free" > "$dir/fake/status.json"
   TASK_TMPS+=("/tmp/fm-$id")
@@ -236,7 +232,7 @@ assert_refused_before_anything_durable() {  # <case-dir> <id> <out>
   local dir=$1 id=$2 out=$3
   assert_no_grep '^new-window ' "$dir/fake/tmux.log" \
     "a capacity refusal must happen before endpoint creation"$'\n'"$out"
-  assert_no_grep 'treehouse get' "$dir/fake/keys" \
+  assert_no_grep '^get ' "$dir/fake/treehouse.log" \
     "a capacity refusal must not acquire a copy"$'\n'"$out"
   assert_absent "$dir/home/state/$id.meta" "a capacity refusal must publish no record"
 }
