@@ -181,7 +181,7 @@
 #   then tmux.
 #   Spawn-capable backends are the reference tmux adapter and experimental
 #   herdr, zellij, orca, and cmux. Orca owns both the task worktree and
-#   terminal, so ship/scout Orca spawns do not run treehouse get; cmux is a
+#   terminal, so ship/scout Orca spawns take no pool lease; cmux is a
 #   session provider only, exactly like herdr/zellij, so it does. An
 #   auto-detected herdr or cmux spawn prints a loud stderr notice;
 #   auto-detected tmux stays silent; zellij and orca are never auto-detected.
@@ -2338,15 +2338,17 @@ real_path_or_raw() {  # <path>
 # --- pooled-copy ownership cross-check ---------------------------------------
 #
 # `treehouse get` hands out any clean copy that has no process inside it and no
-# durable lease, and checks it out at origin's default branch as it does so. The
-# pool remembers an interactive acquisition only by the acquiring shell's pid,
-# so a host reboot (or any exit of that shell) turns a parked task's clean,
-# committed copy back into an available one while this home's state/<id>.meta
-# still binds it - and the pool cannot be told to skip a copy. The cross-check
-# therefore runs BEFORE the acquisition: every copy another task record still
-# binds is identified, and if the pool would hand any of them out, the pane is
-# steered into an unbound free copy with `treehouse enter <name>` instead of
-# letting `get` choose. A record binds its copy until teardown stamps
+# durable lease, and checks it out at origin's default branch as it does so. A
+# copy leased under a task id (pool-lease, script header) is skipped by the pool
+# itself; a copy a pre-lease record or a steered acquisition binds is not, because
+# the pool remembered an interactive acquisition only by the acquiring shell's
+# pid, so a host reboot (or any exit of that shell) turns such a parked task's
+# clean, committed copy back into an available one while this home's
+# state/<id>.meta still binds it - and the pool cannot be told to skip a copy.
+# The cross-check therefore runs BEFORE the acquisition: every copy another
+# task record still binds is identified, and if the pool would hand any of
+# them out, the pane is steered into an unbound free copy with `treehouse
+# enter <name>` instead of letting `get` choose. A record binds its copy until teardown stamps
 # teardown_at= into it (bin/fm-teardown.sh does so only after its landed-work
 # test) or removes it; a status log or report alone binds nothing.
 
@@ -3013,10 +3015,10 @@ case "$BACKEND" in
     # treehouse cd's into the worktree. WT_TARGET carries that stable id for the
     # rename-critical worktree-detection steps below; the persisted window= handle
     # stays $T (the name form), which is safe now that rename is disabled.
-    # A fresh spawn opens in the project and lets `treehouse get` move the pane
-    # into a pooled copy. A reattach has its copy already and must never run
-    # that acquisition, so the replacement pane opens directly in the retained
-    # copy. From here the two paths converge.
+    # A fresh spawn opens in the project and lets `treehouse enter` move the pane
+    # into the pooled copy this script leased or steered it to. A reattach has
+    # its copy already and must never run that acquisition, so the replacement
+    # pane opens directly in the retained copy. From here the two paths converge.
     REATTACH_ENDPOINT_CWD=$PROJ_ABS
     [ "$REATTACH" -eq 0 ] || [ "$REACQUIRE" -eq 1 ] || REATTACH_ENDPOINT_CWD=$WT
     WID=$(fm_backend_tmux_create_task "$SES" "$W" "$REATTACH_ENDPOINT_CWD") || exit 1
@@ -3531,7 +3533,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # A single read that already differs from PROJ_ABS_REAL is not proof the pane
   # settled there: on some tmux/WSL setups a brand-new window's pane_current_path
   # transiently reports an unrelated stale path (seen live as another real git
-  # checkout entirely) before the shell catches up with treehouse get's cd. That
+  # checkout entirely) before the shell catches up with treehouse enter's cd. That
   # stale path still passes the PROJ_ABS_REAL comparison and validate_spawn_worktree
   # below (it resolves to a real, distinct worktree top-level too), so accepting it
   # on one read alone silently records the wrong worktree= in state/<id>.meta. Require

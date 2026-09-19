@@ -54,8 +54,9 @@
 #      pane's own top-level shell within one poll (<0.3s) - but does NOT
 #      reflect a `cd` performed by a NESTED SUBSHELL the pane's shell
 #      launched as a foreground command (verified: `treehouse get` opens
-#      exactly such a subshell). `pane_cwd` stays frozen at wherever the
-#      pane's shell was when it invoked that foreground command - worse than
+#      exactly such a subshell, as does the `treehouse enter` the pane
+#      runs). `pane_cwd` stays frozen at wherever the pane's shell was when
+#      it invoked that foreground command - worse than
 #      herdr's frozen-cwd trap (herdr at least exposes a `foreground_cwd`
 #      that tracks this; zellij's CLI exposes no live-process cwd field and
 #      no per-pane pid to read it from `/proc`/`lsof` either). This directly
@@ -388,14 +389,15 @@ fm_backend_zellij_target_ready() {  # <target> [expected-label]
 
 # fm_backend_zellij_current_path: the live pane's cwd, or empty on any error.
 # Mirrors tmux's pane_current_path poll used for worktree-path discovery after
-# `treehouse get`.
+# `treehouse enter`.
 #
 # Verified pitfall (docs/zellij-backend.md "Worktree-path discovery: pane_cwd
 # does not track a subshell"): `list-panes --json`'s `pane_cwd` DOES reflect a
 # `cd` run directly in the pane's own top-level shell, but stays FROZEN at
-# whatever directory the pane's shell was in when it launched `treehouse get`
-# as a foreground command - it never follows that command's own internal `cd`
-# into the acquired worktree, even after the subshell is fully interactive and
+# whatever directory the pane's shell was in when it launched `treehouse enter`
+# (or, verified, `treehouse get`) as a foreground command - it never follows
+# that command's own internal `cd` into the acquired worktree, even after the
+# subshell is fully interactive and
 # a `pwd` typed into it prints the correct live path on screen. Zellij's CLI
 # exposes no per-pane pid and no live-process cwd field to read instead
 # (unlike herdr's `foreground_cwd`), so passive JSON polling cannot solve
