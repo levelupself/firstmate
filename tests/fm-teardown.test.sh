@@ -3745,6 +3745,73 @@ test_early_torn_down_record_never_resets_a_copy_reheld_by_another_task() {
   pass "a merged early-torn-down record retires records-only when the pool re-leased its copy to another task"
 }
 
+# A record written before copy_returned_at= existed: torn down early through
+# the real flow with its allocation recorded in the ledger, then stripped of the
+# marker so only the ledger's release event proves the copy was returned.
+early_teardown_legacy_open_pr_task() {  # <case-dir>
+  local case_dir=$1
+  printf '%s\n' 'worktree_allocation=reused' "allocation_project=$case_dir/project" \
+    >> "$case_dir/state/task-x1.meta"
+  FM_DATA_OVERRIDE="$case_dir/data" FM_STATE_OVERRIDE="$case_dir/state" \
+    "$ROOT/bin/fm-worktree-allocation.sh" initialize "$case_dir/project" 2026-09-17T18:00:00Z complete \
+    || fail "could not initialize the allocation ledger fixture"
+  FM_DATA_OVERRIDE="$case_dir/data" FM_STATE_OVERRIDE="$case_dir/state" \
+    "$ROOT/bin/fm-worktree-allocation.sh" acquire task-x1 "$case_dir/project" "$case_dir/wt" \
+    2026-09-17T19:00:00Z reused >/dev/null \
+    || fail "could not record the allocation acquire fixture"
+  early_teardown_open_pr_task "$case_dir"
+  FM_DATA_OVERRIDE="$case_dir/data" FM_STATE_OVERRIDE="$case_dir/state" \
+    "$ROOT/bin/fm-worktree-allocation.sh" released task-x1 "$case_dir/project" "$case_dir/wt" \
+    || fail "early teardown did not record the ledger release"
+  sed -i '/^copy_returned_at=/d' "$case_dir/state/task-x1.meta"
+  ! grep -q '^copy_returned_at=' "$case_dir/state/task-x1.meta" \
+    || fail "legacy fixture still carries copy_returned_at="
+}
+
+test_legacy_early_torn_down_record_retires_records_only_on_ledger_release() {
+  local case_dir rc head_before meta_before
+  case_dir=$(make_case legacy-reheld-copy)
+  write_meta "$case_dir" no-mistakes ship
+  add_pool_like_treehouse "$case_dir"
+  add_logging_tmux "$case_dir"
+  early_teardown_legacy_open_pr_task "$case_dir"
+  release_copy_to_second_task "$case_dir"
+  head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
+  meta_before=$(cat "$case_dir/state/task-x2.meta")
+  : > "$case_dir/treehouse.log"
+  : > "$case_dir/tmux.log"
+  mark_open_pr_task_merged "$case_dir"
+
+  rc=0
+  FM_FAKE_TASKS_SHOW_STATE="done" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+
+  if ! kill -0 "$SECOND_TASK_PID" 2>/dev/null; then
+    fail "legacy-reheld-copy: the second task's live worker process was killed by the first task's teardown"
+  fi
+  kill -KILL "$SECOND_TASK_PID" 2>/dev/null || true
+  expect_code 0 "$rc" "legacy-reheld-copy: a record with a ledger release but no marker should retire records-only: $(cat "$case_dir/output")"
+  assert_no_grep "REFUSED" "$case_dir/output" \
+    "legacy-reheld-copy: the ledger release was not counted as this task's release"
+  assert_grep "copy already returned; held by task-x2" "$case_dir/output" \
+    "legacy-reheld-copy: teardown did not report the copy as held by the other task: $(cat "$case_dir/output")"
+  [ "$(git -C "$case_dir/wt" symbolic-ref --quiet --short HEAD 2>/dev/null)" = fm/task-x2 ] \
+    || fail "legacy-reheld-copy: the copy is no longer on the second task's branch"
+  [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] \
+    || fail "legacy-reheld-copy: the copy's HEAD moved"
+  assert_no_grep "return" "$case_dir/treehouse.log" \
+    "legacy-reheld-copy: the copy was returned to the pool from under the second task"
+  assert_no_grep "kill" "$case_dir/tmux.log" \
+    "legacy-reheld-copy: a pane was killed: $(cat "$case_dir/tmux.log")"
+  [ "$(cat "$case_dir/state/task-x2.meta")" = "$meta_before" ] \
+    || fail "legacy-reheld-copy: the second task's record changed"
+  assert_absent "$case_dir/state/task-x1.meta" "legacy-reheld-copy: the first task's record was not retired"
+  assert_absent "$case_dir/state/task-x1.pr-poll" "legacy-reheld-copy: the merge poll was not retired"
+  assert_absent "$case_dir/state/task-x1.launch-receipt" "legacy-reheld-copy: the launch receipt was not retired"
+  pass "a legacy early-torn-down record retires records-only on its ledger release when another task holds the copy"
+}
+
 test_early_torn_down_record_retires_when_its_returned_copy_sits_free() {
   local case_dir rc head_before
   case_dir=$(make_case returned-copy-free)
@@ -4032,6 +4099,7 @@ test_copy_bound_by_another_live_record_refuses_reset_by_name() {
 
 if [ "${1:-}" = --copy-binding ]; then
   test_early_torn_down_record_never_resets_a_copy_reheld_by_another_task
+  test_legacy_early_torn_down_record_retires_records_only_on_ledger_release
   test_early_torn_down_record_retires_when_its_returned_copy_sits_free
   test_early_torn_down_record_reports_an_unreadable_pool_for_a_copy_at_trunk
   test_early_torn_down_record_with_pruned_row_never_judges_the_reheld_copy
@@ -4144,6 +4212,7 @@ test_persistent_scan_refuses_after_bounded_retries
 test_process_exit_during_identity_lookup_does_not_refuse
 test_run_abort_precedes_process_reap_precedes_worktree_removal
 test_early_torn_down_record_never_resets_a_copy_reheld_by_another_task
+test_legacy_early_torn_down_record_retires_records_only_on_ledger_release
 test_early_torn_down_record_retires_when_its_returned_copy_sits_free
 test_early_torn_down_record_reports_an_unreadable_pool_for_a_copy_at_trunk
 test_early_torn_down_record_with_pruned_row_never_judges_the_reheld_copy

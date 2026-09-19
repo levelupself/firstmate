@@ -77,10 +77,14 @@
 #
 # Copy-binding check (copy-binding): a record binds its worktree= for other
 # tasks only until this script stamps teardown_at= into it, and this task's own
-# release of the copy is proved by copy_returned_at=, stamped immediately after
-# a successful treehouse return (teardown_at= precedes the return, so a return
-# that fails after the stamp leaves no copy_returned_at= and the rerun retries
-# it). A task torn down EARLY (its PR still open
+# release of the copy is proved by either of two signals: copy_returned_at=,
+# stamped immediately after a successful treehouse return, or a release event
+# for this task and worktree in the allocation ledger (bin/fm-worktree-
+# allocation.sh released), which this script writes only after that same
+# return and which retained records written before copy_returned_at= existed
+# already carry. teardown_at= precedes the return, so a return that fails
+# after the stamp leaves neither signal and the rerun retries it. A task torn
+# down EARLY (its PR still open
 # under an armed merge poll) keeps its record for that poll while its copy goes
 # back to the pool, and the pool may hand that same copy to another task before
 # the PR merges (observed 2026-09-18: the post-merge rerun trusted the stale
@@ -92,8 +96,9 @@
 # no teardown_at=) binds it. A copy held by another task - by such a record or
 # by a checked-out fm/<other-id> branch - is refused by name on a first
 # teardown, --force included, because that work is not this task's to discard.
-# Once this task has already released the copy (copy_returned_at= present), a
-# copy that is not back on fm/<task-id> is never touched: teardown prints
+# Once this task has already released the copy (copy_returned_at= or a ledger
+# release present), a copy that is not back on fm/<task-id> is never touched:
+# teardown prints
 # `copy already returned; held by <holder>` (the other task, or what
 # `treehouse status --json` run from the project reports inside the copy) or
 # `copy already returned; detached at trunk; ...` (whether the pool inventory
@@ -1572,10 +1577,22 @@ teardown_copy_records_only() {  # <why>
   TEARDOWN_COPY_RECORDS_ONLY=1
 }
 
+# teardown_copy_ledger_released: does the allocation ledger hold this task's
+# release of $WT? That event is written only after a successful treehouse
+# return, so it proves the release for records that predate copy_returned_at=.
+teardown_copy_ledger_released() {
+  local project
+  project=$(meta_value "$META" allocation_project)
+  [ -n "$project" ] || project=$PROJ
+  "$SCRIPT_DIR/fm-worktree-allocation.sh" released "$ID" "$project" "$WT" 2>/dev/null
+}
+
 teardown_copy_binding_check() {
   local branch other='' holder='' released=0 occupant pool_free=''
   inspectable_git_worktree "$WT" || return 0
-  ! grep -q '^copy_returned_at=' "$META" 2>/dev/null || released=1
+  if grep -q '^copy_returned_at=' "$META" 2>/dev/null || teardown_copy_ledger_released; then
+    released=1
+  fi
   branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=
   other=$(teardown_copy_other_binder) || other=
   if [ -n "$other" ]; then

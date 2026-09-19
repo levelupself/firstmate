@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# Own the per-project worktree allocation ledger (data/worktree-allocations/
+# <project-id>.jsonl): initialize records the tracking boundary, acquire and
+# release append one event each for a task's hold on a worktree, and released
+# is a read-only query that answers whether the ledger already holds a release
+# event for exactly that task and worktree after its latest acquire. The query
+# exits 0 only on such a release; a missing, unreadable, or malformed ledger,
+# a hold with no release, or a release that predates the latest acquire all
+# exit 1. bin/fm-teardown.sh writes the release only after a successful
+# treehouse return, so a recorded release is durable proof that the task
+# returned that copy, and the query never writes the ledger or takes its lock.
 set -u
 
 COMMAND=${1:-}
@@ -23,10 +33,13 @@ case "$COMMAND" in
     [ "$CANDIDATE" = fresh ] || [ "$CANDIDATE" = reused ] || CANDIDATE=unknown
     ;;
   release) ;;
-  *) echo "fm-worktree-allocation: usage: $0 initialize <project> <timestamp> <complete|incomplete> [worktree ...] | acquire|release <task-id> <project> <worktree> <timestamp> [fresh|reused]" >&2; exit 2 ;;
+  released) ;;
+  *) echo "fm-worktree-allocation: usage: $0 initialize <project> <timestamp> <complete|incomplete> [worktree ...] | acquire|release <task-id> <project> <worktree> <timestamp> [fresh|reused] | released <task-id> <project> <worktree>" >&2; exit 2 ;;
 esac
 if [ "$COMMAND" = initialize ]; then
   [ -n "$PROJECT" ] && [ -n "$EVENT_AT" ] || exit 2
+elif [ "$COMMAND" = released ]; then
+  [ -n "$TASK_ID" ] && [ -n "$PROJECT" ] && [ -n "$WORKTREE" ] || exit 2
 else
   [ -n "$TASK_ID" ] && [ -n "$PROJECT" ] && [ -n "$WORKTREE" ] && [ -n "$EVENT_AT" ] || exit 2
 fi
@@ -34,6 +47,37 @@ fi
 PROJECT_ID=$(node -e 'const c=require("crypto"); const p=process.argv[1].replace(/\\/g,"/").replace(/\/+$/g,"").toLowerCase(); process.stdout.write(c.createHash("sha256").update(p).digest("hex"))' "$PROJECT") || exit 1
 LEDGER_DIR="$DATA/worktree-allocations"
 LEDGER="$LEDGER_DIR/$PROJECT_ID.jsonl"
+if [ "$COMMAND" = released ]; then
+  [ -f "$LEDGER" ] && [ ! -L "$LEDGER" ] || exit 1
+  exec node - "$LEDGER" "$TASK_ID" "$PROJECT" "$WORKTREE" <<'NODE'
+const fs = require('fs')
+const [file, taskId, project, worktree] = process.argv.slice(2)
+const projectIdentity = String(project).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+const identity = String(worktree).replace(/\\/g, '/').replace(/^\/+/, '').replace(/[-/_]+/g, '/').replace(/\/+$/, '').toLowerCase()
+const canonical = value => {
+  const time = Date.parse(value)
+  return Number.isFinite(time) && new Date(time).toISOString().replace('.000Z', 'Z') === value ? value : null
+}
+if (!taskId || !projectIdentity || !identity) process.exit(2)
+let records
+try {
+  records = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
+} catch {
+  process.exit(1)
+}
+if (records[0]?.schema !== 'fm-worktree-allocations.v1' || !canonical(records[0]?.tracking_started_at)
+    || records[0]?.project_identity !== projectIdentity
+    || typeof records[0]?.boundary_complete !== 'boolean') process.exit(1)
+for (const record of records.slice(1)) {
+  if (!['boundary', 'acquire', 'release'].includes(record?.event) || !record.task_id || !record.identity
+      || !canonical(record.event_at) || !record.worktree) process.exit(1)
+}
+const events = records.slice(1)
+const acquireIndex = events.findLastIndex(record => record.event === 'acquire' && record.task_id === taskId && record.identity === identity)
+const released = events.slice(acquireIndex + 1).some(record => record.event === 'release' && record.task_id === taskId && record.identity === identity)
+process.exit(released ? 0 : 1)
+NODE
+fi
 mkdir -p "$LEDGER_DIR" "$STATE"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/fm-wake-lib.sh"
