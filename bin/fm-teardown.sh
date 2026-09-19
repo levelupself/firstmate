@@ -88,8 +88,14 @@
 # of that copy not followed by that task's release; this script writes the
 # release only after a successful treehouse return, and bin/fm-spawn.sh writes
 # a fresh acquire on every lease, recovery included). An unreadable or
-# malformed ledger is unknown, not free, and refuses. A holder that is another
-# task selects records-only mode: teardown prints `copy already returned;
+# malformed ledger is unknown, not free, and refuses. Records-only mode is
+# selected only by a two-part condition: this task's record carries
+# teardown_at= (it already ran a return) AND the ledger names another task as
+# the holder. A live record (no teardown_at=) whose ledger holder is another
+# task is a ledger inconsistency (a stale acquire the pool later re-leased
+# without a ledger write) and is refused by name on the ordinary path,
+# --force included, with the copy, its processes, its branch, and every
+# record untouched. In records-only mode teardown prints `copy already returned;
 # held by <holder-task-id>`, never reads, prunes, resets, reaps under, or
 # returns the copy, still closes THIS task's own recorded endpoint (the
 # recorded target, window fm-<task-id>, zellij tab, or herdr session and pane
@@ -1595,8 +1601,13 @@ teardown_copy_binding_check() {
     return 1
   fi
   if [ -n "$ledger_holder" ] && [ "$ledger_holder" != "$ID" ]; then
-    teardown_copy_records_only "held by $ledger_holder"
-    return 0
+    if grep -q '^teardown_at=' "$META" 2>/dev/null; then
+      teardown_copy_records_only "held by $ledger_holder"
+      return 0
+    fi
+    echo "REFUSED: the allocation ledger names task $ledger_holder as the holder of copy $WT, yet task $ID has never released it (no teardown_at= in its record)." >&2
+    echo "That is a ledger inconsistency; reconcile which task owns the copy before cleanup. --force does not override this." >&2
+    return 1
   fi
   branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=
   other=$(teardown_copy_other_binder) || other=

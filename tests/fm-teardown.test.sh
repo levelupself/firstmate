@@ -4216,6 +4216,52 @@ test_unreadable_allocation_ledger_refuses_cleanup() {
   pass "an unreadable allocation ledger refuses cleanup rather than reading the copy as free"
 }
 
+test_live_record_with_a_stale_ledger_holder_refuses_by_name() {
+  local case_dir rc head_before pid
+  case_dir=$(make_case stale-ledger-holder)
+  write_meta "$case_dir" no-mistakes ship
+  add_pool_like_treehouse "$case_dir"
+  add_logging_tmux "$case_dir"
+  land_shippable_commit "$case_dir"
+  # The ledger still names task-x9 (an acquire that was never released), but
+  # task-x1 is live on fm/task-x1 with its worker inside the copy and has never
+  # run a return: the ledger is inconsistent, and nothing may be touched.
+  FM_DATA_OVERRIDE="$case_dir/data" FM_STATE_OVERRIDE="$case_dir/state" \
+    "$ROOT/bin/fm-worktree-allocation.sh" initialize "$case_dir/project" 2026-09-17T18:00:00Z complete \
+    || fail "could not initialize the allocation ledger fixture"
+  FM_DATA_OVERRIDE="$case_dir/data" FM_STATE_OVERRIDE="$case_dir/state" \
+    "$ROOT/bin/fm-worktree-allocation.sh" acquire task-x9 "$case_dir/project" "$case_dir/wt" \
+    2026-09-17T19:00:00Z reused >/dev/null \
+    || fail "could not record the stale holder's acquire"
+  head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
+  ( cd "$case_dir/wt" && exec sleep 300 ) &
+  pid=$!
+  disown
+  sleep 0.3
+  kill -0 "$pid" 2>/dev/null || fail "stale-ledger-holder: the task's own process did not start"
+
+  rc=0
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+  if ! kill -0 "$pid" 2>/dev/null; then
+    fail "stale-ledger-holder: the live worker process was killed"
+  fi
+  kill -KILL "$pid" 2>/dev/null || true
+  [ "$rc" -ne 0 ] || fail "stale-ledger-holder: a live record with a stale ledger holder was retired: $(cat "$case_dir/output")"
+  assert_grep "task-x9" "$case_dir/stderr" \
+    "stale-ledger-holder: the refusal did not name the ledger holder: $(cat "$case_dir/stderr")"
+  assert_no_grep "copy already returned" "$case_dir/output" \
+    "stale-ledger-holder: a live record went records-only on a stale ledger holder"
+  [ "$(git -C "$case_dir/wt" symbolic-ref --quiet --short HEAD 2>/dev/null)" = fm/task-x1 ] \
+    || fail "stale-ledger-holder: the copy's branch changed"
+  [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] \
+    || fail "stale-ledger-holder: the copy's HEAD moved"
+  assert_no_grep "return" "$case_dir/treehouse.log" "stale-ledger-holder: the copy was returned"
+  assert_no_grep "kill" "$case_dir/tmux.log" "stale-ledger-holder: a pane was killed"
+  assert_present "$case_dir/state/task-x1.meta" "stale-ledger-holder: the refusal removed the task record"
+  pass "a live record whose ledger holder is another task refuses by name, even under --force"
+}
+
 test_copy_on_another_tasks_branch_refuses_reset_by_name() {
   local case_dir rc head_before flag
   case_dir=$(make_case foreign-branch)
@@ -4286,6 +4332,7 @@ if [ "${1:-}" = --copy-binding ]; then
   test_rerun_after_post_return_failure_retires_own_copy_and_endpoint
   test_early_torn_down_record_reruns_while_its_pr_is_still_open
   test_unreadable_allocation_ledger_refuses_cleanup
+  test_live_record_with_a_stale_ledger_holder_refuses_by_name
   test_copy_on_another_tasks_branch_refuses_reset_by_name
   test_copy_bound_by_another_live_record_refuses_reset_by_name
   exit 0
@@ -4403,5 +4450,6 @@ test_live_task_on_a_detached_copy_the_pool_reports_in_use_is_torn_down
 test_rerun_after_post_return_failure_retires_own_copy_and_endpoint
 test_early_torn_down_record_reruns_while_its_pr_is_still_open
 test_unreadable_allocation_ledger_refuses_cleanup
+test_live_record_with_a_stale_ledger_holder_refuses_by_name
 test_copy_on_another_tasks_branch_refuses_reset_by_name
 test_copy_bound_by_another_live_record_refuses_reset_by_name
