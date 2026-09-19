@@ -196,7 +196,7 @@ if [ "${1:-}" = show ]; then
     printf '%s\n' 'error: task not found' >&2
     exit 1
   fi
-  printf '%s\n' '  state: in_flight'
+  printf '  state: %s\n' "${FM_FAKE_TASKS_SHOW_STATE:-in_flight}"
   exit 0
 fi
 if [ "${1:-}" = update ] && [ "${2:-}" = --help ]; then
@@ -3587,6 +3587,308 @@ EOF
   pass "the run abort and the leaked-process reap both complete before the destructive worktree return"
 }
 
+# --- copy-binding check ------------------------------------------------------
+# Observed 2026-09-18: a ship task torn down EARLY (PR open, merge poll armed)
+# keeps its record so the poll can run, and the pool re-leased its returned
+# copy to another task. When the PR merged, the second teardown trusted the
+# stale worktree= line, hard-reset the copy - now checked out on the OTHER
+# task's branch - and killed the live worker inside it. These cases pin the
+# copy-binding check bin/fm-teardown.sh's header describes: a copy is reset
+# only while it provably still belongs to THIS task.
+
+# A treehouse fake whose `return --force <copy>` behaves like the real pool
+# (hard reset, detached at origin's default branch) and whose `status --json`
+# answers FM_FAKE_TREEHOUSE_STATUS_JSON (an empty inventory by default). Every
+# invocation is appended to <case-dir>/treehouse.log so a test can prove the
+# copy was, or was not, returned.
+add_pool_like_treehouse() {  # <case-dir>
+  local case_dir=$1
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "$case_dir/treehouse.log"
+case "\${1:-} \${2:-}" in
+  "status --json") printf '%s\\n' "\${FM_FAKE_TREEHOUSE_STATUS_JSON:-[]}" ;;
+  "return --force")
+    git -C "\$3" reset -q --hard || exit 1
+    git -C "\$3" checkout -q --detach origin/main || exit 1
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+  : > "$case_dir/treehouse.log"
+}
+
+# A tmux fake that records every invocation so a test can prove no pane was
+# killed.
+add_logging_tmux() {  # <case-dir>
+  local case_dir=$1
+  cat > "$case_dir/fakebin/tmux" <<SH
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "$case_dir/tmux.log"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+  : > "$case_dir/tmux.log"
+}
+
+# Tear task-x1 down EARLY: its PR is open and its merge poll armed, so the
+# teardown returns the copy but keeps the record for the poll. Leaves task-x1's
+# record stamped teardown_at= and the copy detached at origin/main.
+early_teardown_open_pr_task() {  # <case-dir>
+  local case_dir=$1 out
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/data"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$case_dir/data/backlog.md"
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" \
+    PATH="$case_dir/fakebin:$PATH" "$PR_CHECK" task-x1 https://github.com/example/repo/pull/7 >/dev/null \
+    || fail "could not arm the open PR poll fixture"
+  add_compatible_tasks_axi "$case_dir"
+  out=$(run_teardown "$case_dir" 2>&1) || fail "early teardown of the open PR task failed: $out"
+  grep -q '^teardown_at=' "$case_dir/state/task-x1.meta" \
+    || fail "early teardown did not stamp teardown_at= into the retained record"
+  [ -f "$case_dir/state/task-x1.pr-poll" ] || fail "early teardown did not retain the merge poll"
+  assert_grep "return --force $case_dir/wt" "$case_dir/treehouse.log" \
+    "early teardown did not return the copy to the pool"
+  [ -z "$(git -C "$case_dir/wt" symbolic-ref --quiet --short HEAD 2>/dev/null)" ] \
+    || fail "early teardown left the copy on a named branch"
+}
+
+# Mark task-x1's PR merged the way the merge poll does, so the next teardown is
+# the ordinary post-merge retirement.
+# Mark task-x1's PR merged the way the merge poll and bin/fm-pr-merge.sh do:
+# merged_at= in the record plus the launch and merge receipts the effort
+# capture of a pr-merged outcome requires.
+mark_open_pr_task_merged() {  # <case-dir>
+  local case_dir=$1 merge_commit
+  merge_commit=$(git -C "$case_dir/project" rev-parse origin/main)
+  printf '%s\n' 'merged_at=2026-09-18T02:00:00Z' >> "$case_dir/state/task-x1.meta"
+  add_gh_pr_merged_for_head "$case_dir" "$merge_commit"
+  printf '%s\n' 'schema=fm-task-launch.v1' 'task_id=task-x1' \
+    'spawned_at=2026-09-17T19:00:00Z' > "$case_dir/state/task-x1.launch-receipt"
+  mkdir -p "$case_dir/data/pr-merges"
+  printf '%s\n' 'schema=fm-pr-merge.v3' 'task_id=task-x1' \
+    'pr=https://github.com/example/repo/pull/7' 'repository=example/repo' \
+    'default_branch=main' "merge_commit=$merge_commit" \
+    'spawned_at=2026-09-17T19:00:00Z' 'phase=merged' 'authorization=live-meta' \
+    'prepared_epoch=1' 'merged_at=2026-09-18T02:00:00Z' \
+    > "$case_dir/data/pr-merges/task-x1.receipt"
+}
+
+# Re-lease the returned copy to task-x2: check out its branch, land a pushed
+# commit (clean and remote-reachable, exactly as the observed incident), bind it
+# with a live record, and park a live worker process inside the copy.
+release_copy_to_second_task() {  # <case-dir>
+  local case_dir=$1
+  git -C "$case_dir/wt" checkout -q -b fm/task-x2
+  git -C "$case_dir/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "task-x2 work"
+  git -C "$case_dir/wt" push -q origin fm/task-x2
+  fm_write_meta "$case_dir/state/task-x2.meta" \
+    "window=firstmate:fm-task-x2" \
+    "endpoint_task_id=task-x2" \
+    "worktree=$case_dir/wt" \
+    "project=$case_dir/project" \
+    "kind=ship" \
+    "mode=no-mistakes"
+  ( cd "$case_dir/wt" && exec sleep 300 ) &
+  SECOND_TASK_PID=$!
+  disown
+  sleep 0.3
+  kill -0 "$SECOND_TASK_PID" 2>/dev/null || fail "second task's worker process did not start"
+}
+
+test_early_torn_down_record_never_resets_a_copy_reheld_by_another_task() {
+  local case_dir rc head_before meta_before
+  case_dir=$(make_case reheld-copy)
+  write_meta "$case_dir" no-mistakes ship
+  add_pool_like_treehouse "$case_dir"
+  add_logging_tmux "$case_dir"
+  early_teardown_open_pr_task "$case_dir"
+  release_copy_to_second_task "$case_dir"
+  head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
+  meta_before=$(cat "$case_dir/state/task-x2.meta")
+  : > "$case_dir/state/task-x1.context-watch"
+  : > "$case_dir/treehouse.log"
+  : > "$case_dir/tmux.log"
+  mark_open_pr_task_merged "$case_dir"
+
+  rc=0
+  FM_FAKE_TASKS_SHOW_STATE="done" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+
+  if ! kill -0 "$SECOND_TASK_PID" 2>/dev/null; then
+    fail "reheld-copy: the second task's live worker process was killed by the first task's teardown"
+  fi
+  kill -KILL "$SECOND_TASK_PID" 2>/dev/null || true
+  expect_code 0 "$rc" "reheld-copy: retiring the merged early-torn-down record should succeed records-only"
+  [ "$(git -C "$case_dir/wt" symbolic-ref --quiet --short HEAD 2>/dev/null)" = fm/task-x2 ] \
+    || fail "reheld-copy: the copy is no longer on the second task's branch: $(git -C "$case_dir/wt" rev-parse --abbrev-ref HEAD)"
+  [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] \
+    || fail "reheld-copy: the copy's HEAD moved"
+  git -C "$case_dir/wt" show-ref --verify --quiet refs/heads/fm/task-x2 \
+    || fail "reheld-copy: the second task's branch was deleted"
+  assert_no_grep "return" "$case_dir/treehouse.log" \
+    "reheld-copy: the copy was returned to the pool from under the second task"
+  assert_no_grep "kill" "$case_dir/tmux.log" \
+    "reheld-copy: a pane was killed: $(cat "$case_dir/tmux.log")"
+  [ "$(cat "$case_dir/state/task-x2.meta")" = "$meta_before" ] \
+    || fail "reheld-copy: the second task's record changed"
+  assert_grep "copy already returned; held by task-x2" "$case_dir/output" \
+    "reheld-copy: teardown did not report the copy as held by the other task: $(cat "$case_dir/output")"
+  assert_absent "$case_dir/state/task-x1.meta" "reheld-copy: the first task's record was not retired"
+  assert_absent "$case_dir/state/task-x1.pr-poll" "reheld-copy: the merge poll was not retired"
+  assert_absent "$case_dir/state/task-x1.pr-poll-registration" "reheld-copy: the poll registration was not retired"
+  assert_absent "$case_dir/state/task-x1.check.sh" "reheld-copy: the check was not retired"
+  assert_absent "$case_dir/state/task-x1.context-watch" "reheld-copy: the context watch was not retired"
+  assert_absent "$case_dir/state/task-x1.launch-receipt" "reheld-copy: the launch receipt was not retired"
+  pass "a merged early-torn-down record retires records-only when the pool re-leased its copy to another task"
+}
+
+test_early_torn_down_record_retires_when_its_returned_copy_sits_free() {
+  local case_dir rc head_before
+  case_dir=$(make_case returned-copy-free)
+  write_meta "$case_dir" no-mistakes ship
+  add_pool_like_treehouse "$case_dir"
+  add_logging_tmux "$case_dir"
+  early_teardown_open_pr_task "$case_dir"
+  head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
+  : > "$case_dir/treehouse.log"
+  mark_open_pr_task_merged "$case_dir"
+
+  rc=0
+  FM_FAKE_TASKS_SHOW_STATE="done" \
+  FM_FAKE_TREEHOUSE_STATUS_JSON="[{\"name\":\"1\",\"path\":\"$case_dir/wt\",\"status\":\"available\",\"lease_id\":\"\",\"lease_holder\":\"\",\"processes\":[]}]" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+  expect_code 0 "$rc" "returned-copy-free: retiring the merged early-torn-down record should succeed"
+  [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] \
+    || fail "returned-copy-free: the free copy's HEAD moved"
+  assert_no_grep "return" "$case_dir/treehouse.log" \
+    "returned-copy-free: an already-returned free copy was returned again"
+  assert_grep "copy already returned" "$case_dir/output" \
+    "returned-copy-free: teardown did not report the copy as already returned: $(cat "$case_dir/output")"
+  assert_absent "$case_dir/state/task-x1.meta" "returned-copy-free: the record was not retired"
+  assert_absent "$case_dir/state/task-x1.pr-poll" "returned-copy-free: the merge poll was not retired"
+  pass "a merged early-torn-down record retires records-only when its returned copy sits free in the pool"
+}
+
+test_early_torn_down_record_never_touches_a_copy_the_pool_reports_in_use() {
+  local case_dir rc head_before
+  case_dir=$(make_case returned-copy-in-use)
+  write_meta "$case_dir" no-mistakes ship
+  add_pool_like_treehouse "$case_dir"
+  add_logging_tmux "$case_dir"
+  early_teardown_open_pr_task "$case_dir"
+  head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
+  : > "$case_dir/treehouse.log"
+  mark_open_pr_task_merged "$case_dir"
+
+  # No record in this home binds the copy, but the pool reports an occupant
+  # (a worker that has not created its branch yet): still not this task's.
+  rc=0
+  FM_FAKE_TASKS_SHOW_STATE="done" \
+  FM_FAKE_TREEHOUSE_STATUS_JSON="[{\"name\":\"1\",\"path\":\"$case_dir/wt\",\"status\":\"in-use\",\"lease_id\":\"\",\"lease_holder\":\"\",\"processes\":[{\"pid\":1,\"name\":\"claude\"}]}]" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+  expect_code 0 "$rc" "returned-copy-in-use: retiring the merged early-torn-down record should succeed records-only"
+  [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] \
+    || fail "returned-copy-in-use: the occupied copy's HEAD moved"
+  assert_no_grep "return" "$case_dir/treehouse.log" \
+    "returned-copy-in-use: an occupied copy was returned from under its occupant"
+  assert_grep "copy already returned; held by" "$case_dir/output" \
+    "returned-copy-in-use: teardown did not report the occupant: $(cat "$case_dir/output")"
+  assert_absent "$case_dir/state/task-x1.meta" "returned-copy-in-use: the record was not retired"
+  pass "a merged early-torn-down record retires records-only when the pool reports its returned copy in use"
+}
+
+test_early_torn_down_record_still_returns_its_own_unreturned_copy() {
+  local case_dir rc
+  case_dir=$(make_case returned-copy-failed-return)
+  write_meta "$case_dir" no-mistakes ship
+  add_pool_like_treehouse "$case_dir"
+  early_teardown_open_pr_task "$case_dir"
+  # The early return never took effect: the copy is back on this task's branch.
+  git -C "$case_dir/wt" checkout -q -b fm/task-x1
+  : > "$case_dir/treehouse.log"
+  mark_open_pr_task_merged "$case_dir"
+
+  rc=0
+  FM_FAKE_TASKS_SHOW_STATE="done" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "returned-copy-failed-return: retiring the merged record should succeed"
+  assert_grep "return --force $case_dir/wt" "$case_dir/treehouse.log" \
+    "returned-copy-failed-return: a copy still on this task's branch was not returned"
+  assert_absent "$case_dir/state/task-x1.meta" "returned-copy-failed-return: the record was not retired"
+  pass "a merged early-torn-down record still returns a copy that is still on its own branch"
+}
+
+test_copy_on_another_tasks_branch_refuses_reset_by_name() {
+  local case_dir rc head_before flag
+  case_dir=$(make_case foreign-branch)
+  write_meta "$case_dir" no-mistakes ship
+  add_pool_like_treehouse "$case_dir"
+  add_logging_tmux "$case_dir"
+  land_shippable_commit "$case_dir"
+  # The record still binds the copy, but the copy is on another task's branch.
+  git -C "$case_dir/wt" checkout -q -b fm/task-x9
+  head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  for flag in "" --force; do
+    rc=0
+    # shellcheck disable=SC2086  # an empty flag must expand to no argument
+    run_teardown "$case_dir" $flag > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    [ "$rc" -ne 0 ] || fail "foreign-branch${flag:+ ($flag)}: teardown reset a copy on another task's branch"
+    assert_grep "fm/task-x9" "$case_dir/stderr" \
+      "foreign-branch${flag:+ ($flag)}: the refusal did not name the foreign branch: $(cat "$case_dir/stderr")"
+    [ "$(git -C "$case_dir/wt" symbolic-ref --quiet --short HEAD 2>/dev/null)" = fm/task-x9 ] \
+      || fail "foreign-branch${flag:+ ($flag)}: the copy's branch changed"
+    [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] \
+      || fail "foreign-branch${flag:+ ($flag)}: the copy's HEAD moved"
+    assert_no_grep "return" "$case_dir/treehouse.log" \
+      "foreign-branch${flag:+ ($flag)}: the copy was returned to the pool"
+    assert_no_grep "kill" "$case_dir/tmux.log" \
+      "foreign-branch${flag:+ ($flag)}: a pane was killed"
+    assert_present "$case_dir/state/task-x1.meta" \
+      "foreign-branch${flag:+ ($flag)}: the refusal removed the task record"
+  done
+  pass "a copy checked out on another task's branch refuses the reset by name, even under --force"
+}
+
+test_copy_bound_by_another_live_record_refuses_reset_by_name() {
+  local case_dir rc head_before
+  case_dir=$(make_case double-bound-copy)
+  write_meta "$case_dir" no-mistakes ship
+  add_pool_like_treehouse "$case_dir"
+  land_shippable_commit "$case_dir"
+  git -C "$case_dir/wt" checkout -q --detach origin/main
+  head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
+  fm_write_meta "$case_dir/state/task-x2.meta" \
+    "window=firstmate:fm-task-x2" "endpoint_task_id=task-x2" \
+    "worktree=$case_dir/wt" "project=$case_dir/project" "kind=ship" "mode=no-mistakes"
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "double-bound-copy: teardown reset a copy another live record binds"
+  assert_grep "task-x2" "$case_dir/stderr" \
+    "double-bound-copy: the refusal did not name the other task: $(cat "$case_dir/stderr")"
+  [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] \
+    || fail "double-bound-copy: the copy's HEAD moved"
+  assert_no_grep "return" "$case_dir/treehouse.log" \
+    "double-bound-copy: the copy was returned to the pool"
+  assert_present "$case_dir/state/task-x1.meta" "double-bound-copy: the refusal removed the task record"
+  pass "a copy another live record binds refuses the reset naming that task"
+}
+
+if [ "${1:-}" = --copy-binding ]; then
+  test_early_torn_down_record_never_resets_a_copy_reheld_by_another_task
+  test_early_torn_down_record_retires_when_its_returned_copy_sits_free
+  test_early_torn_down_record_never_touches_a_copy_the_pool_reports_in_use
+  test_early_torn_down_record_still_returns_its_own_unreturned_copy
+  test_copy_on_another_tasks_branch_refuses_reset_by_name
+  test_copy_bound_by_another_live_record_refuses_reset_by_name
+  exit 0
+fi
 if [ "${1:-}" = --footprint ]; then
   test_footprint_gate_refuses_over_budget_copy
   test_footprint_gate_retires_under_budget_copy
@@ -3688,3 +3990,9 @@ test_process_spawned_during_grace_is_reaped_on_later_pass
 test_persistent_scan_refuses_after_bounded_retries
 test_process_exit_during_identity_lookup_does_not_refuse
 test_run_abort_precedes_process_reap_precedes_worktree_removal
+test_early_torn_down_record_never_resets_a_copy_reheld_by_another_task
+test_early_torn_down_record_retires_when_its_returned_copy_sits_free
+test_early_torn_down_record_never_touches_a_copy_the_pool_reports_in_use
+test_early_torn_down_record_still_returns_its_own_unreturned_copy
+test_copy_on_another_tasks_branch_refuses_reset_by_name
+test_copy_bound_by_another_live_record_refuses_reset_by_name
