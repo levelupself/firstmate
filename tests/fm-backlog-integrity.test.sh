@@ -50,6 +50,33 @@ test_landed_work_reports_absent_backlog() {
   pass "landed work proceeds and reports an absent backlog"
 }
 
+test_landed_work_accepts_archived_done_row() {
+  local home out rc=0
+  home=$(make_home archived-landed-row)
+  cat > "$home/data/done-archive.md" <<'MD'
+# Done archive
+
+## Archived 2026-08-20
+- [x] archived-task - Archived task https://github.com/example/repo/pull/1 (repo: repo) (kind: ship) (priority: 1) (merged 2026-08-18)
+MD
+
+  out=$(run_integrity "$home" landed archived-task PR-merge --pr https://github.com/example/repo/pull/1 2>"$home/err") \
+    || fail "landed work was refused for a Done row pruned into the archive: $(cat "$home/err")"
+  printf '%s\n' "$out" | grep -F 'PR-merge for archived-task found the row already Done' >/dev/null \
+    || fail "landed work did not report the already-Done archived row: $out"
+  assert_no_grep 'absent from the backlog' "$home/err" \
+    "an archived Done row was reported as absent"
+  set +e
+  run_integrity "$home" landed never-recorded PR-merge --pr https://github.com/example/repo/pull/2 \
+    > "$home/out2" 2> "$home/err2"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "landed work tolerated a task with no backlog row and no Done history"
+  assert_grep 'task never-recorded is absent from the backlog' "$home/err2" \
+    "missing-row refusal changed shape"
+  pass "landed work accepts a Done row pruned into the archive and still refuses an unknown task"
+}
+
 test_finished_row_cannot_be_resurrected() {
   local home rc state
   home=$(make_home finished-start)
@@ -395,6 +422,7 @@ test_reconcile_reports_task_state_whose_record_retention_pruned() {
 
 test_dispatch_refuses_absent_backlog
 test_landed_work_reports_absent_backlog
+test_landed_work_accepts_archived_done_row
 test_reconcile_reports_task_state_whose_record_retention_pruned
 test_finished_row_cannot_be_resurrected
 test_three_orphans_are_repaired_without_blinding

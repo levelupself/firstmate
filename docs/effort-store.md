@@ -16,6 +16,7 @@ GitHub and GitLab creation timestamps and the GitHub merge timestamp come from s
 The PR outcome is stamped only after the same forge response confirms the merged state.
 The sanctioned merge path also snapshots the matching no-mistakes run's structured process record while it is still available.
 Merges performed outside `fm-pr-merge.sh` are not observed or inferred later.
+A merge `fm-pr-merge.sh` authorizes from the backlog's Done history after the task's metadata is gone is not stamped either, because it has no launch identity to bind a lifecycle record to; [`bin/fm-pr-merge.sh`](../bin/fm-pr-merge.sh)'s header owns that path.
 Launch, PR-open, sanctioned merge, sanctioned local landing, and teardown producers synchronously append their metadata or receipts and enqueue derived ingestion.
 `fm-teardown.sh` additionally snapshots task usage, stamps teardown time and outcome, and captures the final revision before deleting task state.
 Only durable evidence capture runs on the lifecycle critical path; launch, relaunch, PR checking, merge, and cleanup never wait for derived ingestion.

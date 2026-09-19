@@ -45,11 +45,13 @@ done | awk '
   }
 
   # Strip the trailing "(key: value)" / "(since <date>)" annotations. Only two
-  # shapes exist in the format: colon-bearing keys, and bare date keys.
+  # shapes exist in the format: colon-bearing keys, and bare date keys. The
+  # colon-bearing keys are the ones tasks-axi writes; a parenthetical that
+  # belongs to the title is never at the end once the annotations are gone.
   function strip_annotations(s,   prev) {
     do {
       prev = s
-      sub(/[[:space:]]*\((repo|kind|hold-kind):[^()]*\)[[:space:]]*$/, "", s)
+      sub(/[[:space:]]*\((repo|kind|hold-kind|priority):[^()]*\)[[:space:]]*$/, "", s)
       sub(/[[:space:]]*\((since|merged|reported|done|added)[^()]*\)[[:space:]]*$/, "", s)
     } while (s != prev)
     return s

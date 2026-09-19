@@ -10,6 +10,12 @@
 #        fm-backlog-integrity.sh failed <id>
 #        fm-backlog-integrity.sh reconcile
 #
+# landed records a delivered task's outcome. It proceeds when no backlog exists,
+# and it accepts a row that is already Done, including one completed-history
+# retention pruned into data/done-archive.md, because a task closed as Done
+# before its PR merged already carries the outcome the landing would write.
+# A task with neither a row nor Done history is still refused.
+#
 # row-state prints `no-backlog`, `present`, or `absent` for <id> and fails when
 # the backlog data cannot be positively verified. It is the read-only query
 # behind check-row, so a caller that must distinguish a pruned record from a
@@ -156,11 +162,30 @@ record_done() {
   tasks_axi "done" "$id" "$@" >/dev/null || fail "could not close task $id"
 }
 
+# Whether the backlog's Done history - the live Done section plus the entries
+# completed-history retention pruned into data/done-archive.md - records <id>
+# as done. Read-only; a Done row that retention already archived is still a
+# completed row, not a missing one.
+done_history_has() {
+  local id=$1
+  "$SCRIPT_DIR/fm-backlog-tsv.sh" "$DATA/backlog.md" "$DATA/done-archive.md" 2>/dev/null \
+    | awk -F '\t' -v id="$id" '$1 == "done" && $2 == id { found = 1 } END { exit(found ? 0 : 1) }'
+}
+
 record_landed() {
-  local id=$1 context=$2
+  local id=$1 context=$2 state
   shift 2
   if [ ! -f "$DATA/backlog.md" ]; then
     printf 'Backlog: %s for %s proceeded with no backlog present; there was no lifecycle row to update.\n' \
+      "$context" "$id"
+    return 0
+  fi
+  # A task closed as Done before its work landed (Done first, merge later) can
+  # have its row pruned into the archive by the time the landing is recorded.
+  # That row is already the outcome this call would write, so accept it.
+  state=$(row_state "$id" 2>/dev/null) || state=
+  if [ "$state" = absent ] && done_history_has "$id"; then
+    printf 'Backlog: %s for %s found the row already Done in completed history; there was no lifecycle row to update.\n' \
       "$context" "$id"
     return 0
   fi
@@ -231,7 +256,7 @@ valid_pr_receipt() {
   receipt_matches_launch "$receipt" "$id" || return 1
   [ "$(receipt_value "$receipt" phase)" = merged ] || return 1
   authorization=$(receipt_value "$receipt" authorization)
-  [ "$authorization" = live-meta ] || [ "$authorization" = done-record ] || return 1
+  [ "$authorization" = live-meta ] || [ "$authorization" = done-history ] || return 1
   prepared_epoch=$(receipt_value "$receipt" prepared_epoch)
   case "$prepared_epoch" in ''|*[!0-9]*) return 1 ;; esac
   receipt_has_one "$receipt" merged_at || return 1
