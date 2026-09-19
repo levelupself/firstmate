@@ -75,6 +75,68 @@
 #   is still over FM_POOL_COPY_BUDGET_GB after the return prune, appending the
 #   reason to state/teardown.log; the flag is refused without a reason.
 #
+# Copy-binding check (copy-binding): a record binds its worktree= for other
+# tasks only until this script stamps teardown_at= into it. A task torn down
+# EARLY (its PR still open under an armed merge poll) keeps its record for
+# that poll while its copy goes back to the pool, and the pool may hand that
+# same copy to another task before the PR merges (observed 2026-09-18: the
+# post-merge rerun trusted the stale worktree= line, hard-reset the copy - by
+# then checked out on the other task's branch - and killed the live worker
+# inside it). So before anything reads, prunes, resets, kills inside, or
+# returns a Treehouse copy, teardown asks the worktree allocation ledger who
+# holds it (bin/fm-worktree-allocation.sh holder: the task of the last acquire
+# of that copy not followed by that task's release; this script writes the
+# release only after a successful treehouse return, and only a fresh spawn or
+# a --reacquire-worktree in bin/fm-spawn.sh writes a ledger acquire, while a
+# --reattach-worktree deliberately writes none). An unreadable or
+# malformed ledger is unknown, not free, and refuses. Records-only mode is
+# selected only by a two-part condition: this task's record carries
+# teardown_at= (it already ran a return) AND the ledger names another task as
+# the holder. A live record (no teardown_at=) whose ledger holder is another
+# task is a ledger inconsistency (a stale acquire the pool later re-leased
+# without a ledger write) and is refused by name on the ordinary path,
+# --force included, with the copy, its processes, its branch, and every
+# record untouched. Accepted residual: a record torn down early and later
+# reacquired into a copy whose last ledger acquire is a stale never-released
+# holder, when its own acquire write also failed at spawn, would read that
+# stale holder together with its carried-over teardown_at= and retire
+# records-only, which is accepted because it needs a reacquire plus a stale
+# holder plus a failed ledger write. In records-only mode teardown prints `copy already returned;
+# held by <holder-task-id>`, never reads, prunes, resets, reaps under, or
+# returns the copy, still closes THIS task's own recorded endpoint (the
+# recorded target, window fm-<task-id>, zellij tab, or herdr session and pane
+# - an identity that is per task and never the other task's, so the close is
+# a no-op once the early cleanup already ran it), retires only this task's own
+# records (meta, launch receipt, merge poll, check, context watch, busy state,
+# per-task temp), and exits 0; a pruned backlog row is then judged on durable
+# landed-work evidence alone (fm-backlog-integrity.sh landed-evidence), never
+# on the copy's HEAD or branch. When the ledger names this task or no one,
+# the copy is still this task's and the ordinary path runs, so a rerun after
+# a failed return simply retries the return. On that path a copy that another
+# live record in this home binds (worktree= resolving to the same directory,
+# no teardown_at=), or that is checked out on another task's fm/<other-id>
+# branch, is refused by name, --force included, because that work is not this
+# task's to discard; and only when the ledger records NO holder for the copy
+# and the copy is not on fm/<task-id>, the pool inventory (`treehouse status
+# --json` run from the project, parsed with node) is extra evidence: a lease,
+# live processes, or a non-available status reported inside it refuses by
+# name naming what the pool reports. An unreadable, malformed, or unlisting
+# inventory never reads as free: for a record that already released the copy
+# (teardown_at= present) it is a refusal naming the inventory, to be rerun
+# once the pool answers, while a live record (no teardown_at=) on a named
+# non-task branch such as main or master keeps proceeding so existing
+# consumers that tear down such copies are unaffected. When the ledger names
+# this task as holder the
+# pool's lease and processes are this task's own (the pool reports every
+# leased copy in use with its agent inside), so the inventory is not
+# consulted and a detached or main-checked-out copy of a live task, or a
+# stamped copy whose return failed, proceeds to the reap and return. The
+# inventory never by itself selects records-only. A copy that no other task
+# holds - on fm/<task-id>, detached, or on a branch that is not another
+# task's fm/<other-id> - remains this task's own, and the landed-work checks
+# below decide whether it may be reset. A copy that is not an inspectable git
+# worktree (a scout scratch directory) skips this check.
+#
 # Footprint post-condition (footprint-gate): once the landed-work, run-abort, and
 # process-reap steps have passed, a Treehouse task copy is pruned through the
 # return rule table and its remaining ignored footprint is measured through
@@ -1026,7 +1088,7 @@ backlog_refresh_reminder() {
       return 1
     fi
     evidence=
-    if [ "$KIND" = ship ] && { [ -e "$WT" ] || [ -L "$WT" ]; }; then
+    if [ "$KIND" = ship ] && [ "$TEARDOWN_COPY_RECORDS_ONLY" != 1 ] && { [ -e "$WT" ] || [ -L "$WT" ]; }; then
       if [ -d "$WT" ] && {
         current_head_in_merged_pr "$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null)" \
           || content_in_default
@@ -1461,6 +1523,121 @@ validate_worktree_teardown_safety() {
       echo "Push the branch, land its PR, or get the captain's explicit OK to discard, then --force." >&2
       return 1
     fi
+  fi
+  return 0
+}
+
+# Copy-binding check (copy-binding; see the script header). Decides, before
+# anything reads or resets the recorded Treehouse copy, whether that copy still
+# belongs to THIS task. Sets TEARDOWN_COPY_RECORDS_ONLY=1 when the allocation
+# ledger names another task as the copy's current holder, so the remainder of
+# teardown retires only this task's own records and endpoint.
+TEARDOWN_COPY_RECORDS_ONLY=0
+
+# teardown_copy_other_binder: the id of another record in this home that still
+# binds $WT (its worktree= resolves to the same directory and it carries no
+# teardown_at=), or nothing. This mirrors the binding rule bin/fm-spawn.sh
+# applies before handing out a copy.
+teardown_copy_other_binder() {
+  local wt_real meta other_id other_wt other_real
+  wt_real=$(canonical_existing_dir "$WT") || wt_real=$WT
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+    other_id=$(basename "$meta" .meta)
+    [ "$other_id" != "$ID" ] || continue
+    ! grep -q '^teardown_at=' "$meta" 2>/dev/null || continue
+    other_wt=$(fm_meta_get "$meta" worktree)
+    [ -n "$other_wt" ] || continue
+    other_real=$(canonical_existing_dir "$other_wt") || other_real=$other_wt
+    [ "$other_real" = "$wt_real" ] || continue
+    printf '%s\n' "$other_id"
+    return 0
+  done
+  return 1
+}
+
+# teardown_copy_pool_occupant: what the pool itself says holds $WT. Prints the
+# occupant (a lease holder, live processes, or a non-available status) and
+# returns 0; prints nothing and returns 0 when the pool reports the copy free;
+# returns 1 when the inventory cannot be read or does not list the copy. Parsed
+# with node for the same reason bin/fm-spawn.sh parses it that way: jq is not a
+# required tool, and a missing parser must never read as a free copy.
+teardown_copy_pool_occupant() {
+  local inventory wt_real
+  wt_real=$(canonical_existing_dir "$WT") || wt_real=$WT
+  inventory=$(cd "$PROJ" && treehouse status --json 2>/dev/null) || return 1
+  FM_TEARDOWN_POOL_INVENTORY="$inventory" FM_TEARDOWN_COPY="$wt_real" node - <<'NODE'
+const fs = require('fs')
+let parsed
+try { parsed = JSON.parse(process.env.FM_TEARDOWN_POOL_INVENTORY || '') } catch { process.exit(1) }
+if (!Array.isArray(parsed)) process.exit(1)
+const real = p => { try { return fs.realpathSync(p) } catch { return p } }
+const copy = real(process.env.FM_TEARDOWN_COPY)
+const entry = parsed.find(e => e && typeof e.path === 'string' && real(e.path) === copy)
+if (!entry || typeof entry.status !== 'string' || !Array.isArray(entry.processes)) process.exit(1)
+const lease = [entry.lease_holder, entry.lease_id].find(v => typeof v === 'string' && v !== '')
+if (lease) process.stdout.write(`pool lease ${lease}\n`)
+else if (entry.processes.length > 0) process.stdout.write(`${entry.processes.length} live process(es) the pool reports inside it\n`)
+else if (entry.status !== 'available') process.stdout.write(`pool status ${entry.status}\n`)
+NODE
+}
+
+teardown_copy_records_only() {  # <why>
+  echo "teardown: copy already returned; $1 - retiring only task $ID's records, leaving $WT and its processes untouched"
+  TEARDOWN_COPY_RECORDS_ONLY=1
+}
+
+# teardown_copy_ledger_holder: the task the allocation ledger records as the
+# current holder of $WT (see the script header). Prints that id, or nothing
+# when no task holds the copy, and returns 0; returns 1 when the ledger cannot
+# be read, which the caller treats as unknown.
+teardown_copy_ledger_holder() {
+  local project
+  project=$(meta_value "$META" allocation_project)
+  [ -n "$project" ] || project=$PROJ
+  "$SCRIPT_DIR/fm-worktree-allocation.sh" holder "$project" "$WT" 2>/dev/null
+}
+
+teardown_copy_binding_check() {
+  local branch other='' holder='' ledger_holder occupant
+  inspectable_git_worktree "$WT" || return 0
+  if ! ledger_holder=$(teardown_copy_ledger_holder); then
+    echo "REFUSED: the worktree allocation ledger for $WT cannot be read, so which task holds the copy is unknown." >&2
+    echo "Repair the project's ledger under data/worktree-allocations, then rerun cleanup." >&2
+    return 1
+  fi
+  if [ -n "$ledger_holder" ] && [ "$ledger_holder" != "$ID" ]; then
+    if grep -q '^teardown_at=' "$META" 2>/dev/null; then
+      teardown_copy_records_only "held by $ledger_holder"
+      return 0
+    fi
+    echo "REFUSED: the allocation ledger names task $ledger_holder as the holder of copy $WT, yet task $ID has never released it (no teardown_at= in its record)." >&2
+    echo "That is a ledger inconsistency; reconcile which task owns the copy before cleanup. --force does not override this." >&2
+    return 1
+  fi
+  branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=
+  other=$(teardown_copy_other_binder) || other=
+  if [ -n "$other" ]; then
+    holder="task $other (its record still binds the copy)"
+  else
+    case "$branch" in
+      "fm/$ID") ;;
+      fm/*) holder="task ${branch#fm/} (branch $branch is checked out)" ;;
+    esac
+  fi
+  if [ -z "$holder" ] && [ -z "$ledger_holder" ] && [ "$branch" != "fm/$ID" ]; then
+    if occupant=$(teardown_copy_pool_occupant); then
+      [ -z "$occupant" ] || holder=$occupant
+    elif grep -q '^teardown_at=' "$META" 2>/dev/null; then
+      echo "REFUSED: copy $WT was already released by task $ID, the allocation ledger records no holder for it, and the pool inventory (treehouse status --json in $PROJ) cannot be read or does not list the copy, so it cannot be proved free." >&2
+      echo "Rerun cleanup once the pool answers for the copy; nothing in it was touched." >&2
+      return 1
+    fi
+  fi
+  if [ -n "$holder" ]; then
+    echo "REFUSED: copy $WT is held by $holder, not by task $ID (expected branch fm/$ID)." >&2
+    echo "Resetting or returning it would destroy that holder's session; reconcile which task owns the copy before cleanup. --force does not override this." >&2
+    return 1
   fi
   return 0
 }
@@ -2644,7 +2821,15 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] &&
   ORCA_PATH_MATCH_VERIFIED=1
 fi
 
-if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
+# Copy-binding check (see the script header): nothing below may read, reset,
+# prune, kill inside, or return the recorded copy until it is proved to still
+# be this task's. Orca worktrees have their own path-match proof above, and a
+# secondmate home is not a task copy.
+if [ "$BACKEND" != orca ] && [ "$KIND" != secondmate ] && [ -d "$WT" ]; then
+  teardown_copy_binding_check || exit 1
+fi
+
+if [ "$TEARDOWN_COPY_RECORDS_ONLY" != 1 ] && [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   if validate_worktree_teardown_safety; then
     :
   else
@@ -2668,7 +2853,7 @@ backlog_refresh_reminder || exit 1
 # kind=secondmate: a secondmate home's own runtime lifecycle is owned by the
 # dedicated process-event and firstmate-home removal machinery further below,
 # not by task-worktree cleanup.
-if [ "$KIND" != secondmate ]; then
+if [ "$KIND" != secondmate ] && [ "$TEARDOWN_COPY_RECORDS_ONLY" != 1 ]; then
   conclude_task_no_mistakes_run "$WT"
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 fi
@@ -2680,7 +2865,8 @@ fi
 # Footprint post-condition (see script header): prune, then refuse to return a
 # Treehouse copy that is still over budget. Runs before any stamp or removal so
 # a refusal leaves the record binding the copy exactly as it was.
-if [ "$BACKEND" != orca ] && [ "$KIND" != secondmate ] && [ -d "$WT" ]; then
+if [ "$BACKEND" != orca ] && [ "$KIND" != secondmate ] && [ -d "$WT" ] \
+  && [ "$TEARDOWN_COPY_RECORDS_ONLY" != 1 ]; then
   teardown_footprint_gate "$WT" || exit 1
 fi
 
@@ -2757,6 +2943,8 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   fi
   [ -z "$T_ORCA" ] || fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
   fm_backend_remove_worktree "$BACKEND" "$ORCA_WORKTREE_ID"
+elif [ "$TEARDOWN_COPY_RECORDS_ONLY" = 1 ]; then
+  : # the copy was already returned and is no longer this task's; see teardown_copy_binding_check
 elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   if [ "$branch" != "HEAD" ]; then
@@ -2815,6 +3003,9 @@ if [ "$BACKEND" = herdr ] \
   fi
 fi
 
+# The endpoint closed here is this task's own recorded identity, never the
+# copy's current holder's, so records-only mode closes it too (a no-op when
+# the early cleanup already did).
 if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   # The presentation lock was acquired before the worktree return above; a
   # contended lock already refused this teardown while everything was intact.

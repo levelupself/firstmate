@@ -293,8 +293,8 @@ Backlog data that cannot be positively verified as a regular non-symlink file is
 Locked session start reconciles in-flight rows whose volatile worker record is absent, closing them only from an identity-bound merged-PR receipt, verified local-landing receipt, or completed scout report, and otherwise reopening them; the same pass removes resolved blocker edges and closes answered decision holds from their recorded decision files.
 `tests/fm-backlog-integrity.test.sh` is the focused regression owner for completed-row resurrection, orphan repair, blocker cleanup, failed-work preservation, receipt identity checks, and stranded-record reporting.
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
-[`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and stale-lock recovery procedure.
-[`tests/fm-teardown.test.sh`](../tests/fm-teardown.test.sh) covers retention-driven cleanup, stale receipts followed by additional pushed work, replayed patches with unmerged parents, and armed merge-poll preservation.
+[`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, stale-lock recovery procedure, and the copy-binding check that keeps a rerun from touching a pool copy since leased to another task.
+[`tests/fm-teardown.test.sh`](../tests/fm-teardown.test.sh) covers retention-driven cleanup, stale receipts followed by additional pushed work, replayed patches with unmerged parents, armed merge-poll preservation, and records-only retirement of an early-torn-down task whose copy another task now holds.
 
 ## Optional Relay
 

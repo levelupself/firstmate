@@ -38,6 +38,7 @@ Read local `config/cmux-socket-password` fresh on every cmux CLI call without ov
 `data/effort-annotations.jsonl` is firstmate-private, hand-recorded, append-only ingestion data that outlives the derived store; `data/cost-attribution.tsv` is append-only lifecycle capture written before volatile metadata disappears; and `data/effort-store.sqlite` is firstmate-private, fully rebuildable, and safe to delete.
 `data/learnings.md` remains dated, evidence-backed, and lazily created, and it is rewritten and pruned rather than appended forever.
 `data/projects.md` is parsed for mechanical sync and seeding by `bin/fm-project-mode.sh`, and `data/secondmates.md` is maintained by the secondmate seed helpers; both registries are firstmate-private.
+`data/worktree-allocations/<project-id>.jsonl` is the per-project worktree allocation event ledger that `bin/fm-spawn.sh` and `bin/fm-teardown.sh` write and that teardown's copy-binding check reads; [`bin/fm-worktree-allocation.sh`](../../../bin/fm-worktree-allocation.sh)'s header owns its format and holder query.
 The named data producers and `docs/effort-store.md` and `docs/task-usage.md` own child paths, formats, and lifecycle mechanics.
 
 ## `state/` children
