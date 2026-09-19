@@ -598,6 +598,44 @@ MD
   pass "fm-pr-merge authorizes a merge from a Done record pruned into the archive"
 }
 
+test_symlinked_meta_does_not_leak_launch_identity_into_done_history_receipt() {
+  local case_dir receipt target
+  case_dir=$(make_done_history_case done-history-symlinked-meta)
+  receipt="$case_dir/data/pr-merges/delivered-x1.receipt"
+  target="$case_dir/planted.meta"
+  cat > "$case_dir/data/backlog.md" <<'MD'
+# Backlog
+
+## In flight
+
+## Queued
+
+## Done
+- [x] delivered-x1 - Delivered task https://github.com/example/repo/pull/21 (repo: repo) (kind: ship) (priority: 1) (merged 2026-08-18)
+MD
+  printf '%s\n' 'spawned_at=2026-08-18T09:00:00Z' "project=$case_dir/projects/other" > "$target"
+  ln -s "$target" "$case_dir/state/delivered-x1.meta"
+  cp "$target" "$case_dir/planted.before"
+
+  run_pr_merge "$case_dir" delivered-x1 https://github.com/example/repo/pull/21 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "done-history-symlinked-meta: fm-pr-merge refused a task whose Done history names this PR: $(cat "$case_dir/stderr")"
+
+  grep -qxF 'pr merge 21 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "done-history-symlinked-meta: gh-axi pr merge was not invoked"
+  assert_grep 'authorization=done-history' "$receipt" \
+    "done-history-symlinked-meta: receipt did not record the Done-history authorization"
+  assert_grep 'phase=merged' "$receipt" \
+    "done-history-symlinked-meta: durable receipt did not advance to merged"
+  grep -qxF 'spawned_at=' "$receipt" \
+    || fail "done-history-symlinked-meta: the symlinked meta leaked a launch identity into a Done-history receipt"
+  assert_grep "project=$case_dir/projects/repo" "$receipt" \
+    "done-history-symlinked-meta: receipt did not take the project checkout from the registry"
+  cmp -s "$target" "$case_dir/planted.before" \
+    || fail "done-history-symlinked-meta: the merge wrote lifecycle fields through the symlinked meta"
+  pass "fm-pr-merge keeps a Done-history receipt free of a symlinked meta's launch identity"
+}
+
 test_done_history_without_registered_clone_refuses() {
   local case_dir rc
   case_dir=$(make_done_history_case done-history-no-clone)
@@ -1641,6 +1679,7 @@ test_unreadable_merge_state_refuses_before_merge
 test_extra_merge_args_forwarded
 test_torn_down_delivered_task_merges_with_durable_provenance
 test_archived_done_record_authorizes_merge
+test_symlinked_meta_does_not_leak_launch_identity_into_done_history_receipt
 test_done_history_without_registered_clone_refuses
 test_done_history_prepared_receipt_retries_without_launch_identity
 test_missing_meta_refuses_before_merge

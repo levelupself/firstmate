@@ -365,6 +365,7 @@ elif done_history_matches_request; then
     echo "error: no registered project clone matches $PR_OWNER/$PR_REPO; the Done record cannot supply a project checkout identity" >&2
     exit 1
   }
+  CURRENT_SPAWNED_AT=
   AUTHORIZATION=done-history
 else
   echo "error: task metadata is unavailable and no launch-bound merge receipt exists; Done history records no matching PR" >&2
@@ -563,7 +564,7 @@ else
 fi
 sync_local_mirror || exit 1
 write_provenance_receipt merged "$AUTHORIZATION" "$PREPARED_EPOCH" "$MERGED_AT" "$MERGE_COMMIT"
-if [ -f "$META" ]; then
+if [ -f "$META" ] && [ ! -L "$META" ]; then
   if [ -n "$MERGED_AT" ]; then
     fm_task_meta_set_once "$META" merged_at "$MERGED_AT" || {
       echo "error: merged PR succeeded but its forge timestamp could not be recorded" >&2
