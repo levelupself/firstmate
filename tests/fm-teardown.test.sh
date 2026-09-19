@@ -3647,6 +3647,8 @@ early_teardown_open_pr_task() {  # <case-dir>
   out=$(run_teardown "$case_dir" 2>&1) || fail "early teardown of the open PR task failed: $out"
   grep -q '^teardown_at=' "$case_dir/state/task-x1.meta" \
     || fail "early teardown did not stamp teardown_at= into the retained record"
+  grep -q '^copy_returned_at=' "$case_dir/state/task-x1.meta" \
+    || fail "early teardown did not stamp copy_returned_at= into the retained record"
   [ -f "$case_dir/state/task-x1.pr-poll" ] || fail "early teardown did not retain the merge poll"
   assert_grep "return --force $case_dir/wt" "$case_dir/treehouse.log" \
     "early teardown did not return the copy to the pool"
@@ -3934,6 +3936,43 @@ test_early_torn_down_record_still_returns_its_own_unreturned_copy() {
   pass "a merged early-torn-down record still returns a copy that is still on its own branch"
 }
 
+test_stamped_but_unreturned_copy_is_returned_on_rerun() {
+  local case_dir rc pid
+  case_dir=$(make_case stamped-unreturned-copy)
+  write_meta "$case_dir" no-mistakes ship
+  add_pool_like_treehouse "$case_dir"
+  add_logging_tmux "$case_dir"
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  add_compatible_tasks_axi "$case_dir"
+  mark_open_pr_task_merged "$case_dir"
+  # A post-merge teardown stamped teardown_at=, detached the copy and dropped
+  # its branch, then the treehouse return failed: no copy_returned_at= exists,
+  # the copy rests at this task's own commit, and a process is still inside it.
+  git -C "$case_dir/wt" checkout -q --detach
+  git -C "$case_dir/wt" branch -q -D fm/task-x1
+  printf '%s\n' 'teardown_at=2026-09-18T02:05:00Z' >> "$case_dir/state/task-x1.meta"
+  ( cd "$case_dir/wt" && exec sleep 300 ) &
+  pid=$!
+  disown
+  sleep 0.3
+  kill -0 "$pid" 2>/dev/null || fail "stamped-unreturned-copy: the lingering process did not start"
+
+  rc=0
+  FM_FAKE_TASKS_SHOW_STATE="done" \
+  FM_FAKE_TREEHOUSE_STATUS_JSON="[{\"name\":\"1\",\"path\":\"$case_dir/wt\",\"status\":\"in-use\",\"lease_id\":\"\",\"lease_holder\":\"\",\"processes\":[{\"pid\":$pid,\"name\":\"sleep\"}]}]" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+  kill -KILL "$pid" 2>/dev/null || true
+  expect_code 0 "$rc" "stamped-unreturned-copy: the rerun should retry the return and retire the record: $(cat "$case_dir/output")"
+  assert_no_grep "copy already returned" "$case_dir/output" \
+    "stamped-unreturned-copy: a copy whose return failed was treated as released"
+  assert_grep "return --force $case_dir/wt" "$case_dir/treehouse.log" \
+    "stamped-unreturned-copy: the rerun did not return this task's own copy"
+  assert_absent "$case_dir/state/task-x1.meta" "stamped-unreturned-copy: the record was not retired"
+  assert_absent "$case_dir/state/task-x1.launch-receipt" "stamped-unreturned-copy: the launch receipt was not retired"
+  pass "a record stamped teardown_at= whose return failed retries the return on rerun"
+}
+
 test_copy_on_another_tasks_branch_refuses_reset_by_name() {
   local case_dir rc head_before flag
   case_dir=$(make_case foreign-branch)
@@ -3994,8 +4033,11 @@ test_copy_bound_by_another_live_record_refuses_reset_by_name() {
 if [ "${1:-}" = --copy-binding ]; then
   test_early_torn_down_record_never_resets_a_copy_reheld_by_another_task
   test_early_torn_down_record_retires_when_its_returned_copy_sits_free
+  test_early_torn_down_record_reports_an_unreadable_pool_for_a_copy_at_trunk
+  test_early_torn_down_record_with_pruned_row_never_judges_the_reheld_copy
   test_early_torn_down_record_never_touches_a_copy_the_pool_reports_in_use
   test_early_torn_down_record_still_returns_its_own_unreturned_copy
+  test_stamped_but_unreturned_copy_is_returned_on_rerun
   test_copy_on_another_tasks_branch_refuses_reset_by_name
   test_copy_bound_by_another_live_record_refuses_reset_by_name
   exit 0
@@ -4107,5 +4149,6 @@ test_early_torn_down_record_reports_an_unreadable_pool_for_a_copy_at_trunk
 test_early_torn_down_record_with_pruned_row_never_judges_the_reheld_copy
 test_early_torn_down_record_never_touches_a_copy_the_pool_reports_in_use
 test_early_torn_down_record_still_returns_its_own_unreturned_copy
+test_stamped_but_unreturned_copy_is_returned_on_rerun
 test_copy_on_another_tasks_branch_refuses_reset_by_name
 test_copy_bound_by_another_live_record_refuses_reset_by_name

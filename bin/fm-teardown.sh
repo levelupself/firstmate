@@ -75,8 +75,12 @@
 #   is still over FM_POOL_COPY_BUDGET_GB after the return prune, appending the
 #   reason to state/teardown.log; the flag is refused without a reason.
 #
-# Copy-binding check (copy-binding): a record binds its worktree= only until this
-# script stamps teardown_at= into it. A task torn down EARLY (its PR still open
+# Copy-binding check (copy-binding): a record binds its worktree= for other
+# tasks only until this script stamps teardown_at= into it, and this task's own
+# release of the copy is proved by copy_returned_at=, stamped immediately after
+# a successful treehouse return (teardown_at= precedes the return, so a return
+# that fails after the stamp leaves no copy_returned_at= and the rerun retries
+# it). A task torn down EARLY (its PR still open
 # under an armed merge poll) keeps its record for that poll while its copy goes
 # back to the pool, and the pool may hand that same copy to another task before
 # the PR merges (observed 2026-09-18: the post-merge rerun trusted the stale
@@ -88,8 +92,8 @@
 # no teardown_at=) binds it. A copy held by another task - by such a record or
 # by a checked-out fm/<other-id> branch - is refused by name on a first
 # teardown, --force included, because that work is not this task's to discard.
-# Once this task has already released the copy (teardown_at= present), a copy
-# that is not back on fm/<task-id> is never touched: teardown prints
+# Once this task has already released the copy (copy_returned_at= present), a
+# copy that is not back on fm/<task-id> is never touched: teardown prints
 # `copy already returned; held by <holder>` (the other task, or what
 # `treehouse status --json` run from the project reports inside the copy) or
 # `copy already returned; detached at trunk; ...` (whether the pool inventory
@@ -1571,7 +1575,7 @@ teardown_copy_records_only() {  # <why>
 teardown_copy_binding_check() {
   local branch other='' holder='' released=0 occupant pool_free=''
   inspectable_git_worktree "$WT" || return 0
-  ! grep -q '^teardown_at=' "$META" 2>/dev/null || released=1
+  ! grep -q '^copy_returned_at=' "$META" 2>/dev/null || released=1
   branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=
   other=$(teardown_copy_other_binder) || other=
   if [ -n "$other" ]; then
@@ -2957,6 +2961,8 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
     echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
     exit 1
   }
+  teardown_meta_set_once_locked copy_returned_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    || { echo "error: could not record the copy return for $ID; retaining task state" >&2; exit 1; }
 fi
 
 WORKTREE_ALLOCATION=$(meta_value "$META" worktree_allocation)
