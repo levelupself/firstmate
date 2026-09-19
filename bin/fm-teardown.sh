@@ -104,15 +104,20 @@
 # live record in this home binds (worktree= resolving to the same directory,
 # no teardown_at=), or that is checked out on another task's fm/<other-id>
 # branch, is refused by name, --force included, because that work is not this
-# task's to discard; and when the copy is not on fm/<task-id>, the pool
-# inventory (`treehouse status --json` run from the project, parsed with
-# node) is extra evidence: a lease, live processes, or a non-available status
-# reported inside it refuses by name naming what the pool reports, while an
-# unreadable or unlisted inventory is not a refusal. The inventory never by
-# itself selects records-only. A copy that no other task holds - on
-# fm/<task-id>, detached, or on a branch that is not another task's
-# fm/<other-id> - remains this task's own, and the landed-work checks below
-# decide whether it may be reset. A copy that is not an inspectable git
+# task's to discard; and only when the ledger records NO holder for the copy
+# and the copy is not on fm/<task-id>, the pool inventory (`treehouse status
+# --json` run from the project, parsed with node) is extra evidence: a lease,
+# live processes, or a non-available status reported inside it refuses by
+# name naming what the pool reports, while an unreadable or unlisted
+# inventory is not a refusal. When the ledger names this task as holder the
+# pool's lease and processes are this task's own (the pool reports every
+# leased copy in use with its agent inside), so the inventory is not
+# consulted and a detached or main-checked-out copy of a live task, or a
+# stamped copy whose return failed, proceeds to the reap and return. The
+# inventory never by itself selects records-only. A copy that no other task
+# holds - on fm/<task-id>, detached, or on a branch that is not another
+# task's fm/<other-id> - remains this task's own, and the landed-work checks
+# below decide whether it may be reset. A copy that is not an inspectable git
 # worktree (a scout scratch directory) skips this check.
 #
 # Footprint post-condition (footprint-gate): once the landed-work, run-abort, and
@@ -1598,7 +1603,7 @@ teardown_copy_binding_check() {
       fm/*) holder="task ${branch#fm/} (branch $branch is checked out)" ;;
     esac
   fi
-  if [ -z "$holder" ] && [ "$branch" != "fm/$ID" ]; then
+  if [ -z "$holder" ] && [ -z "$ledger_holder" ] && [ "$branch" != "fm/$ID" ]; then
     if occupant=$(teardown_copy_pool_occupant) && [ -n "$occupant" ]; then
       holder=$occupant
     fi

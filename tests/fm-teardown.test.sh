@@ -3755,6 +3755,8 @@ assert_reheld_copy_untouched_and_records_retired() {  # <case-dir> <label> <head
   assert_no_grep "return" "$case_dir/treehouse.log" \
     "$label: the copy was returned to the pool from under the second task"
   assert_tmux_kills_only_own_window "$case_dir" "$label"
+  assert_grep "kill-window -t =firstmate:=fm-task-x1" "$case_dir/tmux.log" \
+    "$label: this task's own window was not closed: $(cat "$case_dir/tmux.log")"
   [ "$(cat "$case_dir/state/task-x2.meta")" = "$meta_before" ] \
     || fail "$label: the second task's record changed"
   assert_absent "$case_dir/state/task-x1.meta" "$label: the first task's record was not retired"
@@ -4018,6 +4020,21 @@ test_early_torn_down_record_still_returns_its_own_unreturned_copy() {
   pass "a merged early-torn-down record still returns a copy that is still on its own branch"
 }
 
+# Park a live process inside the copy and answer the pool inventory the way
+# the real pool does for a leased copy: in use, with that process inside it.
+# Sets OWN_COPY_PID and FM_FAKE_TREEHOUSE_STATUS_JSON.
+occupy_own_copy_as_the_pool_sees_it() {  # <case-dir> <label>
+  local case_dir=$1 label=$2
+  ( cd "$case_dir/wt" && exec sleep 300 ) &
+  OWN_COPY_PID=$!
+  disown
+  sleep 0.3
+  kill -0 "$OWN_COPY_PID" 2>/dev/null || fail "$label: the task's own process did not start"
+  FM_FAKE_TREEHOUSE_STATUS_JSON=$(printf '[{"name":"1","path":"%s","status":"in-use","lease_id":"","lease_holder":"","processes":[{"pid":%s,"name":"sleep"}]}]' \
+    "$case_dir/wt" "$OWN_COPY_PID")
+  export FM_FAKE_TREEHOUSE_STATUS_JSON
+}
+
 test_stamped_but_unreturned_copy_is_returned_on_rerun() {
   local case_dir rc
   case_dir=$(make_case stamped-unreturned-copy)
@@ -4030,14 +4047,18 @@ test_stamped_but_unreturned_copy_is_returned_on_rerun() {
   mark_open_pr_task_merged "$case_dir"
   # A post-merge teardown stamped teardown_at=, detached the copy and dropped
   # its branch, then the treehouse return failed: the ledger still names this
-  # task as the holder, so the rerun retries the return.
+  # task as the holder and the pool still reports the task's own lease and
+  # process inside the copy, so the rerun reaps and retries the return.
   git -C "$case_dir/wt" checkout -q --detach
   git -C "$case_dir/wt" branch -q -D fm/task-x1
   printf '%s\n' 'teardown_at=2026-09-18T02:05:00Z' >> "$case_dir/state/task-x1.meta"
+  occupy_own_copy_as_the_pool_sees_it "$case_dir" stamped-unreturned-copy
 
   rc=0
   FM_FAKE_TASKS_SHOW_STATE="done" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  unset FM_FAKE_TREEHOUSE_STATUS_JSON
+  kill -KILL "$OWN_COPY_PID" 2>/dev/null || true
   cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
   expect_code 0 "$rc" "stamped-unreturned-copy: the rerun should retry the return and retire the record: $(cat "$case_dir/output")"
   assert_own_copy_retired "$case_dir" stamped-unreturned-copy
@@ -4047,6 +4068,36 @@ test_stamped_but_unreturned_copy_is_returned_on_rerun() {
   [ ! -s "$case_dir/holder" ] \
     || fail "stamped-unreturned-copy: the ledger still names a holder after the return: $(cat "$case_dir/holder")"
   pass "a record stamped teardown_at= whose return failed retries the return on rerun"
+}
+
+test_live_task_on_a_detached_copy_the_pool_reports_in_use_is_torn_down() {
+  local case_dir rc
+  case_dir=$(make_case live-detached-copy)
+  write_meta "$case_dir" no-mistakes ship
+  add_pool_like_treehouse "$case_dir"
+  add_logging_tmux "$case_dir"
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  add_compatible_tasks_axi "$case_dir"
+  seed_allocation_acquire "$case_dir"
+  mark_open_pr_task_merged "$case_dir"
+  # A live task (no teardown_at=) whose agent left the copy detached at trunk:
+  # the ledger names this task as holder and the pool reports the copy in use
+  # with the task's own process, which is exactly a leased copy's normal
+  # shape, so the ordinary path reaps and returns it.
+  git -C "$case_dir/wt" checkout -q --detach
+  occupy_own_copy_as_the_pool_sees_it "$case_dir" live-detached-copy
+
+  rc=0
+  FM_FAKE_TASKS_SHOW_STATE="done" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  unset FM_FAKE_TREEHOUSE_STATUS_JSON
+  kill -KILL "$OWN_COPY_PID" 2>/dev/null || true
+  cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+  expect_code 0 "$rc" "live-detached-copy: a live task's own detached copy should be torn down: $(cat "$case_dir/output")"
+  assert_no_grep "REFUSED" "$case_dir/output" \
+    "live-detached-copy: the pool's view of this task's own lease refused its teardown"
+  assert_own_copy_retired "$case_dir" live-detached-copy
+  pass "a live task's detached copy the pool reports in use is still torn down on the ordinary path"
 }
 
 test_rerun_after_post_return_failure_retires_own_copy_and_endpoint() {
@@ -4211,6 +4262,7 @@ if [ "${1:-}" = --copy-binding ]; then
   test_early_torn_down_record_refuses_by_name_when_the_pool_reports_its_copy_in_use
   test_early_torn_down_record_still_returns_its_own_unreturned_copy
   test_stamped_but_unreturned_copy_is_returned_on_rerun
+  test_live_task_on_a_detached_copy_the_pool_reports_in_use_is_torn_down
   test_rerun_after_post_return_failure_retires_own_copy_and_endpoint
   test_early_torn_down_record_reruns_while_its_pr_is_still_open
   test_unreadable_allocation_ledger_refuses_cleanup
@@ -4327,6 +4379,7 @@ test_early_torn_down_record_with_pruned_row_never_judges_the_reheld_copy
 test_early_torn_down_record_refuses_by_name_when_the_pool_reports_its_copy_in_use
 test_early_torn_down_record_still_returns_its_own_unreturned_copy
 test_stamped_but_unreturned_copy_is_returned_on_rerun
+test_live_task_on_a_detached_copy_the_pool_reports_in_use_is_torn_down
 test_rerun_after_post_return_failure_retires_own_copy_and_endpoint
 test_early_torn_down_record_reruns_while_its_pr_is_still_open
 test_unreadable_allocation_ledger_refuses_cleanup
