@@ -23,16 +23,18 @@ test_quiet_checkpoint_exits_124_cleanly() {
   err="$home/err.txt"
   # The checkpoint must outlast the watcher's startup so its quiet exit is
   # observed from a running cycle: on a loaded host the startup to the first
-  # beacon takes seconds (docs/configuration.md FM_ARM_CONFIRM_TIMEOUT), and a
-  # watcher stopped between its lock claim and its cleanup trap leaves a
-  # dead-pid lock that this case would misread as a live one.
+  # beacon takes seconds (docs/configuration.md FM_ARM_CONFIRM_TIMEOUT; about
+  # 4s at load1 57 on an empty home), and a watcher stopped between its lock
+  # claim and its cleanup trap leaves a dead-pid lock that this case would
+  # misread as a live one. The 15s bound is a hang guard sized well above that
+  # floor, not a latency contract.
   printf '%s\n' fm-pr-check-migration-scan-v1 > "$home/state/.pr-check-migration-scan-v1"
   printf '%s\n' fm-pr-check-migration-v1 > "$home/state/.pr-check-migration-v1"
   chmod 0600 "$home/state/.pr-check-migration-scan-v1" "$home/state/.pr-check-migration-v1"
   status=0
-  FM_HOME="$home" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 "$CHECKPOINT" --seconds 6 >"$out" 2>"$err" || status=$?
+  FM_HOME="$home" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 "$CHECKPOINT" --seconds 15 >"$out" 2>"$err" || status=$?
   expect_code 124 "$status" "quiet checkpoint exit"
-  assert_contains "$(cat "$out")" "checkpoint: no actionable wake within 6s" "quiet checkpoint line missing"
+  assert_contains "$(cat "$out")" "checkpoint: no actionable wake within 15s" "quiet checkpoint line missing"
   assert_absent "$home/state/.watch.lock/pid" "watch lock pid survived quiet checkpoint timeout"
   pass "quiet checkpoint exits 124 with a clean checkpoint line and no live lock"
 }
@@ -46,8 +48,12 @@ test_signal_passes_through_and_exits_zero() {
     sleep 1
     printf 'done: synthetic wake\n' > "$home/state/demo.status"
   ) &
+  # The wake window must outlast the watcher's startup to its first beat (about
+  # 4s at load1 57 on an empty home) or a loaded host reports the quiet 124
+  # exit before the watcher ever scans the synthetic wake; a wider window costs
+  # nothing when the wake passes through because the checkpoint exits on it.
   status=0
-  FM_HOME="$home" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 "$CHECKPOINT" --seconds 8 >"$out" 2>"$err" || status=$?
+  FM_HOME="$home" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 "$CHECKPOINT" --seconds 20 >"$out" 2>"$err" || status=$?
   expect_code 0 "$status" "signal checkpoint exit"
   assert_contains "$(cat "$out")" "signal:" "signal wake was not passed through"
   drained=$(FM_HOME="$home" "$ROOT/bin/fm-wake-drain.sh")
