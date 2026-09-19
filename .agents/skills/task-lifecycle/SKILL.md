@@ -136,6 +136,7 @@ For any custom `state/<id>.check.sh` written directly, keep it an ordinary singl
 
 Keep a PR-based ship task live until its open PR lands whenever practical.
 This is advisory because the sanctioned merge path also handles a safely delivered task that was torn down early.
+A post-merge rerun of teardown for such a task reports `copy already returned; held by <task-id>` and retires only its records when the pool has since leased its copy to another task; a `REFUSED` naming another task's hold on the copy is never overridden with `--force`, and `docs/configuration.md` owns that boundary.
 When teardown refuses a legacy Herdr record that lacks `endpoint_task_id=`, use the explicit evidence migration in `bin/fm-endpoint-bind-migrate.sh` rather than editing task metadata by hand; `docs/configuration.md` owns the supported boundary.
 When teardown prints `REFUSED: copy over footprint budget`, the copy stays out of the pool with its record intact: inspect the listed paths, remove or relocate the output, and rerun, or pass `--footprint-override --reason <text>` only with a concrete reason worth recording; `docs/configuration.md` owns the budget and `bin/fm-teardown.sh --help` the mechanics.
 [`docs/architecture.md`](../../../docs/architecture.md) owns backlog outcome transitions and the cleanup exception for pruned task rows.
