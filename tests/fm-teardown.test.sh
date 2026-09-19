@@ -4542,6 +4542,49 @@ test_lease_record_refuses_when_the_pool_inventory_is_unreadable() {
   pass "a lease-bound record refuses cleanup while the pool cannot answer for its lease"
 }
 
+test_lease_record_with_a_malformed_recorded_lease_refuses_and_returns_nothing() {
+  local case_dir rc head_before flag recorded label
+  case_dir=$(make_case lease-malformed-record)
+  write_meta "$case_dir" no-mistakes ship
+  add_logging_tmux "$case_dir"
+  seed_allocation_acquire "$case_dir"
+  add_lease_pool_treehouse "$case_dir" lease-x1-gggg
+  add_compatible_tasks_axi "$case_dir"
+  head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
+  # The pool holds the copy under exactly the lease the record was spawned
+  # with, but the record's own copy of it is one bin/fm-spawn.sh could never
+  # have written: a CR (a CRLF hand edit), a tab, or nothing at all. Each is a
+  # lease-bound record whose lease cannot be trusted, never a pre-lease one.
+  for recorded in $'lease-x1-gggg\r' $'lease-x1\tgggg' ''; do
+    case "$recorded" in
+      *$'\r'*) label=cr ;;
+      *$'\t'*) label=tab ;;
+      *) label=empty ;;
+    esac
+    printf 'pool_lease_id=%s\n' "$recorded" >> "$case_dir/state/task-x1.meta"
+    for flag in "" --force; do
+      : > "$case_dir/fake/treehouse.log"
+      : > "$case_dir/tmux.log"
+      rc=0
+      # shellcheck disable=SC2086 # an empty flag must vanish, not pass as ""
+      run_teardown "$case_dir" $flag > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+      [ "$rc" -ne 0 ] || fail "lease-malformed-record ($label${flag:+ $flag}): a malformed recorded lease must refuse: $(cat "$case_dir/output")"
+      assert_grep "REFUSED: task task-x1's record binds copy $case_dir/wt under a pool lease, but its recorded pool_lease_id= is not a lease" "$case_dir/output" \
+        "lease-malformed-record ($label${flag:+ $flag}): the refusal must name the untrusted lease: $(cat "$case_dir/output")"
+      [ ! -s "$case_dir/fake/treehouse.log" ] \
+        || fail "lease-malformed-record ($label${flag:+ $flag}): the pool was touched: $(cat "$case_dir/fake/treehouse.log")"
+      [ ! -s "$case_dir/tmux.log" ] || fail "lease-malformed-record ($label${flag:+ $flag}): an endpoint was touched: $(cat "$case_dir/tmux.log")"
+      [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] || fail "lease-malformed-record ($label${flag:+ $flag}): the copy's HEAD moved"
+      assert_present "$case_dir/state/task-x1.meta" "lease-malformed-record ($label${flag:+ $flag}): the record was removed"
+      [ "$(pool_lease_of "$case_dir")" = lease-x1-gggg ] \
+        || fail "lease-malformed-record ($label${flag:+ $flag}): the pool's lease was disturbed"
+    done
+  done
+  unset FM_FAKE_DIR
+  pass "a lease-bound record whose recorded lease is malformed refuses by name, --force included, and returns nothing"
+}
+
 
 test_local_only_fork_remote_allows
 test_teardown_preserves_open_pr_poll_when_compatible
@@ -4625,6 +4668,7 @@ test_early_torn_down_lease_record_retires_records_only_when_the_pool_re_leased_i
 test_early_torn_down_lease_record_retires_records_only_when_its_lease_is_gone
 test_live_lease_record_whose_lease_the_pool_no_longer_holds_refuses_by_name
 test_lease_record_refuses_when_the_pool_inventory_is_unreadable
+test_lease_record_with_a_malformed_recorded_lease_refuses_and_returns_nothing
 test_untracked_early_torn_down_record_retires_records_only_when_the_ledger_names_another_holder
 test_early_torn_down_record_retires_when_its_returned_copy_sits_free
 test_early_torn_down_record_refuses_when_the_pool_inventory_is_unreadable

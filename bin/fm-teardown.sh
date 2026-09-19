@@ -101,9 +101,13 @@
 # outside this task's cleanup) refused by name, --force included, with the
 # copy, its processes, and every record untouched. An unreadable inventory,
 # or one that does not list the copy, refuses a lease-bound cleanup until the
-# pool answers. A record without pool_lease_id= (spawned before leases) keeps
-# every pre-lease rule below unchanged and returns without a lease
-# precondition.
+# pool answers. The recorded lease is trusted only in the form
+# bin/fm-spawn.sh records it (non-empty, no tab, CR, or LF); a pool_lease_id=
+# line that fails that rule is a lease-bound record whose lease cannot be
+# trusted and is refused by name before anything else runs, never downgraded
+# to the pre-lease rules. A record without pool_lease_id= (spawned before
+# leases) keeps every pre-lease rule below unchanged and returns without a
+# lease precondition.
 # Every record is then keyed on the worktree allocation ledger, the
 # firstmate-side mirror of the pool's binding, which says who
 # holds it (bin/fm-worktree-allocation.sh holder: the task of the last acquire
@@ -615,7 +619,15 @@ PROJ=$(fm_meta_get "$META" project)
 # took under this task id (pool-lease in the script header). Absent for a
 # record spawned before leases, which keeps every pre-lease path unchanged.
 POOL_LEASE_ID=$(fm_meta_get "$META" pool_lease_id)
-case "$POOL_LEASE_ID" in *[!0-9A-Za-z._-]*) POOL_LEASE_ID= ;; esac
+if grep -q '^pool_lease_id=' "$META" 2>/dev/null; then
+  case "$POOL_LEASE_ID" in
+    ''|*$'\t'*|*$'\r'*|*$'\n'*)
+      echo "REFUSED: task $ID's record binds copy ${WT:-<missing>} under a pool lease, but its recorded pool_lease_id= is not a lease bin/fm-spawn.sh could have recorded (empty, or containing a tab, CR, or LF), so the lease cannot be trusted." >&2
+      echo "Repair the pool_lease_id= line in $META from 'treehouse status --json' in ${PROJ:-<missing>} (the copy leased to task $ID), then rerun cleanup; nothing was touched. --force does not override this." >&2
+      exit 1
+      ;;
+  esac
+fi
 T_ORCA=
 [ "$BACKEND" != orca ] || T_ORCA=$T
 if [ "${FM_TEARDOWN_GUARD_DONE:-0}" != 1 ]; then
