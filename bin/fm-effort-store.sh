@@ -41,12 +41,14 @@
 #
 # `capture-ci` reads the task's PR run ledger from GitHub with `gh api` (read-only)
 # into data/pr-ci/<task-id>.json and enqueues ingestion; fm-pr-merge.sh runs it
-# with --from merge at the merged receipt, and a train PR's manifest members are
-# captured beside it. A PR URL is required only when the task has no recorded
+# with --from merge after the merged receipt, and a train PR's manifest members
+# are captured beside it. A PR URL is required only when the task has no recorded
 # PR; a conflicting URL is refused. `backfill-ci` pulls once for every merged
-# data/pr-merges/ receipt without a ledger, holding the store lock, then rebuilds;
-# an existing ledger is kept unless --replace-existing. bin/fm-effort-store.mjs's
-# header owns the ledger contract. Neither rebuild nor report reaches the forge.
+# data/pr-merges/ receipt without a ledger, holding the store lock, then rebuilds.
+# For both, an existing ledger is kept unless --replace-existing, which replaces
+# the named task's own ledger only: a manifest member's existing ledger is never
+# replaced by the train's capture. bin/fm-effort-store.mjs's header owns the
+# ledger contract. Neither rebuild nor report reaches the forge.
 # `capture` is the lifecycle-owned synchronous append-and-enqueue path. It reads stamped
 # task metadata, a prior raw row when volatile metadata is gone, merge receipts,
 # and matching settled no-mistakes rounds, and persists the task's token

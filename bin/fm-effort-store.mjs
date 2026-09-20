@@ -2307,30 +2307,40 @@ function readForgeRuns(pr, headRef, closedAt) {
   }))
 }
 
-const TRAIN_MENTION = /train[^\n#]{0,80}#([1-9]\d*)|#([1-9]\d*)[^\n]{0,80}\btrain\b/i
+const TRAIN_MENTION = /train[^\n#]{0,80}#([1-9]\d*)/gi
+
+// The first `train ... #<n>` mention in `text` that names another PR; a PR's
+// own number is never its train.
+function trainMentionedIn(text, pattern, ownNumber) {
+  pattern.lastIndex = 0
+  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+    const number = Number(match[1])
+    if (number !== ownNumber) return number
+  }
+  return null
+}
 
 function trainFromClosingComment(pr) {
   let found = null
   for (const comment of forgePages(`/repos/${pr.owner}/${pr.repo}/issues/${pr.number}/comments?per_page=100`, 'comments')) {
-    const match = TRAIN_MENTION.exec(String(comment?.body ?? ''))
-    if (match) found = Number(match[1] ?? match[2])
+    found = trainMentionedIn(String(comment?.body ?? ''), TRAIN_MENTION, pr.number) ?? found
   }
   return found
 }
 
 // The task's Done row in data/backlog.md or data/done-archive.md, as the
 // backlog format spells it, naming its train by `#<n>` or a PR URL.
-function trainFromDoneRow(dataDir, taskId) {
+function trainFromDoneRow(dataDir, taskId, ownNumber) {
   const escaped = taskId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const row = new RegExp(`^- \\[x\\] ${escaped} `)
-  const mention = /train[^\n]{0,80}?(?:#|\/pull\/)([1-9]\d*)/i
+  const mention = /train[^\n]{0,80}?(?:#|\/pull\/)([1-9]\d*)/gi
   for (const name of ['backlog.md', 'done-archive.md']) {
     const text = readTextFile(path.join(dataDir, name))
     if (text === null) continue
     for (const line of text.split('\n')) {
       if (!row.test(line)) continue
-      const match = mention.exec(line)
-      if (match) return Number(match[1])
+      const found = trainMentionedIn(line, mention, ownNumber)
+      if (found !== null) return found
     }
   }
   return null
@@ -2345,7 +2355,7 @@ function buildCiLedger(options, taskId, pr, {landing = null, trainNumber = null,
     if (record.merged) {
       resolvedLanding = 'direct'
     } else {
-      resolvedTrain = trainFromClosingComment(pr) ?? trainFromDoneRow(options.dataDir, taskId)
+      resolvedTrain = trainFromClosingComment(pr) ?? trainFromDoneRow(options.dataDir, taskId, pr.number)
       resolvedLanding = resolvedTrain === null ? 'closed' : `train:${resolvedTrain}`
     }
   }
@@ -2385,13 +2395,21 @@ function writeCiLedger(options, ledger) {
 }
 
 // Capture one PR's ledger and, for a train, every manifest member's ledger as
-// landed through it. A member ledger that already exists is left alone unless
-// replacement is explicit; the train's own ledger always reflects this capture.
+// landed through it. The PR's own ledger is kept when it already exists unless
+// replacement is explicit; a member ledger that already exists is never
+// replaced by the manifest path, whatever the flag, because the member's own
+// receipt or capture is the closer record of how it landed.
 function captureCiTree(options, taskId, pr, {from, replaceExisting}) {
-  const outcome = {captured: [], skipped: [], failed: []}
-  const ledger = buildCiLedger(options, taskId, pr, {from})
-  writeCiLedger(options, ledger)
-  outcome.captured.push(taskId)
+  const outcome = {captured: [], kept: [], skipped: [], failed: []}
+  let ledger = null
+  if (!replaceExisting) ledger = readCiLedgerFile(options.dataDir, taskId)
+  if (ledger) {
+    outcome.kept.push(taskId)
+  } else {
+    ledger = buildCiLedger(options, taskId, pr, {from})
+    writeCiLedger(options, ledger)
+    outcome.captured.push(taskId)
+  }
   const train = parseTrain(ledger.title, ledger.body)
   for (const member of train?.members ?? []) {
     const memberTask = /^fm\/(.+)$/.exec(member.branch)?.[1]
@@ -2401,7 +2419,7 @@ function captureCiTree(options, taskId, pr, {from, replaceExisting}) {
       outcome.failed.push({task: label, reason: 'manifest member does not name a task branch'})
       continue
     }
-    if (!replaceExisting && fs.existsSync(ciLedgerPath(options.dataDir, memberTask))) {
+    if (fs.existsSync(ciLedgerPath(options.dataDir, memberTask))) {
       outcome.skipped.push(memberTask)
       continue
     }
@@ -2489,14 +2507,10 @@ function backfillCi(options, argv) {
       outcome.skippedNotLanded.push(taskId)
       continue
     }
-    if (!replaceExisting && fs.existsSync(ciLedgerPath(options.dataDir, taskId))) {
-      outcome.skippedExisting.push(taskId)
-      continue
-    }
     try {
       const tree = captureCiTree(options, taskId, pr, {from: 'backfill', replaceExisting})
       outcome.captured.push(...tree.captured)
-      outcome.skippedExisting.push(...tree.skipped)
+      outcome.skippedExisting.push(...tree.kept, ...tree.skipped)
       outcome.failed.push(...tree.failed)
     } catch (error) {
       outcome.failed.push({task: taskId, reason: error.message})
@@ -3269,7 +3283,10 @@ if (command === 'rebuild' || command === 'ingest') {
     warn(error.message)
     process.exit(2)
   }
-  process.stdout.write(`captured run ledger for ${outcome.captured.join(', ')}; ingestion queued by lifecycle entry point\n`)
+  if (outcome.captured.length > 0) {
+    process.stdout.write(`captured run ledger for ${outcome.captured.join(', ')}; ingestion queued by lifecycle entry point\n`)
+  }
+  if (outcome.kept.length > 0) process.stdout.write(`kept existing run ledger for ${outcome.kept.join(', ')}; pass --replace-existing to read it again\n`)
   if (outcome.skipped.length > 0) process.stdout.write(`kept existing member ledgers: ${outcome.skipped.join(', ')}\n`)
   for (const failure of outcome.failed) process.stdout.write(`member not captured ${failure.task}: ${failure.reason}\n`)
 } else if (command === 'backfill-ci') {

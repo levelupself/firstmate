@@ -326,6 +326,9 @@ FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
   || fail 'PR merge with a readable run ledger failed'
 grep -q '^ci: captured' "$TMP_ROOT/ledger-merge.out" || fail 'the merge should report the captured run ledger'
 assert_present "$HOME_DIR/data/pr-ci/pr-task.json" 'the merge edge should write the run ledger beside the receipt'
+MERGE_ORDER=$(grep -o '^\(Backlog\|linear\|ci\):' "$TMP_ROOT/ledger-merge.out" | tr '\n' ' ')
+[ "$MERGE_ORDER" = 'Backlog: linear: ci: ' ] \
+  || fail "the forge read must follow the backlog outcome and the Linear write: $MERGE_ORDER"
 FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "effort sync failed"
 CI_ROW=$(node - "$DB" <<'NODE'
 process.emitWarning = () => {}

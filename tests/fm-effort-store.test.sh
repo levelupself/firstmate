@@ -1327,6 +1327,18 @@ for (const [number, ref] of [[70, 'fm/970-closed'], [71, 'fm/971-done-row'], [72
 write('comments-70.json', [[{id: 1, created_at: '2026-06-02T13:00:00Z', body: 'Superseded: landed through train #60; closing.'}]])
 write('comments-71.json', [[]])
 write('comments-72.json', [[]])
+// Closed member PRs whose train evidence names the PR itself: a closing
+// comment that mentions the PR before the word train, a comment that names
+// the PR and then the train, and Done rows whose titles carry the word train
+// ahead of the row's own PR URL.
+for (const [number, ref] of [[73, 'fm/973-self-comment'], [74, 'fm/974-own-then-train'], [75, 'fm/975-self-row'], [76, 'fm/976-self-only-row']]) {
+  write(`pull-${number}.json`, pr(number, ref, {merged: false, merged_at: null, closed_at: '2026-06-02T13:00:00Z'}))
+  write(`runs-${ref.replace('/', '__')}.json`, runsOn(ref, []))
+}
+write('comments-73.json', [[{id: 1, created_at: '2026-06-02T13:00:00Z', body: 'Closing #73: landed with the train.'}]])
+write('comments-74.json', [[{id: 1, created_at: '2026-06-02T13:00:00Z', body: 'Retry train for #74 rolled into train #60; closing.'}]])
+write('comments-75.json', [[]])
+write('comments-76.json', [[]])
 // Still open: the ledger records landed PRs only.
 write('pull-80.json', pr(80, 'fm/980-open', {state: 'open', merged: false, closed_at: null, merged_at: null}))
 // A landed PR whose only record is its merge receipt, for the backfill.
@@ -1339,6 +1351,8 @@ cat > "$FM_HOME/data/backlog.md" <<'MD'
 
 ## Done
 - [x] 971-done-row - Member b https://github.com/example/repo/pull/71 (repo: example) (kind: ship) (landed via train #60)
+- [x] 975-self-row - Merge train retries https://github.com/example/repo/pull/75 (repo: example) (kind: ship) (landed via train #60)
+- [x] 976-self-only-row - Merge train retries https://github.com/example/repo/pull/76 (repo: example) (kind: ship)
 MD
 
 fm_write_meta "$FM_HOME/state/950-direct.meta" \
@@ -1414,6 +1428,20 @@ NO_CI_REPORT=$("$STORE" report 940-tools) || fail 'no-ledger task report failed'
 assert_contains "$NO_CI_REPORT" 'CI unavailable' 'a task without a ledger should say so in the per-task report'
 pass 'reports expose CI minutes and queue minutes per task and per landed card'
 
+for self_task in 973-self-comment:73 974-own-then-train:74 975-self-row:75 976-self-only-row:76; do
+  "$STORE" capture-ci "${self_task%%:*}" "https://github.com/example/repo/pull/${self_task##*:}" >/dev/null 2>&1 \
+    || fail "self-mentioning closed capture failed for ${self_task%%:*}"
+done
+SELF_ROWS=$(query "SELECT task_id, landing, train_pr_number FROM task_ci WHERE task_id LIKE '97_-self%' OR task_id = '974-own-then-train' ORDER BY task_id")
+[ "$SELF_ROWS" = '973-self-comment|closed|NULL
+974-own-then-train|train:60|60
+975-self-row|train:60|60
+976-self-only-row|closed|NULL' ] \
+  || fail "a closed PR resolved its own number as its train: $SELF_ROWS"
+[ "$(query "SELECT count(*) FROM task_ci WHERE train_pr_number = pr_number")" = 0 ] \
+  || fail 'no ledger may name its own PR as its train'
+pass 'train resolution skips the PR itself in closing comments and Done rows'
+
 CI_FINGERPRINT=$("$STORE" fingerprint) || fail 'fingerprint after CI capture failed'
 rm -f "$DB"
 : > "$FORGE/calls.log"
@@ -1460,3 +1488,36 @@ assert_contains "$REPEAT_OUT" 'captured 0 | skipped 2 existing' 'a repeated back
 [ "$(query "SELECT captured_from FROM task_ci WHERE task_id = '950-direct'")" = backfill ] \
   || fail '--replace-existing should recapture an existing ledger'
 pass 'the one-time backfill captures landed receipts idempotently and names what it could not read'
+
+# The train has landed member a, whose PR the forge now shows closed with the
+# train named in its closing comment.
+node - "$FORGE" <<'NODE'
+const fs = require('fs')
+const path = require('path')
+const dir = process.argv[2]
+const file = path.join(dir, 'pull-51.json')
+const pr = JSON.parse(fs.readFileSync(file, 'utf8'))
+fs.writeFileSync(file, `${JSON.stringify({...pr, state: 'closed', closed_at: '2026-06-02T12:00:00Z'})}\n`)
+fs.writeFileSync(path.join(dir, 'comments-51.json'), `${JSON.stringify([[{id: 1, body: 'Superseded: landed through train #60; closing.'}]])}\n`)
+NODE
+KEPT_OUT=$("$STORE" capture-ci 951-member-a https://github.com/example/repo/pull/51 2>&1) || fail "repeated member capture failed: $KEPT_OUT"
+assert_contains "$KEPT_OUT" 'kept existing run ledger for 951-member-a' 'capture-ci should say it kept the existing ledger'
+[ "$(query "SELECT captured_from FROM task_ci WHERE task_id = '951-member-a'")" = train-manifest ] \
+  || fail 'capture-ci must keep an existing ledger without --replace-existing'
+"$STORE" capture-ci 951-member-a https://github.com/example/repo/pull/51 --replace-existing >/dev/null 2>&1 \
+  || fail 'replacing member capture failed'
+[ "$(query "SELECT landing, captured_from FROM task_ci WHERE task_id = '951-member-a'")" = 'train:60|manual' ] \
+  || fail 'capture-ci --replace-existing should recapture the named task from its own PR'
+write_receipt 960-train 60 merged
+"$STORE" backfill-ci --replace-existing >/dev/null 2>&1 || fail 'replacing train backfill failed'
+[ "$(query "SELECT captured_from FROM task_ci WHERE task_id = '960-train'")" = backfill ] \
+  || fail '--replace-existing should recapture the train receipt itself'
+MEMBER_SOURCES=$(query "SELECT task_id, captured_from FROM task_ci WHERE task_id IN ('951-member-a', '952-member-b') ORDER BY task_id")
+[ "$MEMBER_SOURCES" = '951-member-a|manual
+952-member-b|train-manifest' ] \
+  || fail "the train's manifest replaced an existing member ledger under --replace-existing: $MEMBER_SOURCES"
+"$STORE" capture-ci 960-train https://github.com/example/repo/pull/60 --replace-existing >/dev/null 2>&1 \
+  || fail 'replacing train capture failed'
+[ "$(query "SELECT task_id, captured_from FROM task_ci WHERE task_id IN ('951-member-a', '952-member-b') ORDER BY task_id")" = "$MEMBER_SOURCES" ] \
+  || fail 'capture-ci --replace-existing on a train must leave member ledgers alone'
+pass '--replace-existing recaptures the named ledger and never a manifest member'

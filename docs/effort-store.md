@@ -86,11 +86,11 @@ Every cross-task report row adds a `USAGE` column (`turns / calls / result tok e
 
 ## CI ledger per landed PR
 
-Every sanctioned PR merge also reads the PR's workflow-run ledger from GitHub, read-only, at the moment the merge receipt is written, and stores it as `data/pr-ci/<task>.json`.
+Every sanctioned PR merge also reads the PR's workflow-run ledger from GitHub, read-only, once the merge receipt, the backlog outcome, and the Linear write are recorded, and stores it as `data/pr-ci/<task>.json`.
 The ledger is the forge's own record of that landing: the PR, every workflow run on its head branch created before it closed, and each run's jobs across all attempts; nothing in it is reconstructed.
 Runs on the default branch after the merge belong to the branch, not to the PR, and are not counted.
 `bin/fm-effort-store.sh backfill-ci` pulls the same record once for every merged receipt under `data/pr-merges/` that has no ledger yet, which is the capture-forward rule's one allowance for forge facts the forge recorded at the time.
-An existing ledger is kept unless `--replace-existing` is passed, a receipt whose PR the forge can no longer serve is named and counted rather than invented, and `--limit` bounds one pass so a large backlog can be pulled in batches under the API rate limit.
+An existing ledger is kept unless `--replace-existing` is passed, which replaces the receipt's own ledger and never a train member's, a receipt whose PR the forge can no longer serve is named and counted rather than invented, and `--limit` bounds one pass so a large backlog can be pulled in batches under the API rate limit.
 A merge whose forge read fails still lands; the merge reports that the ledger was not captured and the backfill recovers it.
 
 The `task_ci` row joined to `task` carries the run count, the runs cancelled, failed, and succeeded, total runner seconds (the sum of job durations), total queue seconds (run creation to the first job start, per run), the first run's creation and the last run's completion, and how the PR landed.
@@ -99,8 +99,8 @@ A run is cancelled on a `cancelled` conclusion, failed on `failure`, `timed_out`
 
 `landing` is `direct` for a PR merged on its own, `train:<n>` for a PR that landed through merge train PR `<n>`, and `closed` for a closed PR with no train evidence.
 A train is a PR whose title starts with `train:` or whose body carries a `## Manifest` section; the ledger records its member count from the manifest's `- #<pr> fm/<task-id> ...` lines, its ejected count from the same shape under `## Ejected`, and its fix-round count from the body's `## Fix round` headings.
-When a train's receipt is captured, every manifest member whose branch names a task is captured beside it as landed through that train, and an existing member ledger is never replaced by the manifest path.
-A member PR captured on its own after it was closed names its train from its closing comment or from its Done row in `data/backlog.md` or `data/done-archive.md`.
+When a train's receipt is captured, every manifest member whose branch names a task is captured beside it as landed through that train, and an existing member ledger is never replaced by the manifest path, even under `--replace-existing`.
+A member PR captured on its own after it was closed names its train from a `train ... #<n>` mention in its closing comment or from its Done row in `data/backlog.md` or `data/done-archive.md`, skipping any mention of its own number.
 The `**N moved**` figure in a PR body is stored as `task.cards_moved_claimed`; it is the body's claim, not a measurement.
 
 The cross-task report adds a `CI` column per task (runner minutes, queue minutes, runs with the cancelled and failed counts, landing, and runner minutes per claimed card), one `CI direct` line and one `CI train` line totaling runner minutes, queue minutes, and claimed cards per landing method, and one `TRAIN` line per train with its members' minutes and card claims.
