@@ -1359,6 +1359,28 @@ write('comments-77.json', [[]])
 write('pull-91.json', pr(91, 'fm/977-relaunched', {
   body: '**6 moved**', created_at: '2026-06-04T10:00:00Z', closed_at: '2026-06-04T11:00:00Z', merged_at: '2026-06-04T11:00:00Z',
 }))
+// A branch whose run listing spans two pages, with a run created between the
+// page reads so the second page repeats the first page's last run.
+write('pull-92.json', pr(92, 'fm/978-paged', {}))
+const paged = id => ({...run(id, 'success', '2026-06-01T10:20:00Z', '2026-06-01T10:20:00Z', '2026-06-01T10:30:00Z'), head_branch: 'fm/978-paged'})
+write('runs-fm__978-paged.json', [
+  {total_count: 3, workflow_runs: [paged(5001), paged(5002)]},
+  {total_count: 3, workflow_runs: [paged(5002), paged(5003)]},
+])
+for (const id of [5001, 5002, 5003]) {
+  write(`jobs-${id}.json`, [{total_count: 1, jobs: [job(id, '2026-06-01T10:21:00Z', '2026-06-01T10:30:00Z')]}])
+}
+// A second merged train whose member card was relaunched: its first PR closed
+// unmerged, its second PR is the manifest member.
+write('pull-62.json', pr(62, 'fm/962-train-two', {
+  title: 'train: relaunch (1 item)', body: '## Manifest (1 member, 0 ejected)\n\n- #58 fm/958-relaunched-member 5858585 clean\n',
+  created_at: '2026-06-05T10:00:00Z', closed_at: '2026-06-05T12:00:00Z', merged_at: '2026-06-05T12:00:00Z',
+}))
+write('runs-fm__962-train-two.json', runsOn('fm/962-train-two', []))
+write('pull-58.json', pr(58, 'fm/958-relaunched-member', {state: 'open', merged: false, closed_at: null, merged_at: null, body: '**2 moved**'}))
+write('pull-78.json', pr(78, 'fm/958-relaunched-member', {merged: false, merged_at: null, closed_at: '2026-06-02T13:00:00Z'}))
+write('runs-fm__958-relaunched-member.json', runsOn('fm/958-relaunched-member', []))
+write('comments-78.json', [[]])
 // Still open: the ledger records landed PRs only.
 write('pull-80.json', pr(80, 'fm/980-open', {state: 'open', merged: false, closed_at: null, merged_at: null}))
 // A landed PR whose only record is its merge receipt, for the backfill.
@@ -1488,6 +1510,44 @@ assert_not_contains "$RELAUNCH_OUT" 'kept existing' 'a ledger for an earlier PR 
 [ "$(query "SELECT count(*) FROM ingest_issue WHERE task_id = '977-relaunched' AND kind = 'ci-pr-identity'")" = 0 ] \
   || fail 'a rebuilt ledger must not leave a stale identity issue'
 pass 'an existing ledger is kept only for the same task and PR'
+
+: > "$FORGE/calls.log"
+"$STORE" capture-ci 978-paged https://github.com/example/repo/pull/92 >/dev/null 2>&1 || fail 'paged capture failed'
+[ "$(query "SELECT runs, runner_seconds FROM task_ci WHERE task_id = '978-paged'")" = '3|1620' ] \
+  || fail 'a run repeated across listing pages must count once'
+[ "$(query "SELECT count(*) FROM task_ci_run WHERE task_id = '978-paged'")" = 3 ] \
+  || fail 'a run repeated across listing pages must be recorded once'
+[ "$(grep -c 'runs/5002/jobs' "$FORGE/calls.log")" = 1 ] || fail 'a repeated run must have its jobs read once'
+node - "$FM_HOME/data/pr-ci" <<'NODE'
+const fs = require('fs')
+const path = require('path')
+const dir = process.argv[2]
+const ledger = JSON.parse(fs.readFileSync(path.join(dir, '978-paged.json'), 'utf8'))
+const repeated = {...ledger, task_id: '979-repeated', pr_url: 'https://github.com/example/repo/pull/93', pr_number: 93, runs: [ledger.runs[0], ledger.runs[0]]}
+fs.writeFileSync(path.join(dir, '979-repeated.json'), `${JSON.stringify(repeated)}\n`)
+NODE
+"$STORE" rebuild >/dev/null 2>&1 || fail 'a ledger that repeats a run id must not stop the rebuild'
+[ "$(query "SELECT status FROM task_source WHERE task_id = '979-repeated' AND source = 'ci'")" = missing ] \
+  || fail 'a ledger that repeats a run id must leave the ci source missing'
+[ "$(query "SELECT kind FROM ingest_issue WHERE task_id = '979-repeated'")" = ci-ledger-invalid ] \
+  || fail 'a ledger that repeats a run id must be surfaced as an invalid ledger'
+[ "$(query "SELECT count(*) FROM task_ci_run WHERE task_id = '979-repeated'")" = 0 ] \
+  || fail 'an invalid ledger must record no runs'
+rm -f "$FM_HOME/data/pr-ci/979-repeated.json"
+pass 'a repeated run id is recorded once from the forge and invalidates a stored ledger without breaking rebuild'
+
+"$STORE" capture-ci 958-relaunched-member https://github.com/example/repo/pull/78 >/dev/null 2>&1 || fail 'closed first-PR member capture failed'
+[ "$(query "SELECT pr_number, landing FROM task_ci WHERE task_id = '958-relaunched-member'")" = '78|closed' ] \
+  || fail 'the relaunched member should first carry its closed PR'
+TRAIN_TWO_OUT=$("$STORE" capture-ci 962-train-two https://github.com/example/repo/pull/62 2>&1) || fail "second train capture failed: $TRAIN_TWO_OUT"
+assert_contains "$TRAIN_TWO_OUT" 'captured run ledger for 962-train-two, 958-relaunched-member' \
+  'a member ledger for an earlier PR must be rebuilt for the manifest PR'
+[ "$(query "SELECT pr_number, landing, captured_from FROM task_ci WHERE task_id = '958-relaunched-member'")" = '58|train:62|train-manifest' ] \
+  || fail 'the manifest path must replace a member ledger that records a different PR'
+REPEAT_TRAIN_OUT=$("$STORE" capture-ci 962-train-two https://github.com/example/repo/pull/62 2>&1) || fail "repeated second train capture failed: $REPEAT_TRAIN_OUT"
+assert_contains "$REPEAT_TRAIN_OUT" 'kept existing member ledgers: 958-relaunched-member' \
+  'a member ledger for the manifest PR is kept on a repeated capture'
+pass 'the manifest path keeps a member ledger only for the same task and PR'
 
 CI_FINGERPRINT=$("$STORE" fingerprint) || fail 'fingerprint after CI capture failed'
 rm -f "$DB"

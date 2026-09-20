@@ -306,7 +306,8 @@ const path = require('path')
 const dir = process.argv[2]
 const write = (name, value) => fs.writeFileSync(path.join(dir, name), `${JSON.stringify(value)}\n`)
 write('pull-9.json', {
-  number: 9, title: 'PR task', body: '**3 moved**', state: 'closed', merged: true,
+  number: 9, title: 'PR task', body: '**3 moved**\n\n## Manifest (1 member, 0 ejected)\n\n- #5 feature/no-task 1234567 clean\n',
+  state: 'closed', merged: true,
   created_at: '2026-08-29T10:15:00Z', closed_at: '2026-08-29T10:20:00Z', merged_at: '2026-08-29T10:20:00Z',
   head: {ref: 'fm/pr-task', sha: '0123456789abcdef0123456789abcdef01234567'}, base: {ref: 'main'},
 })
@@ -325,8 +326,10 @@ FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
   "$PR_MERGE" pr-task https://github.com/example/repo/pull/9 >"$TMP_ROOT/ledger-merge.out" \
   || fail 'PR merge with a readable run ledger failed'
 grep -q '^ci: captured' "$TMP_ROOT/ledger-merge.out" || fail 'the merge should report the captured run ledger'
+grep -q '^ci: member not captured #5 feature/no-task: manifest member does not name a task branch' "$TMP_ROOT/ledger-merge.out" \
+  || fail 'the merge should report every member the ledger capture could not record'
 assert_present "$HOME_DIR/data/pr-ci/pr-task.json" 'the merge edge should write the run ledger beside the receipt'
-MERGE_ORDER=$(grep -o '^\(Backlog\|linear\|ci\):' "$TMP_ROOT/ledger-merge.out" | tr '\n' ' ')
+MERGE_ORDER=$(grep -o '^\(Backlog\|linear\|ci\):' "$TMP_ROOT/ledger-merge.out" | uniq | tr '\n' ' ')
 [ "$MERGE_ORDER" = 'Backlog: linear: ci: ' ] \
   || fail "the forge read must follow the backlog outcome and the Linear write: $MERGE_ORDER"
 FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "effort sync failed"

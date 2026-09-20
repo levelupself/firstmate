@@ -609,7 +609,7 @@ fi
 # merge has already landed, so a forge read that fails is reported, never
 # fatal: `fm-effort-store.sh backfill-ci` recovers any receipt without a ledger.
 if CI_CAPTURE=$("$FM_ROOT/bin/fm-effort-store.sh" capture-ci "$ID" "$URL" --from merge 2>&1); then
-  echo "ci: $(printf '%s\n' "$CI_CAPTURE" | head -1)"
+  printf '%s\n' "$CI_CAPTURE" | sed 's/^/ci: /'
 else
   echo "ci: not captured; run fm-effort-store.sh backfill-ci later: $(printf '%s\n' "$CI_CAPTURE" | tail -1)"
 fi

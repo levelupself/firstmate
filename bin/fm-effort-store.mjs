@@ -1739,8 +1739,11 @@ function summarizeCiLedger(ledger, taskId, taskPrUrl) {
   if (trainNumber !== null && ledger.train_pr_number !== trainNumber) return invalid('ledger train number does not match its landing')
 
   const runs = []
+  const seenRunIds = new Set()
   for (const run of ledger.runs) {
     if (!run || !Number.isSafeInteger(run.id) || !Array.isArray(run.jobs)) return invalid('a recorded run is malformed')
+    if (seenRunIds.has(run.id)) return invalid('a recorded run is repeated')
+    seenRunIds.add(run.id)
     const createdAt = optionalTimestamp(run.created_at)
     let runnerSeconds = 0
     let firstStart = null
@@ -2295,9 +2298,11 @@ function readForgePr(pr) {
 // with its jobs across all attempts. Runs after the close are not fetched.
 function readForgeRuns(pr, headRef, closedAt) {
   const route = `/repos/${pr.owner}/${pr.repo}/actions/runs?branch=${encodeURIComponent(headRef)}&per_page=100`
+  const seen = new Set()
   const runs = forgePages(route, 'workflow_runs')
     .filter(run => run && Number.isSafeInteger(run.id) && run.head_branch === headRef)
     .filter(run => !closedAt || (optionalTimestamp(run.created_at) ?? '') <= closedAt)
+    .filter(run => !seen.has(run.id) && seen.add(run.id))
   const keep = (record, fields) => Object.fromEntries(fields.map(field => [field, record[field] ?? null]))
   return sortedBy(runs, run => `${run.created_at ?? ''}${KEY_SEPARATOR}${String(run.id).padStart(20, '0')}`).map(run => ({
     ...keep(run, ['id', 'name', 'event', 'status', 'conclusion', 'run_attempt', 'created_at', 'run_started_at', 'updated_at', 'head_sha']),
@@ -2394,20 +2399,23 @@ function writeCiLedger(options, ledger) {
   fs.renameSync(staged, file)
 }
 
+// The task's existing ledger when it records this task and this PR; a ledger
+// left by another PR of the same card is not this landing's record.
+function existingCiLedger(options, taskId, pr) {
+  const existing = readCiLedgerFile(options.dataDir, taskId)
+  return existing?.task_id === taskId && existing.pr_url === pr.url ? existing : null
+}
+
 // Capture one PR's ledger and, for a merged train, every manifest member's
 // ledger as landed through it. The PR's own ledger is kept when it already
-// records this task and this PR unless replacement is explicit; a ledger for
-// another PR is not this landing's record and is rebuilt. A member ledger that
-// already exists is never replaced by the manifest path, whatever the flag,
-// because the member's own receipt or capture is the closer record of how it
-// landed, and a train that did not merge landed nothing.
+// records this task and this PR unless replacement is explicit. A member
+// ledger that records the member's PR is never replaced by the manifest path,
+// whatever the flag, because the member's own receipt or capture is the closer
+// record of how it landed; one for another PR is rebuilt for the manifest PR.
+// A train that did not merge landed nothing.
 function captureCiTree(options, taskId, pr, {from, replaceExisting}) {
   const outcome = {captured: [], kept: [], skipped: [], failed: []}
-  let ledger = null
-  if (!replaceExisting) {
-    const existing = readCiLedgerFile(options.dataDir, taskId)
-    if (existing?.task_id === taskId && existing.pr_url === pr.url) ledger = existing
-  }
+  let ledger = replaceExisting ? null : existingCiLedger(options, taskId, pr)
   if (ledger) {
     outcome.kept.push(taskId)
   } else {
@@ -2429,7 +2437,7 @@ function captureCiTree(options, taskId, pr, {from, replaceExisting}) {
       outcome.failed.push({task: memberTask, reason: `train #${pr.number} did not merge; nothing landed through it`})
       continue
     }
-    if (fs.existsSync(ciLedgerPath(options.dataDir, memberTask))) {
+    if (existingCiLedger(options, memberTask, memberPr)) {
       outcome.skipped.push(memberTask)
       continue
     }
