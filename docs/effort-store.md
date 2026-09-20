@@ -99,7 +99,9 @@ A run is cancelled on a `cancelled` conclusion, failed on `failure`, `timed_out`
 
 `landing` is `direct` for a PR merged on its own, `train:<n>` for a PR that landed through merge train PR `<n>`, and `closed` for a closed PR with no train evidence.
 A train is a PR whose title starts with `train:` or whose body carries a `## Manifest` section; the ledger records its member count from the manifest's `- #<pr> fm/<task-id> ...` lines, its ejected count from the same shape under `## Ejected`, and its fix-round count from the body's `## Fix round` headings.
-When a train's receipt is captured, every manifest member whose branch names a task is captured beside it as landed through that train, and an existing member ledger is never replaced by the manifest path, even under `--replace-existing`.
+When a merged train's receipt is captured, every manifest member whose branch names a task is captured beside it as landed through that train, and an existing member ledger is never replaced by the manifest path, even under `--replace-existing`.
+A train that closed without merging landed nothing, so its capture records only its own ledger and reports each member as not captured.
+A task's existing ledger is kept only when it records the same task and the same PR being captured; a ledger left by an earlier PR of a relaunched card is rebuilt from the PR that landed.
 A member PR captured on its own after it was closed names its train from a `train ... #<n>` mention in its closing comment or from its Done row in `data/backlog.md` or `data/done-archive.md`, skipping any mention of its own number.
 The `**N moved**` figure in a PR body is stored as `task.cards_moved_claimed`; it is the body's claim, not a measurement.
 

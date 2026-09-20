@@ -1339,6 +1339,26 @@ write('comments-73.json', [[{id: 1, created_at: '2026-06-02T13:00:00Z', body: 'C
 write('comments-74.json', [[{id: 1, created_at: '2026-06-02T13:00:00Z', body: 'Retry train for #74 rolled into train #60; closing.'}]])
 write('comments-75.json', [[]])
 write('comments-76.json', [[]])
+// A train abandoned without merging: its manifest names members that landed
+// through nothing.
+write('pull-61.json', pr(61, 'fm/961-dead-train', {
+  title: 'train: memory retry (2 items)', merged: false, merged_at: null,
+  created_at: '2026-06-03T10:00:00Z', closed_at: '2026-06-03T11:00:00Z',
+  body: ['## Manifest (2 members, 0 ejected)', '', '- #56 fm/956-ghost-a 5555555 clean', '- #57 fm/957-ghost-b 5757575 clean'].join('\n'),
+}))
+write('runs-fm__961-dead-train.json', runsOn('fm/961-dead-train', []))
+write('comments-61.json', [[]])
+for (const [number, ref] of [[56, 'fm/956-ghost-a'], [57, 'fm/957-ghost-b']]) {
+  write(`pull-${number}.json`, pr(number, ref, {state: 'open', merged: false, closed_at: null, merged_at: null}))
+  write(`runs-${ref.replace('/', '__')}.json`, runsOn(ref, []))
+}
+// A relaunched card: its first PR closed unmerged, its second PR merged.
+write('pull-77.json', pr(77, 'fm/977-relaunched', {merged: false, merged_at: null, closed_at: '2026-06-02T13:00:00Z'}))
+write('runs-fm__977-relaunched.json', runsOn('fm/977-relaunched', []))
+write('comments-77.json', [[]])
+write('pull-91.json', pr(91, 'fm/977-relaunched', {
+  body: '**6 moved**', created_at: '2026-06-04T10:00:00Z', closed_at: '2026-06-04T11:00:00Z', merged_at: '2026-06-04T11:00:00Z',
+}))
 // Still open: the ledger records landed PRs only.
 write('pull-80.json', pr(80, 'fm/980-open', {state: 'open', merged: false, closed_at: null, merged_at: null}))
 // A landed PR whose only record is its merge receipt, for the backfill.
@@ -1441,6 +1461,33 @@ SELF_ROWS=$(query "SELECT task_id, landing, train_pr_number FROM task_ci WHERE t
 [ "$(query "SELECT count(*) FROM task_ci WHERE train_pr_number = pr_number")" = 0 ] \
   || fail 'no ledger may name its own PR as its train'
 pass 'train resolution skips the PR itself in closing comments and Done rows'
+
+: > "$FORGE/calls.log"
+DEAD_OUT=$("$STORE" capture-ci 961-dead-train https://github.com/example/repo/pull/61 2>&1) || fail "unmerged train capture failed: $DEAD_OUT"
+assert_contains "$DEAD_OUT" 'member not captured 956-ghost-a: train #61 did not merge' 'an unmerged train should report each member as not captured'
+assert_contains "$DEAD_OUT" 'member not captured 957-ghost-b: train #61 did not merge' 'an unmerged train should report every member'
+assert_absent "$FM_HOME/data/pr-ci/956-ghost-a.json" 'an unmerged train must not write a member ledger'
+assert_absent "$FM_HOME/data/pr-ci/957-ghost-b.json" 'an unmerged train must not write any member ledger'
+assert_no_grep 'pulls/56' "$FORGE/calls.log" 'an unmerged train must not read its members from the forge'
+[ "$(query "SELECT landing, is_train, member_count FROM task_ci WHERE task_id = '961-dead-train'")" = 'closed|1|2' ] \
+  || fail 'an unmerged train still records its own ledger as closed'
+[ "$(query "SELECT count(*) FROM task_ci WHERE landing = 'train:61'")" = 0 ] \
+  || fail 'no ledger may land through a train that did not merge'
+pass 'an unmerged train records its own ledger and lands no member through it'
+
+"$STORE" capture-ci 977-relaunched https://github.com/example/repo/pull/77 >/dev/null 2>&1 || fail 'first-PR capture failed'
+[ "$(query "SELECT pr_number, landing FROM task_ci WHERE task_id = '977-relaunched'")" = '77|closed' ] \
+  || fail 'the relaunched card should first carry its closed PR'
+RELAUNCH_OUT=$("$STORE" capture-ci 977-relaunched https://github.com/example/repo/pull/91 --from merge 2>&1) || fail "relaunched capture failed: $RELAUNCH_OUT"
+assert_contains "$RELAUNCH_OUT" 'captured run ledger for 977-relaunched' 'a ledger for an earlier PR must be rebuilt, not kept'
+assert_not_contains "$RELAUNCH_OUT" 'kept existing' 'a ledger for an earlier PR is not this landing record'
+[ "$(query "SELECT pr_number, landing, captured_from FROM task_ci WHERE task_id = '977-relaunched'")" = '91|direct|merge' ] \
+  || fail 'the merged PR of a relaunched card must replace the ledger of its closed predecessor'
+[ "$(query "SELECT status FROM task_source WHERE task_id = '977-relaunched' AND source = 'ci'")" = present ] \
+  || fail 'the rebuilt ledger should join the task'
+[ "$(query "SELECT count(*) FROM ingest_issue WHERE task_id = '977-relaunched' AND kind = 'ci-pr-identity'")" = 0 ] \
+  || fail 'a rebuilt ledger must not leave a stale identity issue'
+pass 'an existing ledger is kept only for the same task and PR'
 
 CI_FINGERPRINT=$("$STORE" fingerprint) || fail 'fingerprint after CI capture failed'
 rm -f "$DB"

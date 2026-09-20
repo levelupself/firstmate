@@ -2394,15 +2394,20 @@ function writeCiLedger(options, ledger) {
   fs.renameSync(staged, file)
 }
 
-// Capture one PR's ledger and, for a train, every manifest member's ledger as
-// landed through it. The PR's own ledger is kept when it already exists unless
-// replacement is explicit; a member ledger that already exists is never
-// replaced by the manifest path, whatever the flag, because the member's own
-// receipt or capture is the closer record of how it landed.
+// Capture one PR's ledger and, for a merged train, every manifest member's
+// ledger as landed through it. The PR's own ledger is kept when it already
+// records this task and this PR unless replacement is explicit; a ledger for
+// another PR is not this landing's record and is rebuilt. A member ledger that
+// already exists is never replaced by the manifest path, whatever the flag,
+// because the member's own receipt or capture is the closer record of how it
+// landed, and a train that did not merge landed nothing.
 function captureCiTree(options, taskId, pr, {from, replaceExisting}) {
   const outcome = {captured: [], kept: [], skipped: [], failed: []}
   let ledger = null
-  if (!replaceExisting) ledger = readCiLedgerFile(options.dataDir, taskId)
+  if (!replaceExisting) {
+    const existing = readCiLedgerFile(options.dataDir, taskId)
+    if (existing?.task_id === taskId && existing.pr_url === pr.url) ledger = existing
+  }
   if (ledger) {
     outcome.kept.push(taskId)
   } else {
@@ -2411,12 +2416,17 @@ function captureCiTree(options, taskId, pr, {from, replaceExisting}) {
     outcome.captured.push(taskId)
   }
   const train = parseTrain(ledger.title, ledger.body)
+  const trainMerged = ledger.landing === 'direct' && Boolean(ledger.pr_merged_at)
   for (const member of train?.members ?? []) {
     const memberTask = /^fm\/(.+)$/.exec(member.branch)?.[1]
     const memberPr = parseGithubPrUrl(`https://github.com/${pr.owner}/${pr.repo}/pull/${member.number}`)
     const label = `#${member.number} ${member.branch}`
     if (!memberTask || !TASK_ID_PATTERN.test(memberTask) || !memberPr) {
       outcome.failed.push({task: label, reason: 'manifest member does not name a task branch'})
+      continue
+    }
+    if (!trainMerged) {
+      outcome.failed.push({task: memberTask, reason: `train #${pr.number} did not merge; nothing landed through it`})
       continue
     }
     if (fs.existsSync(ciLedgerPath(options.dataDir, memberTask))) {
