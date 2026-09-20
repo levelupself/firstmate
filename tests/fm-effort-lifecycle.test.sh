@@ -23,8 +23,26 @@ exit 0
 SH
 chmod +x "$FAKE_ROOT/bin/fm-guard.sh"
 
+# `gh api` answers from JSON fixtures so the merge edge's CI ledger capture
+# never reaches the forge; every call is logged.
+FORGE="$TMP_ROOT/forge"
+mkdir -p "$FORGE"
+export FM_TEST_FORGE_JSON="$FORGE"
 cat > "$FAKEBIN/gh" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ]; then
+  printf '%s\n' "$*" >> "$FM_TEST_FORGE_JSON/calls.log"
+  path=${2%%\?*}
+  case "$path" in
+    */pulls/*) f="$FM_TEST_FORGE_JSON/pull-${path##*/}.json" ;;
+    */actions/runs/*/jobs) id=${path#*/actions/runs/}; id=${id%%/*}; f="$FM_TEST_FORGE_JSON/jobs-$id.json" ;;
+    */actions/runs) f="$FM_TEST_FORGE_JSON/runs.json" ;;
+    *) echo "gh: unstubbed path $path" >&2; exit 1 ;;
+  esac
+  [ -f "$f" ] || { echo "gh: HTTP 404: Not Found ($path)" >&2; exit 1; }
+  cat "$f"
+  exit 0
+fi
 case " $* " in
   *" headRefOid "*) printf '%s\n' 0123456789abcdef0123456789abcdef01234567 ;;
   *" createdAt "*) printf '%s\n' 2026-08-29T10:15:00Z ;;
@@ -278,6 +296,55 @@ grep -qx "project=$TMP_ROOT/project" "$HOME_DIR/data/pr-merges/pr-task.receipt" 
   || fail 'PR merge receipt did not preserve the project checkout identity'
 grep -qx 'merged_at=2026-08-29T10:20:00Z' "$HOME_DIR/data/pr-merges/pr-task.receipt" \
   || fail 'PR merge receipt did not preserve the forge timestamp'
+assert_absent "$HOME_DIR/data/pr-ci/pr-task.json" 'a merge whose forge run ledger cannot be read must not invent one'
+grep -q '^ci: not captured' "$TMP_ROOT/stalled-merge.out" \
+  || fail 'a merge without a readable run ledger should say the ledger was not captured'
+
+node - "$FORGE" <<'NODE'
+const fs = require('fs')
+const path = require('path')
+const dir = process.argv[2]
+const write = (name, value) => fs.writeFileSync(path.join(dir, name), `${JSON.stringify(value)}\n`)
+write('pull-9.json', {
+  number: 9, title: 'PR task', body: '**3 moved**\n\n## Manifest (1 member, 0 ejected)\n\n- #5 feature/no-task 1234567 clean\n',
+  state: 'closed', merged: true,
+  created_at: '2026-08-29T10:15:00Z', closed_at: '2026-08-29T10:20:00Z', merged_at: '2026-08-29T10:20:00Z',
+  head: {ref: 'fm/pr-task', sha: '0123456789abcdef0123456789abcdef01234567'}, base: {ref: 'main'},
+})
+write('runs.json', [{total_count: 1, workflow_runs: [{
+  id: 501, name: 'CI', event: 'pull_request', status: 'completed', conclusion: 'success', run_attempt: 1,
+  created_at: '2026-08-29T10:16:00Z', run_started_at: '2026-08-29T10:16:00Z', updated_at: '2026-08-29T10:19:00Z',
+  head_branch: 'fm/pr-task', head_sha: '0123456789abcdef0123456789abcdef01234567',
+}]}])
+write('jobs-501.json', [{total_count: 1, jobs: [{
+  id: 1, name: 'test', status: 'completed', conclusion: 'success',
+  started_at: '2026-08-29T10:17:00Z', completed_at: '2026-08-29T10:19:00Z',
+}]}])
+NODE
+FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$FAKE_ROOT" PATH="$FAKEBIN:$PATH" \
+  FM_NO_MISTAKES_STATE_DB_OVERRIDE="$NM_DB" \
+  "$PR_MERGE" pr-task https://github.com/example/repo/pull/9 >"$TMP_ROOT/ledger-merge.out" \
+  || fail 'PR merge with a readable run ledger failed'
+grep -q '^ci: captured' "$TMP_ROOT/ledger-merge.out" || fail 'the merge should report the captured run ledger'
+grep -q '^ci: member not captured #5 feature/no-task: manifest member does not name a task branch' "$TMP_ROOT/ledger-merge.out" \
+  || fail 'the merge should report every member the ledger capture could not record'
+assert_present "$HOME_DIR/data/pr-ci/pr-task.json" 'the merge edge should write the run ledger beside the receipt'
+MERGE_ORDER=$(grep -o '^\(Backlog\|linear\|ci\):' "$TMP_ROOT/ledger-merge.out" | uniq | tr '\n' ' ')
+[ "$MERGE_ORDER" = 'Backlog: linear: ci: ' ] \
+  || fail "the forge read must follow the backlog outcome and the Linear write: $MERGE_ORDER"
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || fail "effort sync failed"
+CI_ROW=$(node - "$DB" <<'NODE'
+process.emitWarning = () => {}
+const {DatabaseSync} = require('node:sqlite')
+const db = new DatabaseSync(process.argv[2], {readOnly:true})
+const ci = db.prepare('SELECT landing, runs, runner_seconds, queue_seconds, captured_from FROM task_ci WHERE task_id = ?').get('pr-task')
+const task = db.prepare('SELECT cards_moved_claimed FROM task WHERE task_id = ?').get('pr-task')
+process.stdout.write([...Object.values(ci || {}), task?.cards_moved_claimed].map(value => value ?? 'NULL').join('|') + '\n')
+NODE
+)
+[ "$CI_ROW" = 'direct|1|120|60|merge|3' ] \
+  || fail "the merge edge did not capture the run ledger from the forge: $CI_ROW"
+pass 'sanctioned PR merge captures the CI run ledger read-only from the forge at the receipt'
 
 fm_write_meta "$HOME_DIR/state/rerun-task.meta" \
   'window=fm-rerun-task' \

@@ -18,7 +18,11 @@
 # provenance is written. The effort store's launch-bound merge capture is
 # skipped for such a merge because no lifecycle record can bind to it; the
 # backlog outcome, which accepts the already-Done row, and the Linear write
-# still run. A launch-bound receipt (authorization=live-meta) keeps its
+# still run. Last, after the merged receipt, the backlog outcome, and the
+# Linear write, bin/fm-effort-store.sh capture-ci reads the PR's CI run ledger
+# from the forge for every authorization, so the fleet's own records land
+# before any forge read; that read is reported and never fatal. A launch-bound
+# receipt (authorization=live-meta) keeps its
 # spawned_at requirement exactly as before, and a Done-history receipt is never
 # rotated into history because it has no launch to rotate by.
 # Every accepted request writes a prepared data/pr-merges/<task-id>.receipt
@@ -594,6 +598,18 @@ fi
 # The merge has landed. Record that outcome in Linear - Done, plus the pull
 # request as an attachment - because this is the last moment the task id and the
 # pull request are known together; data/backlog.md prunes Done to the recent few.
-# Non-fatal by contract (bin/fm-linear-merge-write.sh always exits 0), and last
-# so a merge that failed above never reaches it.
+# Non-fatal by contract (bin/fm-linear-merge-write.sh always exits 0), and after
+# every fatal step so a merge that failed above never reaches it.
 "$SCRIPT_DIR/fm-linear-merge-write.sh" "$ID" "$URL" || true
+
+# The PR's CI run ledger is read from the forge now, while it is the forge's
+# own record of this landing; it is keyed by task and PR rather than launch, so
+# a Done-history merge captures too. It runs after the fleet's own records so a
+# slow forge never delays the backlog outcome or the Linear write, and the
+# merge has already landed, so a forge read that fails is reported, never
+# fatal: `fm-effort-store.sh backfill-ci` recovers any receipt without a ledger.
+if CI_CAPTURE=$("$FM_ROOT/bin/fm-effort-store.sh" capture-ci "$ID" "$URL" --from merge 2>&1); then
+  printf '%s\n' "$CI_CAPTURE" | sed 's/^/ci: /'
+else
+  echo "ci: not captured; run fm-effort-store.sh backfill-ci later: $(printf '%s\n' "$CI_CAPTURE" | tail -1)"
+fi

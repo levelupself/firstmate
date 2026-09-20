@@ -36,6 +36,7 @@ Nothing in the derived layer is ever written back to the raw layer.
 | raw | `data/cost-attribution.tsv` | identity, dispatch axes, lifecycle timestamps, configured model, process counts, and outcome stamps |
 | codeburn | `data/<task>/usage.json` | tokens, notional cost, calls, sessions, and actual-model split |
 | tool-usage | `data/<task>/tool-usage.json` | where the tokens went: turns, tool calls, result sizes by tool and class, the largest results, and the per-turn timeline |
+| ci | `data/pr-ci/<task>.json` | the forge's run ledger for the PR: runs and their jobs, how the PR landed, the train shape, and the card claim |
 | git | the project clone named in the raw row | structure, commit link, and the durability relation |
 | annotation | `data/effort-annotations.jsonl` | the posterior that no artifact records |
 
@@ -82,6 +83,32 @@ The snapshot is bound to its launch by `spawned_at`, and a snapshot from another
 
 Every cross-task report row adds a `USAGE` column (`turns / calls / result tok est / out tok / peak ctx`) and a `CLASSES (tok est)` column with the estimated result tokens per class in taxonomy order.
 `report <task-id>` adds the base prompt estimate, the class roll-up, the per-tool table, the five largest results, a `TIMELINE` line sampling the prompt size at turn 1 and at 25, 50, 75, and 100 percent of the turns, and the five largest single-turn jumps with the tool and class of the turn whose results landed.
+
+## CI ledger per landed PR
+
+Every sanctioned PR merge also reads the PR's workflow-run ledger from GitHub, read-only, once the merge receipt, the backlog outcome, and the Linear write are recorded, and stores it as `data/pr-ci/<task>.json`.
+The ledger is the forge's own record of that landing: the PR, every workflow run on its head branch created before it closed, and each run's jobs across all attempts; nothing in it is reconstructed.
+Runs on the default branch after the merge belong to the branch, not to the PR, and are not counted.
+`bin/fm-effort-store.sh backfill-ci` pulls the same record once for every merged receipt under `data/pr-merges/` that has no ledger yet, which is the capture-forward rule's one allowance for forge facts the forge recorded at the time.
+An existing ledger is kept unless `--replace-existing` is passed, which replaces the receipt's own ledger and never a train member's, a receipt whose PR the forge can no longer serve is named and counted rather than invented, and `--limit` bounds one pass so a large backlog can be pulled in batches under the API rate limit.
+A merge whose forge read fails still lands; the merge reports that the ledger was not captured and the backfill recovers it.
+
+The `task_ci` row joined to `task` carries the run count, the runs cancelled, failed, and succeeded, total runner seconds (the sum of job durations), total queue seconds (run creation to the first job start, per run), the first run's creation and the last run's completion, and how the PR landed.
+`task_ci_run` keeps one row per run with its attempt number so restarts stay queryable.
+A run is cancelled on a `cancelled` conclusion, failed on `failure`, `timed_out`, or `startup_failure`, and succeeded on `success`; other conclusions count as runs and nothing else.
+
+`landing` is `direct` for a PR merged on its own, `train:<n>` for a PR that landed through merge train PR `<n>`, and `closed` for a closed PR with no train evidence.
+A train is a PR whose title starts with `train:` or whose body carries a `## Manifest` section; the ledger records its member count from the manifest's `- #<pr> fm/<task-id> ...` lines, its ejected count from the same shape under `## Ejected`, and its fix-round count from the body's `## Fix round` headings.
+When a merged train's receipt is captured, every manifest member whose branch names a task is captured beside it as landed through that train, and a member ledger that already records the member's PR is never replaced by the manifest path, even under `--replace-existing`.
+A train that closed without merging landed nothing, so its capture records only its own ledger and reports each member as not captured.
+A task's existing ledger, primary or member, is kept only when it records the same task and the same PR being captured; a ledger left by an earlier PR of a relaunched card is rebuilt from the PR that landed.
+A run listed twice by the forge is recorded once, and a ledger that repeats a run id is an invalid ledger whose CI source is missing rather than a rebuild failure.
+A member PR captured on its own after it was closed names its train from a `train ... #<n>` mention in its closing comment or from its Done row in `data/backlog.md` or `data/done-archive.md`, skipping any mention of its own number.
+The `**N moved**` figure in a PR body is stored as `task.cards_moved_claimed`; it is the body's claim, not a measurement.
+
+The cross-task report adds a `CI` column per task (runner minutes, queue minutes, runs with the cancelled and failed counts, landing, and runner minutes per claimed card), one `CI direct` line and one `CI train` line totaling runner minutes, queue minutes, and claimed cards per landing method, and one `TRAIN` line per train with its members' minutes and card claims.
+`report <task-id>` adds the ledger's counts, timestamps, landing, and card claim, plus the train shape for a train.
+Rebuild derives every figure from the recorded ledger and never consults the forge, so the ledger is the single durable input and `rebuild` reproduces the tables exactly.
 
 ## Reading the headline numbers
 
@@ -139,6 +166,7 @@ An absent source and a zero must never look the same.
 - A line under that legacy header with the wrong column count is recorded as `legacy-column-count`, and an undeclared legacy region remains `unparsed-legacy-line`.
 - A raw line whose schema section is unknown is recorded in `ingest_issue` rather than guessed into a task row, so nothing that arrives is dropped.
 - A baseline-only task directory from before deterministic lifecycle capture creates a task row with NULL measurements and a `usage-pre-deterministic-attribution` issue.
+- A CI ledger that names a different PR from the one the task recorded is recorded as `ci-pr-identity`, and a malformed ledger as `ci-ledger-invalid`; either leaves the `ci` source `missing` rather than counting runs from the wrong PR.
 
 The same rule applies inside a source.
 Binary diff additions and deletions stay NULL at both file and task levels because git cannot measure them.
@@ -173,7 +201,7 @@ Event times are written once by the lifecycle edge that observed them and become
 ## Deterministic limits
 
 Launch time, PR-open time, sanctioned merge or local landing time, teardown time, outcome, process counts, cost, tokens, calls, sessions, configured model, actual models, and the token attribution snapshot are deterministic lifecycle or snapshot facts.
-A task discovered from any durable raw row, usage snapshot, or annotation remains visible when another source is absent, with that source's measurements NULL and its `task_source` row marked `missing`.
+A task discovered from any durable raw row, usage snapshot, CI ledger, or annotation remains visible when another source is absent, with that source's measurements NULL and its `task_source` row marked `missing`.
 Legacy `fm-task-usage.v1` snapshots are discovered but treated as missing because they predate deterministic reported-project attribution and may contain the broken plausible-zero result.
 Baseline-only task directories from before lifecycle capture remain `usage-pre-deterministic-attribution` because they have no trustworthy task window or project mapping for a history join.
 No value is reconstructed from a guess.
@@ -182,7 +210,7 @@ The separate discovery-versus-churn and loud-versus-quiet research annotations r
 ## Verification
 
 The suites drive public lifecycle and store entry points and verify SQL results, report output, and instrumented ingestion and git calls.
-They cover nonblocking lifecycle capture during stalled ingestion, request coalescing, cached history reuse, pending reports, launch-to-PR duration, durable usage and actual models, missing-versus-zero behavior, both recorded-by-hand fields, the durability link across a file rename, one-command reporting, token attribution capture and reporting for both session record formats, and delete-and-rebuild identity.
+They cover nonblocking lifecycle capture during stalled ingestion, request coalescing, cached history reuse, pending reports, launch-to-PR duration, durable usage and actual models, missing-versus-zero behavior, both recorded-by-hand fields, the durability link across a file rename, one-command reporting, token attribution capture and reporting for both session record formats, the CI ledger against a stubbed forge (capture at the merge edge, train members, closed-member train resolution, the one-time backfill, and rebuild without the forge), and delete-and-rebuild identity.
 The context-watch suite proves the per-harness tool fold and class taxonomy through the `usage` reader.
 
 ```sh

@@ -1224,3 +1224,407 @@ rm -f "$DB"
 [ "$(query "SELECT COUNT(*) FROM task_turn_timeline WHERE task_id = '940-tools'")" = 4 ] \
   || fail 'the turn timeline must survive a rebuild without the session record'
 pass 'the attribution is forward-only durable evidence and the rebuild contract covers every new table'
+
+# --- CI ledger per landed PR ---------------------------------------------------
+# The forge is a stub: every `gh api` call answers from JSON fixtures and is
+# logged, so no test here can reach GitHub. Runs and jobs are recorded by the
+# forge at the time; the store derives counts and minutes from them.
+
+FORGE="$ROOTDIR/forge"
+mkdir -p "$FORGE" "$FM_HOME/data/pr-merges"
+export FM_TEST_FORGE_JSON="$FORGE"
+FAKEBIN=$(fm_fakebin "$ROOTDIR")
+cat > "$FAKEBIN/gh" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = api ] || { echo "unexpected gh invocation: $*" >&2; exit 1; }
+printf '%s\n' "$*" >> "$FM_TEST_FORGE_JSON/calls.log"
+path=${2%%\?*}
+query=${2#"$path"}
+case "$path" in
+  */issues/*/comments) n=${path#*/issues/}; n=${n%%/*}; f="$FM_TEST_FORGE_JSON/comments-$n.json" ;;
+  */pulls/*) f="$FM_TEST_FORGE_JSON/pull-${path##*/}.json" ;;
+  */actions/runs/*/jobs) id=${path#*/actions/runs/}; id=${id%%/*}; f="$FM_TEST_FORGE_JSON/jobs-$id.json" ;;
+  */actions/runs) branch=$(printf '%s' "$query" | sed -n 's/.*branch=\([^&]*\).*/\1/p'); f="$FM_TEST_FORGE_JSON/runs-${branch//%2F/__}.json" ;;
+  *) echo "gh: unstubbed path $path" >&2; exit 1 ;;
+esac
+[ -f "$f" ] || { echo "gh: HTTP 404: Not Found ($path)" >&2; exit 1; }
+cat "$f"
+SH
+chmod +x "$FAKEBIN/gh"
+export PATH="$FAKEBIN:$PATH"
+
+node - "$FORGE" <<'NODE'
+const fs = require('fs')
+const path = require('path')
+const dir = process.argv[2]
+const write = (name, value) => fs.writeFileSync(path.join(dir, name), `${JSON.stringify(value)}\n`)
+const pr = (number, ref, extra) => ({
+  number, title: `PR ${number}`, body: '', state: 'closed', merged: true,
+  created_at: '2026-06-01T10:15:00Z', closed_at: '2026-06-01T11:00:00Z', merged_at: '2026-06-01T11:00:00Z',
+  head: {ref, sha: 'a'.repeat(40)}, base: {ref: 'main'}, ...extra,
+})
+const run = (id, conclusion, created, started, updated, extra) => ({
+  id, name: 'CI', event: 'pull_request', status: 'completed', conclusion, run_attempt: 1,
+  created_at: created, run_started_at: started, updated_at: updated, head_sha: 'b'.repeat(40), ...extra,
+})
+const runsOn = (ref, runs) => [{total_count: runs.length, workflow_runs: runs.map(item => ({...item, head_branch: ref}))}]
+const job = (id, started, completed, conclusion = 'success') => ({
+  id, name: `job ${id}`, status: 'completed', conclusion, started_at: started, completed_at: completed,
+})
+// A directly merged PR: one cancelled run, one successful re-run, and a run
+// created after the PR closed that must never be fetched.
+write('pull-42.json', pr(42, 'fm/950-direct', {title: 'Introduce memory', body: '## Measurement\n- **23 moved**, 0 lost\n'}))
+write('runs-fm__950-direct.json', runsOn('fm/950-direct', [
+  run(1001, 'cancelled', '2026-06-01T10:16:00Z', '2026-06-01T10:16:00Z', '2026-06-01T10:20:00Z'),
+  run(1002, 'success', '2026-06-01T10:30:00Z', '2026-06-01T10:31:00Z', '2026-06-01T10:50:00Z', {run_attempt: 2}),
+  run(1003, 'success', '2026-06-01T11:30:00Z', '2026-06-01T11:30:00Z', '2026-06-01T11:40:00Z', {event: 'push'}),
+]))
+write('jobs-1001.json', [{total_count: 1, jobs: [job(1, '2026-06-01T10:18:00Z', '2026-06-01T10:20:00Z', 'cancelled')]}])
+write('jobs-1002.json', [{total_count: 3, jobs: [
+  job(2, '2026-06-01T10:33:00Z', '2026-06-01T10:45:00Z'),
+  job(3, '2026-06-01T10:34:00Z', '2026-06-01T10:50:00Z'),
+  {id: 4, name: 'never started', status: 'completed', conclusion: 'cancelled', started_at: null, completed_at: null},
+]}])
+// A merge train with two members, no ejections, and two fix rounds.
+write('pull-60.json', pr(60, 'fm/960-train', {
+  title: 'train: memory (2 items)',
+  created_at: '2026-06-02T10:00:00Z', closed_at: '2026-06-02T12:00:00Z', merged_at: '2026-06-02T12:00:00Z',
+  body: [
+    'Merge train "memory".', '',
+    '## Manifest (2 members, 0 ejected)', '',
+    '- #51 fm/951-member-a 1111111 clean',
+    '- #52 fm/952-member-b 2222222 keep-both: AGENTS.md index', '',
+    '## Ejected', '', 'None.', '',
+    '## Fix round 1 (CI red on shard 1)', '', 'text', '',
+    '## Fix round 2', '', 'text', '',
+  ].join('\n'),
+}))
+write('runs-fm__960-train.json', runsOn('fm/960-train', [
+  run(2001, 'failure', '2026-06-02T10:05:00Z', '2026-06-02T10:05:00Z', '2026-06-02T10:16:00Z'),
+  run(2002, 'success', '2026-06-02T11:00:00Z', '2026-06-02T11:00:00Z', '2026-06-02T11:30:00Z'),
+]))
+write('jobs-2001.json', [{total_count: 1, jobs: [job(5, '2026-06-02T10:06:00Z', '2026-06-02T10:16:00Z', 'failure')]}])
+write('jobs-2002.json', [{total_count: 1, jobs: [job(6, '2026-06-02T11:02:00Z', '2026-06-02T11:30:00Z')]}])
+write('pull-51.json', pr(51, 'fm/951-member-a', {state: 'open', merged: false, closed_at: null, merged_at: null, body: '**10 moved**, 0 lost'}))
+write('runs-fm__951-member-a.json', runsOn('fm/951-member-a', [
+  run(3001, 'success', '2026-06-01T12:00:00Z', '2026-06-01T12:00:00Z', '2026-06-01T12:11:00Z'),
+]))
+write('jobs-3001.json', [{total_count: 1, jobs: [job(7, '2026-06-01T12:01:00Z', '2026-06-01T12:11:00Z')]}])
+write('pull-52.json', pr(52, 'fm/952-member-b', {state: 'open', merged: false, closed_at: null, merged_at: null, body: '- **Strict floor 9: 8 moved**\n'}))
+write('runs-fm__952-member-b.json', runsOn('fm/952-member-b', [
+  run(3002, 'timed_out', '2026-06-01T13:00:00Z', '2026-06-01T13:00:00Z', '2026-06-01T13:31:00Z'),
+]))
+write('jobs-3002.json', [{total_count: 1, jobs: [job(8, '2026-06-01T13:01:00Z', '2026-06-01T13:31:00Z', 'timed_out')]}])
+// Member PRs closed after a train landed: one names the train in its closing
+// comment, one only in its Done row, one has no train evidence at all.
+for (const [number, ref] of [[70, 'fm/970-closed'], [71, 'fm/971-done-row'], [72, 'fm/972-orphan']]) {
+  write(`pull-${number}.json`, pr(number, ref, {merged: false, merged_at: null, closed_at: '2026-06-02T13:00:00Z'}))
+  write(`runs-${ref.replace('/', '__')}.json`, runsOn(ref, [
+    run(4000 + number, 'success', '2026-06-01T14:00:00Z', '2026-06-01T14:00:00Z', '2026-06-01T14:05:00Z'),
+  ]))
+  write(`jobs-${4000 + number}.json`, [{total_count: 1, jobs: [job(9, '2026-06-01T14:01:00Z', '2026-06-01T14:05:00Z')]}])
+}
+write('comments-70.json', [[{id: 1, created_at: '2026-06-02T13:00:00Z', body: 'Superseded: landed through train #60; closing.'}]])
+write('comments-71.json', [[]])
+write('comments-72.json', [[]])
+// Closed member PRs whose train evidence names the PR itself: a closing
+// comment that mentions the PR before the word train, a comment that names
+// the PR and then the train, and Done rows whose titles carry the word train
+// ahead of the row's own PR URL.
+for (const [number, ref] of [[73, 'fm/973-self-comment'], [74, 'fm/974-own-then-train'], [75, 'fm/975-self-row'], [76, 'fm/976-self-only-row']]) {
+  write(`pull-${number}.json`, pr(number, ref, {merged: false, merged_at: null, closed_at: '2026-06-02T13:00:00Z'}))
+  write(`runs-${ref.replace('/', '__')}.json`, runsOn(ref, []))
+}
+write('comments-73.json', [[{id: 1, created_at: '2026-06-02T13:00:00Z', body: 'Closing #73: landed with the train.'}]])
+write('comments-74.json', [[{id: 1, created_at: '2026-06-02T13:00:00Z', body: 'Retry train for #74 rolled into train #60; closing.'}]])
+write('comments-75.json', [[]])
+write('comments-76.json', [[]])
+// A train abandoned without merging: its manifest names members that landed
+// through nothing.
+write('pull-61.json', pr(61, 'fm/961-dead-train', {
+  title: 'train: memory retry (2 items)', merged: false, merged_at: null,
+  created_at: '2026-06-03T10:00:00Z', closed_at: '2026-06-03T11:00:00Z',
+  body: ['## Manifest (2 members, 0 ejected)', '', '- #56 fm/956-ghost-a 5555555 clean', '- #57 fm/957-ghost-b 5757575 clean'].join('\n'),
+}))
+write('runs-fm__961-dead-train.json', runsOn('fm/961-dead-train', []))
+write('comments-61.json', [[]])
+for (const [number, ref] of [[56, 'fm/956-ghost-a'], [57, 'fm/957-ghost-b']]) {
+  write(`pull-${number}.json`, pr(number, ref, {state: 'open', merged: false, closed_at: null, merged_at: null}))
+  write(`runs-${ref.replace('/', '__')}.json`, runsOn(ref, []))
+}
+// A relaunched card: its first PR closed unmerged, its second PR merged.
+write('pull-77.json', pr(77, 'fm/977-relaunched', {merged: false, merged_at: null, closed_at: '2026-06-02T13:00:00Z'}))
+write('runs-fm__977-relaunched.json', runsOn('fm/977-relaunched', []))
+write('comments-77.json', [[]])
+write('pull-91.json', pr(91, 'fm/977-relaunched', {
+  body: '**6 moved**', created_at: '2026-06-04T10:00:00Z', closed_at: '2026-06-04T11:00:00Z', merged_at: '2026-06-04T11:00:00Z',
+}))
+// A branch whose run listing spans two pages, with a run created between the
+// page reads so the second page repeats the first page's last run.
+write('pull-92.json', pr(92, 'fm/978-paged', {}))
+const paged = id => ({...run(id, 'success', '2026-06-01T10:20:00Z', '2026-06-01T10:20:00Z', '2026-06-01T10:30:00Z'), head_branch: 'fm/978-paged'})
+write('runs-fm__978-paged.json', [
+  {total_count: 3, workflow_runs: [paged(5001), paged(5002)]},
+  {total_count: 3, workflow_runs: [paged(5002), paged(5003)]},
+])
+for (const id of [5001, 5002, 5003]) {
+  write(`jobs-${id}.json`, [{total_count: 1, jobs: [job(id, '2026-06-01T10:21:00Z', '2026-06-01T10:30:00Z')]}])
+}
+// A second merged train whose member card was relaunched: its first PR closed
+// unmerged, its second PR is the manifest member.
+write('pull-62.json', pr(62, 'fm/962-train-two', {
+  title: 'train: relaunch (1 item)', body: '## Manifest (1 member, 0 ejected)\n\n- #58 fm/958-relaunched-member 5858585 clean\n',
+  created_at: '2026-06-05T10:00:00Z', closed_at: '2026-06-05T12:00:00Z', merged_at: '2026-06-05T12:00:00Z',
+}))
+write('runs-fm__962-train-two.json', runsOn('fm/962-train-two', []))
+write('pull-58.json', pr(58, 'fm/958-relaunched-member', {state: 'open', merged: false, closed_at: null, merged_at: null, body: '**2 moved**'}))
+write('pull-78.json', pr(78, 'fm/958-relaunched-member', {merged: false, merged_at: null, closed_at: '2026-06-02T13:00:00Z'}))
+write('runs-fm__958-relaunched-member.json', runsOn('fm/958-relaunched-member', []))
+write('comments-78.json', [[]])
+// Still open: the ledger records landed PRs only.
+write('pull-80.json', pr(80, 'fm/980-open', {state: 'open', merged: false, closed_at: null, merged_at: null}))
+// A landed PR whose only record is its merge receipt, for the backfill.
+write('pull-53.json', pr(53, 'fm/953-backfill', {body: '**4 moved**'}))
+write('runs-fm__953-backfill.json', runsOn('fm/953-backfill', []))
+NODE
+
+cat > "$FM_HOME/data/backlog.md" <<'MD'
+# Backlog
+
+## Done
+- [x] 971-done-row - Member b https://github.com/example/repo/pull/71 (repo: example) (kind: ship) (landed via train #60)
+- [x] 975-self-row - Merge train retries https://github.com/example/repo/pull/75 (repo: example) (kind: ship) (landed via train #60)
+- [x] 976-self-only-row - Merge train retries https://github.com/example/repo/pull/76 (repo: example) (kind: ship)
+MD
+
+fm_write_meta "$FM_HOME/state/950-direct.meta" \
+  "worktree=$ROOTDIR/worktrees/direct" \
+  "project=$PROJECT" \
+  "kind=ship" \
+  "spawned_at=2026-06-01T10:00:00Z" \
+  "pr=https://github.com/example/repo/pull/42"
+: > "$FORGE/calls.log"
+CI_OUT=$("$STORE" capture-ci 950-direct 2>&1) || fail "CI capture failed: $CI_OUT"
+assert_present "$FM_HOME/data/pr-ci/950-direct.json" 'CI capture should write a durable ledger under data/pr-ci/'
+assert_no_grep 'runs/1003/jobs' "$FORGE/calls.log" 'a run created after the PR closed must not be fetched'
+CI_ROW=$(query "SELECT pr_url, pr_number, landing, is_train, runs, runs_cancelled, runs_failed, runs_succeeded, runner_seconds, queue_seconds, first_run_created_at, last_run_completed_at, captured_from FROM task_ci WHERE task_id = '950-direct'")
+[ "$CI_ROW" = 'https://github.com/example/repo/pull/42|42|direct|0|2|1|0|1|1800|300|2026-06-01T10:16:00Z|2026-06-01T10:50:00Z|manual' ] \
+  || fail "direct CI ledger was not derived from the recorded runs and jobs: $CI_ROW"
+[ "$(query "SELECT cards_moved_claimed FROM task WHERE task_id = '950-direct'")" = 23 ] \
+  || fail 'the **N moved** figure was not parsed into task.cards_moved_claimed'
+[ "$(query "SELECT run_attempt, jobs, runner_seconds, queue_seconds FROM task_ci_run WHERE task_id = '950-direct' AND run_id = 1002")" = '2|3|1680|180' ] \
+  || fail 'per-run rows should carry the attempt, job count, runner seconds, and queue seconds'
+[ "$(query "SELECT status FROM task_source WHERE task_id = '950-direct' AND source = 'ci'")" = present ] \
+  || fail 'a captured ledger should mark the ci source present'
+pass 'CI capture records the forge run ledger for a directly merged PR'
+
+if "$STORE" capture-ci 950-direct https://github.com/example/repo/pull/43 >/dev/null 2>&1; then
+  fail 'CI capture accepted a PR that conflicts with the task record'
+fi
+if "$STORE" capture-ci 980-open https://github.com/example/repo/pull/80 >/dev/null 2>&1; then
+  fail 'CI capture accepted a PR that has not landed'
+fi
+assert_absent "$FM_HOME/data/pr-ci/980-open.json" 'an open PR must not produce a ledger'
+pass 'CI capture refuses a conflicting PR and an open PR'
+
+"$STORE" capture-ci 960-train https://github.com/example/repo/pull/60 >/dev/null 2>&1 || fail 'train CI capture failed'
+TRAIN_ROW=$(query "SELECT landing, is_train, member_count, ejected_count, fix_round_count, runs, runs_failed, runs_succeeded, runner_seconds, queue_seconds FROM task_ci WHERE task_id = '960-train'")
+[ "$TRAIN_ROW" = 'direct|1|2|0|2|2|1|1|2280|180' ] \
+  || fail "train ledger did not record its members and fix rounds: $TRAIN_ROW"
+MEMBER_ROWS=$(query "SELECT task_id, landing, train_pr_number, runs_failed, runner_seconds, captured_from FROM task_ci WHERE landing = 'train:60' ORDER BY task_id")
+[ "$MEMBER_ROWS" = '951-member-a|train:60|60|0|600|train-manifest
+952-member-b|train:60|60|1|1800|train-manifest' ] \
+  || fail "manifest members were not captured as landed through the train: $MEMBER_ROWS"
+[ "$(query "SELECT group_concat(cards_moved_claimed, ',') FROM (SELECT cards_moved_claimed FROM task WHERE task_id IN ('951-member-a', '952-member-b') ORDER BY task_id)")" = '10,8' ] \
+  || fail 'member card claims were not parsed from their PR bodies'
+pass 'a train merge captures its own ledger and every manifest member as landed through it'
+
+"$STORE" capture-ci 970-closed https://github.com/example/repo/pull/70 >/dev/null 2>&1 || fail 'closed-by-comment capture failed'
+"$STORE" capture-ci 971-done-row https://github.com/example/repo/pull/71 >/dev/null 2>&1 || fail 'closed-by-done-row capture failed'
+"$STORE" capture-ci 972-orphan https://github.com/example/repo/pull/72 >/dev/null 2>&1 || fail 'closed-orphan capture failed'
+CLOSED_ROWS=$(query "SELECT task_id, landing, train_pr_number FROM task_ci WHERE task_id IN ('970-closed', '971-done-row', '972-orphan') ORDER BY task_id")
+[ "$CLOSED_ROWS" = '970-closed|train:60|60
+971-done-row|train:60|60
+972-orphan|closed|NULL' ] \
+  || fail "closed member PRs did not resolve their train from the closing comment or Done row: $CLOSED_ROWS"
+pass 'a member PR closed by a train names the train from its closing comment or its Done row'
+
+CI_REPORT=$("$STORE" report --sync) || fail 'CI report failed'
+assert_contains "$CI_REPORT" '| CI' 'the cross-task header should carry the CI column'
+CI_LINE=$(printf '%s\n' "$CI_REPORT" | grep '^950-direct ')
+assert_contains "$CI_LINE" '| 30.0 runner min / 5.0 queue min / 2 runs (1 cancelled, 0 failed) / direct / 1.30 min per card' \
+  'the cross-task row should show CI minutes, queue minutes, runs, landing, and minutes per landed card'
+NO_CI_LINE=$(printf '%s\n' "$CI_REPORT" | grep '^940-tools ')
+[ "${NO_CI_LINE##* | }" = '-' ] || fail "a task without a ledger should print a dash in the CI column: $NO_CI_LINE"
+assert_contains "$CI_REPORT" 'CI direct 1 PRs | 30.0 runner min | 5.0 queue min | 23 cards claimed | 1.30 min per card' \
+  'the report should total directly landed PRs per landed card'
+assert_contains "$CI_REPORT" 'CI train 1 trains / 4 members | 86.0 runner min (trains 38.0 + members 48.0) | 7.0 queue min | 18 cards claimed | 4.78 min per card' \
+  'the report should total train-landed PRs per landed card'
+assert_contains "$CI_REPORT" 'TRAIN #60 960-train | 2 members (0 ejected) | 2 fix rounds | train 38.0 runner min | members 48.0 runner min (4 ledgers) | 18 cards claimed | 4.78 min per card' \
+  'each train should report its members, fix rounds, and minutes per landed card'
+TRAIN_REPORT=$("$STORE" report 960-train) || fail 'train task report failed'
+assert_contains "$TRAIN_REPORT" 'CI runs 2 | cancelled 0 | failed 1 | succeeded 1 | runner 38.0 min | queue 3.0 min | first run 2026-06-02T10:05:00Z | last completed 2026-06-02T11:30:00Z | landing direct | cards claimed -' \
+  'the per-task report should list the CI ledger'
+assert_contains "$TRAIN_REPORT" 'TRAIN members 2 | ejected 0 | fix rounds 2' 'the per-task report should list the train shape'
+NO_CI_REPORT=$("$STORE" report 940-tools) || fail 'no-ledger task report failed'
+assert_contains "$NO_CI_REPORT" 'CI unavailable' 'a task without a ledger should say so in the per-task report'
+pass 'reports expose CI minutes and queue minutes per task and per landed card'
+
+for self_task in 973-self-comment:73 974-own-then-train:74 975-self-row:75 976-self-only-row:76; do
+  "$STORE" capture-ci "${self_task%%:*}" "https://github.com/example/repo/pull/${self_task##*:}" >/dev/null 2>&1 \
+    || fail "self-mentioning closed capture failed for ${self_task%%:*}"
+done
+SELF_ROWS=$(query "SELECT task_id, landing, train_pr_number FROM task_ci WHERE task_id LIKE '97_-self%' OR task_id = '974-own-then-train' ORDER BY task_id")
+[ "$SELF_ROWS" = '973-self-comment|closed|NULL
+974-own-then-train|train:60|60
+975-self-row|train:60|60
+976-self-only-row|closed|NULL' ] \
+  || fail "a closed PR resolved its own number as its train: $SELF_ROWS"
+[ "$(query "SELECT count(*) FROM task_ci WHERE train_pr_number = pr_number")" = 0 ] \
+  || fail 'no ledger may name its own PR as its train'
+pass 'train resolution skips the PR itself in closing comments and Done rows'
+
+: > "$FORGE/calls.log"
+DEAD_OUT=$("$STORE" capture-ci 961-dead-train https://github.com/example/repo/pull/61 2>&1) || fail "unmerged train capture failed: $DEAD_OUT"
+assert_contains "$DEAD_OUT" 'member not captured 956-ghost-a: train #61 did not merge' 'an unmerged train should report each member as not captured'
+assert_contains "$DEAD_OUT" 'member not captured 957-ghost-b: train #61 did not merge' 'an unmerged train should report every member'
+assert_absent "$FM_HOME/data/pr-ci/956-ghost-a.json" 'an unmerged train must not write a member ledger'
+assert_absent "$FM_HOME/data/pr-ci/957-ghost-b.json" 'an unmerged train must not write any member ledger'
+assert_no_grep 'pulls/56' "$FORGE/calls.log" 'an unmerged train must not read its members from the forge'
+[ "$(query "SELECT landing, is_train, member_count FROM task_ci WHERE task_id = '961-dead-train'")" = 'closed|1|2' ] \
+  || fail 'an unmerged train still records its own ledger as closed'
+[ "$(query "SELECT count(*) FROM task_ci WHERE landing = 'train:61'")" = 0 ] \
+  || fail 'no ledger may land through a train that did not merge'
+pass 'an unmerged train records its own ledger and lands no member through it'
+
+"$STORE" capture-ci 977-relaunched https://github.com/example/repo/pull/77 >/dev/null 2>&1 || fail 'first-PR capture failed'
+[ "$(query "SELECT pr_number, landing FROM task_ci WHERE task_id = '977-relaunched'")" = '77|closed' ] \
+  || fail 'the relaunched card should first carry its closed PR'
+RELAUNCH_OUT=$("$STORE" capture-ci 977-relaunched https://github.com/example/repo/pull/91 --from merge 2>&1) || fail "relaunched capture failed: $RELAUNCH_OUT"
+assert_contains "$RELAUNCH_OUT" 'captured run ledger for 977-relaunched' 'a ledger for an earlier PR must be rebuilt, not kept'
+assert_not_contains "$RELAUNCH_OUT" 'kept existing' 'a ledger for an earlier PR is not this landing record'
+[ "$(query "SELECT pr_number, landing, captured_from FROM task_ci WHERE task_id = '977-relaunched'")" = '91|direct|merge' ] \
+  || fail 'the merged PR of a relaunched card must replace the ledger of its closed predecessor'
+[ "$(query "SELECT status FROM task_source WHERE task_id = '977-relaunched' AND source = 'ci'")" = present ] \
+  || fail 'the rebuilt ledger should join the task'
+[ "$(query "SELECT count(*) FROM ingest_issue WHERE task_id = '977-relaunched' AND kind = 'ci-pr-identity'")" = 0 ] \
+  || fail 'a rebuilt ledger must not leave a stale identity issue'
+pass 'an existing ledger is kept only for the same task and PR'
+
+: > "$FORGE/calls.log"
+"$STORE" capture-ci 978-paged https://github.com/example/repo/pull/92 >/dev/null 2>&1 || fail 'paged capture failed'
+[ "$(query "SELECT runs, runner_seconds FROM task_ci WHERE task_id = '978-paged'")" = '3|1620' ] \
+  || fail 'a run repeated across listing pages must count once'
+[ "$(query "SELECT count(*) FROM task_ci_run WHERE task_id = '978-paged'")" = 3 ] \
+  || fail 'a run repeated across listing pages must be recorded once'
+[ "$(grep -c 'runs/5002/jobs' "$FORGE/calls.log")" = 1 ] || fail 'a repeated run must have its jobs read once'
+node - "$FM_HOME/data/pr-ci" <<'NODE'
+const fs = require('fs')
+const path = require('path')
+const dir = process.argv[2]
+const ledger = JSON.parse(fs.readFileSync(path.join(dir, '978-paged.json'), 'utf8'))
+const repeated = {...ledger, task_id: '979-repeated', pr_url: 'https://github.com/example/repo/pull/93', pr_number: 93, runs: [ledger.runs[0], ledger.runs[0]]}
+fs.writeFileSync(path.join(dir, '979-repeated.json'), `${JSON.stringify(repeated)}\n`)
+NODE
+"$STORE" rebuild >/dev/null 2>&1 || fail 'a ledger that repeats a run id must not stop the rebuild'
+[ "$(query "SELECT status FROM task_source WHERE task_id = '979-repeated' AND source = 'ci'")" = missing ] \
+  || fail 'a ledger that repeats a run id must leave the ci source missing'
+[ "$(query "SELECT kind FROM ingest_issue WHERE task_id = '979-repeated'")" = ci-ledger-invalid ] \
+  || fail 'a ledger that repeats a run id must be surfaced as an invalid ledger'
+[ "$(query "SELECT count(*) FROM task_ci_run WHERE task_id = '979-repeated'")" = 0 ] \
+  || fail 'an invalid ledger must record no runs'
+rm -f "$FM_HOME/data/pr-ci/979-repeated.json"
+pass 'a repeated run id is recorded once from the forge and invalidates a stored ledger without breaking rebuild'
+
+"$STORE" capture-ci 958-relaunched-member https://github.com/example/repo/pull/78 >/dev/null 2>&1 || fail 'closed first-PR member capture failed'
+[ "$(query "SELECT pr_number, landing FROM task_ci WHERE task_id = '958-relaunched-member'")" = '78|closed' ] \
+  || fail 'the relaunched member should first carry its closed PR'
+TRAIN_TWO_OUT=$("$STORE" capture-ci 962-train-two https://github.com/example/repo/pull/62 2>&1) || fail "second train capture failed: $TRAIN_TWO_OUT"
+assert_contains "$TRAIN_TWO_OUT" 'captured run ledger for 962-train-two, 958-relaunched-member' \
+  'a member ledger for an earlier PR must be rebuilt for the manifest PR'
+[ "$(query "SELECT pr_number, landing, captured_from FROM task_ci WHERE task_id = '958-relaunched-member'")" = '58|train:62|train-manifest' ] \
+  || fail 'the manifest path must replace a member ledger that records a different PR'
+REPEAT_TRAIN_OUT=$("$STORE" capture-ci 962-train-two https://github.com/example/repo/pull/62 2>&1) || fail "repeated second train capture failed: $REPEAT_TRAIN_OUT"
+assert_contains "$REPEAT_TRAIN_OUT" 'kept existing member ledgers: 958-relaunched-member' \
+  'a member ledger for the manifest PR is kept on a repeated capture'
+pass 'the manifest path keeps a member ledger only for the same task and PR'
+
+CI_FINGERPRINT=$("$STORE" fingerprint) || fail 'fingerprint after CI capture failed'
+rm -f "$DB"
+: > "$FORGE/calls.log"
+"$STORE" rebuild >/dev/null || fail 'rebuild after CI capture failed'
+[ "$("$STORE" fingerprint)" = "$CI_FINGERPRINT" ] || fail 'rebuild must reproduce the CI tables from the durable ledgers alone'
+[ ! -s "$FORGE/calls.log" ] || fail 'rebuild must never consult the forge'
+pass 'the CI ledger is durable evidence and rebuild never reaches the forge'
+
+"$STORE" annotate 950-direct --pr-url https://github.com/example/repo/pull/44 >/dev/null \
+  || fail 'annotating a different PR failed'
+"$STORE" rebuild >/dev/null || fail 'rebuild with a mismatched ledger failed'
+[ "$(query "SELECT status FROM task_source WHERE task_id = '950-direct' AND source = 'ci'")" = missing ] \
+  || fail 'a ledger for another PR must not be joined to the task'
+[ "$(query "SELECT kind FROM ingest_issue WHERE task_id = '950-direct' AND kind = 'ci-pr-identity'")" = ci-pr-identity ] \
+  || fail 'a mismatched ledger should be surfaced as an ingest issue'
+"$STORE" annotate 950-direct --pr-url https://github.com/example/repo/pull/42 >/dev/null \
+  || fail 'restoring the PR annotation failed'
+pass 'a ledger bound to a different PR is missing, never silently joined'
+
+write_receipt() {  # <task-id> <pr-number> <phase>
+  printf '%s\n' 'schema=fm-pr-merge.v4' "task_id=$1" "pr=https://github.com/example/repo/pull/$2" \
+    'repository=example/repo' "project=$PROJECT" 'default_branch=main' \
+    "merge_commit=$(printf 'c%.0s' $(seq 1 40))" 'spawned_at=2026-06-01T10:00:00Z' "phase=$3" \
+    'authorization=live-meta' 'prepared_epoch=1780000000' 'merged_at=2026-06-01T11:00:00Z' \
+    > "$FM_HOME/data/pr-merges/$1.receipt"
+}
+write_receipt 950-direct 42 merged
+write_receipt 953-backfill 53 merged
+write_receipt 954-prepared 54 prepared
+write_receipt 955-vanished 55 merged
+BACKFILL_OUT=$("$STORE" backfill-ci 2>&1) || fail "CI backfill failed: $BACKFILL_OUT"
+assert_contains "$BACKFILL_OUT" 'captured 1 | skipped 1 existing | skipped 1 not landed | failed 3' \
+  'the backfill should report what it captured, skipped, and could not read (two earlier receipts have no stubbed PR)'
+assert_contains "$BACKFILL_OUT" '955-vanished' 'a receipt whose PR the forge cannot serve should be named'
+[ "$(query "SELECT landing, runs, captured_from FROM task_ci WHERE task_id = '953-backfill'")" = 'direct|0|backfill' ] \
+  || fail 'the backfill should capture a landed receipt with no ledger'
+[ "$(query "SELECT cards_moved_claimed FROM task WHERE task_id = '953-backfill'")" = 4 ] \
+  || fail 'a ledger-only task should still surface its card claim'
+[ "$(query "SELECT captured_from FROM task_ci WHERE task_id = '950-direct'")" = manual ] \
+  || fail 'the backfill must not replace an existing ledger by default'
+REPEAT_OUT=$("$STORE" backfill-ci 2>&1) || fail "repeated CI backfill failed: $REPEAT_OUT"
+assert_contains "$REPEAT_OUT" 'captured 0 | skipped 2 existing' 'a repeated backfill should be a no-op for captured ledgers'
+"$STORE" backfill-ci --replace-existing >/dev/null 2>&1 || fail 'replacing CI backfill failed'
+[ "$(query "SELECT captured_from FROM task_ci WHERE task_id = '950-direct'")" = backfill ] \
+  || fail '--replace-existing should recapture an existing ledger'
+pass 'the one-time backfill captures landed receipts idempotently and names what it could not read'
+
+# The train has landed member a, whose PR the forge now shows closed with the
+# train named in its closing comment.
+node - "$FORGE" <<'NODE'
+const fs = require('fs')
+const path = require('path')
+const dir = process.argv[2]
+const file = path.join(dir, 'pull-51.json')
+const pr = JSON.parse(fs.readFileSync(file, 'utf8'))
+fs.writeFileSync(file, `${JSON.stringify({...pr, state: 'closed', closed_at: '2026-06-02T12:00:00Z'})}\n`)
+fs.writeFileSync(path.join(dir, 'comments-51.json'), `${JSON.stringify([[{id: 1, body: 'Superseded: landed through train #60; closing.'}]])}\n`)
+NODE
+KEPT_OUT=$("$STORE" capture-ci 951-member-a https://github.com/example/repo/pull/51 2>&1) || fail "repeated member capture failed: $KEPT_OUT"
+assert_contains "$KEPT_OUT" 'kept existing run ledger for 951-member-a' 'capture-ci should say it kept the existing ledger'
+[ "$(query "SELECT captured_from FROM task_ci WHERE task_id = '951-member-a'")" = train-manifest ] \
+  || fail 'capture-ci must keep an existing ledger without --replace-existing'
+"$STORE" capture-ci 951-member-a https://github.com/example/repo/pull/51 --replace-existing >/dev/null 2>&1 \
+  || fail 'replacing member capture failed'
+[ "$(query "SELECT landing, captured_from FROM task_ci WHERE task_id = '951-member-a'")" = 'train:60|manual' ] \
+  || fail 'capture-ci --replace-existing should recapture the named task from its own PR'
+write_receipt 960-train 60 merged
+"$STORE" backfill-ci --replace-existing >/dev/null 2>&1 || fail 'replacing train backfill failed'
+[ "$(query "SELECT captured_from FROM task_ci WHERE task_id = '960-train'")" = backfill ] \
+  || fail '--replace-existing should recapture the train receipt itself'
+MEMBER_SOURCES=$(query "SELECT task_id, captured_from FROM task_ci WHERE task_id IN ('951-member-a', '952-member-b') ORDER BY task_id")
+[ "$MEMBER_SOURCES" = '951-member-a|manual
+952-member-b|train-manifest' ] \
+  || fail "the train's manifest replaced an existing member ledger under --replace-existing: $MEMBER_SOURCES"
+"$STORE" capture-ci 960-train https://github.com/example/repo/pull/60 --replace-existing >/dev/null 2>&1 \
+  || fail 'replacing train capture failed'
+[ "$(query "SELECT task_id, captured_from FROM task_ci WHERE task_id IN ('951-member-a', '952-member-b') ORDER BY task_id")" = "$MEMBER_SOURCES" ] \
+  || fail 'capture-ci --replace-existing on a train must leave member ledgers alone'
+pass '--replace-existing recaptures the named ledger and never a manifest member'
