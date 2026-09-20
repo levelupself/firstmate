@@ -3,9 +3,9 @@
 #
 # The store is the reference class for agentic engineering work: one SQLite file
 # under this home's gitignored data/, joining the append-only lifecycle capture
-# (data/cost-attribution.tsv), durable task-usage snapshots, and the project's
-# own git history. It is derived, so it is safe to delete; `rebuild` recreates
-# it exactly.
+# (data/cost-attribution.tsv), durable task-usage snapshots, per-PR CI run
+# ledgers, and the project's own git history. It is derived, so it is safe to
+# delete; `rebuild` recreates it exactly.
 #
 # Two fields cannot be derived from any artifact and are recorded by hand
 # instead: why a task needed another round (discovery, meaning the work revealed

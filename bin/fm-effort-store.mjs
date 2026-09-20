@@ -3,8 +3,8 @@
 //
 // This module owns lifecycle capture and the derived layer. The raw layer,
 // data/cost-attribution.tsv, is irreplaceable and append-only. Everything in
-// the database is recomputed from three durable sources plus one recorded-by-
-// hand source, so the file is safe to delete and `rebuild` restores it exactly.
+// the database is recomputed from the durable sources below plus one recorded-
+// by-hand source, so the file is safe to delete and `rebuild` restores it exactly.
 // Pipeline process counts are read once at a settled sanctioned merge edge and
 // become raw lifecycle input; rebuild never consults the mutable pipeline DB.
 //
@@ -40,7 +40,7 @@
 // estimates under the one rule in that reader's header (ceil(bytes / 4)) and
 // keep the _est suffix in every column and report label.
 //
-// The fourth source exists because two of the required fields - round_reasons
+// The annotation source exists because two of the required fields - round_reasons
 // and the loud/quiet failure bit - are not inferable from any artifact, and the
 // database is deletable. A field recorded only in the database would not
 // survive its own rebuild contract, so recorded-by-hand values live in an
@@ -1286,9 +1286,9 @@ function rebuild(options) {
   const raw = readRawCapture(options.rawFile, issues)
   const annotations = readAnnotations(options.annotationsFile, issues)
 
-  // A task can enter the store from the raw layer, a durable usage snapshot, or
-  // an annotation alone, so partial lifecycle records remain visible with each
-  // absent source recorded missing.
+  // A task can enter the store from the raw layer, a durable usage snapshot, a
+  // CI ledger, or an annotation alone, so partial lifecycle records remain
+  // visible with each absent source recorded missing.
   const taskIds = new Set([
     ...raw.rows.map(row => row.task),
     ...annotations.byTask.keys(),

@@ -166,6 +166,7 @@ An absent source and a zero must never look the same.
 - A line under that legacy header with the wrong column count is recorded as `legacy-column-count`, and an undeclared legacy region remains `unparsed-legacy-line`.
 - A raw line whose schema section is unknown is recorded in `ingest_issue` rather than guessed into a task row, so nothing that arrives is dropped.
 - A baseline-only task directory from before deterministic lifecycle capture creates a task row with NULL measurements and a `usage-pre-deterministic-attribution` issue.
+- A CI ledger that names a different PR from the one the task recorded is recorded as `ci-pr-identity`, and a malformed ledger as `ci-ledger-invalid`; either leaves the `ci` source `missing` rather than counting runs from the wrong PR.
 
 The same rule applies inside a source.
 Binary diff additions and deletions stay NULL at both file and task levels because git cannot measure them.
@@ -200,7 +201,7 @@ Event times are written once by the lifecycle edge that observed them and become
 ## Deterministic limits
 
 Launch time, PR-open time, sanctioned merge or local landing time, teardown time, outcome, process counts, cost, tokens, calls, sessions, configured model, actual models, and the token attribution snapshot are deterministic lifecycle or snapshot facts.
-A task discovered from any durable raw row, usage snapshot, or annotation remains visible when another source is absent, with that source's measurements NULL and its `task_source` row marked `missing`.
+A task discovered from any durable raw row, usage snapshot, CI ledger, or annotation remains visible when another source is absent, with that source's measurements NULL and its `task_source` row marked `missing`.
 Legacy `fm-task-usage.v1` snapshots are discovered but treated as missing because they predate deterministic reported-project attribution and may contain the broken plausible-zero result.
 Baseline-only task directories from before lifecycle capture remain `usage-pre-deterministic-attribution` because they have no trustworthy task window or project mapping for a history join.
 No value is reconstructed from a guess.
