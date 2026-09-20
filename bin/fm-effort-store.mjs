@@ -11,8 +11,24 @@
 //   raw         data/cost-attribution.tsv       identity, lifecycle, process
 //   codeburn    data/<task>/usage.json           effort tokens and notional cost
 //   tool-usage  data/<task>/tool-usage.json      where the tokens went, per turn
+//   ci          data/pr-ci/<task>.json           the forge's run ledger for the PR
 //   git         the project clone               structure, time, durability
 //   annotation  data/effort-annotations.jsonl   the posterior nobody can derive
+//
+// ci is the fm-pr-ci.v1 ledger `capture-ci` reads from GitHub with `gh api`
+// (the official CLI, because its raw JSON carries the nested run and job
+// arrays) at the sanctioned merge edge, and `backfill-ci` pulls once for
+// receipts that predate it: the PR, every workflow run on its head branch
+// created before it closed, and each run's jobs across all attempts. Rebuild
+// derives the counts and minutes from the recorded runs and never consults the
+// forge. Landing is `direct` for a merged PR, `train:<n>` for a manifest
+// member of a merged train PR (title `train:` or a `## Manifest` section,
+// members `- #<pr> fm/<task-id> ...`) or a closed PR whose closing comment or
+// Done row names its train, and `closed` for a closed PR with no train
+// evidence. `**N moved**` in the body is the card claim. A run counts as
+// failed on a failure, timed_out, or startup_failure conclusion; runner
+// seconds sum job durations; queue seconds run from run creation to the first
+// job start. Runs on the default branch after the merge are not the PR's.
 //
 // tool-usage is the fm-task-tool-usage.v1 object bin/fm-context-watch.mjs
 // usage folds from the task's bound session records, persisted by capture
@@ -46,7 +62,7 @@
 // bin/fm-effort-store.sh is the entry point and owns the CLI contract; run it
 // with --help. This file is invoked by that script and not directly.
 
-const SCHEMA_VERSION = 'fm-effort-store.v4'
+const SCHEMA_VERSION = 'fm-effort-store.v5'
 const CLASSIFIER_VERSION = 'fm-effort-classifier.v1'
 const V2_MARKER = '# schema=firstmate-effort-attribution-v2'
 const LEGACY_CAPTURE_COLUMNS = [
@@ -1029,7 +1045,60 @@ CREATE TABLE task (
   tool_calls             INTEGER,
   tool_result_tokens_est INTEGER,
   assistant_output_tokens INTEGER,
-  base_prompt_tokens_est INTEGER
+  base_prompt_tokens_est INTEGER,
+  -- The **N moved** figure the PR body claims, from the CI ledger's recorded
+  -- body. NULL without a ledger or without the figure.
+  cards_moved_claimed    INTEGER
+);
+
+-- The forge's run ledger for the task's PR, derived from the fm-pr-ci.v1
+-- record at rebuild. landing is direct, closed, or train:<pr number>; a train
+-- PR carries its manifest shape. Seconds are exact sums of forge timestamps.
+CREATE TABLE task_ci (
+  task_id               TEXT PRIMARY KEY,
+  pr_url                TEXT NOT NULL,
+  pr_number             INTEGER NOT NULL,
+  repository            TEXT NOT NULL,
+  head_ref              TEXT NOT NULL,
+  pr_state              TEXT NOT NULL,
+  pr_created_at         TEXT,
+  pr_closed_at          TEXT,
+  pr_merged_at          TEXT,
+  landing               TEXT NOT NULL,
+  train_pr_number       INTEGER,
+  is_train              INTEGER NOT NULL CHECK (is_train IN (0, 1)),
+  member_count          INTEGER,
+  ejected_count         INTEGER,
+  fix_round_count       INTEGER,
+  runs                  INTEGER NOT NULL,
+  runs_cancelled        INTEGER NOT NULL,
+  runs_failed           INTEGER NOT NULL,
+  runs_succeeded        INTEGER NOT NULL,
+  runner_seconds        INTEGER NOT NULL,
+  queue_seconds         INTEGER NOT NULL,
+  first_run_created_at  TEXT,
+  last_run_completed_at TEXT,
+  captured_from         TEXT NOT NULL CHECK (captured_from IN ('manual', 'merge', 'backfill', 'train-manifest')),
+  captured_at           TEXT NOT NULL
+);
+
+-- One row per recorded workflow run. queue_seconds is NULL when no job of the
+-- run ever started; completed_at is the last job completion, or the run's
+-- final update when it completed without a timed job.
+CREATE TABLE task_ci_run (
+  task_id        TEXT NOT NULL,
+  run_id         INTEGER NOT NULL,
+  name           TEXT,
+  event          TEXT,
+  status         TEXT,
+  conclusion     TEXT,
+  run_attempt    INTEGER,
+  created_at     TEXT,
+  completed_at   TEXT,
+  jobs           INTEGER NOT NULL,
+  runner_seconds INTEGER NOT NULL,
+  queue_seconds  INTEGER,
+  PRIMARY KEY (task_id, run_id)
 );
 
 -- One row per (tool, class) a task called. wall_seconds_in_tool is the summed
@@ -1088,7 +1157,7 @@ CREATE TABLE task_turn_timeline (
 -- from a source is recorded here, never dropped from the store.
 CREATE TABLE task_source (
   task_id TEXT NOT NULL,
-  source  TEXT NOT NULL CHECK (source IN ('raw', 'codeburn', 'tool-usage', 'git', 'annotation')),
+  source  TEXT NOT NULL CHECK (source IN ('raw', 'codeburn', 'tool-usage', 'ci', 'git', 'annotation')),
   status  TEXT NOT NULL CHECK (status IN ('present', 'missing')),
   detail  TEXT,
   PRIMARY KEY (task_id, source)
@@ -1224,6 +1293,7 @@ function rebuild(options) {
     ...raw.rows.map(row => row.task),
     ...annotations.byTask.keys(),
     ...discoverUsageTaskIds(options.dataDir),
+    ...discoverCiTaskIds(options.dataDir),
   ])
   const rawByTask = new Map()
   for (const row of raw.rows) {
@@ -1259,7 +1329,7 @@ function rebuild(options) {
       ['raw_digest', raw.digest],
     ]) metaInsert.run(key, value)
 
-    writeTasks(db, tasks, usage, toolUsage, gitResults, options)
+    writeTasks(db, tasks, usage, toolUsage, gitResults, options, issues)
     writeDurability(db, gitResults)
     writeIssues(db, issues)
     db.exec('COMMIT')
@@ -1557,7 +1627,191 @@ function readLocalLandingReceipt(dataDir, taskId, spawnedAt) {
   return {local_landed_at: landedAt, project: receipt.project}
 }
 
-function writeTasks(db, tasks, usageByTask, toolUsageByTask, gitResults, options) {
+// --- CI ledger --------------------------------------------------------------
+//
+// data/pr-ci/<task>.json is the fm-pr-ci.v1 record capture-ci wrote from the
+// forge. Rebuild derives every count and minute from the recorded runs and the
+// recorded body, so the arithmetic and the body parse have one owner here.
+
+const CI_LEDGER_SCHEMA = 'fm-pr-ci.v1'
+const CI_FAILED_CONCLUSIONS = new Set(['failure', 'timed_out', 'startup_failure'])
+const CI_CAPTURE_SOURCES = new Set(['manual', 'merge', 'backfill', 'train-manifest'])
+const CI_LANDING_PATTERN = /^(direct|closed|train:[1-9]\d*)$/
+const MAX_CI_LEDGER_BYTES = 8 * 1024 * 1024
+const GITHUB_PR_URL_PATTERN = /^https:\/\/github\.com\/((?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]{0,37}[A-Za-z0-9]))\/([A-Za-z0-9._-]{1,100})\/pull\/([1-9]\d*)$/
+
+function parseGithubPrUrl(url) {
+  const match = GITHUB_PR_URL_PATTERN.exec(url || '')
+  return match ? {url, owner: match[1], repo: match[2], number: Number(match[3])} : null
+}
+
+// The `**N moved**` claim: the number immediately before `moved**`, so both
+// `**23 moved**` and `**Strict floor 25: 23 moved**` read as the claim.
+function cardsMovedClaimed(body) {
+  const match = /(\d[\d,]*)\s+(?:cards?\s+)?moved\*\*/i.exec(String(body ?? ''))
+  if (!match) return null
+  const count = Number(match[1].replace(/,/g, ''))
+  return Number.isSafeInteger(count) ? count : null
+}
+
+// A train is a PR titled `train:` or carrying a `## Manifest` section; its
+// members are the manifest's `- #<pr> <branch>` lines, its ejections the same
+// shape under `## Ejected`, and its fix rounds the `## Fix round` headings.
+function parseTrain(title, body) {
+  const lines = String(body ?? '').split(/\r?\n/)
+  const sectionLines = name => {
+    const start = lines.findIndex(line => new RegExp(`^##\\s+${name}\\b`, 'i').test(line))
+    if (start < 0) return []
+    const end = lines.findIndex((line, index) => index > start && /^##\s/.test(line))
+    return lines.slice(start + 1, end < 0 ? lines.length : end)
+  }
+  const manifest = sectionLines('Manifest')
+  if (!/^\s*train:/i.test(String(title ?? '')) && !lines.some(line => /^##\s+Manifest\b/i.test(line))) return null
+  const memberLine = /^-\s+#([1-9]\d*)\s+(\S+)/
+  const members = manifest.map(line => memberLine.exec(line)).filter(Boolean)
+    .map(match => ({number: Number(match[1]), branch: match[2]}))
+  return {
+    members,
+    member_count: members.length,
+    ejected_count: sectionLines('Ejected').filter(line => /^-\s+#[1-9]\d*/.test(line)).length,
+    fix_round_count: lines.filter(line => /^##+\s+Fix round\b/i.test(line)).length,
+  }
+}
+
+function discoverCiTaskIds(dataDir) {
+  let names
+  try {
+    names = fs.readdirSync(path.join(dataDir, 'pr-ci'))
+  } catch {
+    return []
+  }
+  return names.filter(name => name.endsWith('.json'))
+    .map(name => name.slice(0, -'.json'.length))
+    .filter(id => TASK_ID_PATTERN.test(id))
+}
+
+function ciLedgerPath(dataDir, taskId) {
+  return path.join(dataDir, 'pr-ci', `${taskId}.json`)
+}
+
+function readCiLedgerFile(dataDir, taskId) {
+  if (!TASK_ID_PATTERN.test(taskId)) return null
+  let descriptor
+  let text
+  try {
+    descriptor = fs.openSync(ciLedgerPath(dataDir, taskId), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    const stat = fs.fstatSync(descriptor)
+    if (!stat.isFile() || stat.size > MAX_CI_LEDGER_BYTES) return null
+    text = fs.readFileSync(descriptor, 'utf8')
+  } catch {
+    return null
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor)
+  }
+  try {
+    const ledger = JSON.parse(text)
+    return ledger && typeof ledger === 'object' && !Array.isArray(ledger) ? ledger : null
+  } catch {
+    return null
+  }
+}
+
+const optionalTimestamp = value => (value === null || value === undefined ? null : canonicalTimestamp(value))
+const optionalText = value => (typeof value === 'string' ? value : null)
+
+// Derive the per-run and per-task figures from a recorded ledger. Returns
+// {status: 'present', ...} or {status: 'missing', detail, kind}.
+function summarizeCiLedger(ledger, taskId, taskPrUrl) {
+  const invalid = detail => ({status: 'missing', kind: 'ci-ledger-invalid', detail})
+  if (!ledger) return {status: 'missing', kind: null, detail: 'no run ledger was captured for this task'}
+  if (ledger.schema !== CI_LEDGER_SCHEMA || ledger.task_id !== taskId) return invalid('ledger schema or task identity does not match')
+  const pr = parseGithubPrUrl(ledger.pr_url)
+  if (!pr || ledger.pr_number !== pr.number || ledger.repository !== `${pr.owner}/${pr.repo}`) return invalid('ledger PR identity is malformed')
+  if (taskPrUrl && taskPrUrl !== ledger.pr_url) {
+    return {status: 'missing', kind: 'ci-pr-identity', detail: `ledger records ${ledger.pr_url} but the task recorded ${taskPrUrl}`}
+  }
+  if (typeof ledger.head_ref !== 'string' || !ledger.head_ref) return invalid('ledger has no head ref')
+  if (!['open', 'closed'].includes(ledger.pr_state)) return invalid('ledger PR state is malformed')
+  if (!CI_LANDING_PATTERN.test(ledger.landing || '')) return invalid('ledger landing is malformed')
+  if (!CI_CAPTURE_SOURCES.has(ledger.captured_from) || !canonicalTimestamp(ledger.captured_at)) return invalid('ledger capture provenance is malformed')
+  if (!Array.isArray(ledger.runs)) return invalid('ledger runs are malformed')
+  const trainNumber = ledger.landing.startsWith('train:') ? Number(ledger.landing.slice('train:'.length)) : null
+  if (trainNumber !== null && ledger.train_pr_number !== trainNumber) return invalid('ledger train number does not match its landing')
+
+  const runs = []
+  for (const run of ledger.runs) {
+    if (!run || !Number.isSafeInteger(run.id) || !Array.isArray(run.jobs)) return invalid('a recorded run is malformed')
+    const createdAt = optionalTimestamp(run.created_at)
+    let runnerSeconds = 0
+    let firstStart = null
+    let lastCompleted = null
+    for (const job of run.jobs) {
+      if (!job || typeof job !== 'object') return invalid('a recorded job is malformed')
+      const started = optionalTimestamp(job.started_at)
+      const completed = optionalTimestamp(job.completed_at)
+      if (started && completed) {
+        const seconds = isoSecondsBetween(started, completed)
+        if (seconds !== null) runnerSeconds += seconds
+      }
+      if (started && (firstStart === null || started < firstStart)) firstStart = started
+      if (completed && (lastCompleted === null || completed > lastCompleted)) lastCompleted = completed
+    }
+    const queueSeconds = createdAt && firstStart ? isoSecondsBetween(createdAt, firstStart) : null
+    const completedAt = lastCompleted
+      ?? (run.status === 'completed' ? optionalTimestamp(run.updated_at) : null)
+    runs.push({
+      run_id: run.id,
+      name: optionalText(run.name),
+      event: optionalText(run.event),
+      status: optionalText(run.status),
+      conclusion: optionalText(run.conclusion),
+      run_attempt: Number.isSafeInteger(run.run_attempt) ? run.run_attempt : null,
+      created_at: createdAt,
+      completed_at: completedAt,
+      jobs: run.jobs.length,
+      runner_seconds: runnerSeconds,
+      queue_seconds: queueSeconds,
+    })
+  }
+  const sortedRuns = sortedBy(runs, run => `${run.created_at ?? ''}${KEY_SEPARATOR}${String(run.run_id).padStart(20, '0')}`)
+  const train = parseTrain(ledger.title, ledger.body)
+  const created = sortedRuns.map(run => run.created_at).filter(Boolean)
+  const completed = sortedRuns.map(run => run.completed_at).filter(Boolean)
+  return {
+    status: 'present',
+    detail: null,
+    runs: sortedRuns,
+    summary: {
+      pr_url: ledger.pr_url,
+      pr_number: pr.number,
+      repository: ledger.repository,
+      head_ref: ledger.head_ref,
+      pr_state: ledger.pr_state,
+      pr_created_at: optionalTimestamp(ledger.pr_created_at),
+      pr_closed_at: optionalTimestamp(ledger.pr_closed_at),
+      pr_merged_at: optionalTimestamp(ledger.pr_merged_at),
+      landing: ledger.landing,
+      train_pr_number: trainNumber,
+      is_train: train !== null,
+      member_count: train?.member_count ?? null,
+      ejected_count: train?.ejected_count ?? null,
+      fix_round_count: train?.fix_round_count ?? null,
+      runs: sortedRuns.length,
+      runs_cancelled: sortedRuns.filter(run => run.conclusion === 'cancelled').length,
+      runs_failed: sortedRuns.filter(run => CI_FAILED_CONCLUSIONS.has(run.conclusion)).length,
+      runs_succeeded: sortedRuns.filter(run => run.conclusion === 'success').length,
+      runner_seconds: sortedRuns.reduce((total, run) => total + run.runner_seconds, 0),
+      queue_seconds: sortedRuns.reduce((total, run) => total + (run.queue_seconds ?? 0), 0),
+      first_run_created_at: created.length ? created.reduce((min, value) => (value < min ? value : min)) : null,
+      last_run_completed_at: completed.length ? completed.reduce((max, value) => (value > max ? value : max)) : null,
+      captured_from: ledger.captured_from,
+      captured_at: ledger.captured_at,
+      cards_moved_claimed: cardsMovedClaimed(ledger.body),
+    },
+  }
+}
+
+function writeTasks(db, tasks, usageByTask, toolUsageByTask, gitResults, options, issues) {
   const taskInsert = insert(db, 'task', [
     'task_id', 'title', 'repo', 'project_path', 'kind', 'branch', 'pr_url',
     'harness', 'model', 'effort', 'backend', 'worktree', 'dispatched_at',
@@ -1571,6 +1825,18 @@ function writeTasks(db, tasks, usageByTask, toolUsageByTask, gitResults, options
     'tokens_cached_write', 'notional_cost_usd', 'api_calls', 'sessions',
     'outcome', 'reverted', 'peak_context_tokens', 'compactions', 'restarts',
     'turns', 'tool_calls', 'tool_result_tokens_est', 'assistant_output_tokens', 'base_prompt_tokens_est',
+    'cards_moved_claimed',
+  ])
+  const ciInsert = insert(db, 'task_ci', [
+    'task_id', 'pr_url', 'pr_number', 'repository', 'head_ref', 'pr_state',
+    'pr_created_at', 'pr_closed_at', 'pr_merged_at', 'landing', 'train_pr_number',
+    'is_train', 'member_count', 'ejected_count', 'fix_round_count',
+    'runs', 'runs_cancelled', 'runs_failed', 'runs_succeeded', 'runner_seconds', 'queue_seconds',
+    'first_run_created_at', 'last_run_completed_at', 'captured_from', 'captured_at',
+  ])
+  const ciRunInsert = insert(db, 'task_ci_run', [
+    'task_id', 'run_id', 'name', 'event', 'status', 'conclusion', 'run_attempt',
+    'created_at', 'completed_at', 'jobs', 'runner_seconds', 'queue_seconds',
   ])
   const toolInsert = insert(db, 'task_tool_usage', [
     'task_id', 'tool_name', 'tool_class', 'calls', 'result_bytes', 'result_tokens_est', 'wall_seconds_in_tool',
@@ -1622,6 +1888,11 @@ function writeTasks(db, tasks, usageByTask, toolUsageByTask, gitResults, options
       : localReceipt?.local_landed_at ? 'local-landed'
         : stampedMergedAt ? 'merged'
           : stampedLocalLandedAt ? 'local-landed' : teardownOutcome
+    const taskPrUrl = row?.pr_url ?? receipt?.pr_url ?? annotation?.pr_url ?? null
+    const ci = summarizeCiLedger(readCiLedgerFile(options.dataDir, task.taskId), task.taskId, taskPrUrl)
+    if (ci.status === 'missing' && ci.kind) {
+      issues.push({source: 'ci', task_id: task.taskId, kind: ci.kind, detail: ci.detail})
+    }
 
     taskInsert.run(
       task.taskId,
@@ -1630,7 +1901,7 @@ function writeTasks(db, tasks, usageByTask, toolUsageByTask, gitResults, options
       bind(row?.project),
       bind(row?.kind ?? annotation?.kind),
       bind(row?.branch ?? annotation?.branch),
-      bind(row?.pr_url ?? receipt?.pr_url ?? annotation?.pr_url),
+      bind(taskPrUrl ?? (ci.status === 'present' ? ci.summary.pr_url : null)),
       bind(row?.harness),
       bind(startedAt ? row?.model : null),
       bind(row?.effort),
@@ -1677,6 +1948,7 @@ function writeTasks(db, tasks, usageByTask, toolUsageByTask, gitResults, options
       bind(attribution?.tool_result_tokens_est),
       bind(attribution?.assistant_output_tokens),
       bind(attribution?.base_prompt_tokens_est),
+      bind(ci.status === 'present' ? ci.summary.cards_moved_claimed : null),
     )
 
     sourceInsert.run(task.taskId, 'raw', row ? 'present' : 'missing',
@@ -1685,7 +1957,25 @@ function writeTasks(db, tasks, usageByTask, toolUsageByTask, gitResults, options
       annotation ? null : 'nothing recorded by hand for this task')
     sourceInsert.run(task.taskId, 'codeburn', burn.status, bind(burn.detail))
     sourceInsert.run(task.taskId, 'tool-usage', toolUsage.status, bind(toolUsage.detail))
+    sourceInsert.run(task.taskId, 'ci', ci.status, bind(ci.detail))
     sourceInsert.run(task.taskId, 'git', gitResult.status, bind(gitResult.detail))
+
+    if (ci.status === 'present') {
+      const summary = ci.summary
+      ciInsert.run(task.taskId, summary.pr_url, summary.pr_number, summary.repository, summary.head_ref,
+        summary.pr_state, bind(summary.pr_created_at), bind(summary.pr_closed_at), bind(summary.pr_merged_at),
+        summary.landing, bind(summary.train_pr_number), bind(summary.is_train),
+        bind(summary.member_count), bind(summary.ejected_count), bind(summary.fix_round_count),
+        summary.runs, summary.runs_cancelled, summary.runs_failed, summary.runs_succeeded,
+        summary.runner_seconds, summary.queue_seconds,
+        bind(summary.first_run_created_at), bind(summary.last_run_completed_at),
+        summary.captured_from, summary.captured_at)
+      for (const run of ci.runs) {
+        ciRunInsert.run(task.taskId, run.run_id, bind(run.name), bind(run.event), bind(run.status),
+          bind(run.conclusion), bind(run.run_attempt), bind(run.created_at), bind(run.completed_at),
+          run.jobs, run.runner_seconds, bind(run.queue_seconds))
+      }
+    }
 
     const rounds = Array.isArray(annotation?.round_reasons) ? annotation.round_reasons : []
     rounds.forEach((round, index) => {
@@ -1941,6 +2231,278 @@ function capture(options, taskId, argv) {
       fs.closeSync(fd)
     }
   }
+}
+
+// --- CI ledger capture from the forge -------------------------------------
+//
+// Read-only: every call is `gh api` GET. The ledger records what the forge
+// reports at capture; nothing is reconstructed. Only the capture path and the
+// explicit backfill reach the forge, never rebuild or report.
+
+function forgeJson(route, {paginate = false} = {}) {
+  const args = ['api', route]
+  if (paginate) args.push('--paginate', '--slurp')
+  const result = spawnSync('gh', args, {encoding: 'utf8', timeout: 120000, maxBuffer: 64 * 1024 * 1024})
+  if (result.error) throw new Error(`forge read failed for ${route}: ${result.error.message}`)
+  if (result.status !== 0) {
+    const reason = String(result.stderr || '').trim().split('\n')[0] || `exit ${result.status}`
+    throw new Error(`forge read failed for ${route}: ${reason}`)
+  }
+  try {
+    return JSON.parse(result.stdout)
+  } catch {
+    throw new Error(`forge read for ${route} was not JSON`)
+  }
+}
+
+// --paginate --slurp yields one element per page: the page object for an
+// object endpoint, the page array for an array endpoint.
+function forgePages(route, key) {
+  const pages = forgeJson(route, {paginate: true})
+  const list = Array.isArray(pages) ? pages : [pages]
+  return list.flatMap(page => {
+    if (Array.isArray(page)) return page
+    const items = page?.[key]
+    if (!Array.isArray(items)) throw new Error(`forge read for ${route} lacks ${key}`)
+    return items
+  })
+}
+
+function readForgePr(pr) {
+  const record = forgeJson(`/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`)
+  if (record?.number !== pr.number || typeof record.merged !== 'boolean'
+      || !['open', 'closed'].includes(record.state) || typeof record.head?.ref !== 'string' || !record.head.ref) {
+    throw new Error(`forge PR record for ${pr.url} is malformed`)
+  }
+  const stamp = (field, required) => {
+    const value = optionalTimestamp(record[field])
+    if (required && !value) throw new Error(`forge PR record for ${pr.url} has no valid ${field}`)
+    return value
+  }
+  return {
+    state: record.state,
+    merged: record.merged,
+    head_ref: record.head.ref,
+    title: typeof record.title === 'string' ? record.title : '',
+    body: typeof record.body === 'string' ? record.body : '',
+    created_at: stamp('created_at', true),
+    closed_at: stamp('closed_at', false),
+    merged_at: stamp('merged_at', false),
+  }
+}
+
+// Every workflow run on the PR's head branch created before the PR closed,
+// with its jobs across all attempts. Runs after the close are not fetched.
+function readForgeRuns(pr, headRef, closedAt) {
+  const route = `/repos/${pr.owner}/${pr.repo}/actions/runs?branch=${encodeURIComponent(headRef)}&per_page=100`
+  const runs = forgePages(route, 'workflow_runs')
+    .filter(run => run && Number.isSafeInteger(run.id) && run.head_branch === headRef)
+    .filter(run => !closedAt || (optionalTimestamp(run.created_at) ?? '') <= closedAt)
+  const keep = (record, fields) => Object.fromEntries(fields.map(field => [field, record[field] ?? null]))
+  return sortedBy(runs, run => `${run.created_at ?? ''}${KEY_SEPARATOR}${String(run.id).padStart(20, '0')}`).map(run => ({
+    ...keep(run, ['id', 'name', 'event', 'status', 'conclusion', 'run_attempt', 'created_at', 'run_started_at', 'updated_at', 'head_sha']),
+    jobs: forgePages(`/repos/${pr.owner}/${pr.repo}/actions/runs/${run.id}/jobs?filter=all&per_page=100`, 'jobs')
+      .filter(job => job && typeof job === 'object')
+      .map(job => keep(job, ['id', 'name', 'status', 'conclusion', 'run_attempt', 'started_at', 'completed_at'])),
+  }))
+}
+
+const TRAIN_MENTION = /train[^\n#]{0,80}#([1-9]\d*)|#([1-9]\d*)[^\n]{0,80}\btrain\b/i
+
+function trainFromClosingComment(pr) {
+  let found = null
+  for (const comment of forgePages(`/repos/${pr.owner}/${pr.repo}/issues/${pr.number}/comments?per_page=100`, 'comments')) {
+    const match = TRAIN_MENTION.exec(String(comment?.body ?? ''))
+    if (match) found = Number(match[1] ?? match[2])
+  }
+  return found
+}
+
+// The task's Done row in data/backlog.md or data/done-archive.md, as the
+// backlog format spells it, naming its train by `#<n>` or a PR URL.
+function trainFromDoneRow(dataDir, taskId) {
+  const escaped = taskId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const row = new RegExp(`^- \\[x\\] ${escaped} `)
+  const mention = /train[^\n]{0,80}?(?:#|\/pull\/)([1-9]\d*)/i
+  for (const name of ['backlog.md', 'done-archive.md']) {
+    const text = readTextFile(path.join(dataDir, name))
+    if (text === null) continue
+    for (const line of text.split('\n')) {
+      if (!row.test(line)) continue
+      const match = mention.exec(line)
+      if (match) return Number(match[1])
+    }
+  }
+  return null
+}
+
+function buildCiLedger(options, taskId, pr, {landing = null, trainNumber = null, from, allowOpen = false}) {
+  const record = readForgePr(pr)
+  if (!allowOpen && record.state === 'open') throw new Error(`${pr.url} is still open; the run ledger records landed PRs`)
+  let resolvedLanding = landing
+  let resolvedTrain = trainNumber
+  if (!resolvedLanding) {
+    if (record.merged) {
+      resolvedLanding = 'direct'
+    } else {
+      resolvedTrain = trainFromClosingComment(pr) ?? trainFromDoneRow(options.dataDir, taskId)
+      resolvedLanding = resolvedTrain === null ? 'closed' : `train:${resolvedTrain}`
+    }
+  }
+  return {
+    schema: CI_LEDGER_SCHEMA,
+    task_id: taskId,
+    pr_url: pr.url,
+    pr_number: pr.number,
+    repository: `${pr.owner}/${pr.repo}`,
+    head_ref: record.head_ref,
+    title: record.title,
+    body: record.body,
+    pr_state: record.state,
+    pr_created_at: record.created_at,
+    pr_closed_at: record.closed_at,
+    pr_merged_at: record.merged_at,
+    landing: resolvedLanding,
+    train_pr_number: resolvedTrain,
+    captured_from: from,
+    captured_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    runs: readForgeRuns(pr, record.head_ref, record.closed_at),
+  }
+}
+
+function writeCiLedger(options, ledger) {
+  const file = ciLedgerPath(options.dataDir, ledger.task_id)
+  fs.mkdirSync(path.dirname(file), {recursive: true})
+  const staged = `${file}.${process.pid}`
+  const fd = fs.openSync(staged, 'w', 0o600)
+  try {
+    fs.writeFileSync(fd, `${JSON.stringify(ledger)}\n`)
+    fs.fsyncSync(fd)
+  } finally {
+    fs.closeSync(fd)
+  }
+  fs.renameSync(staged, file)
+}
+
+// Capture one PR's ledger and, for a train, every manifest member's ledger as
+// landed through it. A member ledger that already exists is left alone unless
+// replacement is explicit; the train's own ledger always reflects this capture.
+function captureCiTree(options, taskId, pr, {from, replaceExisting}) {
+  const outcome = {captured: [], skipped: [], failed: []}
+  const ledger = buildCiLedger(options, taskId, pr, {from})
+  writeCiLedger(options, ledger)
+  outcome.captured.push(taskId)
+  const train = parseTrain(ledger.title, ledger.body)
+  for (const member of train?.members ?? []) {
+    const memberTask = /^fm\/(.+)$/.exec(member.branch)?.[1]
+    const memberPr = parseGithubPrUrl(`https://github.com/${pr.owner}/${pr.repo}/pull/${member.number}`)
+    const label = `#${member.number} ${member.branch}`
+    if (!memberTask || !TASK_ID_PATTERN.test(memberTask) || !memberPr) {
+      outcome.failed.push({task: label, reason: 'manifest member does not name a task branch'})
+      continue
+    }
+    if (!replaceExisting && fs.existsSync(ciLedgerPath(options.dataDir, memberTask))) {
+      outcome.skipped.push(memberTask)
+      continue
+    }
+    try {
+      writeCiLedger(options, buildCiLedger(options, memberTask, memberPr, {
+        landing: `train:${pr.number}`, trainNumber: pr.number, from: 'train-manifest', allowOpen: true,
+      }))
+      outcome.captured.push(memberTask)
+    } catch (error) {
+      outcome.failed.push({task: memberTask, reason: error.message})
+    }
+  }
+  return outcome
+}
+
+function recordedPrUrl(options, taskId) {
+  const meta = readMeta(path.join(options.stateDir, `${taskId}.meta`))
+  if (meta?.pr) return meta.pr
+  const rows = fs.existsSync(options.rawFile) ? readRawCapture(options.rawFile, []).rows : []
+  const previous = [...rows].reverse().find(candidate => candidate.task === taskId)
+  if (previous?.pr_url) return previous.pr_url
+  const receipt = readMetaWithRequiredFields(path.join(options.dataDir, 'pr-merges', `${taskId}.receipt`), ['schema', 'task_id', 'pr'])
+  return receipt?.task_id === taskId ? receipt.pr : null
+}
+
+function captureCi(options, taskId, argv) {
+  if (!TASK_ID_PATTERN.test(taskId)) throw new Error('capture-ci needs a safe task id')
+  let explicitUrl = null
+  let from = 'manual'
+  let replaceExisting = false
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === '--from' && argv[index + 1]) {
+      from = argv[index + 1]
+      index += 1
+    } else if (argv[index] === '--replace-existing') {
+      replaceExisting = true
+    } else if (explicitUrl === null && !argv[index].startsWith('-')) {
+      explicitUrl = argv[index]
+    } else {
+      throw new Error(`unknown capture-ci option '${argv[index]}'`)
+    }
+  }
+  if (!CI_CAPTURE_SOURCES.has(from) || from === 'train-manifest') throw new Error(`unsupported capture source '${from}'`)
+  const recorded = recordedPrUrl(options, taskId)
+  if (explicitUrl && recorded && explicitUrl !== recorded) {
+    throw new Error(`${explicitUrl} conflicts with the PR recorded for ${taskId} (${recorded})`)
+  }
+  const url = explicitUrl ?? recorded
+  if (!url) throw new Error(`no PR is recorded for ${taskId}; pass its URL`)
+  const pr = parseGithubPrUrl(url)
+  if (!pr) throw new Error('capture-ci needs a canonical GitHub PR URL')
+  return captureCiTree(options, taskId, pr, {from, replaceExisting})
+}
+
+// One pull for every merged receipt without a ledger. A receipt whose PR the
+// forge cannot serve is named and counted, never invented.
+function backfillCi(options, argv) {
+  let replaceExisting = false
+  let limit = null
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === '--replace-existing') {
+      replaceExisting = true
+    } else if (argv[index] === '--limit' && /^[1-9]\d*$/.test(argv[index + 1] || '')) {
+      limit = Number(argv[index + 1])
+      index += 1
+    } else {
+      throw new Error(`unknown backfill-ci option '${argv[index]}'`)
+    }
+  }
+  const receiptDir = path.join(options.dataDir, 'pr-merges')
+  let names = []
+  try {
+    names = fs.readdirSync(receiptDir).filter(name => name.endsWith('.receipt')).sort()
+  } catch {
+    names = []
+  }
+  const outcome = {captured: [], skippedExisting: [], skippedNotLanded: [], failed: []}
+  for (const name of names) {
+    if (limit !== null && outcome.captured.length >= limit) break
+    const taskId = name.slice(0, -'.receipt'.length)
+    if (!TASK_ID_PATTERN.test(taskId)) continue
+    const receipt = readMetaWithRequiredFields(path.join(receiptDir, name), ['schema', 'task_id', 'pr', 'phase'])
+    const pr = receipt?.task_id === taskId ? parseGithubPrUrl(receipt.pr) : null
+    if (!receipt || !pr || receipt.phase !== 'merged') {
+      outcome.skippedNotLanded.push(taskId)
+      continue
+    }
+    if (!replaceExisting && fs.existsSync(ciLedgerPath(options.dataDir, taskId))) {
+      outcome.skippedExisting.push(taskId)
+      continue
+    }
+    try {
+      const tree = captureCiTree(options, taskId, pr, {from: 'backfill', replaceExisting})
+      outcome.captured.push(...tree.captured)
+      outcome.skippedExisting.push(...tree.skipped)
+      outcome.failed.push(...tree.failed)
+    } catch (error) {
+      outcome.failed.push({task: taskId, reason: error.message})
+    }
+  }
+  return outcome
 }
 
 // --- explicit codeburn-history recovery -----------------------------------
@@ -2306,12 +2868,88 @@ function pendingReport(options) {
   if (!ids.length) return null
   return 'Store behind append log or queued evidence; pending ingestion. Run report --sync to wait.\n'
     + `${REPORT_HEADER}\n`
-    + ids.map(id => `${id} | - | - | - | - | pending ingestion | - | - | -`).join('\n') + '\n'
+    + ids.map(id => `${id} | - | - | - | - | pending ingestion | - | - | - | -`).join('\n') + '\n'
 }
 
-const REPORT_HEADER = 'TASK | LAUNCH->PR | COST | TOKENS | ACTUAL MODEL | OUTCOME | CONTEXT | USAGE | CLASSES (tok est)'
+const REPORT_HEADER = 'TASK | LAUNCH->PR | COST | TOKENS | ACTUAL MODEL | OUTCOME | CONTEXT | USAGE | CLASSES (tok est) | CI'
 
 const seconds = value => (value === null ? '-' : String(Math.round(Number(value) * 1000) / 1000))
+const minutes = value => (value === null || value === undefined ? '-' : (Number(value) / 60).toFixed(1))
+const minutesPerCard = (runnerSeconds, cards) =>
+  (cards === null || cards === undefined || Number(cards) <= 0 ? '-' : (Number(runnerSeconds) / 60 / Number(cards)).toFixed(2))
+
+// The CI column: runner and queue minutes, the run outcomes, how the PR
+// landed, and runner minutes per card the body claims.
+function ciColumn(ci) {
+  if (!ci) return '-'
+  return `${minutes(ci.runner_seconds)} runner min / ${minutes(ci.queue_seconds)} queue min / ${ci.runs} runs (${ci.runs_cancelled} cancelled, ${ci.runs_failed} failed) / ${ci.landing} / ${minutesPerCard(ci.runner_seconds, ci.cards_moved_claimed)} min per card`
+}
+
+function taskCiLines(db, row) {
+  const ci = db.prepare(`
+    SELECT task_ci.*, task.cards_moved_claimed FROM task_ci JOIN task USING (task_id) WHERE task_id = ?
+  `).get(row.task_id)
+  if (!ci) {
+    const source = db.prepare("SELECT detail FROM task_source WHERE task_id = ? AND source = 'ci'").get(row.task_id)
+    return [`CI unavailable: ${source?.detail || 'ci source not consulted'}`]
+  }
+  const lines = [
+    `CI runs ${ci.runs} | cancelled ${ci.runs_cancelled} | failed ${ci.runs_failed} | succeeded ${ci.runs_succeeded}`
+    + ` | runner ${minutes(ci.runner_seconds)} min | queue ${minutes(ci.queue_seconds)} min`
+    + ` | first run ${ci.first_run_created_at ?? '-'} | last completed ${ci.last_run_completed_at ?? '-'}`
+    + ` | landing ${ci.landing} | cards claimed ${ci.cards_moved_claimed ?? '-'}`,
+  ]
+  if (ci.is_train) lines.push(`TRAIN members ${ci.member_count} | ejected ${ci.ejected_count} | fix rounds ${ci.fix_round_count}`)
+  return lines
+}
+
+// The before/after the ledger exists for: runner minutes per landed card for
+// PRs that landed directly and for PRs that landed through a train, then each
+// train with its members' minutes and card claims.
+function ciAggregateLines(db) {
+  const direct = db.prepare(`
+    SELECT COUNT(*) AS prs, SUM(runner_seconds) AS runner, SUM(queue_seconds) AS queue, SUM(cards_moved_claimed) AS cards
+    FROM task_ci JOIN task USING (task_id) WHERE landing = 'direct' AND is_train = 0
+  `).get()
+  const trains = db.prepare(`
+    SELECT COUNT(*) AS prs, SUM(runner_seconds) AS runner, SUM(queue_seconds) AS queue, SUM(cards_moved_claimed) AS cards
+    FROM task_ci JOIN task USING (task_id) WHERE is_train = 1
+  `).get()
+  const members = db.prepare(`
+    SELECT COUNT(*) AS prs, SUM(runner_seconds) AS runner, SUM(queue_seconds) AS queue, SUM(cards_moved_claimed) AS cards
+    FROM task_ci JOIN task USING (task_id) WHERE landing LIKE 'train:%'
+  `).get()
+  if (direct.prs + trains.prs + members.prs === 0) return ['CI no run ledgers captured']
+  const cards = (...values) => (values.every(value => value === null) ? null : values.reduce((sum, value) => sum + (value ?? 0), 0))
+  const lines = [
+    `CI direct ${direct.prs} PRs | ${minutes(direct.runner ?? 0)} runner min | ${minutes(direct.queue ?? 0)} queue min`
+    + ` | ${direct.cards ?? '-'} cards claimed | ${minutesPerCard(direct.runner ?? 0, direct.cards)} min per card`,
+    `CI train ${trains.prs} trains / ${members.prs} members | ${minutes((trains.runner ?? 0) + (members.runner ?? 0))} runner min`
+    + ` (trains ${minutes(trains.runner ?? 0)} + members ${minutes(members.runner ?? 0)})`
+    + ` | ${minutes((trains.queue ?? 0) + (members.queue ?? 0))} queue min`
+    + ` | ${cards(trains.cards, members.cards) ?? '-'} cards claimed`
+    + ` | ${minutesPerCard((trains.runner ?? 0) + (members.runner ?? 0), cards(trains.cards, members.cards))} min per card`,
+  ]
+  const perTrain = db.prepare(`
+    SELECT train.task_id, train.pr_number, train.member_count, train.ejected_count, train.fix_round_count,
+      train.runner_seconds, task.cards_moved_claimed,
+      (SELECT COUNT(*) FROM task_ci AS m WHERE m.landing = 'train:' || train.pr_number) AS ledgers,
+      (SELECT SUM(m.runner_seconds) FROM task_ci AS m WHERE m.landing = 'train:' || train.pr_number) AS member_runner,
+      (SELECT SUM(mt.cards_moved_claimed) FROM task_ci AS m JOIN task AS mt USING (task_id)
+        WHERE m.landing = 'train:' || train.pr_number) AS member_cards
+    FROM task_ci AS train JOIN task USING (task_id)
+    WHERE train.is_train = 1
+    ORDER BY train.pr_number, train.task_id
+  `).all()
+  for (const train of perTrain) {
+    const trainCards = cards(train.cards_moved_claimed, train.member_cards)
+    lines.push(`TRAIN #${train.pr_number} ${train.task_id} | ${train.member_count} members (${train.ejected_count} ejected)`
+      + ` | ${train.fix_round_count} fix rounds | train ${minutes(train.runner_seconds)} runner min`
+      + ` | members ${minutes(train.member_runner ?? 0)} runner min (${train.ledgers} ledgers)`
+      + ` | ${trainCards ?? '-'} cards claimed | ${minutesPerCard(train.runner_seconds + (train.member_runner ?? 0), trainCards)} min per card`)
+  }
+  return lines
+}
 
 // The per-task breakdown under the summary row. Every figure derived from
 // bytes says "tok est"; a task with no snapshot says why instead of zeros.
@@ -2383,9 +3021,14 @@ function report(dbPath, taskId) {
     FROM task ${filter}
     ORDER BY task_id
   `)
+  const ciStatement = db.prepare(`
+    SELECT runner_seconds, queue_seconds, runs, runs_cancelled, runs_failed, landing, cards_moved_claimed
+    FROM task_ci JOIN task USING (task_id) WHERE task_id = ?
+  `)
   const rows = taskId ? statement.all(taskId) : statement.all()
   const lines = [REPORT_HEADER]
   for (const row of rows) {
+    const ci = ciColumn(ciStatement.get(row.task_id) ?? null)
     const cost = row.notional_cost_usd === null ? '-' : `$${Number(row.notional_cost_usd).toFixed(4)}`
     const tokens = row.tokens_in === null || row.tokens_out === null ? '-' : `${row.tokens_in} in / ${row.tokens_out} out`
     const context = row.peak_context_tokens === null || row.compactions === null || row.restarts === null
@@ -2393,10 +3036,10 @@ function report(dbPath, taskId) {
     const usage = row.turns === null ? '-'
       : `${row.turns} turns / ${row.tool_calls} calls / ${row.tool_result_tokens_est} result tok est / ${row.assistant_output_tokens} out tok / ${row.peak_context_tokens ?? '-'} peak ctx`
     const classes = row.turns === null ? '-' : (row.class_split || 'no tool calls')
-    lines.push(`${row.task_id} | ${durationText(row.launch_to_pr_seconds)} | ${cost} | ${tokens} | ${row.actual_models || '-'} | ${row.outcome || '-'} | ${context} | ${usage} | ${classes}`)
+    lines.push(`${row.task_id} | ${durationText(row.launch_to_pr_seconds)} | ${cost} | ${tokens} | ${row.actual_models || '-'} | ${row.outcome || '-'} | ${context} | ${usage} | ${classes} | ${ci}`)
   }
   if (taskId) {
-    for (const row of rows) lines.push(...taskUsageLines(db, row))
+    for (const row of rows) lines.push(...taskUsageLines(db, row), ...taskCiLines(db, row))
   }
   if (!taskId) {
     // Outcome by compaction bucket: the correlation the signal exists for. A
@@ -2434,6 +3077,7 @@ function report(dbPath, taskId) {
     const cost = aggregate.cost_tasks === 0 ? '-' : `$${Number(aggregate.cost).toFixed(4)}`
     const tokens = aggregate.token_tasks === 0 ? '-' : `${aggregate.tokens_in ?? 0} in / ${aggregate.tokens_out ?? 0} out`
     lines.push(`TOTAL ${aggregate.tasks} tasks | avg ${durationText(aggregate.average_pr)} (${aggregate.pr_tasks} PR) | ${cost} | ${tokens}`)
+    lines.push(...ciAggregateLines(db))
     const projects = db.prepare(`
       SELECT project_path, COUNT(*) AS tasks, COUNT(notional_cost_usd) AS measured_tasks,
         SUM(notional_cost_usd) AS cost
@@ -2617,6 +3261,31 @@ if (command === 'rebuild' || command === 'ingest') {
     process.exit(2)
   }
   process.stdout.write(`captured ${config.taskId}; ingestion queued by lifecycle entry point\n`)
+} else if (command === 'capture-ci') {
+  let outcome
+  try {
+    outcome = captureCi(config, config.taskId, argv)
+  } catch (error) {
+    warn(error.message)
+    process.exit(2)
+  }
+  process.stdout.write(`captured run ledger for ${outcome.captured.join(', ')}; ingestion queued by lifecycle entry point\n`)
+  if (outcome.skipped.length > 0) process.stdout.write(`kept existing member ledgers: ${outcome.skipped.join(', ')}\n`)
+  for (const failure of outcome.failed) process.stdout.write(`member not captured ${failure.task}: ${failure.reason}\n`)
+} else if (command === 'backfill-ci') {
+  let outcome
+  try {
+    outcome = backfillCi(config, argv)
+  } catch (error) {
+    warn(error.message)
+    process.exit(2)
+  }
+  process.stdout.write(`run ledgers: captured ${outcome.captured.length} | skipped ${outcome.skippedExisting.length} existing`
+    + ` | skipped ${outcome.skippedNotLanded.length} not landed | failed ${outcome.failed.length}\n`)
+  for (const failure of outcome.failed) process.stdout.write(`failed ${failure.task}: ${failure.reason}\n`)
+  const rebuilt = rebuild(config)
+  process.stdout.write(`rebuilt ${rebuilt.tasks} tasks into ${config.dbPath}\n`)
+  if (rebuilt.issues > 0) process.stdout.write(`${rebuilt.issues} ingest issues recorded in ingest_issue\n`)
 } else if (command === 'report') {
   const output = pendingReport(config) ?? report(config.dbPath, config.taskId)
   if (output === null) {

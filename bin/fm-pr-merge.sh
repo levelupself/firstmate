@@ -18,7 +18,9 @@
 # provenance is written. The effort store's launch-bound merge capture is
 # skipped for such a merge because no lifecycle record can bind to it; the
 # backlog outcome, which accepts the already-Done row, and the Linear write
-# still run. A launch-bound receipt (authorization=live-meta) keeps its
+# still run. After the merged receipt, bin/fm-effort-store.sh capture-ci reads
+# the PR's CI run ledger from the forge for every authorization; that read is
+# reported and never fatal. A launch-bound receipt (authorization=live-meta) keeps its
 # spawned_at requirement exactly as before, and a Done-history receipt is never
 # rotated into history because it has no launch to rotate by.
 # Every accepted request writes a prepared data/pr-merges/<task-id>.receipt
@@ -585,6 +587,16 @@ else
     echo "error: merged PR succeeded but its effort record could not be captured" >&2
     exit 1
   }
+fi
+# The PR's CI run ledger is read from the forge now, while it is the forge's
+# own record of this landing; it is keyed by task and PR rather than launch, so
+# a Done-history merge captures too. The merge has already landed, so a forge
+# read that fails is reported, never fatal: `fm-effort-store.sh backfill-ci`
+# recovers any receipt without a ledger.
+if CI_CAPTURE=$("$FM_ROOT/bin/fm-effort-store.sh" capture-ci "$ID" "$URL" --from merge 2>&1); then
+  echo "ci: captured run ledger for $ID"
+else
+  echo "ci: not captured; run fm-effort-store.sh backfill-ci later: $(printf '%s\n' "$CI_CAPTURE" | tail -1)"
 fi
 "$SCRIPT_DIR/fm-backlog-integrity.sh" landed "$ID" PR-merge --pr "$URL" || {
   echo "error: merged PR succeeded but the backlog outcome could not be recorded" >&2

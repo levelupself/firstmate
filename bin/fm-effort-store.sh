@@ -22,6 +22,8 @@
 # Usage:
 #   fm-effort-store.sh rebuild [--db <path>] [--no-import-graph]
 #   fm-effort-store.sh backfill-codeburn [--replace-existing] <export.json>
+#   fm-effort-store.sh capture-ci <task-id> [<pr-url>] [--from manual|merge|backfill] [--replace-existing]
+#   fm-effort-store.sh backfill-ci [--replace-existing] [--limit <n>]
 #   fm-effort-store.sh report [<task-id>] [--sync] [--db <path>]
 #   fm-effort-store.sh fingerprint [--db <path>]
 #   fm-effort-store.sh annotate <task-id> [annotation options]
@@ -37,6 +39,14 @@
 #   --commit <sha>                  repeatable; the task-to-commit link
 #   --reverted yes|no
 #
+# `capture-ci` reads the task's PR run ledger from GitHub with `gh api` (read-only)
+# into data/pr-ci/<task-id>.json and enqueues ingestion; fm-pr-merge.sh runs it
+# with --from merge at the merged receipt, and a train PR's manifest members are
+# captured beside it. A PR URL is required only when the task has no recorded
+# PR; a conflicting URL is refused. `backfill-ci` pulls once for every merged
+# data/pr-merges/ receipt without a ledger, holding the store lock, then rebuilds;
+# an existing ledger is kept unless --replace-existing. bin/fm-effort-store.mjs's
+# header owns the ledger contract. Neither rebuild nor report reaches the forge.
 # `capture` is the lifecycle-owned synchronous append-and-enqueue path. It reads stamped
 # task metadata, a prior raw row when volatile metadata is gone, merge receipts,
 # and matching settled no-mistakes rounds, and persists the task's token
@@ -81,7 +91,7 @@ die() {
 COMMAND=${1:-}
 case "$COMMAND" in
   -h|--help|help|'') usage; exit 0 ;;
-  rebuild|backfill-codeburn|report|fingerprint|annotate|capture|path|enqueue|worker) shift ;;
+  rebuild|backfill-codeburn|report|fingerprint|annotate|capture|capture-ci|backfill-ci|path|enqueue|worker) shift ;;
   *) usage >&2; exit 2 ;;
 esac
 
@@ -119,7 +129,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     *)
-      if { [ "$COMMAND" = annotate ] || [ "$COMMAND" = capture ] || [ "$COMMAND" = report ]; } \
+      if { [ "$COMMAND" = annotate ] || [ "$COMMAND" = capture ] || [ "$COMMAND" = capture-ci ] || [ "$COMMAND" = report ]; } \
         && [ -z "$TASK_ID" ]; then
         TASK_ID=$1
       else
@@ -134,7 +144,7 @@ if [ "$COMMAND" = path ]; then
   printf '%s\n' "$DB"
   exit 0
 fi
-if { [ "$COMMAND" = annotate ] || [ "$COMMAND" = capture ]; } && [ -z "$TASK_ID" ]; then
+if { [ "$COMMAND" = annotate ] || [ "$COMMAND" = capture ] || [ "$COMMAND" = capture-ci ]; } && [ -z "$TASK_ID" ]; then
   die "$COMMAND needs a task id"
 fi
 
@@ -264,6 +274,13 @@ case "$COMMAND" in
     queue_request || die "could not queue ingestion"
     start_worker || die "could not start ingestion worker"
     ;;
+  capture-ci)
+    # The forge read is bounded by the engine; only its durable ledger write
+    # feeds ingestion, so no store lock is taken here either.
+    node "$ENGINE" capture-ci "$CONFIG" "$ARGV" || exit $?
+    queue_request || die "could not queue ingestion"
+    start_worker || die "could not start ingestion worker"
+    ;;
   enqueue)
     queue_request || die "could not queue ingestion"
     start_worker || die "could not start ingestion worker"
@@ -278,7 +295,7 @@ case "$COMMAND" in
     fi
     node "$ENGINE" report "$CONFIG" "$ARGV"
     ;;
-  rebuild|backfill-codeburn)
+  rebuild|backfill-codeburn|backfill-ci)
     fm_lock_acquire_wait "$LOCK" || die "could not acquire the effort-store lock"
     LOCK_HELD=1
     node "$ENGINE" "$COMMAND" "$CONFIG" "$ARGV"
