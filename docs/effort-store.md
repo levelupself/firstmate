@@ -36,6 +36,7 @@ Nothing in the derived layer is ever written back to the raw layer.
 | raw | `data/cost-attribution.tsv` | identity, dispatch axes, lifecycle timestamps, configured model, process counts, and outcome stamps |
 | codeburn | `data/<task>/usage.json` | tokens, notional cost, calls, sessions, and actual-model split |
 | tool-usage | `data/<task>/tool-usage.json` | where the tokens went: turns, tool calls, result sizes by tool and class, the largest results, and the per-turn timeline |
+| skills | `data/<task>/skill-usage.json` | transcript-proven loads, versions, scope, and observed-use estimates |
 | ci | `data/pr-ci/<task>.json` | the forge's run ledger for the PR: runs and their jobs, how the PR landed, the train shape, and the card claim |
 | git | the project clone named in the raw row | structure, commit link, and the durability relation |
 | annotation | `data/effort-annotations.jsonl` | the posterior that no artifact records |
@@ -219,3 +220,56 @@ tests/fm-effort-lifecycle.test.sh
 tests/fm-effort-store.test.sh
 tests/fm-context-watch.test.sh
 ```
+
+## Skill loads and observed use
+
+`bin/fm-effort-skills.mjs` owns deterministic extraction from Claude and Codex records, including the conservative use heuristic.
+The deferred ingestion worker captures skills; lifecycle capture only queues that work and never waits for transcript scanning or the derived-store lock.
+Each successful fold persists private evidence in `data/<task>/skill-usage.json`, preserving previously captured events if a log later disappears.
+Normal rebuild reads that evidence without reopening transcripts.
+The first deferred capture records its start time in `data/skill-capture.json` and captures only loads at or after that time.
+An explicit `rebuild --rescan` or `skills --rescan` re-derives evidence from retained, attributable logs, including older events; missing logs never produce fabricated historical rows.
+No worker statement that a skill was loaded or used is accepted as evidence.
+
+`task_skill_usage` has one row per task, skill name, and version, with `scope`, total `loads`, `explicit_loads`, `implicit_loads`, and `first_turn`.
+Its nullable `skill_sha` is the first twelve hexadecimal characters of the SHA-256 of the complete skill content observed in a tool result, when that result contains the complete resolvable `SKILL.md`; otherwise it remains NULL.
+Reading today's file alone does not prove which version was loaded previously.
+`task_skill_event` has one row per load, identified by task, provider-prefixed session id, and `log_offset`.
+The offset combines the zero-based UTF-8 byte offset of the record with the block or invocation index, so several loads in one record remain distinct.
+The row records the skill, local session turn, timestamp, explicit or implicit source, private log locator, scope, version hash, and nullable `followed_by_use`.
+The event's scope and hash bind each event to its aggregate version without guessing which version an event used.
+SQLite upgrades use the store's existing atomic rebuild migration to schema v6; this repository has no Postgres replay path.
+
+The supported record shapes were verified against local sessions, and the regression fixtures are synthetic.
+Claude assistant records carry `message.content[]` blocks with `type: tool_use`, `name: Skill`, and `input.skill`; these are explicit loads.
+Claude `requestId` or `message.id` groups assistant blocks into turns; sidechain records are excluded.
+Codex `response_item` records with `payload.type: message`, `role: user`, and `content[]` blocks of `type: input_text` supply explicit `$skill-name` invocations.
+Developer instructions, assistant prose, and mirrored `event_msg` notifications do not count.
+Codex `function_call` records carry `name`, JSON `arguments`, and `call_id`; `custom_tool_call` records carry `name`, string `input`, and `call_id`.
+Reads of literal `skills/<name>/SKILL.md` paths through a read interface or a read-classified command, including literal commands inside the `exec` JavaScript wrapper, supply implicit loads when a matching tool result exists without a recorded error.
+The corresponding `function_call_output` or `custom_tool_call_output` provides `call_id` and `output`.
+`turn_context` increments the Codex turn count; calls before the first context have turn one.
+Dynamic paths, unreadable files, missing results, and unrecognized transcript shapes cannot prove an implicit load.
+
+A tracked skill in this repository is `shared`, an untracked skill in the home's skill inventory is `local`, and a skill within the attributed project or its isolated copy is `project`.
+Unresolved explicit skill names have NULL versions and local scope as an unknown-origin fallback.
+A task's launch receipts bind worker sessions using the existing session index; matching filenames or workspace similarity alone never assign a worker session to a task.
+Primary sessions whose recorded current directory equals the operational home are captured as `fm-session-<date>-<provider>-<session hash>` with `kind: primary-session`.
+They are sampled when deferred ingestion runs; `enqueue` requests another capture without changing lifecycle evidence.
+Primary-session rows are excluded from the skill report by default and can be included explicitly.
+
+`followed_by_use` asks whether a later non-read, non-search, non-Skill call in the load's turn or the next three turns contains a distinctive word or command from the observed skill description.
+A match is true; a complete three-turn window without a match is false; a short window, unavailable description, or unresolved version is NULL.
+It is a correlation heuristic: common words can cause false positives, equivalent commands can cause false negatives, and applying a skill entirely in reasoning is invisible.
+It does not measure correctness, causality, or the skill's value.
+A missing snapshot is recorded as a missing `skills` source, rather than evidence that no skill was loaded.
+Inventory entries flagged `never-loaded` mean no captured load within the selected report coverage, not proof that a skill has never been used outside that coverage.
+The report calculates the percent not followed by use over known true/false loads and separately reports unknown loads.
+Outcome context counts distinct tasks per recorded outcome, rather than claiming that a skill caused the outcome.
+
+The `skills` command reports scope, loads, distinct tasks, the use estimate, outcome context, and `never-loaded` inventory entries.
+The optional `--since <days>d` filters on load timestamps, not task completion dates.
+Available inventory includes this repository, the operational home's local skills, standard agent and Codex skill locations, installed Codex plugin skills, and attributed project skills.
+The small explicit safety and authority exemption set in `bin/fm-effort-skills.mjs` includes credential handling, authority decisions, project management (including removal), and lifecycle safeguards.
+These skills are marked `exempt` even when never loaded; the report makes no automatic retirement recommendation.
+All transcript locators, captured skill names, and observed content stay in the private operational home; public fixtures contain synthetic names and text only.

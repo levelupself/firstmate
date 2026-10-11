@@ -20,7 +20,8 @@
 # contract; read its header before changing ingestion behavior.
 #
 # Usage:
-#   fm-effort-store.sh rebuild [--db <path>] [--no-import-graph]
+#   fm-effort-store.sh rebuild [--rescan] [--db <path>] [--no-import-graph]
+#   fm-effort-store.sh skills [--since <days>d] [--json] [--include-primary] [--rescan]
 #   fm-effort-store.sh backfill-codeburn [--replace-existing] <export.json>
 #   fm-effort-store.sh capture-ci <task-id> [<pr-url>] [--from manual|merge|backfill] [--replace-existing]
 #   fm-effort-store.sh backfill-ci [--replace-existing] [--limit <n>]
@@ -61,6 +62,10 @@
 # Capture never acquires the derived-store lock. Usage snapshots are persisted
 # by fm-task-usage before its capture call and survive volatile metadata removal.
 # state/.effort-capture-<task-id>.lock serializes each task's raw append.
+# Skill transcript capture runs only in the deferred worker or an explicit
+# rebuild/skills --rescan. data/<task>/skill-usage.json preserves deterministic
+# evidence; data/skill-capture.json records the forward-capture start time.
+# --rescan re-derives retained logs, never fabricates missing historical loads.
 # Enqueue starts a detached job with one runner per database, coalescing pending
 # requests after acquiring the store lock. Failed work remains queued; the next
 # enqueue or report --sync retries it. No separately started daemon is required.
@@ -93,7 +98,7 @@ die() {
 COMMAND=${1:-}
 case "$COMMAND" in
   -h|--help|help|'') usage; exit 0 ;;
-  rebuild|backfill-codeburn|report|fingerprint|annotate|capture|capture-ci|backfill-ci|path|enqueue|worker) shift ;;
+  rebuild|skills|backfill-codeburn|report|fingerprint|annotate|capture|capture-ci|backfill-ci|path|enqueue|worker) shift ;;
   *) usage >&2; exit 2 ;;
 esac
 
@@ -104,10 +109,16 @@ DB="$DATA/effort-store.sqlite"
 IMPORT_GRAPH=true
 TASK_ID=
 SYNC=false
+RESCAN=false
 ARGS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --rescan)
+      [[ "$COMMAND" = rebuild || "$COMMAND" = skills ]] || die "--rescan is only supported by rebuild or skills"
+      RESCAN=true
+      shift
+      ;;
     --sync)
       [ "$COMMAND" = report ] || die "--sync is only supported by report"
       SYNC=true
@@ -178,11 +189,11 @@ fi
 node -e '
 const fs = require("fs")
 const path = require("path")
-const [out, dbPath, rawFile, annotationsFile, dataDir, stateDir, importGraph, taskId] = process.argv.slice(1)
+const [out, dbPath, rawFile, annotationsFile, dataDir, stateDir, importGraph, taskId, rootDir, homeDir, rescan] = process.argv.slice(1)
 const pipelineDbPath = process.env.FM_NO_MISTAKES_STATE_DB_OVERRIDE
   || (process.env.HOME ? path.join(process.env.HOME, ".no-mistakes", "state.sqlite") : null)
 fs.writeFileSync(out, JSON.stringify({
-  dbPath,
+  dbPath, rootDir, homeDir, rescan: rescan === "true",
   rawFile,
   annotationsFile,
   dataDir,
@@ -192,7 +203,7 @@ fs.writeFileSync(out, JSON.stringify({
   pipelineDbPath,
 }))
 ' "$CONFIG" "$DB" "$DATA/cost-attribution.tsv" "$DATA/effort-annotations.jsonl" \
-  "$DATA" "$STATE" "$IMPORT_GRAPH" "$TASK_ID" || die "could not stage the ingestion config"
+  "$DATA" "$STATE" "$IMPORT_GRAPH" "$TASK_ID" "$FM_ROOT" "$FM_HOME" "$RESCAN" || die "could not stage the ingestion config"
 
 QUEUE_KEY=$(node -e 'process.stdout.write(require("crypto").createHash("sha256").update(require("path").resolve(process.argv[1])).digest("hex"))' "$DB") || die "could not identify queue"
 QUEUE="$STATE/.effort-queue-$QUEUE_KEY"
@@ -296,6 +307,14 @@ case "$COMMAND" in
       run_queue >/dev/null || die "pending ingestion failed; see $QUEUE/worker.log"
     fi
     node "$ENGINE" report "$CONFIG" "$ARGV"
+    ;;
+  skills)
+    if [ "$RESCAN" = true ]; then
+      fm_lock_acquire_wait "$LOCK" || die "could not acquire the effort-store lock"
+      LOCK_HELD=1
+      node "$ENGINE" rescan "$CONFIG" "$ARGV" || exit $?
+    fi
+    node "$ENGINE" skills "$CONFIG" "$ARGV"
     ;;
   rebuild|backfill-codeburn|backfill-ci)
     fm_lock_acquire_wait "$LOCK" || die "could not acquire the effort-store lock"

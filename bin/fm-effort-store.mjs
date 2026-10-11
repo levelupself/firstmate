@@ -11,6 +11,9 @@
 //   raw         data/cost-attribution.tsv       identity, lifecycle, process
 //   codeburn    data/<task>/usage.json           effort tokens and notional cost
 //   tool-usage  data/<task>/tool-usage.json      where the tokens went, per turn
+//   skills      data/<task>/skill-usage.json     deterministic transcript evidence
+// bin/fm-effort-skills.mjs owns skill extraction and report heuristics. Schema
+// upgrades use the existing atomic rebuild migration; there is no Postgres path.
 //   ci          data/pr-ci/<task>.json           the forge's run ledger for the PR
 //   git         the project clone               structure, time, durability
 //   annotation  data/effort-annotations.jsonl   the posterior nobody can derive
@@ -62,7 +65,7 @@
 // bin/fm-effort-store.sh is the entry point and owns the CLI contract; run it
 // with --help. This file is invoked by that script and not directly.
 
-const SCHEMA_VERSION = 'fm-effort-store.v5'
+const SCHEMA_VERSION = 'fm-effort-store.v6'
 const CLASSIFIER_VERSION = 'fm-effort-classifier.v1'
 const V2_MARKER = '# schema=firstmate-effort-attribution-v2'
 const LEGACY_CAPTURE_COLUMNS = [
@@ -97,6 +100,8 @@ const crypto = await import('node:crypto')
 const { spawnSync } = await import('node:child_process')
 const { fileURLToPath } = await import('node:url')
 const { TOOL_CLASSES: TOOL_CLASS_ORDER } = await import('./fm-model-bench-analyze.mjs')
+
+const {captureSkills, skillSnapshots, writeSkillRows, skillsReport} = await import('./fm-effort-skills.mjs')
 
 // --- small helpers ----------------------------------------------------------
 
@@ -1104,6 +1109,34 @@ CREATE TABLE task_ci_run (
 -- One row per (tool, class) a task called. wall_seconds_in_tool is the summed
 -- gap between each call and its result, NULL when any call of the row was not
 -- timed.
+CREATE TABLE task_skill_usage (
+  task_id TEXT NOT NULL REFERENCES task(task_id),
+  skill TEXT NOT NULL,
+  scope TEXT NOT NULL CHECK (scope IN ('shared','local','project')),
+  loads INTEGER NOT NULL,
+  explicit_loads INTEGER NOT NULL,
+  implicit_loads INTEGER NOT NULL,
+  first_turn INTEGER NOT NULL,
+  skill_sha TEXT,
+  PRIMARY KEY (task_id, skill, skill_sha)
+);
+-- SQLite NULLs need an expression index to enforce one unknown-version row.
+CREATE UNIQUE INDEX skill_unknown_version ON task_skill_usage (task_id, skill, coalesce(skill_sha,''));
+CREATE TABLE task_skill_event (
+  task_id TEXT NOT NULL REFERENCES task(task_id),
+  session_id TEXT NOT NULL,
+  log_offset TEXT NOT NULL,
+  skill TEXT NOT NULL,
+  turn INTEGER NOT NULL,
+  at_utc TEXT,
+  source TEXT NOT NULL CHECK (source IN ('explicit','implicit')),
+  evidence TEXT NOT NULL,
+  followed_by_use INTEGER CHECK (followed_by_use IN (0,1)),
+  scope TEXT NOT NULL CHECK (scope IN ('shared','local','project')),
+  skill_sha TEXT,
+  PRIMARY KEY (task_id, session_id, log_offset)
+);
+
 CREATE TABLE task_tool_usage (
   task_id              TEXT NOT NULL,
   tool_name            TEXT NOT NULL,
@@ -1157,7 +1190,7 @@ CREATE TABLE task_turn_timeline (
 -- from a source is recorded here, never dropped from the store.
 CREATE TABLE task_source (
   task_id TEXT NOT NULL,
-  source  TEXT NOT NULL CHECK (source IN ('raw', 'codeburn', 'tool-usage', 'ci', 'git', 'annotation')),
+  source  TEXT NOT NULL CHECK (source IN ('raw', 'codeburn', 'tool-usage', 'skills', 'ci', 'git', 'annotation')),
   status  TEXT NOT NULL CHECK (status IN ('present', 'missing')),
   detail  TEXT,
   PRIMARY KEY (task_id, source)
@@ -1289,7 +1322,18 @@ function rebuild(options) {
   // A task can enter the store from the raw layer, a durable usage snapshot, a
   // CI ledger, or an annotation alone, so partial lifecycle records remain
   // visible with each absent source recorded missing.
+  const skillData = skillSnapshots(options)
+  const sessionTaskIds = []
+  if (options.scanSkills || options.rescan) {
+    try {
+      for (const entry of fs.readdirSync(options.dataDir, {withFileTypes: true})) {
+        if (entry.isDirectory() && fs.existsSync(path.join(options.dataDir,entry.name,'sessions','identity.json'))) sessionTaskIds.push(entry.name)
+      }
+    } catch { /* No retained session receipts. */ }
+  }
   const taskIds = new Set([
+    ...skillData.filter(s=>s.identity?.kind !== 'primary-session').map(s=>s.task),
+    ...sessionTaskIds,
     ...raw.rows.map(row => row.task),
     ...annotations.byTask.keys(),
     ...discoverUsageTaskIds(options.dataDir),
@@ -1314,6 +1358,8 @@ function rebuild(options) {
     annotation: annotations.byTask.get(taskId) || null,
   }))
 
+  if (options.scanSkills || options.rescan) captureSkills(options,tasks,options.rescan)
+  const capturedSkills = skillSnapshots(options)
   const usage = collectUsage(tasks, options, issues)
   const toolUsage = collectToolUsage(tasks, options, issues)
   const gitResults = collectGit(tasks, options, issues)
@@ -1330,6 +1376,7 @@ function rebuild(options) {
     ]) metaInsert.run(key, value)
 
     writeTasks(db, tasks, usage, toolUsage, gitResults, options, issues)
+    writeSkillRows(db, capturedSkills)
     writeDurability(db, gitResults)
     writeIssues(db, issues)
     db.exec('COMMIT')
@@ -3232,6 +3279,7 @@ const argv = argvPath && fs.existsSync(argvPath)
 
 if (command === 'rebuild' || command === 'ingest') {
   config.fullRebuild = command === 'rebuild'
+  config.scanSkills = command === 'ingest'
   if (argv.length > 0) {
     warn(`rebuild takes no extra arguments; got '${argv[0]}'`)
     process.exit(2)
@@ -3241,6 +3289,14 @@ if (command === 'rebuild' || command === 'ingest') {
   if (result.issues > 0) {
     process.stdout.write(`${result.issues} ingest issues recorded in ingest_issue\n`)
   }
+} else if (command === 'rescan') {
+  config.rescan = true
+  rebuild(config)
+} else if (command === 'skills') {
+  try {
+    const db = new DatabaseSync(config.dbPath, {readOnly:true})
+    try { process.stdout.write(skillsReport(db,config,argv)) } finally { db.close() }
+  } catch (error) { warn(error.message); process.exit(1) }
 } else if (command === 'current') {
   process.exit(storeCurrent(config) ? 0 : 1)
 } else if (command === 'fingerprint') {
