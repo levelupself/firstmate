@@ -222,3 +222,35 @@ fm_startup_memory_decimal_le() {
   [ "$left" = "$right" ] && return 0
   [[ "$left" < "$right" ]]
 }
+
+# fm_startup_memory_target_read <config-dir> <effective-budget>
+# Optional per-home config/startup-memory-target uses the budget's safe positive
+# decimal format and cannot exceed the budget. Absence means floor(60% of the
+# budget), at least one token. Long division avoids shell integer overflow.
+# Prints the target without materializing or changing configuration.
+fm_startup_memory_target_read() {
+  local config_dir=$1 budget=$2 path target digit carry=0 i
+  path="$config_dir/startup-memory-target"
+  fm_startup_memory_budget_config_dir_safe "$config_dir" || return 1
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    fm_startup_memory_budget_file_valid "$path" || return 1
+    target=$FM_STARTUP_MEMORY_BUDGET_VALUE
+    if ! fm_startup_memory_decimal_le "$target" "$budget"; then
+      fm_startup_memory_budget_fail "target must not exceed effective budget"
+      return 1
+    fi
+  else
+    target=""
+    for ((i=0; i<${#budget}; i++)); do
+      digit=${budget:i:1}
+      carry=$((carry * 10 + digit * 3))
+      target="$target$((carry / 5))"
+      carry=$((carry % 5))
+    done
+    while [ "${#target}" -gt 1 ] && [ "${target:0:1}" = 0 ]; do
+      target=${target:1}
+    done
+    [ "$target" != 0 ] || target=1
+  fi
+  printf '%s\n' "$target"
+}

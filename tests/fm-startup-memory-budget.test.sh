@@ -353,6 +353,46 @@ test_primary_budget_converges_with_exact_reread_and_safe_failures() {
   pass "budget propagation converges through config push with exact rereads, absence, and safe rejection"
 }
 
+test_lean_target_reporting() {
+  local home out rc value
+  home="$TMP_ROOT/target-home"
+  mkdir -p "$home/config" "$home/data"
+  printf '100\n' > "$home/config/startup-memory-budget"
+  printf '%0210d' 0 > "$home/data/learnings.md"
+  out=$(FM_HOME="$home" "$BUDGET" report) || fail "default target report failed"
+  assert_contains "$out" 'lean_target_tokens=60' "report omitted the default 60% lean target"
+  assert_contains "$out" 'target_status=above-target' "70 tokens should exceed the lean target"
+  assert_contains "$out" 'budget_status=within-budget' "above target must remain within budget"
+  printf '80\n' > "$home/config/startup-memory-target"
+  out=$(FM_HOME="$home" "$BUDGET" report) || fail "explicit target report failed"
+  assert_contains "$out" 'lean_target_tokens=80' "report ignored explicit target"
+  assert_contains "$out" 'target_status=at-or-below-target' "70 tokens should meet target 80"
+  for value in 0 101 '60%' 060; do
+    printf '%s\n' "$value" > "$home/config/startup-memory-target"
+    out=$(FM_HOME="$home" "$BUDGET" report 2>&1); rc=$?
+    expect_code 2 "$rc" "invalid target must reject report: $value"
+    assert_contains "$out" 'startup-memory-target' "target rejection must name the target"
+  done
+  printf '60\n' > "$home/config/startup-memory-target"
+  ln "$home/config/startup-memory-target" "$home/hardlink"
+  out=$(FM_HOME="$home" "$BUDGET" report 2>&1); rc=$?
+  expect_code 2 "$rc" "hardlinked target must reject report"
+  rm "$home/config/startup-memory-target" "$home/hardlink"
+  ln -s missing "$home/config/startup-memory-target"
+  out=$(FM_HOME="$home" "$BUDGET" report 2>&1); rc=$?
+  expect_code 2 "$rc" "dangling target symlink must reject report"
+  rm "$home/config/startup-memory-target"
+  printf '1\n' > "$home/config/startup-memory-budget"
+  out=$(FM_HOME="$home" "$BUDGET" report) || fail "minimum budget report failed"
+  assert_contains "$out" 'lean_target_tokens=1' "default target must be at least one token"
+  printf '999999999999999999999999999999\n' > "$home/config/startup-memory-budget"
+  out=$(FM_HOME="$home" "$BUDGET" report) || fail "large budget report failed"
+  assert_contains "$out" 'lean_target_tokens=599999999999999999999999999999' "target calculation overflowed"
+  pass "lean target defaults safely, accepts an override, and never changes budget status"
+}
+
+test_lean_target_reporting
+
 test_primary_bootstrap_materializes_visible_default
 test_bootstrap_reports_agents_md_budget_diagnostics
 test_safe_parser_rejects_ambiguous_and_unsafe_values

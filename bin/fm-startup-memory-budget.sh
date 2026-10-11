@@ -8,8 +8,11 @@
 # config/startup-memory-budget.  `report` prints the stable local estimate for
 # data/captain.md, data/captain-shared.md, and data/learnings.md together.
 # Bootstrap owns default materialization; this command never creates or repairs
-# configuration, so an absent, malformed, symlinked, hardlinked, or otherwise
-# unsafe value is a concrete error rather than an inferred default.
+# the required budget. Optional config/startup-memory-target is a safe positive
+# token count no larger than the budget, defaulting to floor(60% of budget),
+# at least one token. report adds lean_target_tokens and target_status
+# (above-target|at-or-below-target); above-target alone never returns an error.
+# Unsafe settings or memory inputs return an error, never an inferred default.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +25,7 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-startup-memory-budget-lib.sh"
 
 usage() {
-  sed -n '2,11{s/^# \{0,1\}//;p;}' "$0"
+  sed -n '2,16{s/^# \{0,1\}//;p;}' "$0"
 }
 
 print_error() {
@@ -38,10 +41,16 @@ read_budget() {
 }
 
 report() {
-  local budget bytes tokens presence total=0 shared_tokens=0 role=primary
+  local budget target bytes tokens presence total=0 shared_tokens=0 role=primary
   if ! budget=$(read_budget); then
     return 2
   fi
+
+  if ! fm_startup_memory_target_read "$CONFIG" "$budget" >/dev/null; then
+    print_error "invalid config/startup-memory-target - $FM_STARTUP_MEMORY_BUDGET_ERROR"
+    return 2
+  fi
+  target=$(fm_startup_memory_target_read "$CONFIG" "$budget")
 
   if [ -e "$FM_HOME/.fm-secondmate-home" ] || [ -L "$FM_HOME/.fm-secondmate-home" ]; then
     role=secondmate
@@ -50,6 +59,7 @@ report() {
   printf 'estimator=ceil(UTF-8 bytes / 3) conservative-local-estimate\n'
   printf 'role=%s\n' "$role"
   printf 'effective_budget_tokens=%s\n' "$budget"
+  printf 'lean_target_tokens=%s\n' "$target"
   for file in captain.md captain-shared.md learnings.md; do
     if ! fm_startup_memory_measure_file "$DATA/$file" >/dev/null; then
       print_error "$FM_STARTUP_MEMORY_BUDGET_ERROR"
@@ -64,6 +74,11 @@ report() {
       "$file" "$bytes" "$tokens" "$presence"
   done
   printf 'total_estimated_tokens=%s\n' "$total"
+  if fm_startup_memory_decimal_le "$total" "$target"; then
+    printf 'target_status=at-or-below-target\n'
+  else
+    printf 'target_status=above-target\n'
+  fi
   if fm_startup_memory_decimal_le "$total" "$budget"; then
     printf 'budget_status=within-budget\n'
   else

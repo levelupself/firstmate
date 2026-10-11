@@ -210,7 +210,7 @@ family_for_basename() {
     fm-remote-secondmate-trace-context.test.sh|\
     fm-secondmate-harness.test.sh|fm-secondmate-lifecycle-e2e.test.sh|\
     fm-secondmate-liveness.test.sh|fm-secondmate-safety.test.sh|fm-secondmate-sync.test.sh|\
-    fm-startup-memory-budget.test.sh|fm-stow-cascade.test.sh|\
+    fm-startup-memory-budget.test.sh|fm-memory-offload-candidates.test.sh|fm-stow-cascade.test.sh|\
     fm-send-secondmate-marker.test.sh|fm-shared-captain-inheritance.test.sh)
       printf '%s\n' secondmate
       ;;
@@ -1046,7 +1046,8 @@ families_for_changed_path() {
       ;;
     bin/fm-agents-md-budget.sh|bin/fm-agents-md-budget-lib.sh|\
     bin/fm-session-start-budget.sh|bin/fm-session-start-budget-lib.sh|\
-    bin/fm-startup-memory-budget.sh|bin/fm-startup-memory-budget-lib.sh)
+    bin/fm-startup-memory-budget.sh|bin/fm-startup-memory-budget-lib.sh|\
+    bin/fm-memory-offload-candidates.sh|bin/fm-memory-offload-candidates.mjs)
       printf '%s\n' secondmate
       printf '%s\n' session-bootstrap
       ;;

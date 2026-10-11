@@ -255,6 +255,12 @@ The file must be one positive base-10 integer followed by exactly one newline in
 Malformed, multi-line, symlinked, hardlinked, special, or otherwise unsafe values are rejected rather than treated as a default.
 Use `bin/fm-startup-memory-budget.sh read` to validate and print the effective value, or `bin/fm-startup-memory-budget.sh report` to account for the three files.
 The stable local estimate is `ceil(UTF-8 bytes / 3)` per file, a conservative portable approximation rather than a provider-exact tokenizer.
+Optional `config/startup-memory-target` selects a home-local lean target in estimated tokens using the same exact positive-decimal format and safe-file rules as the budget, with a value no larger than the effective budget.
+When absent, the target is 60% of the effective budget rounded down, with a minimum of one token; no file is materialized.
+This optional setting is not inherited by secondmates; each home uses its own override or the default against its inherited budget.
+The report prints the lean target and whether the total is above it separately from budget status.
+Above-target memory within budget is informational and never blocks a pass or reset safety by itself; the internal `/stow` skill owns the required offload sweep toward the target.
+`bin/fm-memory-offload-candidates.sh` prints stable ranked proposals with `--json` available, using untracked local-skill description keywords and registered project mentions as hints; it never moves knowledge or decides eligibility.
 An inherited `data/captain-shared.md` counts in a secondmate's total but remains primary-owned and read-only there.
 The internal [`/stow` skill](../.agents/skills/stow/SKILL.md) owns curation and its automatic secondmate cascade, which accounts every home against this same per-home allowance separately rather than against a fleet total.
 The helper's header owns exact parsing, publication, and report output mechanics.
