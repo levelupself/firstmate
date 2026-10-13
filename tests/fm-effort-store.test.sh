@@ -1676,6 +1676,7 @@ log(home+'/codex/sessions/rollout-demo.jsonl',[
  {type:'turn_context',payload:{}},
  {type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'Mention $ghost-demo without invoking it'}]}},
  call('function_call','exec_command',{arguments:JSON.stringify({cmd:`echo '${home}/.agents/skills/demo-local/SKILL.md'`})},'echo1'),
+ {type:'turn_context',payload:{}},
 ])
 log(home+'/codex/sessions/rollout-primary.jsonl',[
  {type:'session_meta',payload:{id:'primary-demo',originator:'codex_cli',cwd:home,timestamp:at}},

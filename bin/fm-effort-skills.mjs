@@ -70,6 +70,40 @@ function header(file, provider) {
   return null
 }
 function argumentsOf(input) { if(typeof input !== 'string') return input || {}; try { return JSON.parse(input) } catch { return {} } }
+function resultOf(value, failed = false) {
+  if (typeof value === 'string') {
+    try { return resultOf(JSON.parse(value), failed) } catch {}
+    const envelope = value.match(/^(?:Chunk ID:[^\n]*\n)?Wall time:[^\n]*\nProcess exited with code (\d+)\n(?:Final output:\n|Output:\n)([\s\S]*)$/)
+    if (envelope) return resultOf(envelope[2], failed || envelope[1] !== '0')
+    return {text:value, failed:failed || /Process exited with code [1-9]/.test(value), complete:!/(?:truncated|omitted \d+ lines)/i.test(value)}
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 1 && value[0].type === 'text') return resultOf(value[0].text, failed)
+    return {text:'',failed,complete:false}
+  }
+  if (value && typeof value === 'object') {
+    const bad = failed || value.isError === true || (value.exit_code != null && value.exit_code !== 0)
+    const result = resultOf(value.output ?? value.content ?? '', bad)
+    return {...result,complete:result.complete && !value.session_id && !value.truncated}
+  }
+  return {text:'',failed,complete:false}
+}
+function readOperation(call) {
+  const name = call.name.split('.').at(-1), args = argumentsOf(call.input)
+  if (name === 'read_file') return {paths:[args.path || args.file_path].filter(Boolean), whole:false}
+  const command = commandTextOf('codex',name,call.input)
+  if (!command || /[;|&<>`$\\\n]/.test(command)) return null
+  const tokens = command.match(/"[^"\n]*"|'[^'\n]*'|[^\s"']+/g) || []
+  if (tokens.join(' ').replace(/\s+/g,' ') !== command.trim().replace(/\s+/g,' ')) return null
+  const words = tokens.map(t=>t.replace(/^(['"])(.*)\1$/, '$2'))
+  const tool = words.shift()
+  if (['head','tail'].includes(tool) && words[0] === '-n' && /^\d+$/.test(words[1] || '')) words.splice(0,2)
+  else if (tool === 'sed' && words[0] === '-n' && /^\d+(?:,\d+)?p$/.test(words[1] || '')) words.splice(0,2)
+  else if (tool !== 'cat' && !['head','tail'].includes(tool)) return null
+  if (words[0] === '--') words.shift()
+  if (!words.length || words.some(w=>w.startsWith('-') || /[*?\[\]{}]/.test(w))) return null
+  return {paths:words,whole:tool === 'cat' && words.length === 1}
+}
 function parseLog(record) {
   const text = read(record.file)
   if (text === null) return null
@@ -92,7 +126,7 @@ function parseLog(record) {
         }
       }
       if (row.type === 'user' && Array.isArray(row.message?.content)) for (const b of row.message.content) {
-        if (b.type === 'tool_result') outputs.set(b.tool_use_id, {text:typeof b.content === 'string' ? b.content : JSON.stringify(b.content), failed:b.is_error === true})
+        if (b.type === 'tool_result') outputs.set(b.tool_use_id, resultOf(b.content,b.is_error === true))
       }
     } else {
       if (row.type === 'turn_context') turn++
@@ -104,25 +138,23 @@ function parseLog(record) {
         }
       }
       if (['function_call','custom_tool_call'].includes(p.type)) calls.push({name:p.name,input:p.arguments ?? p.input,turn:Math.max(1,turn),at,offset:`${byte}:0`,id:p.call_id})
-      if (['function_call_output','custom_tool_call_output'].includes(p.type)) outputs.set(p.call_id,{text: typeof p.output === 'string' ? p.output : JSON.stringify(p.output), failed: /(?:exit_code["']?\s*:\s*[1-9]|Process exited with code [1-9])/.test(String(p.output))})
+      if (['function_call_output','custom_tool_call_output'].includes(p.type)) outputs.set(p.call_id,resultOf(p.output))
     }
   }
   // Only actual read interfaces/commands count; prose, echo and patch payloads
   // mentioning SKILL.md are never load evidence. Dynamic paths are unresolved.
   if (record.provider === 'codex') for (const call of calls) {
-    const name = call.name.split('.').at(-1)
-    let text = null
-    if (name === 'read_file') text = argumentsOf(call.input).path || argumentsOf(call.input).file_path
-    else if (classifyTool('codex', name, call.input) === 'read') text = commandTextOf('codex', name, call.input)
-    if (!text || !outputs.has(call.id) || outputs.get(call.id).failed) continue
+    const operation = readOperation(call)
+    if (!operation || !outputs.has(call.id) || outputs.get(call.id).failed) continue
     const seen = new Set()
-    for (const m of text.matchAll(/(?:^|[\s"'])((?:~\/|\/|\.\.?\/)?[^\s"'`;|<>]*\/skills\/[^\s"'`;|<>]+\/SKILL\.md)(?=$|[\s"';])/g)) {
-      let file = m[1]
+    for (const candidate of operation.paths) {
+      if (!/(?:^|\/)skills\/[^/]+\/SKILL\.md$/.test(candidate)) continue
+      let file = candidate
       if (file.includes('$') || file.includes('\\')) continue
       file = file.startsWith('~/') ? path.join(os.homedir(),file.slice(2)) : path.resolve(record.cwd,file)
       if (seen.has(file)) continue
       seen.add(file)
-      events.push({skill:path.basename(path.dirname(file)),source:'implicit',turn:call.turn,at_utc:call.at,log_offset:`${call.offset}:read:${seen.size}`,file,call_id:call.id})
+      events.push({skill:path.basename(path.dirname(file)),source:'implicit',turn:call.turn,at_utc:call.at,log_offset:`${call.offset}:read:${seen.size}`,file,call_id:call.id,whole:operation.whole})
     }
   }
   return {events,calls,outputs,lastTurn:Math.max(1,turn)}
@@ -137,14 +169,16 @@ function foldRecord(record, options, inventory, projectRoots, cutoff) {
     const skill = event.file ? skillInfo(event.file,options,projectRoots) : resolved.length === 1 ? resolved[0] : null
     // Hash only content proven by a logged result, never today's file substituted
     // for an old version. Description is usable under the same evidence rule.
-    const output = event.call_id && parsed.outputs.get(event.call_id)?.text
-    const observed = skill && output && output.includes(skill.text)
-    const terms = observed ? [...new Set(skill.description.toLowerCase().match(/[a-z][a-z0-9_-]{3,}/g) || [])].filter(t=>!['this','that','with','from','before','after','when','skill','skills','execute','agent','only','load'].includes(t)) : []
+    const output = event.call_id && parsed.outputs.get(event.call_id)
+    const observed = output && !output.failed && output.complete &&
+      (event.source === 'explicit' || event.whole) && /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.test(output.text) ? output.text : null
+    const description = observed?.match(/^description:\s*([^\n]*(?:\n[ \t]+[^\n]*)*)/m)?.[1] || ''
+    const terms = [...new Set(description.toLowerCase().match(/[a-z][a-z0-9_-]{3,}/g) || [])].filter(t=>!['this','that','with','from','before','after','when','skill','skills','execute','agent','only','load'].includes(t))
     const future = parsed.calls.filter(c=>c.turn >= event.turn && c.turn <= event.turn+3 && Number(c.offset.split(':')[0]) > Number(event.log_offset.split(':')[0]))
     const match = future.some(c=>!['read','search'].includes(classifyTool(record.provider,c.name.split('.').at(-1),c.input)) && c.name !== 'Skill' && terms.some(t=>JSON.stringify(c.input).toLowerCase().includes(t)))
-    return {...event, session_id:`${record.provider}:${record.id}`, evidence:`${record.file}#byte=${event.log_offset}`,scope:skill?.scope || 'local',skill_sha:observed ? skill.skill_sha : null,
-      followed_by_use:terms.length ? match ? true : parsed.lastTurn >= event.turn+3 ? false : null : null,
-      file:undefined,call_id:undefined}
+    return {...event, session_id:`${record.provider}:${record.id}`, evidence:`${record.file}#byte=${event.log_offset}`,scope:skill?.scope || 'local',scope_resolved:Boolean(skill),skill_sha:observed ? crypto.createHash('sha256').update(observed).digest('hex').slice(0,12) : null,
+      followed_by_use:terms.length ? match ? true : parsed.lastTurn > event.turn+3 ? false : null : null,
+      file:undefined,call_id:undefined,whole:undefined}
   })
 }
 export function captureSkills(options, tasks, rescan = false) {
@@ -192,7 +226,7 @@ function captureTask(id, records, identity, options, inventory, projects, cutoff
     available = true
     for (const e of rows) {
       const key = `${e.session_id}\0${e.log_offset}`, old = events.get(key)
-      events.set(key,old ? {...e,skill_sha:old.skill_sha || e.skill_sha,followed_by_use:old.followed_by_use ?? e.followed_by_use} : e)
+      events.set(key,old ? {...e,scope:e.scope_resolved ? e.scope : old.scope,scope_resolved:e.scope_resolved || old.scope_resolved,skill_sha:e.skill_sha || old.skill_sha,followed_by_use:e.followed_by_use === true || old.followed_by_use === true ? true : e.followed_by_use} : e)
     }
   }
   if (available && (events.size || !identity)) save(file,{schema:SNAPSHOT_SCHEMA,task:id,spawned_at:launchAt,project_roots:projects,identity:identity || previous?.identity || null,

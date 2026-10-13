@@ -246,7 +246,9 @@ Claude `requestId` or `message.id` groups assistant blocks into turns; sidechain
 Codex `response_item` records with `payload.type: message`, `role: user`, and `content[]` blocks of `type: input_text` supply explicit `$skill-name` invocations.
 Developer instructions, assistant prose, and mirrored `event_msg` notifications do not count.
 Codex `function_call` records carry `name`, JSON `arguments`, and `call_id`; `custom_tool_call` records carry `name`, string `input`, and `call_id`.
-Reads of literal `skills/<name>/SKILL.md` paths through a read interface or a read-classified command, including literal commands inside the `exec` JavaScript wrapper, supply implicit loads when a matching tool result exists without a recorded error.
+Reads of literal `skills/<name>/SKILL.md` paths through `read_file` or a simple `cat`, `head`, `tail`, or numeric-range `sed -n` command, including a single literal command inside the `exec` JavaScript wrapper, supply implicit loads when a matching tool result exists without a recorded error.
+Compound shell commands, dynamic paths, and ambiguous combined results are conservatively excluded.
+Version evidence decodes JSON result envelopes and requires complete, untruncated skill content from an explicit load or a single-file whole read; partial reads retain NULL versions.
 The corresponding `function_call_output` or `custom_tool_call_output` provides `call_id` and `output`.
 `turn_context` increments the Codex turn count; calls before the first context have turn one.
 Dynamic paths, unreadable files, missing results, and unrecognized transcript shapes cannot prove an implicit load.
@@ -259,7 +261,8 @@ They are sampled when deferred ingestion runs; `enqueue` requests another captur
 Primary-session rows are excluded from the skill report by default and can be included explicitly.
 
 `followed_by_use` asks whether a later non-read, non-search, non-Skill call in the load's turn or the next three turns contains a distinctive word or command from the observed skill description.
-A match is true; a complete three-turn window without a match is false; a short window, unavailable description, or unresolved version is NULL.
+A match is true; a three-turn window closed by the start of the following turn without a match is false; an open window, unavailable description, or unresolved version is NULL.
+Later observed use corrects earlier non-use, and unresolved recapture preserves previously established scope.
 It is a correlation heuristic: common words can cause false positives, equivalent commands can cause false negatives, and applying a skill entirely in reasoning is invisible.
 It does not measure correctness, causality, or the skill's value.
 A missing snapshot is recorded as a missing `skills` source, rather than evidence that no skill was loaded.
