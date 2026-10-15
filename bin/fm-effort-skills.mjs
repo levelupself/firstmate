@@ -75,18 +75,19 @@ function resultOf(value, failed = false) {
     try { return resultOf(JSON.parse(value), failed) } catch {}
     const envelope = value.match(/^(?:Chunk ID:[^\n]*\n)?Wall time:[^\n]*\nProcess exited with code (\d+)\n(?:Final output:\n|Output:\n)([\s\S]*)$/)
     if (envelope) return resultOf(envelope[2], failed || envelope[1] !== '0')
-    return {text:value, failed:failed || /Process exited with code [1-9]/.test(value), complete:!/(?:truncated|omitted \d+ lines)/i.test(value)}
+    return {text:value, failed:failed || /Process exited with code [1-9]/.test(value), finished:!/(?:Process running with session ID|Script running with cell ID)/i.test(value), complete:!/(?:truncated|omitted \d+ lines)/i.test(value)}
   }
   if (Array.isArray(value)) {
     if (value.length === 1 && value[0].type === 'text') return resultOf(value[0].text, failed)
-    return {text:'',failed,complete:false}
+    return {text:'',failed,finished:false,complete:false}
   }
   if (value && typeof value === 'object') {
     const bad = failed || value.isError === true || (value.exit_code != null && value.exit_code !== 0)
     const result = resultOf(value.output ?? value.content ?? '', bad)
-    return {...result,complete:result.complete && !value.session_id && !value.truncated}
+    const finished = result.finished && value.session_id == null && (!Object.hasOwn(value,'exit_code') || value.exit_code === 0)
+    return {...result,finished,complete:result.complete && finished && !value.truncated}
   }
-  return {text:'',failed,complete:false}
+  return {text:'',failed,finished:false,complete:false}
 }
 function readOperation(call) {
   const name = call.name.split('.').at(-1), args = argumentsOf(call.input)
@@ -145,7 +146,8 @@ function parseLog(record) {
   // mentioning SKILL.md are never load evidence. Dynamic paths are unresolved.
   if (record.provider === 'codex') for (const call of calls) {
     const operation = readOperation(call)
-    if (!operation || !outputs.has(call.id) || outputs.get(call.id).failed) continue
+    const result = outputs.get(call.id)
+    if (!operation || !result?.finished || result.failed) continue
     const seen = new Set()
     for (const candidate of operation.paths) {
       if (!/(?:^|\/)skills\/[^/]+\/SKILL\.md$/.test(candidate)) continue
@@ -170,7 +172,7 @@ function foldRecord(record, options, inventory, projectRoots, cutoff) {
     // Hash only content proven by a logged result, never today's file substituted
     // for an old version. Description is usable under the same evidence rule.
     const output = event.call_id && parsed.outputs.get(event.call_id)
-    const observed = output && !output.failed && output.complete &&
+    const observed = output && output.finished && !output.failed && output.complete &&
       (event.source === 'explicit' || event.whole) && /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.test(output.text) ? output.text : null
     const description = observed?.match(/^description:\s*([^\n]*(?:\n[ \t]+[^\n]*)*)/m)?.[1] || ''
     const terms = [...new Set(description.toLowerCase().match(/[a-z][a-z0-9_-]{3,}/g) || [])].filter(t=>!['this','that','with','from','before','after','when','skill','skills','execute','agent','only','load'].includes(t))

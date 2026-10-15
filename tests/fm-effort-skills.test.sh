@@ -28,6 +28,10 @@ try {
   call('failed',`cat '${file}'`,JSON.stringify({output:historical,exit_code:1}))
   call('partial',`head -n 5 '${file}'`,short)
   call('truncated',`cat '${file}'`,{output:short,truncated:true,exit_code:0})
+  call('running',`cat '${file}'`,{output:historical,session_id:42,exit_code:null})
+  call('running-json',`cat '${file}'`,JSON.stringify({output:'',session_id:43,exit_code:null}))
+  call('pending-exit',`cat '${file}'`,{output:historical,exit_code:null})
+  call('running-text',`cat '${file}'`,'Chunk ID: demo\nWall time: 0.1 seconds\nProcess running with session ID 44\nOutput:\n')
   rows.push({type:'turn_context'},{type:'turn_context'},{type:'turn_context'})
   const options={homeDir:home,rootDir:home,dataDir:home+'/data',stateDir:home+'/state'}
   const capture=()=>{
@@ -44,6 +48,10 @@ try {
   assert.equal(snapshot.events[0].scope,'project')
   assert.equal(snapshot.events[1].skill_sha,null)
   assert.equal(snapshot.events[2].skill_sha,null)
+  rows.push({type:'response_item',payload:{type:'function_call',name:'write_stdin',call_id:'continuation',arguments:JSON.stringify({session_id:42,chars:''})}})
+  rows.push({type:'response_item',payload:{type:'function_call_output',call_id:'continuation',output:{output:'cat: missing file',exit_code:1}}})
+  snapshot=capture()
+  assert.equal(snapshot.events.length,3)
   const snapshotFile=home+'/data/'+snapshot.task+'/skill-usage.json'
   snapshot.events[0].followed_by_use=false
   fs.writeFileSync(snapshotFile,JSON.stringify(snapshot))
@@ -57,7 +65,7 @@ try {
   fs.rmSync(snapshotFile)
   snapshot=capture()
   assert.equal(snapshot.events[0].followed_by_use,false)
-  console.log('PASS: historical bytes, read attribution, use windows, and retained scope')
+  console.log('PASS: historical bytes, completed reads, use windows, and retained scope')
 } finally {
   fs.rmSync(home,{recursive:true,force:true})
 }

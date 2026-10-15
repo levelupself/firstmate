@@ -246,7 +246,8 @@ Claude `requestId` or `message.id` groups assistant blocks into turns; sidechain
 Codex `response_item` records with `payload.type: message`, `role: user`, and `content[]` blocks of `type: input_text` supply explicit `$skill-name` invocations.
 Developer instructions, assistant prose, and mirrored `event_msg` notifications do not count.
 Codex `function_call` records carry `name`, JSON `arguments`, and `call_id`; `custom_tool_call` records carry `name`, string `input`, and `call_id`.
-Reads of literal `skills/<name>/SKILL.md` paths through `read_file` or a simple `cat`, `head`, `tail`, or numeric-range `sed -n` command, including a single literal command inside the `exec` JavaScript wrapper, supply implicit loads when a matching tool result exists without a recorded error.
+Reads of literal `skills/<name>/SKILL.md` paths through `read_file` or a simple `cat`, `head`, `tail`, or numeric-range `sed -n` command, including a single literal command inside the `exec` JavaScript wrapper, supply implicit loads when a matching tool result is completed without a recorded error.
+Running results and pending exit statuses do not establish loads; continuation results are not correlated back to the original read.
 Compound shell commands, dynamic paths, and ambiguous combined results are conservatively excluded.
 Version evidence decodes JSON result envelopes and requires complete, untruncated skill content from an explicit load or a single-file whole read; partial reads retain NULL versions.
 The corresponding `function_call_output` or `custom_tool_call_output` provides `call_id` and `output`.
