@@ -1106,9 +1106,6 @@ CREATE TABLE task_ci_run (
   PRIMARY KEY (task_id, run_id)
 );
 
--- One row per (tool, class) a task called. wall_seconds_in_tool is the summed
--- gap between each call and its result, NULL when any call of the row was not
--- timed.
 CREATE TABLE task_skill_usage (
   task_id TEXT NOT NULL REFERENCES task(task_id),
   skill TEXT NOT NULL,
@@ -1137,6 +1134,9 @@ CREATE TABLE task_skill_event (
   PRIMARY KEY (task_id, session_id, log_offset)
 );
 
+-- One row per (tool, class) a task called. wall_seconds_in_tool is the summed
+-- gap between each call and its result, NULL when any call of the row was not
+-- timed.
 CREATE TABLE task_tool_usage (
   task_id              TEXT NOT NULL,
   tool_name            TEXT NOT NULL,
@@ -1319,9 +1319,8 @@ function rebuild(options) {
   const raw = readRawCapture(options.rawFile, issues)
   const annotations = readAnnotations(options.annotationsFile, issues)
 
-  // A task can enter the store from the raw layer, a durable usage snapshot, a
-  // CI ledger, or an annotation alone, so partial lifecycle records remain
-  // visible with each absent source recorded missing.
+  // Durable evidence, including skill snapshots, keeps partial task records
+  // visible. Transcript capture additionally discovers retained session receipts.
   const skillData = skillSnapshots(options)
   const sessionTaskIds = []
   if (options.scanSkills || options.rescan) {

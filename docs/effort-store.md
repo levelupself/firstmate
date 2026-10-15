@@ -218,6 +218,7 @@ The context-watch suite proves the per-harness tool fold and class taxonomy thro
 tests/fm-effort-async.test.sh
 tests/fm-effort-lifecycle.test.sh
 tests/fm-effort-store.test.sh
+tests/fm-effort-skills.test.sh
 tests/fm-context-watch.test.sh
 ```
 
@@ -248,11 +249,13 @@ Developer instructions, assistant prose, and mirrored `event_msg` notifications 
 Codex `function_call` records carry `name`, JSON `arguments`, and `call_id`; `custom_tool_call` records carry `name`, string `input`, and `call_id`.
 Reads of literal `skills/<name>/SKILL.md` paths through `read_file` or a simple `cat`, `head`, `tail`, or numeric-range `sed -n` command, including a single literal command inside the `exec` JavaScript wrapper, supply implicit loads when a matching tool result is completed without a recorded error.
 Running results and pending exit statuses do not establish loads; continuation results are not correlated back to the original read.
-Compound shell commands, dynamic paths, and ambiguous combined results are conservatively excluded.
+Compound shell commands and dynamic paths are conservatively excluded.
+Simple reads naming multiple literal skill paths can establish loads, but combined results do not establish individual versions.
 Version evidence decodes JSON result envelopes and requires complete, untruncated skill content from an explicit load or a single-file whole read; partial reads retain NULL versions.
 The corresponding `function_call_output` or `custom_tool_call_output` provides `call_id` and `output`.
 `turn_context` increments the Codex turn count; calls before the first context have turn one.
-Dynamic paths, unreadable files, missing results, and unrecognized transcript shapes cannot prove an implicit load.
+Dynamic paths, failed reads, missing results, and unrecognized transcript shapes cannot prove an implicit load.
+An unavailable current file does not invalidate a successful logged read, but can leave its scope unresolved.
 
 A tracked skill in this repository is `shared`, an untracked skill in the home's skill inventory is `local`, and a skill within the attributed project or its isolated copy is `project`.
 Unresolved explicit skill names have NULL versions and local scope as an unknown-origin fallback.
@@ -260,6 +263,7 @@ A task's launch receipts bind worker sessions using the existing session index; 
 Primary sessions whose recorded current directory equals the operational home are captured as `fm-session-<date>-<provider>-<session hash>` with `kind: primary-session`.
 They are sampled when deferred ingestion runs; `enqueue` requests another capture without changing lifecycle evidence.
 Primary-session rows are excluded from the skill report by default and can be included explicitly.
+The general effort report still includes these kind-tagged rows; custom task-only SQL queries should exclude `kind = 'primary-session'` while retaining NULL kinds.
 
 `followed_by_use` asks whether a later non-read, non-search, non-Skill call in the load's turn or the next three turns contains a distinctive word or command from the observed skill description.
 A match is true; a three-turn window closed by the start of the following turn without a match is false; an open window, unavailable description, or unresolved version is NULL.
@@ -272,6 +276,7 @@ The report calculates the percent not followed by use over known true/false load
 Outcome context counts distinct tasks per recorded outcome, rather than claiming that a skill caused the outcome.
 
 The `skills` command reports scope, loads, distinct tasks, the use estimate, outcome context, and `never-loaded` inventory entries.
+Without `--rescan`, it reads the published database without triggering ingestion or migration; use `rebuild` first when the database is absent or predates the skill tables.
 The optional `--since <days>d` filters on load timestamps, not task completion dates.
 Available inventory includes this repository, the operational home's local skills, standard agent and Codex skill locations, installed Codex plugin skills, and attributed project skills.
 The small explicit safety and authority exemption set in `bin/fm-effort-skills.mjs` includes credential handling, authority decisions, project management (including removal), and lifecycle safeguards.
