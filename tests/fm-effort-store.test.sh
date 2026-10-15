@@ -1628,3 +1628,141 @@ MEMBER_SOURCES=$(query "SELECT task_id, captured_from FROM task_ci WHERE task_id
 [ "$(query "SELECT task_id, captured_from FROM task_ci WHERE task_id IN ('951-member-a', '952-member-b') ORDER BY task_id")" = "$MEMBER_SOURCES" ] \
   || fail 'capture-ci --replace-existing on a train must leave member ledgers alone'
 pass '--replace-existing recaptures the named ledger and never a manifest member'
+
+# --- deterministic skill capture (all transcript and skill text is synthetic) ---
+SKILL_HOME="$ROOTDIR/skill-home"
+mkdir -p "$SKILL_HOME/data" "$SKILL_HOME/state" "$SKILL_HOME/.agents/skills/demo-local" \
+  "$SKILL_HOME/.agents/skills/demo-shared" "$SKILL_HOME/.agents/skills/credential-handling" \
+  "$SKILL_HOME/project/.agents/skills/demo-project" "$SKILL_HOME/codex/sessions" "$SKILL_HOME/claude/projects/demo"
+git -C "$SKILL_HOME" init -q -b main
+printf '%s\n' '---' 'name: demo-shared' 'description: Execute widget-build for widgets.' '---' 'Synthetic shared skill.' > "$SKILL_HOME/.agents/skills/demo-shared/SKILL.md"
+printf '%s\n' '---' 'name: demo-local' 'description: Execute local-build for widgets.' '---' 'Synthetic local skill.' > "$SKILL_HOME/.agents/skills/demo-local/SKILL.md"
+printf '%s\n' '---' 'name: demo-project' 'description: Execute project-build for widgets.' '---' 'Synthetic project skill.' > "$SKILL_HOME/project/.agents/skills/demo-project/SKILL.md"
+printf '%s\n' '---' 'name: credential-handling' 'description: Protect credentials.' '---' 'Synthetic authority skill.' > "$SKILL_HOME/.agents/skills/credential-handling/SKILL.md"
+git -C "$SKILL_HOME" add .agents/skills/demo-shared/SKILL.md .agents/skills/credential-handling/SKILL.md
+FM_SKILL_FIXTURE="$SKILL_HOME" node <<'NODE'
+const fs = require('fs'), path = require('path')
+const home = process.env.FM_SKILL_FIXTURE
+const at = '2026-01-01T00:00:00Z'
+function log(file, rows) { fs.writeFileSync(file, rows.map(row=>JSON.stringify({timestamp:at,...row})).join('\n')+'\n') }
+function launch(id, harness, stamp, worktree) {
+ const dir = path.join(home,'data',id,'sessions'); fs.mkdirSync(dir,{recursive:true})
+ fs.writeFileSync(path.join(dir,'identity.json'),JSON.stringify({schema:'fm-task-sessions.v1',id,spawned_at:at}))
+ fs.writeFileSync(path.join(dir,'launches.jsonl'),JSON.stringify({stamp,harness,store:path.join(home,harness),worktree})+'\n')
+ fs.writeFileSync(path.join(home,'state',id+'.meta'),`spawned_at=${at}\nharness=${harness}\nworktree=${worktree}\nproject=${home}/project\nkind=ship\n`)
+}
+const stampC = '11111111-1111-4111-8111-111111111111', stampD = '22222222-2222-4222-8222-222222222222'
+launch('skill-claude','claude',stampC,home+'/project')
+launch('skill-codex','codex',stampD,home+'/project')
+log(home+'/claude/projects/demo/'+stampC+'.jsonl',[
+ {type:'user',sessionId:stampC,cwd:home+'/project',message:{role:'user',content:'Run synthetic work'}},
+ {type:'assistant',message:{id:'a1',content:[{type:'tool_use',id:'s1',name:'Skill',input:{skill:'demo-shared'}}]}},
+ {type:'user',message:{content:[{type:'tool_result',tool_use_id:'s1',content:fs.readFileSync(home+'/.agents/skills/demo-shared/SKILL.md','utf8')}]}},
+ {type:'assistant',message:{id:'a2',content:[{type:'tool_use',id:'b1',name:'Bash',input:{command:'widget-build'}}]}},
+])
+const call = (type,name,input,id) => ({type:'response_item',payload:{type,name,...input,call_id:id}})
+log(home+'/codex/sessions/rollout-demo.jsonl',[
+ {type:'session_meta',payload:{id:'codex-demo',originator:stampD,cwd:home+'/project',timestamp:at}},
+ {type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'Use $demo-local and $missing-demo'}]}},
+ {type:'event_msg',payload:{type:'user_message',message:'Use $demo-local and $missing-demo'}},
+ {type:'turn_context',payload:{}},
+ call('function_call','exec_command',{arguments:JSON.stringify({cmd:`cat '${home}/.agents/skills/demo-local/SKILL.md'`})},'read1'),
+ {type:'response_item',payload:{type:'function_call_output',call_id:'read1',output:fs.readFileSync(home+'/.agents/skills/demo-local/SKILL.md','utf8')}},
+ {type:'turn_context',payload:{}},
+ call('custom_tool_call','exec',{input:`text(await tools.exec_command({cmd: "cat ${home}/project/.agents/skills/demo-project/SKILL.md"}));`},'read2'),
+ {type:'response_item',payload:{type:'custom_tool_call_output',call_id:'read2',output:fs.readFileSync(home+'/project/.agents/skills/demo-project/SKILL.md','utf8')}},
+ {type:'turn_context',payload:{}},
+ call('function_call','exec_command',{arguments:JSON.stringify({cmd:'project-build'})},'use1'),
+ {type:'turn_context',payload:{}},
+ {type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'Mention $ghost-demo without invoking it'}]}},
+ call('function_call','exec_command',{arguments:JSON.stringify({cmd:`echo '${home}/.agents/skills/demo-local/SKILL.md'`})},'echo1'),
+ {type:'turn_context',payload:{}},
+])
+log(home+'/codex/sessions/rollout-primary.jsonl',[
+ {type:'session_meta',payload:{id:'primary-demo',originator:'codex_cli',cwd:home,timestamp:at}},
+ {type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'Use $demo-shared'}]}},
+])
+NODE
+skill_store() {
+  FM_HOME="$SKILL_HOME" FM_ROOT_OVERRIDE="$SKILL_HOME" \
+    CODEX_HOME="$SKILL_HOME/codex" CLAUDE_CONFIG_DIR="$SKILL_HOME/claude" \
+    "$STORE" "$@" --no-import-graph
+}
+skill_query() {
+  node --disable-warning=ExperimentalWarning - "$SKILL_HOME/data/effort-store.sqlite" "$1" <<'NODE'
+const {DatabaseSync}=require('node:sqlite')
+const db=new DatabaseSync(process.argv[2],{readOnly:true})
+for(const row of db.prepare(process.argv[3]).all()) console.log(Object.values(row).map(v=>v===null?'NULL':v).join('|'))
+db.close()
+NODE
+}
+skill_store rebuild --rescan >"$ROOTDIR/skill-red.log" 2>&1 || fail "skill rescan failed: $(cat "$ROOTDIR/skill-red.log")"
+[ "$(skill_query "SELECT count(*) FROM task_skill_event WHERE task_id='skill-codex'")" = 4 ] || fail 'Codex explicit invocations and actual reads should yield four loads without mirror or mention duplicates'
+[ "$(skill_query "SELECT scope, loads, explicit_loads, implicit_loads FROM task_skill_usage WHERE task_id='skill-codex' AND skill='demo-project'")" = 'project|1|0|1' ] || fail 'project skill should have normalized usage'
+[ "$(skill_query "SELECT count(*) FROM task_skill_event WHERE task_id='skill-codex' AND skill='demo-project' AND followed_by_use=1")" = 1 ] || fail 'following command should deterministically match the skill description'
+[ "$(skill_query "SELECT count(*) FROM task_skill_event WHERE skill='missing-demo' AND followed_by_use IS NULL")" = 1 ] || fail 'unresolvable skill should have unknown use'
+[ "$(skill_query "SELECT count(*) FROM task_skill_event WHERE skill='demo-local' AND source='implicit' AND followed_by_use=0")" = 1 ] || fail 'complete use window without a matching command should yield false'
+[ "$(skill_query "SELECT scope, length(skill_sha) FROM task_skill_usage WHERE task_id='skill-claude'")" = 'shared|12' ] || fail 'tracked skill should carry a hash of observed content'
+[ "$(skill_query "SELECT kind FROM task WHERE task_id LIKE 'fm-session-%'")" = 'primary-session' ] || fail 'primary session should have a kind-tagged pseudo task'
+SKILL_FP=$(skill_store fingerprint)
+skill_store rebuild --rescan >/dev/null 2>&1 || fail 'repeated rescan failed'
+[ "$(skill_store fingerprint)" = "$SKILL_FP" ] || fail 'rescan must be idempotent'
+skill_store skills --json >"$ROOTDIR/skills-report.json" || fail 'JSON skill report failed'
+node - "$ROOTDIR/skills-report.json" <<'NODE' || fail 'report must enumerate unused skills, exempt authority skills, and exclude primary sessions by default'
+const rows=JSON.parse(require('fs').readFileSync(process.argv[2],'utf8')).skills
+if(!rows.some(r=>r.skill==='credential-handling'&&r.never_loaded&&r.exempt)) process.exit(1)
+if(rows.find(r=>r.skill==='demo-shared')?.tasks!==1) process.exit(1)
+NODE
+skill_store skills --since 1d --json >"$ROOTDIR/skills-recent.json" || fail 'recent report failed'
+node - "$ROOTDIR/skills-recent.json" <<'NODE' || fail 'since filter must restrict loads to event times'
+if(JSON.parse(require('fs').readFileSync(process.argv[2],'utf8')).skills.some(r=>r.loads>0)) process.exit(1)
+NODE
+skill_store skills --include-primary --json >"$ROOTDIR/skills-primary.json" || fail 'primary-inclusive report failed'
+node - "$ROOTDIR/skills-primary.json" <<'NODE' || fail 'primary-inclusive report must include the primary task'
+const rows=JSON.parse(require('fs').readFileSync(process.argv[2],'utf8')).skills
+if(rows.find(r=>r.skill==='demo-shared')?.tasks!==2) process.exit(1)
+NODE
+# Append a second actual read after the synthetic skill changes: versions must
+# remain separate, and the earlier hash must not be replaced with today's text.
+FM_SKILL_FIXTURE="$SKILL_HOME" node <<'NODE'
+const fs=require('fs'), home=process.env.FM_SKILL_FIXTURE
+const file=home+'/.agents/skills/demo-local/SKILL.md'
+fs.appendFileSync(file,'New synthetic version.\n')
+const rows=[
+ {type:'response_item',payload:{type:'function_call',name:'exec_command',arguments:JSON.stringify({cmd:`cat ${file}`}),call_id:'read-version2'}},
+ {type:'response_item',payload:{type:'function_call_output',call_id:'read-version2',output:fs.readFileSync(file,'utf8')}}
+]
+fs.appendFileSync(home+'/codex/sessions/rollout-demo.jsonl',rows.map(r=>JSON.stringify({timestamp:'2026-01-01T00:00:00Z',...r})).join('\n')+'\n')
+NODE
+skill_store skills --rescan --json >/dev/null || fail 'report rescan failed'
+[ "$(skill_query "SELECT count(DISTINCT skill_sha) FROM task_skill_usage WHERE task_id='skill-codex' AND skill='demo-local'")" = 2 ] || fail 'different observed versions must remain separate'
+SKILL_FP=$(skill_store fingerprint)
+rm -rf "$SKILL_HOME/codex/sessions" "$SKILL_HOME/claude/projects"
+skill_store rebuild --rescan >/dev/null 2>&1 || fail 'rebuild after logs removed failed'
+[ "$(skill_store fingerprint)" = "$SKILL_FP" ] || fail 'missing logs must preserve captured evidence rather than invent rows'
+pass 'skill loads are deterministic, normalized, idempotent, scoped, and retained with a safety-aware report'
+
+# Normal deferred capture starts forward; old retained loads require --rescan.
+FORWARD_HOME="$ROOTDIR/skill-forward-home"
+mkdir -p "$FORWARD_HOME/data" "$FORWARD_HOME/state" "$FORWARD_HOME/codex/sessions" "$FORWARD_HOME/claude/projects"
+FM_SKILL_FORWARD="$FORWARD_HOME" node <<'NODE'
+const fs=require('fs'), home=process.env.FM_SKILL_FORWARD
+fs.writeFileSync(home+'/data/skill-capture.json',JSON.stringify({enabled_at:'2026-02-01T00:00:00Z'}))
+const rows=[
+ {timestamp:'2026-01-01T00:00:00Z',type:'session_meta',payload:{id:'forward-demo',originator:'codex_cli',cwd:home,timestamp:'2026-01-01T00:00:00Z'}},
+ {timestamp:'2026-01-01T00:00:00Z',type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'$old-demo'}]}},
+ {timestamp:'2026-03-01T00:00:00Z',type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'$forward-demo'}]}}
+]
+fs.writeFileSync(home+'/codex/sessions/demo.jsonl',rows.map(r=>JSON.stringify(r)).join('\n')+'\n')
+NODE
+FM_HOME="$FORWARD_HOME" CODEX_HOME="$FORWARD_HOME/codex" CLAUDE_CONFIG_DIR="$FORWARD_HOME/claude" \
+  "$STORE" enqueue --no-import-graph || fail 'forward enqueue failed'
+FM_HOME="$FORWARD_HOME" CODEX_HOME="$FORWARD_HOME/codex" CLAUDE_CONFIG_DIR="$FORWARD_HOME/claude" \
+  "$STORE" report --sync --no-import-graph >/dev/null || fail 'forward publication failed'
+node --disable-warning=ExperimentalWarning - "$FORWARD_HOME/data/effort-store.sqlite" <<'NODE' || fail 'normal capture must include only forward skill events'
+const {DatabaseSync}=require('node:sqlite'), db=new DatabaseSync(process.argv[2],{readOnly:true})
+const rows=db.prepare('SELECT skill FROM task_skill_event').all()
+if(rows.length!==1 || rows[0].skill!=='forward-demo') process.exit(1)
+db.close()
+NODE
+pass 'normal asynchronous skill capture honors the persisted forward cutoff'
