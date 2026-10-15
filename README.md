@@ -177,7 +177,7 @@ Claude and grok use the slash form shown here; codex uses the same names with `$
 | `/bearings`        | Generate a concise four-section chat digest from bounded local fleet and registered-secondmate state; use `/bearings file` to also replace today's dated report in `data/`, and add `include PRs` when live PR enrichment is wanted |
 | `/surface`         | Bring a named URL, directory, or file into view through its appropriate browser, Lavish board, Windows application, File Explorer location, or in-session text excerpt without requiring an application choice |
 | `/updatefirstmate` | Fast-forward the running firstmate and its secondmates from origin, report pending changes from an optional upstream template remote without merging them, then re-read instructions and nudge secondmates |
-| `/stow`            | Sweep the session for uncaptured durable knowledge, curate tiered startup memory with decay and cold archival, enforce each home's budget or surface the required decision, cascade to registered second mates, and report what is safe to reset |
+| `/stow`            | Sweep the session for uncaptured durable knowledge, curate tiered startup memory toward the [lean target](docs/configuration.md#startup-memory-budget-configstartup-memory-budget), enforce each home's budget or surface the required decision, cascade to registered second mates, and report what is safe to reset |
 
 Bearings invocation examples:
 

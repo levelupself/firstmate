@@ -55,7 +55,7 @@ Decay advances only when a pass runs, so a home stowed less often than a clock e
 Every `/stow` invocation performs this complete pass, even when the session contains no new finding:
 
 1. Run `bin/fm-startup-memory-budget.sh report` before considering a write.
-   Record its effective budget and each file's estimated-token total.
+   Record its effective budget, lean target, and each file's estimated-token total.
    The budget is per home: this home's three files against this home's own allowance, never a fleet total.
    The helper's stable estimate is the documented conservative local approximation, not provider-exact accounting.
    If it rejects the setting or a memory file, do not infer a default or silently continue.
@@ -84,7 +84,12 @@ Every `/stow` invocation performs this complete pass, even when the session cont
    Prefer one concise current rule or authoritative pointer over duplicate prose.
    Archive completed incident and release chronology, stale versions and paths, transient task state, resolved alternatives, old metrics, and report-sized procedures; merge or remove only superseded claims and duplicates whose facts are preserved elsewhere.
    Never plainly remove a unique current fact: every such exit must archive it with provenance in the recoverable cold tier or relocate it to a live JIT owner or a consolidation merge that preserves the fact.
-7. When the total is still over budget after decay and consolidation, make aggressive reduction the default, using editable files only and in this order: archive every editable stale, superseded, or low-utility entry that is eligible for archival; consolidate tighter; run the over-budget offload sweep below and autonomously relocate every eligible non-pinned conditional entry into an already-existing allowed owner only after that owner holds it; then, only when the convergence precondition below holds, archive eligible `aging` entries oldest-reinforced-first until within budget.
+7. On every pass, remeasure after decay archival and consolidation; whenever the total remains above the reported lean target, run the lean-target offload sweep below toward that target using editable files only.
+   Archive eligible stale, superseded, or low-utility entries first and consolidate tighter before evaluating current conditional knowledge for offload.
+   Run `bin/fm-memory-offload-candidates.sh` (or `--json`) for deterministic largest-first proposals, then judge each candidate under the sweep's eligibility rules; hints are discovery aids, never proof of conditionality, authority, or destination safety.
+   If no candidate qualifies, record that the sweep ran and retain the current knowledge.
+   A result above the lean target but within budget is not an error, never blocks completion or reset safety by itself, and never authorizes budget eviction.
+   If the total is still over budget after the sweep, then, only when the convergence precondition below holds, archive eligible `aging` entries oldest-reinforced-first until within budget.
    A proposal, a future migration, or an accepted exception is never budget relief in this pass.
    Budget eviction considers only editable `aging` entries that carry a last-reinforced date and are not pending offload; a `<!--g-->` legacy-grace entry is ineligible until its grace cycle resolves, so eviction can neither cancel a promised grace cycle nor prefer just-validated entries over unvalidated ones.
    Convergence precondition: before evicting anything, total the eligible pool and check that archiving all of it would reach the budget; when even that cannot, skip the eviction rung entirely, archive nothing for budget reasons, and carry the concrete inability to the final step, naming the exempt pinned floor that crowds out the budget.
@@ -119,7 +124,7 @@ Reasons include `unreinforced <N>d`, `budget oldest-first`, and `legacy-unvalida
 Archiving is a move, not a removal, and recovery is `grep` plus copy back with no tooling.
 Each home keeps its own archive, the archive never cascades, and truncating a grown archive is a captain decision, not a mechanism.
 
-## Over-budget offload to JIT-loaded owners
+## Lean-target offload to JIT-loaded owners
 
 Decay handles staleness over time; offload handles scope: knowledge that is current and durable but relevant only in a nameable context, and therefore wrong to pay for in every session of every fleet member.
 For the offload sweep's evaluation only, each entry has exactly three outcomes decided in this fixed order:
@@ -128,13 +133,16 @@ For the offload sweep's evaluation only, each entry has exactly three outcomes d
 2. Offload, the scope outcome, asked only of current durable entries: is this needed in nearly every session, or only in a nameable context?
 3. Keep, the default outcome for this sweep: current, durable, and either fleet-wide-relevant or safety-relevant even in sessions that never name the topic.
 
-The offload sweep runs whenever the pass is still over budget after decay archiving and consolidation, so routine passes do not move entries speculatively.
-It is an immediate reduction step for eligible non-pinned conditional material that can be added to an already-existing allowed owner, not a deferred proposal that leaves the pass over budget.
+The offload sweep runs on every pass whose total remains above the lean target after decay archiving and consolidation, including routine passes within budget.
+It aims toward the target without promising to reach it: current always-relevant knowledge and approval-bound entries may prevent further safe relief.
+The candidate helper's header owns deterministic entry boundaries, ordering, identifiers, token estimates, and match hints; review the whole source entry before acting.
+It proposes all tiers, including pinned and legacy material, without determining eligibility.
+Eligible non-pinned conditional material may move immediately into an existing allowed owner or a newly created user-owned local skill under the destination checks below.
 Every test must hold for a candidate:
 
 - Editable source: this home owns the memory file and may relocate the entry; a read-only shared entry is routed to its primary owner instead.
 - Durable: not `perishable`, not stale, and expected to remain true for months.
-- Eligible by authority: only a non-pinned, dated `aging` entry that is not pending offload may be autonomously relocated to an already-existing allowed owner, while a `pinned` entry may be proposed only for explicit, per-item captain-approved relocation and can never be archived or autonomously offloaded for budget relief.
+- Eligible by authority: only a non-pinned, dated `aging` entry that is not pending offload may be autonomously relocated to an allowed live owner, while a `pinned` entry may be proposed only for explicit, per-item captain-approved relocation and can never be archived or autonomously offloaded for budget relief.
 - Conditional: a one-line nameable trigger exists, and a session that never touches that trigger runs no risk from omitting the fact.
 - Fat enough to matter: roughly 50 estimated tokens or more, handled largest-first, because consolidation handles smaller entries.
 - A destination below fits the entry's privacy and visibility.
@@ -148,12 +156,14 @@ Approved project-level destinations are not produced by stow: they ship normally
 
 - A user-owned local skill: a directory under `.agents/skills/<freeform-name>/` whose path is appended to the active home clone's repository-local exclude file, never to a `.gitignore`.
   Resolve `home_root` to `$FM_HOME` when it is set and otherwise to the Firstmate code root, and anchor every destination index check, exclude-path lookup, and ignore verification to that root with `git -C "$home_root"`.
-  Before approval and again before migration, validate that the chosen freeform destination under `home_root` is absent from that home's git index and collides with no existing file or directory, and reject the destination if either check fails.
+  Before creating a new skill, and before approval and again before migration of a pinned candidate, validate that the chosen freeform destination under `home_root` is absent from that home's git index and collides with no existing file or directory, and reject the destination if either check fails.
+  For an existing local skill, inspect its content, confirm the entire directory is absent from the index and its trigger fits, and verify its directory is excluded through the resolved repository-local exclude file before adding private knowledge.
+  Never follow a symlinked destination or parent directory.
   The name is freeform with no user-vs-firstmate naming convention, the skill stays per-home and untracked, and the harness still lists and JIT-loads it because skill discovery scans the filesystem and ignores git status (verified in `docs/verification/stow-memory.md`).
   Its precise, condition-stated description line is its entire trigger; it gets no `AGENTS.md` declaration because `AGENTS.md` is shared tracked material.
   Because this destination is local and untracked, it is also the JIT home for private conditional knowledge that no committed surface may hold.
 - An already-existing user-owned local on-demand note with an established trigger, after confirming it is untracked, private, and able to hold the quoted entry.
-  The pass may add the entry to that existing owner but never creates a new note, skill, or trigger for this purpose.
+  The pass may add the entry to that existing note but never creates a new note for this purpose.
 - A project's existing committed `AGENTS.md`, for project-intrinsic knowledge useful to nearly every session of that project, through a normal crewmate ship task using `bin/fm-ensure-agents-md.sh` and the project's registered delivery mode.
 - A project-level skill in the project's own repository, for situation-conditional knowledge within one project, through the same ship-task path.
 
@@ -164,8 +174,13 @@ A local skill exists only in this home, so offloading an entry out of `data/capt
 
 1. Reduce non-pinned material now.
    For each eligible non-pinned candidate, record its first line, source file, estimated tokens, one-line trigger, live destination, privacy and visibility verdict, and actual budget relief in the completion receipt.
-   Autonomously relocate it only by adding it to an already-existing allowed JIT note, or by routing it through a project's established delivery path to its existing owning `AGENTS.md`, then confirming that destination holds the quoted entry before removing the memory entry.
-   A destination that needs creation, uncompleted project delivery, or any other future work is not live and cannot count as relief, so continue with the next archival or eviction rung instead of leaving an over-budget proposal pending.
+   Add it to an existing allowed local owner, or create a new user-owned local skill when a coherent group of eligible non-pinned entries shares one nameable trigger.
+   Before creating that skill or writing private content, perform the destination checks above, resolve the active home's exclude file with `git -C "$home_root" rev-parse --git-path info/exclude`, append the destination directory path, and verify the future `SKILL.md` path with `git -C "$home_root" check-ignore`.
+   Only then create the skill with a precise condition-stated `description:` trigger and the quoted entries, and confirm it appears in a fresh session's skill index.
+   If creation fails, remove only the content and exclude rule created by this attempt, preserving every source entry.
+   Project destinations require that project's established delivery path, whether the owner is its `AGENTS.md` or a skill.
+   Confirm the live destination holds each quoted entry before removing it from memory.
+   Uncompleted creation, project delivery, or other future work cannot count as relief; continue safe reduction rather than treating a proposal as a completed move.
 2. Propose pinned relocation only.
    For a pinned candidate, append a `proposed-offload` section with the same fields to the completion receipt and create or refresh one durable captain-held backlog item using `tasks-axi add`, `tasks-axi hold`, `tasks-axi show <id> --full`, and `tasks-axi update <id> --body-file <path>` as appropriate.
    Preserve each candidate's approval state in that item, and require explicit plain-chat approval for that named item before any migration.
@@ -208,7 +223,7 @@ A local skill exists only in this home, so offloading an entry out of `data/capt
    - File each undone next step as a queued backlog item with a genuine `blocked-by` dependency when applicable.
 4. **Use inspect-then-update.**
    For every retained fact, ask which current statement it supersedes, whether it can be a one-sentence rewrite, and whether a stale entry should be refreshed, archived, or routed to an existing stronger owner.
-   The only graduation moves are promotion to tracked shared material through a PR, folding a learning into the captain-preference destination selected above, archiving a stale entry to `data/memory-archive.md`, autonomous offload of an eligible non-pinned conditional entry to an already-existing allowed owner through the reduce flow above, captain-approved offload of a pinned durable conditional entry to a JIT-loaded owner executed through the migration step above, or deletion of an entry that is a duplicate or already preserved through a stronger existing owner.
+   The only graduation moves are promotion to tracked shared material through a PR, folding a learning into the captain-preference destination selected above, archiving a stale entry to `data/memory-archive.md`, autonomous offload of an eligible non-pinned conditional entry to an allowed live owner through the reduce flow above, captain-approved offload of a pinned durable conditional entry to a JIT-loaded owner executed through the migration step above, or deletion of an entry that is a duplicate or already preserved through a stronger existing owner.
    A stale unique fact is never deleted, only archived.
    Do not invent another graduation path.
 
@@ -227,7 +242,7 @@ The first pass after adoption performs a one-time revalidation sweep of editable
 
 Report the outcome in plain captain-facing language with all of these facts:
 
-- effective startup-memory budget and total estimated tokens before and after;
+- effective startup-memory budget, lean target, and total estimated tokens before and after, including whether the offload sweep ran and whether the result remains above target;
 - one or more actions for each of `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`, using only `unchanged`, `added`, `rewritten`, `pruned`, `routed`, `archived`, or `proposed-offload`; adding or replacing a migration marker is `rewritten`, never a new action verb such as `migrated`;
 - each durable finding filed outside memory and its authoritative owner;
 - each archived entry's reason, each autonomous offload's live destination and actual relief, and, when a pinned candidate was proposed, the `proposed-offload` section with every candidate's fields;
@@ -266,10 +281,9 @@ Extend the completion receipt with one entry per secondmate alongside the primar
 Keep those entries in the same plain captain-facing language the rest of the receipt uses.
 The session is reset-safe only when every home is within its own budget with no unresolved exception.
 
-## Scope exclusion: no skill storage by the pass
+## Scope exclusion: shared tracked skills
 
-The stow pass itself must never store, create, or edit a skill as a destination for any finding.
-The exclusion binds the pass as a writer: proposing an offload and letting the migration step execute a captain-approved candidate later is not the pass storing a skill.
-Every Firstmate-home skill that migration produces is user-owned and local under the destinations hard rule, while an approved project-level destination is produced and shipped through that project's registered delivery path, never by stow.
+The pass may write only user-owned local skills under the guarded non-pinned reduce flow above; pinned candidates still migrate outside the pass only after explicit per-item approval.
 Changing firstmate's tracked `.agents/skills/` or public `skills/` remains a deliberately scoped Firstmate repository task through its pipeline, never a stow product.
-Outside a captain-approved offload, generalizable knowledge still routes to shared tracked material through its pipeline and fleet-local knowledge to `data/`.
+Project-level destinations are produced and shipped through that project's registered delivery path.
+Other generalizable knowledge routes to shared tracked material through its pipeline and fleet-local knowledge to `data/`.

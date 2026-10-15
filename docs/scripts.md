@@ -9,6 +9,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | ------------------------ | ------------------------------------------------------------------------------------ |
 | `fm-session-start.sh`    | Compose lock, bootstrap, and wake drain into the single ordered session-start digest |
 | `fm-session-start-budget.sh` | Read the visible briefing budget or measure a captured session-start digest |
+| `fm-memory-offload-candidates.sh` | Rank read-only startup-memory offload proposals for the internal stow skill |
 | `fm-cockpit.sh`          | Adopt, replace, inspect, or render the current home's orchestration cockpit frame |
 | `fm-sessionstart-nudge.sh` | Print the native session-start hook nudge when the primary has not already run the digest |
 | `fm-sessionstart-run.sh` | Route a native session-open hook to the full digest, a context re-emit, or the nudge |
