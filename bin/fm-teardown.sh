@@ -142,7 +142,12 @@
 # live record in this home binds (worktree= resolving to the same directory,
 # no teardown_at=), or that is checked out on another task's fm/<other-id>
 # branch, is refused by name, --force included, because that work is not this
-# task's to discard; and only when the ledger records NO holder for the copy
+# task's to discard. An exact pr_branch= recorded from this task's forge PR
+# by bin/fm-pr-check.sh also identifies its own branch after a rename; the
+# complete PR metadata must validate, and no branch-prefix similarity counts.
+# A matching PR branch never overrides another live binder, ledger holder,
+# or pool lease. Older records can acquire this evidence by re-registering
+# their PR with bin/fm-pr-check.sh; lacking it keeps the branch refusal. Otherwise, and only when the ledger records NO holder for the copy
 # and the copy is not on fm/<task-id>, the pool inventory (`treehouse status
 # --json` run from the project, parsed with node) is extra evidence: a lease,
 # live processes, or a non-available status reported inside it refuses by
@@ -1725,7 +1730,11 @@ teardown_copy_binding_check() {
   else
     case "$branch" in
       "fm/$ID") ;;
-      fm/*) holder="task ${branch#fm/} (branch $branch is checked out)" ;;
+      fm/*)
+        if ! fm_pr_metadata_identity_parse "$META" || [ "$FM_PR_META_BRANCH" != "$branch" ]; then
+          holder="task ${branch#fm/} (branch $branch is checked out)"
+        fi
+        ;;
     esac
   fi
   if [ -z "$holder" ] && [ -z "$ledger_holder" ] && [ "$branch" != "fm/$ID" ] && [ "$lease_proved" -eq 0 ]; then
