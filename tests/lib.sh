@@ -214,7 +214,7 @@ SH
   done
 }
 
-# fm_fake_treehouse_lease <fakebin> [<copy-path>]: a stateless treehouse stub
+# fm_fake_treehouse_lease <fakebin> [<copy-path>]: a fixed-copy treehouse stub
 # for spawn fixtures whose pane fake already reports the copy's path. It leases
 # one fixed copy: `get --lease --lease-holder <holder> --json` answers with
 # that path under the fixed lease id fakelease0001 and the given holder,
@@ -230,12 +230,13 @@ fm_fake_treehouse_lease() {
 #!/usr/bin/env bash
 set -u
 last=\$(cat "\$0.leased" 2>/dev/null || true)
+holder=\$(cat "\$0.holder" 2>/dev/null || printf '%s' task)
 path=\${FM_FAKE_LEASE_PATH:-\${FM_FAKE_SHELL_CWD:-\${FM_FAKE_PANE_PATH:-\${last:-$default}}}}
 [ -z "\${FM_FAKE_TREEHOUSE_LOG:-}" ] || printf '%s\n' "\$*" >> "\$FM_FAKE_TREEHOUSE_LOG"
 case "\${1:-} \${2:-}" in
   "get --help") printf '%s\n' 'Usage: treehouse get [--lease] [--lease-holder <holder>] [--json]'; exit 0 ;;
   "status --json")
-    printf '[{"name":"1","path":"%s","status":"leased","lease_id":"fakelease0001","lease_holder":"task","leased_at":"2026-09-19T00:00:00Z","processes":[]}]\n' "\$path"
+    printf '[{"name":"1","path":"%s","status":"leased","lease_id":"fakelease0001","lease_holder":"%s","leased_at":"2026-09-19T00:00:00Z","processes":[]}]\n' "\$path" "\$holder"
     exit 0
     ;;
   "get --lease")
@@ -244,6 +245,7 @@ case "\${1:-} \${2:-}" in
       case "\$1" in --lease-holder) holder=\${2:-}; shift 2 ;; *) shift ;; esac
     done
     printf '%s\n' "\$path" > "\$0.leased"
+    printf '%s\n' "\$holder" > "\$0.holder"
     printf '{"path":"%s","lease_id":"fakelease0001","lease_holder":"%s","leased_at":"2026-09-19T00:00:00Z"}\n' "\$path" "\$holder"
     exit 0
     ;;
