@@ -213,6 +213,15 @@ fm_pr_head_valid() {
   [[ "$head" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]]
 }
 
+# Optional exact forge head branch, stored by fm-pr-check.sh as pr_branch=.
+# Git validates the ref syntax; control bytes cannot become metadata records.
+fm_pr_branch_valid() {
+  local branch=${1-}
+  [ -n "$branch" ] || return 1
+  case "$branch" in *$'\n'*|*$'\r'*|*$'\t'*) return 1 ;; esac
+  git check-ref-format "refs/heads/$branch" >/dev/null 2>&1
+}
+
 fm_pr_file_mode() {
   if [ "$(uname)" = Darwin ]; then
     stat -f %Lp "$1" 2>/dev/null
@@ -286,12 +295,13 @@ fm_pr_regular_destination_on_device_or_absent() {
 }
 
 fm_pr_metadata_identity_parse() {
-  local file=$1 line value pr_count=0 seen_pr=0 post_pr_invalid=0
+  local file=$1 line value pr_count=0 branch_count=0 seen_pr=0 post_pr_invalid=0
   FM_PR_META_PROVIDER=
   FM_PR_META_URL=
   FM_PR_META_HOST=
   FM_PR_META_PATH=
   FM_PR_META_NUMBER=
+  FM_PR_META_BRANCH=
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
   [ "$(fm_pr_file_link_count "$file")" = 1 ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
@@ -308,6 +318,16 @@ fm_pr_metadata_identity_parse() {
           FM_PR_META_NUMBER=$FM_PR_NUMBER
         fi
         seen_pr=1
+        ;;
+      pr_branch=*)
+        branch_count=$((branch_count + 1))
+        value=${line#pr_branch=}
+        if [ "$branch_count" -eq 1 ] && fm_pr_branch_valid "$value"; then
+          # shellcheck disable=SC2034 # Consumed by fm-teardown.sh after validation.
+          FM_PR_META_BRANCH=$value
+        else
+          post_pr_invalid=1
+        fi
         ;;
       pr_head=*)
         if [ "$seen_pr" -eq 1 ]; then

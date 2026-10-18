@@ -102,6 +102,7 @@ SH
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
 case " $* " in
+  *" headRefName "*) printf '%s\n' "${FM_TEST_GH_BRANCH-fm/task-a-renamed}" ;;
   *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;
   *" createdAt "*)
     [ "${FM_TEST_GH_CREATED_FAIL:-0}" = 0 ] || exit 1
@@ -152,8 +153,8 @@ printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
 [ "${FM_TEST_GLAB_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GLAB_SLEEP"
 case " $* " in
   *" --output json "*)
-    printf '{"created_at":"%s","state":"%s","target_branch":"%s","merge_commit_sha":"0123456789abcdef0123456789abcdef01234567"}\n' \
-      "${FM_TEST_GLAB_CREATED_AT:-2026-08-21T13:45:00Z}" "${FM_TEST_GLAB_STATE:-opened}" "${FM_TEST_BASE_REF:-main}"
+    printf '{"source_branch":"%s","created_at":"%s","state":"%s","target_branch":"%s","merge_commit_sha":"0123456789abcdef0123456789abcdef01234567"}\n' \
+      "${FM_TEST_GLAB_BRANCH-fm/task-a-gitlab-renamed}" "${FM_TEST_GLAB_CREATED_AT:-2026-08-21T13:45:00Z}" "${FM_TEST_GLAB_STATE:-opened}" "${FM_TEST_BASE_REF:-main}"
     exit 0
     ;;
   *"repository/merge_base"*)
@@ -591,6 +592,38 @@ test_invalid_entrypoints_have_zero_side_effects() {
   [ ! -s "$dir/guard.log" ] || fail "invalid direct or merge data called the guard"
   [ ! -e "$TMP_ROOT/escape.check.sh" ] || fail "task traversal wrote outside state"
   pass "PR and teardown entrypoints reject invalid arguments before every side effect"
+}
+
+test_pr_branch_recording_is_exact_optional_and_replaced() {
+  local dir branch count invalid
+  dir=$(make_case branch-recording)
+  write_task_meta "$dir"
+  branch=fm/task-ab-rescoped
+  FM_TEST_GH_BRANCH=$branch run_check_entry "$dir" task-a https://github.com/o/r/pull/2 \
+    >/dev/null 2>/dev/null || fail "branch recording failed"
+  grep -qxF "pr_branch=$branch" "$dir/home/state/task-a.meta" || fail "forge branch was not recorded exactly"
+  fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" || fail "branch metadata invalidated PR poll"
+  FM_TEST_GH_BRANCH=fm/new-head run_check_entry "$dir" task-a https://github.com/o/r/pull/3 \
+    >/dev/null 2>/dev/null || fail "replacement PR recording failed"
+  count=$(grep -c '^pr_branch=' "$dir/home/state/task-a.meta")
+  [ "$count" -eq 1 ] || fail "replacement registration kept duplicate branch evidence"
+  grep -qxF pr_branch=fm/new-head "$dir/home/state/task-a.meta" || fail "replacement retained stale branch"
+  for invalid in '' 'fm/invalid..name' $'fm/head\nwindow=injected' $'fm/head\tbad' 'refs/heads/../bad'; do
+    FM_TEST_GH_BRANCH=$invalid run_check_entry "$dir" task-a https://github.com/o/r/pull/3 \
+      >/dev/null 2>/dev/null || fail "optional malformed branch prevented PR registration"
+    assert_no_grep '^pr_branch=' "$dir/home/state/task-a.meta" "invalid or stale branch reached metadata"
+    assert_no_grep '^window=injected' "$dir/home/state/task-a.meta" "branch injected metadata"
+    fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" || fail "optional invalid branch broke PR poll"
+  done
+  FM_TEST_GLAB_BRANCH=fm/gitlab-rescoped run_check_entry "$dir" task-a https://gitlab.example.com/o/r/-/merge_requests/4 \
+    >/dev/null 2>/dev/null || fail "GitLab branch recording failed"
+  grep -qxF pr_branch=fm/gitlab-rescoped "$dir/home/state/task-a.meta" || fail "GitLab source branch not recorded"
+  fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" || fail "GitLab branch metadata broke PR poll"
+  printf '%s\n' pr_branch=fm/second-branch >> "$dir/home/state/task-a.meta"
+  if fm_pr_metadata_identity_parse "$dir/home/state/task-a.meta"; then
+    fail "duplicate PR branch identity was trusted"
+  fi
+  pass "forge branches are optional, exact, validated, provider-aware, and replaced on registration"
 }
 
 test_valid_recording_and_merge_derivation() {
@@ -3874,6 +3907,11 @@ test_unchanged_check_set_short_circuits_per_record_validation() {
   pass "an unchanged check set skips per-record validation; only a moved or tampered record is revalidated"
 }
 
+if [ "${1:-}" = --pr-branch ]; then
+  test_pr_branch_recording_is_exact_optional_and_replaced
+  exit 0
+fi
+
 test_parser_matrix
 test_landing_evidence_and_registration
 
@@ -3887,6 +3925,7 @@ test_retirement_refuses_replacement_and_nonterminal_results
 test_retirement_queue_failure_and_receipt_tampering
 test_gitlab_merged_poll_retires
 test_invalid_entrypoints_have_zero_side_effects
+test_pr_branch_recording_is_exact_optional_and_replaced
 test_valid_recording_and_merge_derivation
 test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract

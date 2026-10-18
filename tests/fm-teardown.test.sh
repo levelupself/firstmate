@@ -4321,6 +4321,125 @@ test_copy_bound_by_another_live_record_refuses_reset_by_name() {
   pass "a copy another live record binds refuses the reset naming that task"
 }
 
+# Register the forge's exact renamed head while the local copy may lag it.
+register_renamed_pr() {
+  local case_dir=$1 branch=$2 head
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_pr_merged_for_head "$case_dir" "$head"
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+case " $* " in
+  *" headRefOid "*) printf '%s\n' "$FM_TEST_PR_HEAD" ;;
+  *" headRefName "*) printf '%s\n' "$FM_TEST_PR_BRANCH" ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/gh"
+  FM_TEST_PR_HEAD=$head FM_TEST_PR_BRANCH=$branch \
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" \
+  PATH="$case_dir/fakebin:$PATH" \
+    "$PR_CHECK" task-x1 https://github.com/example/repo/pull/7 >/dev/null \
+    || fail "could not register renamed PR"
+}
+
+test_recorded_renamed_pr_branch_allows_cleanup() {
+  local case_dir rc recorded branch
+  for branch in fm/task-x1-beside-trigger fm/task-x1b-morph-beside-trigger fm/rescoped-morph; do
+    case_dir=$(make_case "renamed-${branch#fm/}")
+    write_meta "$case_dir" no-mistakes ship
+    add_pool_like_treehouse "$case_dir"
+    add_logging_tmux "$case_dir"
+    land_shippable_commit "$case_dir"
+    seed_allocation_acquire "$case_dir"
+    # Registration must use the PR branch, not the still-original local one.
+    register_renamed_pr "$case_dir" "$branch"
+    recorded=$(cat "$case_dir/state/task-x1.meta")
+    git -C "$case_dir/wt" branch -m "$branch"
+    rc=0
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    cat "$case_dir/stdout" "$case_dir/stderr" > "$case_dir/output"
+    expect_code 0 "$rc" "recorded-renamed-branch: cleanup must accept its own PR branch: $(cat "$case_dir/stderr")"
+    assert_contains "$recorded" "pr_branch=$branch" "registration did not record the forge's exact branch"
+    assert_own_copy_retired "$case_dir" recorded-renamed-branch
+  done
+  pass "exact registered PR branches allow cleanup after a rename, including a re-scoped task ID"
+}
+
+test_unproven_renamed_branches_refuse_cleanup() {
+  local case_dir branch flag rc head_before
+  for branch in fm/task-x1-other fm/task-x1b-other fm/task-x9; do
+    case_dir=$(make_case "unproven-${branch#fm/}")
+    write_meta "$case_dir" no-mistakes ship
+    add_pool_like_treehouse "$case_dir"
+    add_logging_tmux "$case_dir"
+    land_shippable_commit "$case_dir"
+    seed_allocation_acquire "$case_dir"
+    # Even identical commits and an own ledger acquire do not prove branch identity.
+    head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
+    git -C "$case_dir/wt" branch -m "$branch"
+    for flag in '' --force; do
+      rc=0
+      # shellcheck disable=SC2086
+      run_teardown "$case_dir" $flag > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      [ "$rc" -ne 0 ] || fail "unproven branch $branch was accepted${flag:+ under $flag}"
+      assert_grep "$branch" "$case_dir/stderr" "refusal omitted unproven branch"
+      [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] || fail "unproven branch HEAD changed"
+      assert_no_grep return "$case_dir/treehouse.log" "unproven copy was returned"
+      assert_no_grep kill "$case_dir/tmux.log" "unproven copy's endpoint was killed"
+      assert_present "$case_dir/state/task-x1.meta" "unproven task record was removed"
+    done
+  done
+  pass "prefix similarity and identical commits never authorize a different task branch, even under --force"
+}
+
+test_recorded_pr_branch_never_overrides_other_holders() {
+  local case_dir conflict flag rc head_before branch=fm/rescoped-morph
+  for conflict in branch record ledger lease; do
+    case_dir=$(make_case "renamed-conflict-$conflict")
+    write_meta "$case_dir" no-mistakes ship
+    add_pool_like_treehouse "$case_dir"
+    add_logging_tmux "$case_dir"
+    land_shippable_commit "$case_dir"
+    # Keep allocation fields before PR metadata, like a real spawn.
+    seed_allocation_acquire "$case_dir"
+    register_renamed_pr "$case_dir" "$branch"
+    git -C "$case_dir/wt" branch -m "$branch"
+    case "$conflict" in
+      branch) git -C "$case_dir/wt" branch -m fm/rescoped-morph-other ;;
+      record)
+        fm_write_meta "$case_dir/state/task-x2.meta" "worktree=$case_dir/wt" ;;
+      ledger)
+        FM_DATA_OVERRIDE="$case_dir/data" FM_STATE_OVERRIDE="$case_dir/state" \
+          "$ROOT/bin/fm-worktree-allocation.sh" acquire task-x2 "$case_dir/project" "$case_dir/wt" \
+          2026-09-18T01:00:00Z reused >/dev/null || fail "could not acquire conflicting ledger holder" ;;
+      lease)
+        # Write spawn-owned lease identity ahead of the PR fields.
+        { printf '%s\n' 'pool_lease_id=lease-x1'; cat "$case_dir/state/task-x1.meta"; } > "$case_dir/meta-new"
+        cat "$case_dir/meta-new" > "$case_dir/state/task-x1.meta" ;;
+    esac
+    head_before=$(git -C "$case_dir/wt" rev-parse HEAD)
+    for flag in '' --force; do
+      rc=0
+      # shellcheck disable=SC2086
+      FM_FAKE_TREEHOUSE_STATUS_JSON="[{\"path\":\"$case_dir/wt\",\"lease_id\":\"lease-x2\",\"lease_holder\":\"task-x2\"}]" \
+        run_teardown "$case_dir" $flag > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+      [ "$rc" -ne 0 ] || fail "registered branch overrode conflicting $conflict holder${flag:+ under $flag}"
+      assert_grep REFUSED "$case_dir/stderr" "conflicting holder was not refused"
+      [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head_before" ] || fail "conflicting holder's HEAD changed"
+      assert_no_grep return "$case_dir/treehouse.log" "conflicting holder's copy was returned"
+      assert_no_grep kill "$case_dir/tmux.log" "conflicting holder's endpoint was killed"
+      assert_present "$case_dir/state/task-x1.meta" "conflicting holder's task record was removed"
+    done
+  done
+  pass "registered renamed PR branches never override branch, live-record, allocation, or pool-lease conflicts"
+}
+
+if [ "${1:-}" = --renamed-branch ]; then
+  test_recorded_renamed_pr_branch_allows_cleanup
+  test_unproven_renamed_branches_refuse_cleanup
+  test_recorded_pr_branch_never_overrides_other_holders
+  exit 0
+fi
+
 if [ "${1:-}" = --copy-binding ]; then
   test_early_torn_down_record_never_resets_a_copy_reheld_by_another_task
   test_untracked_early_torn_down_record_retires_records_only_when_the_ledger_names_another_holder
@@ -4683,3 +4802,7 @@ test_unreadable_allocation_ledger_refuses_cleanup
 test_live_record_with_a_stale_ledger_holder_refuses_by_name
 test_copy_on_another_tasks_branch_refuses_reset_by_name
 test_copy_bound_by_another_live_record_refuses_reset_by_name
+
+test_recorded_renamed_pr_branch_allows_cleanup
+test_unproven_renamed_branches_refuse_cleanup
+test_recorded_pr_branch_never_overrides_other_holders

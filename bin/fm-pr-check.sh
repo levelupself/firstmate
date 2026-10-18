@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Record a PR-ready task: store one validated canonical pr=<url> and the forge's
-# exact pr_head=<sha> when available, then atomically arm a static merge poll.
+# exact pr_head=<sha> and pr_branch=<head branch> when available, then atomically
+# arm a static merge poll. pr_branch is forge-derived ownership evidence for
+# teardown after a task re-scopes and renames its branch; no prefix match suffices.
 # Before registration, the forge base must equal its repository default branch.
 # Wrong or unverifiable bases are refused without publishing task completion.
 # The watcher check source is byte-for-byte bin/fm-pr-poll.sh; task and PR data
@@ -85,11 +87,16 @@ fm_pr_require_default_base "$PROVIDER" "$HOST" "$PROJECT_PATH" "$NUMBER" || {
 # bin/fm-review-diff.sh resolves the head from the remote when none is recorded.
 WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_HEAD=
+PR_BRANCH=
 PR_OPENED_AT=
 if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/dev/null 2>&1; then
   if REMOTE_HEAD=$(cd "$WT" && gh pr view "$URL" --json headRefOid -q .headRefOid 2>/dev/null) \
     && fm_pr_head_valid "$REMOTE_HEAD"; then
     PR_HEAD=$REMOTE_HEAD
+  fi
+  if REMOTE_BRANCH=$(cd "$WT" && gh pr view "$URL" --json headRefName -q .headRefName 2>/dev/null) \
+    && fm_pr_branch_valid "$REMOTE_BRANCH"; then
+    PR_BRANCH=$REMOTE_BRANCH
   fi
   if REMOTE_OPENED_AT=$(cd "$WT" && gh pr view "$URL" --json createdAt -q .createdAt 2>/dev/null) \
     && printf '%s\n' "$REMOTE_OPENED_AT" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
@@ -97,6 +104,20 @@ if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/d
   fi
 fi
 if [ "$PROVIDER" = gitlab ]; then
+  if REMOTE_BRANCH=$(glab mr view "$NUMBER" -R "https://$HOST/$PROJECT_PATH" --output json 2>/dev/null \
+    | node -e '
+      let input = ""
+      process.stdin.setEncoding("utf8")
+      process.stdin.on("data", chunk => { input += chunk })
+      process.stdin.on("end", () => {
+        try {
+          const value = JSON.parse(input).source_branch
+          if (typeof value === "string") process.stdout.write(value)
+        } catch {}
+      })
+    ') && fm_pr_branch_valid "$REMOTE_BRANCH"; then
+    PR_BRANCH=$REMOTE_BRANCH
+  fi
   if REMOTE_OPENED_AT=$(glab mr view "$NUMBER" -R "https://$HOST/$PROJECT_PATH" --output json 2>/dev/null \
     | node -e '
       let input = ""
@@ -149,11 +170,12 @@ if [ "$EXISTING_PR" = "$URL" ] \
 fi
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
-    pr=*|pr_head=*|pr_opened_at=*) ;;
+    pr=*|pr_head=*|pr_branch=*|pr_opened_at=*) ;;
     *) printf '%s\n' "$line" >> "$META_TMP" || exit 1 ;;
   esac
 done < "$META"
 printf 'pr=%s\n' "$URL" >> "$META_TMP" || exit 1
+[ -z "$PR_BRANCH" ] || printf 'pr_branch=%s\n' "$PR_BRANCH" >> "$META_TMP" || exit 1
 [ -z "$PR_HEAD" ] || printf 'pr_head=%s\n' "$PR_HEAD" >> "$META_TMP" || exit 1
 [ -z "$PR_OPENED_AT" ] || printf 'pr_opened_at=%s\n' "$PR_OPENED_AT" >> "$META_TMP" || exit 1
 chmod 0600 "$META_TMP" || exit 1
