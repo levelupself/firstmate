@@ -32,7 +32,10 @@
 #      the active step is ci, `axi status` alone cannot tell "still waiting on
 #      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
 #      a ci-step log-tail check overrides working -> done once checks read
-#      green, so a green PR is never silently read as still-validating.
+#      green, so a green PR is never silently read as still-validating. A declared
+#      paused/captain-held park reports paused only when that CI step has a
+#      current external-wait marker and no other step is running or fixing; the
+#      watcher then applies its bounded pause cadence.
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
@@ -262,6 +265,14 @@ nm_effective_ci_step_status() {
     printf 'fixing'
     return 0
   fi
+  # A leftover running CI row must not hide an active review, test, or rebase.
+  # Treat any concurrent implementation step conservatively as active work.
+  if printf '%s\n' "$RUN_OUT" \
+    | grep -E '^[[:space:]]*[^,]+,[[:space:]]*"?(running|fixing)"?[[:space:]]*,' \
+    | grep -qEv '^[[:space:]]*ci,'; then
+    printf 'fixing'
+    return 0
+  fi
   step_status=$(nm_ci_step_status)
   if [ -n "$step_status" ]; then
     printf '%s' "$step_status"
@@ -298,7 +309,8 @@ nm_ci_checks_state() {
     | tail -1)
   case "$marker" in
     *"checks passed"*|*"no CI checks reported - still monitoring"*) printf 'green' ;;
-    *"no CI checks reported yet"*|*"checks failed"*|*"issues detected"*|*"CI checks running"*|*"base branch advanced"*"re-arming CI monitor timeout"*) printf 'not-ready' ;;
+    *"no CI checks reported yet"*|*"CI checks running"*) printf 'waiting' ;;
+    *"checks failed"*|*"issues detected"*|*"base branch advanced"*"re-arming CI monitor timeout"*) printf 'not-ready' ;;
     *) printf 'unknown' ;;
   esac
 }
@@ -494,6 +506,9 @@ if [ "$HAVE_RUN" = 1 ]; then
             if [ "$CI_LOG_STATE" = green ]; then
               RUN_STATE="done"
               RUN_DETAIL="checks green: PR ready for review (still monitoring for merge/close)"
+            elif [ "$CI_LOG_STATE" = waiting ] && status_is_paused_or_captain_held "$LOG_LINE"; then
+              RUN_STATE=paused
+              RUN_DETAIL="waiting on external CI (declared park)"
             fi
             ;;
           fixing)
@@ -516,7 +531,7 @@ if [ "$HAVE_RUN" = 1 ]; then
     elif [ "$CI_STEP_STATUS" = fixing ]; then
       CI_LOG_STATE=not-ready
     fi
-    if [ "$CI_LOG_STATE" != not-ready ]; then
+    if [ "$CI_LOG_STATE" != not-ready ] && [ "$CI_LOG_STATE" != waiting ]; then
       emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR"
     fi
   fi

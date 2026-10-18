@@ -715,13 +715,16 @@ test_declared_ci_park_does_not_mask_active_work() {
     assert_contains "$out" 'state: working' 'ambiguous or failed CI is not an external wait'
   done
   FM_FAKE_CI_LOGS='no CI checks reported yet, waiting for checks to register...'
-  for step in running fixing reviewing testing ci-fixing top-fixing; do
+  for step in running fixing review test rebase-fixing ci-fixing top-fixing; do
     case "$step" in
       running) FM_FAKE_AXI_STATUS="$(run_running fm/parked-ci-active)" ;;
       fixing) FM_FAKE_AXI_STATUS="$(run_fixing fm/parked-ci-active)" ;;
-      reviewing|testing)
-        FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/parked-ci-active)
-    $step,running,0,0" ;;
+      review|test)
+        FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/parked-ci-active)"
+        FM_FAKE_AXI_STATUS=${FM_FAKE_AXI_STATUS/review,completed/$step,running} ;;
+      rebase-fixing)
+        FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/parked-ci-active)"
+        FM_FAKE_AXI_STATUS=${FM_FAKE_AXI_STATUS/review,completed/rebase,fixing} ;;
       ci-fixing) FM_FAKE_AXI_STATUS="$(run_ci_fixing fm/parked-ci-active)" ;;
       top-fixing) FM_FAKE_AXI_STATUS="$(run_fixing_ci_running fm/parked-ci-active)" ;;
     esac
