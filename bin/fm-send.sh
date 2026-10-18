@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Send one line of literal text to a crewmate endpoint, then Enter.
-# Usage: fm-send.sh <target> [--resolve-key <key>]... <text...>
+# Usage: fm-send.sh <target> [--kind request|closure|ack] [--resolve-key <key>]... <text...>
 #   <target> may be an exact task id, a legacy fm-<id> task label resolved
 #   through this home's state/<id>.meta, or an explicit well-formed backend
 #   target. fm-send refuses unresolved guesses rather than falling back to a
@@ -36,6 +36,10 @@
 # resolves the expectation. Set FM_PENDING_REPLY_EXISTING_CORR=<id> when
 # re-sending a recovery request for an already-open expectation so a second
 # record is not created. Direct unmarked captain input never creates one.
+# --kind defaults to request. Explicit closure and ack kinds retain routing
+# but create or reuse no reply expectation and tell the recipient no reply is
+# required. Message prose never selects an exemption. These kinds do not
+# resolve earlier expectations; a correlated parent report is still required.
 #
 # Decision closure (answerer-closes): pass --resolve-key <key> (repeatable,
 # before the message) when this send answers an open keyed needs-decision: or
@@ -297,6 +301,8 @@ shift
 # must precede --key or the message text; everything after the last flag is the
 # message exactly as before, so ordinary sends are byte-identical.
 RESOLVE_KEYS=
+MESSAGE_KIND=request
+MESSAGE_KIND_SET=0
 fm_send_add_resolve_key() {  # <key>
   local k=$1
   case "$k" in
@@ -315,6 +321,15 @@ fm_send_add_resolve_key() {  # <key>
 }
 while :; do
   case "${1:-}" in
+    --kind)
+      [ "$MESSAGE_KIND_SET" = 0 ] || { echo "error: duplicate --kind" >&2; exit 1; }
+      case "${2:-}" in
+        request|closure|ack) MESSAGE_KIND=$2 ;;
+        *) echo "error: --kind requires request, closure, or ack" >&2; exit 1 ;;
+      esac
+      MESSAGE_KIND_SET=1
+      shift 2
+      ;;
     --resolve-key)
       [ $# -ge 2 ] || { echo "error: --resolve-key requires a key" >&2; exit 1; }
       fm_send_add_resolve_key "$2" || exit 1
@@ -327,6 +342,11 @@ while :; do
     *) break ;;
   esac
 done
+
+if [ "$MESSAGE_KIND_SET" = 1 ]; then
+  [ "${1:-}" != --key ] || { echo "error: --kind cannot accompany --key" >&2; exit 1; }
+  [ -n "$*" ] || { echo "error: --kind requires a nonempty message" >&2; exit 1; }
+fi
 
 if [ "$TARGET_BACKEND" != remote ]; then
   fm_backend_validate "$TARGET_BACKEND" || exit 1
@@ -443,7 +463,12 @@ else
   # The pre-marker answer text, kept for the closing resolved note so the
   # durable ledger records the plain answer without marker or corr bytes.
   RESOLVE_ANSWER_TEXT=$MESSAGE
-  if [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
+  if [ "$MARK_FROM_FIRSTMATE" = 1 ] && [ "$MESSAGE_KIND" != request ]; then
+    # Keep the established routing carrier, but terminate the handshake rather
+    # than minting or reusing a request correlation (including recovery overrides).
+    fm_operational_input_body "$MESSAGE" MESSAGE || true
+    fm_message_mark_from_firstmate "kind=$MESSAGE_KIND No reply required. $MESSAGE" MESSAGE
+  elif [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
     # Reuse an existing correlation id for recovery resends; otherwise create a
     # durable parent expectation before delivery. Transport success never
     # resolves that expectation (see fm-pending-reply-lib.sh).
