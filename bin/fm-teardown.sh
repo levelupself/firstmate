@@ -147,7 +147,8 @@
 # complete PR metadata must validate, and no branch-prefix similarity counts.
 # A matching PR branch never overrides another live binder, ledger holder,
 # or pool lease. Older records can acquire this evidence by re-registering
-# their PR with bin/fm-pr-check.sh; lacking it keeps the branch refusal. Otherwise, and only when the ledger records NO holder for the copy
+# their PR with bin/fm-pr-check.sh; lacking it keeps the branch refusal.
+# Otherwise, and only when the ledger records NO holder for the copy
 # and the copy is not on fm/<task-id>, the pool inventory (`treehouse status
 # --json` run from the project, parsed with node) is extra evidence: a lease,
 # live processes, or a non-available status reported inside it refuses by

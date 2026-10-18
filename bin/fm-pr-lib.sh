@@ -323,6 +323,7 @@ fm_pr_metadata_identity_parse() {
         branch_count=$((branch_count + 1))
         value=${line#pr_branch=}
         if [ "$branch_count" -eq 1 ] && fm_pr_branch_valid "$value"; then
+          # shellcheck disable=SC2034 # Consumed by fm-teardown.sh after validation.
           FM_PR_META_BRANCH=$value
         else
           post_pr_invalid=1
