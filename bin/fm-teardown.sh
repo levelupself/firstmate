@@ -91,7 +91,8 @@
 # only its containing treehouse-state.json, as explicit-path return does.
 # That fallback requires one exact canonical path, an intact durable lease,
 # and the same Git common directory as the project; unknown state refuses.
-# The copy still held under exactly that lease is this task's: the check goes
+# A matching lease with a conflicting holder refuses, even with --force.
+# The copy held under that lease and task holder is this task's: the check goes
 # on to the ledger and record rules below, the occupant read is skipped (the
 # lease and any process inside are this task's own), and the eventual
 # `treehouse return --force` is pinned with `--if-lease-id <lease>` so the
@@ -103,9 +104,9 @@
 # lease <id> ...` or `copy already returned; its pool lease <id> was released
 # ...`; with a live record it is a lease inconsistency (the copy was returned
 # outside this task's cleanup) refused by name, --force included, with the
-# copy, its processes, and every record untouched. An unreadable inventory,
-# or one that does not list the copy, refuses a lease-bound cleanup until the
-# pool answers. The recorded lease is trusted only in the form
+# copy, its processes, and every record untouched. An unreadable or malformed
+# project inventory refuses; a valid inventory omitting the copy refuses unless
+# the containing-pool fallback above proves ownership. The recorded lease is trusted only in the form
 # bin/fm-spawn.sh records it (non-empty, no tab, CR, or LF); a pool_lease_id=
 # line that fails that rule is a lease-bound record whose lease cannot be
 # trusted and is refused by name before anything else runs, never downgraded
@@ -1650,7 +1651,7 @@ teardown_copy_ledger_holder() {
 
 # teardown_copy_pool_lease: the lease the pool currently holds on $WT, as
 # "<lease-id>\t<holder>" ("\t" when unleased). Returns 1 when the inventory
-# cannot be read or does not list the copy, which the caller treats as unknown.
+# is invalid or neither it nor the containing-pool fallback proves ownership.
 teardown_copy_pool_lease() {
   local inventory wt_real
   wt_real=$(canonical_existing_dir "$WT") || wt_real=$WT
