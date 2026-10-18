@@ -63,8 +63,11 @@ SH
   [ "$rc" -eq 143 ] || fail "TERM during marker lock claim did not exit promptly (rc=$rc)"
   [ ! -e "$state/.watch.lock" ] && [ ! -L "$state/.watch.lock" ] \
     || fail "TERM during marker claim retained watcher lock"
-  [ ! -e "$state/.wake-queue.lock" ] && [ ! -L "$state/.wake-queue.lock" ] \
-    || fail "TERM during marker claim retained queue lock"
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$FM_WAKE_QUEUE_LOCK" || exit 1
+    fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  ' _ "$LIB" || fail "TERM during marker claim left queue lock unusable"
   [ ! -e "$state/.watcher-down.lock" ] && [ ! -L "$state/.watcher-down.lock" ] \
     || fail "TERM during marker claim retained marker lock"
   grep -E '^pending:downtime:[A-Za-z0-9._-]+$' "$state/.watcher-down" >/dev/null \
