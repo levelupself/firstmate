@@ -120,7 +120,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pr-lib.sh`           | Own canonical task and PR validation plus private atomic PR-poll publication and identity-bound retirement |
 | `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated PR/MR-poll sidecars           |
 | `fm-pr-check-migrate.sh` | Quarantine older task polls without execution and rebuild only canonical polls       |
-| `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |
+| `fm-pr-check.sh`         | Register PR identity and arm a static merge poll; [header](../bin/fm-pr-check.sh) owns recorded fields |
 | `fm-pr-checks.sh`        | Report GitHub PR merge readiness and mergeability for the guarded merge path         |
 | `fm-pr-merge.sh`         | Merge a canonical GitHub PR, record provenance, and fast-forward its local mirror    |
 | `fm-linear-pr-link.sh`   | Append the matching Linear issue reference to a PR body; never fails a PR check      |
