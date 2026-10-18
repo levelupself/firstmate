@@ -691,7 +691,8 @@ EOF
       and .paths.report.path == ($data + "/bold-task/report.md")
       and .paths.report.present == true
   ' >/dev/null || fail "bold task did not join to override-backed backlog and report"
-  view=$(PATH="$fakebin:$PATH" COLUMNS=100 FM_HOME="$home" FM_DATA_OVERRIDE="$data" \
+  # Reserve room for every fixture row; short-pane truncation has dedicated coverage.
+  view=$(PATH="$fakebin:$PATH" COLUMNS=100 LINES=40 FM_HOME="$home" FM_DATA_OVERRIDE="$data" \
     FM_PROJECTS_OVERRIDE="$projects" "$VIEW")
   assert_not_contains "$view" "bold-task" \
     "finished work should not crowd the default utilization view"
