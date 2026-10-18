@@ -413,7 +413,7 @@ test_recorded_pool_identity_drift_returns_only_exact_old_leases() {
 
 test_recorded_pool_unknown_or_conflicting_ownership_refuses() {
   local dir scenario out rc head_before lease_before flag
-  for scenario in missing malformed shape absent duplicate relative unleased destroying holder lease common ledger binder dirty unlanded current-malformed current-conflict; do
+  for scenario in missing malformed shape absent duplicate relative unleased destroying holder lease common ledger binder dirty unlanded current-malformed current-null current-empty current-mixed current-path current-status current-processes current-lease current-holder current-conflict; do
     dir=$(recorded_pool_case) || fail 'could not prepare refusal fixture'
     node - "$dir" "$scenario" <<'NODE'
 const fs = require('fs'), [dir, scenario] = process.argv.slice(2);
@@ -431,8 +431,26 @@ switch (scenario) {
   case 'holder': e.lease_holder = 'outsider'; break;
   case 'lease': e.lease_id = 'lease-outsider'; break;
   case 'current-malformed': fs.writeFileSync(`${dir}/fake/current.json`, '{'); break;
+  case 'current-null': fs.writeFileSync(`${dir}/fake/current.json`, '[null]'); break;
+  case 'current-empty': fs.writeFileSync(`${dir}/fake/current.json`, '[{}]'); break;
+  case 'current-mixed': {
+    const current = JSON.parse(fs.readFileSync(`${dir}/fake/current.json`));
+    fs.writeFileSync(`${dir}/fake/current.json`, JSON.stringify([...current, null]));
+    break;
+  }
+  case 'current-path':
+  case 'current-status':
+  case 'current-processes':
+  case 'current-lease':
+  case 'current-holder': {
+    const current = JSON.parse(fs.readFileSync(`${dir}/fake/current.json`));
+    const fields = {path:'path', status:'status', processes:'processes', lease:'lease_id', holder:'lease_holder'};
+    current[0][fields[scenario.slice('current-'.length)]] = null;
+    fs.writeFileSync(`${dir}/fake/current.json`, JSON.stringify(current));
+    break;
+  }
   case 'current-conflict': fs.writeFileSync(`${dir}/fake/current.json`, JSON.stringify([
-    {...e, lease_id:'lease-current-outsider', lease_holder:'outsider'}])); break;
+    {...e, status:'leased', processes:[], lease_id:'lease-current-outsider', lease_holder:'outsider'}])); break;
 }
 fs.writeFileSync(file, JSON.stringify(state));
 NODE

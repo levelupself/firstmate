@@ -1663,6 +1663,10 @@ if (!Array.isArray(parsed)) process.exit(1)
 const real = p => { try { return fs.realpathSync(p) } catch { return p } }
 const copy = real(process.env.FM_TEARDOWN_COPY)
 const clean = v => typeof v === 'string' && !/[\t\r\n]/.test(v)
+if (!parsed.every(e => e && typeof e === 'object' && !Array.isArray(e) &&
+    clean(e.path) && path.isAbsolute(e.path) && clean(e.status) && e.status !== '' &&
+    Array.isArray(e.processes) && clean(e.lease_id) && clean(e.lease_holder) &&
+    (e.lease_id === '' || e.lease_holder !== ''))) process.exit(1)
 const matches = entries => entries.filter(e => e && typeof e.path === 'string' && path.isAbsolute(e.path) && real(e.path) === copy)
 let entries = matches(parsed)
 if (entries.length === 0) {
