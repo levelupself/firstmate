@@ -354,7 +354,7 @@ recorded_pool_case() {
     fm_write_meta "$dir/home/state/$id.meta" \
       "window=firstmate:fm-$id" "endpoint_task_id=$id" \
       "worktree=$wt" "project=$dir/proj" "kind=ship" "mode=no-mistakes" \
-      "pool_lease_id=$lease" "allocation_project=$dir/proj"
+      "pool_lease_id=$lease" "allocation_project=$dir/proj" "worktree_allocation=reused"
     FM_HOME="$dir/home" "$ROOT/bin/fm-worktree-allocation.sh" acquire \
       "$id" "$dir/proj" "$wt" 2026-10-18T00:00:00Z reused >/dev/null || exit 1
   done
@@ -411,12 +411,73 @@ test_recorded_pool_identity_drift_returns_only_exact_old_leases() {
   pass 'cleanup resolves both old copies by absolute path after pool identity drift, preserving current same-number slots'
 }
 
+test_recorded_pool_unknown_or_conflicting_ownership_refuses() {
+  local dir scenario out rc head_before lease_before flag
+  for scenario in missing malformed shape absent duplicate relative unleased destroying holder lease common ledger binder dirty unlanded current-malformed current-conflict; do
+    dir=$(recorded_pool_case) || fail 'could not prepare refusal fixture'
+    node - "$dir" "$scenario" <<'NODE'
+const fs = require('fs'), [dir, scenario] = process.argv.slice(2);
+const file = `${dir}/pool/treehouse-state.json`;
+let state = JSON.parse(fs.readFileSync(file)), e = state.worktrees[0];
+switch (scenario) {
+  case 'missing': fs.unlinkSync(file); process.exit(0);
+  case 'malformed': fs.writeFileSync(file, '{'); process.exit(0);
+  case 'shape': state.worktrees = {}; break;
+  case 'absent': state.worktrees.shift(); break;
+  case 'duplicate': state.worktrees.push({...e}); break;
+  case 'relative': e.path = 'pool/1/proj'; break;
+  case 'unleased': e.leased = false; break;
+  case 'destroying': e.destroying = true; break;
+  case 'holder': e.lease_holder = 'outsider'; break;
+  case 'lease': e.lease_id = 'lease-outsider'; break;
+  case 'current-malformed': fs.writeFileSync(`${dir}/fake/current.json`, '{'); break;
+  case 'current-conflict': fs.writeFileSync(`${dir}/fake/current.json`, JSON.stringify([
+    {...e, lease_id:'lease-current-outsider', lease_holder:'outsider'}])); break;
+}
+fs.writeFileSync(file, JSON.stringify(state));
+NODE
+    case "$scenario" in
+      common)
+        git clone -q "$dir/origin.git" "$dir/unrelated"
+        printf 'project=%s\n' "$dir/unrelated" >> "$dir/home/state/old-1.meta" ;;
+      ledger)
+        FM_HOME="$dir/home" "$ROOT/bin/fm-worktree-allocation.sh" acquire outsider \
+          "$dir/proj" "$dir/pool/1/proj" 2026-10-18T01:00:00Z reused >/dev/null || fail 'could not seed competing ledger holder' ;;
+      binder)
+        fm_write_meta "$dir/home/state/outsider.meta" "worktree=$dir/pool/1/proj" ;;
+      dirty) printf 'untracked\n' > "$dir/pool/1/proj/untracked" ;;
+      unlanded)
+        printf 'unlanded\n' > "$dir/pool/1/proj/unlanded"
+        git -C "$dir/pool/1/proj" add unlanded
+        git -C "$dir/pool/1/proj" -c user.name=Test -c user.email=test@example.invalid commit -qm unlanded ;;
+    esac
+    head_before=$(git -C "$dir/pool/1/proj" rev-parse HEAD)
+    lease_before=$(cat "$dir/fake/status.json")
+    for flag in '' --force; do
+      # --force intentionally overrides the dirty and landed-work checks.
+      if [ "$flag" = --force ] && { [ "$scenario" = dirty ] || [ "$scenario" = unlanded ]; }; then continue; fi
+      rc=0
+      out=$(run_teardown "$dir" old-1 ${flag:+"$flag"}) || rc=$?
+      [ "$rc" -ne 0 ] || fail "recorded-pool $scenario $flag: unsafe cleanup succeeded: $out"
+      assert_contains "$out" 'REFUSED:' "recorded-pool $scenario $flag: no safety refusal: $out"
+      assert_present "$dir/home/state/old-1.meta" "recorded-pool $scenario $flag: task record was removed"
+      assert_no_grep 'return ' "$dir/fake/treehouse.log" "recorded-pool $scenario $flag: copy was returned"
+      [ "$(git -C "$dir/pool/1/proj" rev-parse HEAD)" = "$head_before" ] || fail 'refusal changed HEAD'
+      [ "$(cat "$dir/fake/status.json")" = "$lease_before" ] || fail 'refusal changed pool leases'
+      ! grep -q '^teardown_at=' "$dir/home/state/old-1.meta" || fail 'refusal stamped return evidence'
+    done
+  done
+  pass 'recorded-pool fallback refuses unknown and conflicting ownership and preserves dirty, unlanded, ledger, and other-record guards'
+}
+
 if [ "${1:-}" = --recorded-pool ]; then
   test_recorded_pool_identity_drift_returns_only_exact_old_leases
+  test_recorded_pool_unknown_or_conflicting_ownership_refuses
   exit 0
 fi
 
 test_recorded_pool_identity_drift_returns_only_exact_old_leases
+test_recorded_pool_unknown_or_conflicting_ownership_refuses
 test_finished_workers_copy_stays_leased_until_cleanup
 test_concurrent_spawns_receive_distinct_leased_copies
 test_failed_spawn_returns_its_lease

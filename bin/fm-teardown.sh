@@ -87,6 +87,10 @@
 # Pool lease (pool-lease): a record spawned with the pool's durable per-task
 # lease carries pool_lease_id= (bin/fm-spawn.sh's pool-lease section), and
 # for it the pool's own `treehouse status --json` inventory decides first.
+# If a valid inventory omits the copy after project identity drift, consult
+# only its containing treehouse-state.json, as explicit-path return does.
+# That fallback requires one exact canonical path, an intact durable lease,
+# and the same Git common directory as the project; unknown state refuses.
 # The copy still held under exactly that lease is this task's: the check goes
 # on to the ledger and record rules below, the occupant read is skipped (the
 # lease and any process inside are this task's own), and the eventual
@@ -1651,16 +1655,43 @@ teardown_copy_pool_lease() {
   local inventory wt_real
   wt_real=$(canonical_existing_dir "$WT") || wt_real=$WT
   inventory=$(cd "$PROJ" && treehouse status --json 2>/dev/null) || return 1
-  FM_TEARDOWN_POOL_INVENTORY="$inventory" FM_TEARDOWN_COPY="$wt_real" node - <<'NODE'
-const fs = require('fs')
+  FM_TEARDOWN_POOL_INVENTORY="$inventory" FM_TEARDOWN_COPY="$wt_real" FM_TEARDOWN_PROJECT="$PROJ" node - <<'NODE'
+const fs = require('fs'), path = require('path'), cp = require('child_process')
 let parsed
 try { parsed = JSON.parse(process.env.FM_TEARDOWN_POOL_INVENTORY || '') } catch { process.exit(1) }
 if (!Array.isArray(parsed)) process.exit(1)
 const real = p => { try { return fs.realpathSync(p) } catch { return p } }
 const copy = real(process.env.FM_TEARDOWN_COPY)
-const entry = parsed.find(e => e && typeof e.path === 'string' && real(e.path) === copy)
 const clean = v => typeof v === 'string' && !/[\t\r\n]/.test(v)
-if (!entry || !clean(entry.lease_id) || (entry.lease_id !== '' && !clean(entry.lease_holder))) process.exit(1)
+const matches = entries => entries.filter(e => e && typeof e.path === 'string' && path.isAbsolute(e.path) && real(e.path) === copy)
+let entries = matches(parsed)
+if (entries.length === 0) {
+  // Explicit-path Treehouse return first consults <pool>/<slot>/<repo>'s
+  // containing pool. Status instead derives today's pool from the project,
+  // which can differ after an origin change. Read only that containing state,
+  // never scan pools or infer ownership from a slot number.
+  try {
+    const project = fs.realpathSync(process.env.FM_TEARDOWN_PROJECT)
+    const git = (p, ...args) => cp.execFileSync('git', ['-C', p, 'rev-parse', ...args], {encoding:'utf8', stdio:['ignore','pipe','ignore']}).trim()
+    const common = p => fs.realpathSync(git(p, '--path-format=absolute', '--git-common-dir'))
+    if (copy === project || fs.realpathSync(git(copy, '--show-toplevel')) !== copy || common(copy) !== common(project)) process.exit(1)
+    const file = path.join(path.dirname(path.dirname(copy)), 'treehouse-state.json')
+    if (!fs.lstatSync(file).isFile()) process.exit(1)
+    const state = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (!state || !Array.isArray(state.worktrees)) process.exit(1)
+    entries = matches(state.worktrees)
+    if (entries.length !== 1) process.exit(1)
+    const e = entries[0]
+    // State is a different contract from status JSON. Only an intact durable
+    // lease at the exact canonical path is evidence for this fallback.
+    if (e.path !== copy || e.name !== path.basename(path.dirname(copy)) || e.leased !== true ||
+        (e.destroying !== undefined && e.destroying !== false) || !clean(e.lease_id) || e.lease_id === '' ||
+        !clean(e.lease_holder) || e.lease_holder === '') process.exit(1)
+  } catch { process.exit(1) }
+}
+if (entries.length !== 1) process.exit(1)
+const entry = entries[0]
+if (!clean(entry.lease_id) || (entry.lease_id !== '' && !clean(entry.lease_holder))) process.exit(1)
 process.stdout.write(`${entry.lease_id}\t${entry.lease_id === '' ? '' : entry.lease_holder}\n`)
 NODE
 }
@@ -1670,13 +1701,17 @@ NODE
 teardown_copy_lease_check() {
   local lease pool_lease pool_holder
   if ! lease=$(teardown_copy_pool_lease); then
-    echo "REFUSED: task $ID's record binds copy $WT under pool lease $POOL_LEASE_ID, but the pool inventory (treehouse status --json in $PROJ) cannot be read or does not list the copy, so whether the pool still holds that lease is unknown." >&2
+    echo "REFUSED: task $ID's record binds copy $WT under pool lease $POOL_LEASE_ID, but the pool inventory (treehouse status --json in $PROJ, then the recorded copy's containing pool when omitted) cannot prove its ownership, so whether the pool still holds that lease is unknown." >&2
     echo "Rerun cleanup once the pool answers for the copy; nothing in it was touched." >&2
     return 1
   fi
   pool_lease=${lease%%$'\t'*}
   pool_holder=${lease#*$'\t'}
-  [ "$pool_lease" != "$POOL_LEASE_ID" ] || return 0
+  if [ "$pool_lease" = "$POOL_LEASE_ID" ]; then
+    [ "$pool_holder" = "$ID" ] && return 0
+    echo "REFUSED: copy $WT holds task $ID's recorded lease $POOL_LEASE_ID but names ${pool_holder:-no holder} as its holder; reconcile pool ownership before cleanup. --force does not override this." >&2
+    return 1
+  fi
   if grep -q '^teardown_at=' "$META" 2>/dev/null; then
     if [ -n "$pool_lease" ]; then
       teardown_copy_records_only "held by ${pool_holder:-another holder} under pool lease $pool_lease; this task's lease $POOL_LEASE_ID was released"
