@@ -32,7 +32,38 @@ The decision persists for the repo, so later worktrees of the same project skip 
 Resume after exit with `codex resume <session-id>`.
 The session id is printed on quit.
 
-**Primary-session guard fact (verified 2026-07-08, codex-cli 0.142.1).**
+## Model switches and near-limit dialogs
+
+Treat `state/<id>.meta` model and effort as dispatch provenance, not a live guarantee after a long Codex run.
+Historical observation on 2026-09-07: a pane dispatched as `gpt-5.3-codex-spark high` displayed that pair for about two hours, then displayed `gpt-5.6-luna medium`, while the dispatch record retained the original values and no explanation was visible in the pane.
+The initiating event, any earlier dialog or acknowledgement, actual backend model consumption, and later restoration were not captured; neither window exhaustion nor a Spark-specific cap is established by that observation.
+
+The following expectations are scoped to installed `codex-cli 0.160.0`, not a retrospective explanation of that incident.
+[Supervision verification](../../../docs/verification/supervision.md#codex-near-limit-model-selection) separates the controlled live-TUI observations from matching upstream-source evidence.
+
+- An ordinary `codex` usage bucket at 90% or more used in either primary or secondary window can queue the `Approaching rate limits` dialog.
+  It offers `Switch to gpt-6-luna`, `Keep current model`, and `Keep current model (never show again)`; the subtitle asks about lower credit usage.
+  The first option is initially selected, so a routine Enter can accept a model switch instead of submitting a message.
+  This is an interactive selection, not evidence of an automatic quota-exhaustion reroute or a hung worker.
+- Source conditions also require no usable workspace credits, an available visible cheaper-model preset, no hidden reminder preference, and an eligible current model; a backend banner can defer the dialog, and the Luna or Luna-reserve model suppresses it.
+  Model-specific usage buckets alone do not trigger this ordinary-bucket nudge.
+  A warning can precede the dialog, which was observed after a simulated turn completion rather than immediately at startup.
+- Accepting the switch selects the cheaper preset's default effort as well as its model.
+  The controlled observation changed `gpt-6.1-sol high` to `gpt-6-luna medium`; retaining `high` is not part of this path.
+  The footer and `thread/settings/updated` notifications expose the new selection even when no explanatory chat message appears.
+  Sending a subsequent zero-used usage snapshot did not restore the original pair during the bounded observation; do not assume an automatic return after a real allowance reset.
+
+When this dialog or a changed footer appears, inspect the choices and current selection before sending another routine Enter.
+Keep the accepted model and effort unless firstmate authorizes a change under the existing effort and decision-authority rules; an effort downgrade is a decision, not routine dialog dismissal.
+Collect the CLI version, visible dialog, footer or `/status`, and session-bound settings or rollout evidence before classifying the worker as stuck.
+Codex's `thread/settings/updated` supplies selected `model` and `effort`; where legacy rollout `turn_context` records are available, inspect their model and effort for each relevant turn rather than just the last record.
+The existing [model-bench analyzer](../../../bin/fm-model-bench-analyze.mjs) reads rollout model changes, but does not reconcile live dispatch metadata.
+Preserve the original dispatch values and report an evidenced mismatch separately; no automatic metadata reconciliation is provided by this adapter.
+These client settings establish selection, not proof of which backend model consumed a particular quota window, and missing evidence leaves that attribution unknown.
+The September switch's trigger and restoration remain unknown; reproducing a synthetic UI path must never be presented as reproducing that historical service event.
+Do not deliberately exhaust a quota window to investigate it.
+
+## Primary-session guard (verified 2026-07-08, codex-cli 0.142.1)
 The firstmate PRIMARY's own `.codex/hooks.json` registers a Stop hook that pipes Codex's Stop payload to `bin/fm-turnend-guard.sh`.
 Codex Stop hooks block on exit 2 and expose `stop_hook_active` for the same one-block loop safety Claude uses.
 Codex's Stop payload includes `cwd`, but the tracked primary hook does not use it to choose the guard executable.
