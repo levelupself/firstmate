@@ -34,6 +34,82 @@ drain_and_ack() {  # <state>
     --recovery-generation "$generation"
 }
 
+# Interrupt the real claim after its output redirection has truncated pid but
+# before printf writes it. BASH_ENV instrumentation runs only in this fixture;
+# it adds no load and never signals a shared watcher.
+test_term_during_marker_lock_claim() {
+  local dir state rc
+  dir=$(make_case term-mid-claim)
+  state="$dir/state"
+  mark_pr_check_migration_complete "$state"
+  cat > "$dir/instrument.sh" <<'SH'
+printf() {
+  if [ "${FUNCNAME[1]:-}" = fm_lock_claim ] \
+    && [ "${lockdir:-}" = "$FM_STATE_OVERRIDE/.watcher-down.lock" ] \
+    && [ -n "${WATCHER_PID:-}" ] && [ ! -e "$FM_STATE_OVERRIDE/interrupted" ]; then
+    [ -f "$lockdir/pid" ] && [ ! -s "$lockdir/pid" ] || exit 91
+    builtin printf '%s\n' reached > "$FM_STATE_OVERRIDE/interrupted"
+    kill -TERM "${BASHPID:-$$}"
+  fi
+  builtin printf "$@"
+}
+SH
+  rc=0
+  BASH_ENV="$dir/instrument.sh" PATH="$dir/fakebin:$PATH" \
+    FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=0.1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    timeout -k 2 8 "$WATCH" > "$dir/watch.out" 2> "$dir/watch.err" || rc=$?
+  [ -f "$state/interrupted" ] || fail "marker claim interruption was not reached (rc=$rc)"
+  [ "$rc" -eq 143 ] || fail "TERM during marker lock claim did not exit promptly (rc=$rc)"
+  [ ! -e "$state/.watch.lock" ] && [ ! -L "$state/.watch.lock" ] \
+    || fail "TERM during marker claim retained watcher lock"
+  [ ! -e "$state/.wake-queue.lock" ] && [ ! -L "$state/.wake-queue.lock" ] \
+    || fail "TERM during marker claim retained queue lock"
+  [ ! -e "$state/.watcher-down.lock" ] && [ ! -L "$state/.watcher-down.lock" ] \
+    || fail "TERM during marker claim retained marker lock"
+  grep -E '^pending:downtime:[A-Za-z0-9._-]+$' "$state/.watcher-down" >/dev/null \
+    || fail "TERM during marker claim did not publish downtime"
+  pass "TERM during a zero-byte marker lock claim exits and releases locks"
+}
+
+# A bare return inside an EXIT trap can inherit the status that entered the
+# trap. Exercise acquisition itself so both reclamation and the settle grace
+# must remain correct regardless of the terminating command's status.
+test_empty_lock_acquisition_in_exit_trap() {
+  local dir state freshness exit_status rc expected
+  for freshness in fresh stale; do
+    for exit_status in 0 7; do
+      dir=$(make_case "exit-trap-$freshness-$exit_status")
+      state="$dir/state"
+      mkdir "$state/.fixture.lock"
+      if [ "$freshness" = stale ]; then
+        touch -t 200001010000 "$state/.fixture.lock"
+        expected=acquired
+      else
+        expected=refused
+      fi
+      rc=0
+      FM_STATE_OVERRIDE="$state" FM_LOCK_STALE_AFTER=60 bash -c '
+        . "$1"
+        cleanup() {
+          if fm_lock_try_acquire "$STATE/.fixture.lock"; then
+            printf "acquired\n" > "$STATE/result"
+            fm_lock_release "$STATE/.fixture.lock"
+          else
+            printf "refused\n" > "$STATE/result"
+          fi
+        }
+        trap cleanup EXIT
+        exit "$2"
+      ' _ "$LIB" "$exit_status" || rc=$?
+      [ "$rc" -eq "$exit_status" ] || fail "lock cleanup changed exit status $exit_status to $rc"
+      [ "$(cat "$state/result")" = "$expected" ] \
+        || fail "$freshness empty lock was not $expected in EXIT trap with status $exit_status"
+    done
+  done
+  pass "EXIT trap acquisition preserves fresh-lock grace and reclaims stale empty locks"
+}
+
 test_singleton_start() {
   local dir state fakebin out1 out2 pid1 pid2 live i
   dir=$(make_case singleton)
@@ -1346,6 +1422,8 @@ test_msys_pid_identity_uses_proc() {
   pass "MSYS process identity uses compatible /proc fields"
 }
 
+test_term_during_marker_lock_claim
+test_empty_lock_acquisition_in_exit_trap
 test_singleton_start
 test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
