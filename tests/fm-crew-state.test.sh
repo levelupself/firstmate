@@ -635,6 +635,112 @@ test_ci_monitoring_still_waiting_stays_working() {
   pass "ci-monitoring run with checks not yet green stays working"
 }
 
+# Declared parks can use the bounded pause cadence only with positive evidence
+# that the matched run is solely waiting on external CI. Exercise the real
+# crew-state helper through the watcher's sourced classification interface.
+test_declared_park_external_ci_wait() {
+  reset_fakes
+  local d out declaration marker
+  d=$(new_case parked-ci-wait)
+  make_repo_on_branch "$d/wt" fm/parked-ci
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/parked-ci.meta" "window=fm:fm-parked-ci" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/parked-ci)"
+  for declaration in 'captain-held: awaiting CI authorization' \
+    'captain-held [key=ci]: awaiting CI authorization' 'paused: waiting on external CI'; do
+    printf '%s\n' "$declaration" > "$d/state/parked-ci.status"
+    for marker in 'no CI checks reported yet, waiting for checks to register...' \
+      'CI checks running, waiting for results...'; do
+      FM_FAKE_CI_LOGS=$marker
+      out=$(run_crew_state "$d" parked-ci)
+      assert_contains "$out" 'state: paused' "declared park with external CI wait -> paused"
+      assert_contains "$out" 'source: run-step' "external wait is run-step sourced"
+      assert_contains "$out" 'waiting on external CI' "external wait detail names CI"
+      out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" \
+        FM_CREW_STATE_BIN="$CREW_STATE" bash -c '
+          . "$1"
+          pause_state_class fm:fm-parked-ci parked-ci
+        ' _ "$ROOT/bin/fm-watch.sh")
+      [ "$out" = paused ] || fail "watcher classified a declared external CI wait as $out"
+    done
+  done
+
+  # Repeated idle observations use pause tracking, clearing the previous wedge
+  # ladder. Aging the declaration then produces a bounded recheck, never a wedge.
+  printf '143\n' > "$d/state/.wedge-escalations-fm_fm-parked-ci"
+  printf '1\n' > "$d/state/.stale-since-fm_fm-parked-ci"
+  out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" \
+    FM_CREW_STATE_BIN="$CREW_STATE" FM_PAUSE_RESURFACE_SECS=240 bash -c '
+      . "$1"
+      for round in 1 2 3 4; do
+        class=$(pause_state_class fm:fm-parked-ci parked-ci)
+        [ "$class" = paused ] || exit 1
+        handle_paused_stale fm:fm-parked-ci parked-ci "$round"
+      done
+    ' _ "$ROOT/bin/fm-watch.sh") || fail "CI park did not survive repeated idle observations"
+  [ -z "$out" ] || fail "CI park emitted a premature recheck: $out"
+  [ -e "$d/state/.paused-fm_fm-parked-ci" ] || fail "CI park did not enter the pause cadence"
+  [ ! -e "$d/state/.stale-since-fm_fm-parked-ci" ] || fail "CI park retained the wedge timer"
+  [ ! -e "$d/state/.wedge-escalations-fm_fm-parked-ci" ] || fail "CI park retained its wedge escalation count"
+  touch -t 200001010000 "$d/state/parked-ci.status"
+  out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" bash -c '
+    . "$1"
+    handle_paused_stale fm:fm-parked-ci parked-ci aged
+  ' _ "$ROOT/bin/fm-watch.sh")
+  assert_contains "$out" 'awaiting external - declared pause' 'aged CI park resurfaces for a bounded recheck'
+  assert_not_contains "$out" 'possible wedge' 'CI recheck is not a wedge'
+  out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" bash -c '
+    . "$1"
+    handle_paused_stale fm:fm-parked-ci parked-ci same-window
+  ' _ "$ROOT/bin/fm-watch.sh")
+  [ -z "$out" ] || fail "CI park resurfaced twice inside its recheck window: $out"
+  pass "declared external CI waits use the bounded pause cadence without wedge escalations"
+}
+
+test_declared_ci_park_does_not_mask_active_work() {
+  reset_fakes
+  local d out marker step
+  d=$(new_case parked-ci-active)
+  make_repo_on_branch "$d/wt" fm/parked-ci-active
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/parked-ci-active.meta" "window=fm:fm-parked-ci-active" "worktree=$d/wt" "kind=ship"
+  printf 'captain-held: waiting for CI\n' > "$d/state/parked-ci-active.status"
+  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/parked-ci-active)"
+  for marker in '' 'CI log unavailable' \
+    $'CI checks running, waiting for results...\nissues detected: merge conflict - auto-fixing' \
+    $'CI checks running, waiting for results...\nchecks failed' \
+    $'CI checks running, waiting for results...\nbase branch advanced (aaaaaaa..bbbbbbb), re-arming CI monitor timeout'; do
+    FM_FAKE_CI_LOGS=$marker
+    out=$(run_crew_state "$d" parked-ci-active)
+    assert_contains "$out" 'state: working' 'ambiguous or failed CI is not an external wait'
+  done
+  FM_FAKE_CI_LOGS='no CI checks reported yet, waiting for checks to register...'
+  for step in running fixing reviewing testing ci-fixing top-fixing; do
+    case "$step" in
+      running) FM_FAKE_AXI_STATUS="$(run_running fm/parked-ci-active)" ;;
+      fixing) FM_FAKE_AXI_STATUS="$(run_fixing fm/parked-ci-active)" ;;
+      reviewing|testing)
+        FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/parked-ci-active)
+    $step,running,0,0" ;;
+      ci-fixing) FM_FAKE_AXI_STATUS="$(run_ci_fixing fm/parked-ci-active)" ;;
+      top-fixing) FM_FAKE_AXI_STATUS="$(run_fixing_ci_running fm/parked-ci-active)" ;;
+    esac
+    out=$(run_crew_state "$d" parked-ci-active)
+    assert_contains "$out" 'state: working' "active $step must outrank a declared CI park"
+    out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" \
+      FM_CREW_STATE_BIN="$CREW_STATE" bash -c '
+        . "$1"
+        pause_state_class fm:fm-parked-ci-active parked-ci-active
+      ' _ "$ROOT/bin/fm-watch.sh")
+    [ "$out" = working ] || fail "watcher masked active $step as $out"
+  done
+  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/parked-ci-active)"
+  FM_FAKE_CI_LOGS='all CI checks passed - still monitoring until merged or closed'
+  out=$(run_crew_state "$d" parked-ci-active)
+  assert_contains "$out" 'state: done' 'green CI remains ready despite a declared park'
+  pass "declared CI parks do not mask active implementation, uncertain CI, or green results"
+}
+
 # A later merge-conflict auto-fix round after an earlier green reading must
 # not be masked: the MOST RECENT marker in the log tail wins.
 test_ci_monitoring_green_then_new_issue_stays_working() {
@@ -1706,6 +1812,8 @@ test_ci_monitoring_no_checks_terminal_surfaces_done
 test_ci_monitoring_green_then_rearm_stays_working
 test_ci_monitoring_no_checks_yet_stays_working
 test_ci_monitoring_still_waiting_stays_working
+test_declared_park_external_ci_wait
+test_declared_ci_park_does_not_mask_active_work
 test_ci_monitoring_green_then_new_issue_stays_working
 test_ci_ready_done_log_relapse_stays_working
 test_ci_fixing_after_green_stays_working
