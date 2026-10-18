@@ -795,6 +795,60 @@ test_fm_send_marked_secondmate_creates_pending_and_embeds_corr() {
   pass "fm-send marked secondmate path creates pending and embeds corr"
 }
 
+# A resolved request followed by a closure/ack must terminate the exchange.
+# The explicit kind is transport metadata, never guessed from message prose.
+test_fm_send_nonrequest_kinds_terminate_handshake() {
+  local kind dir fb log home state corr rec before got
+  for kind in closure ack; do
+    dir="$TMP_ROOT/send-$kind"; mkdir -p "$dir"
+    fb=$(make_stubs "$dir"); log="$dir/send.log"
+    home=$(setup_parent "send-$kind"); state="$home/state"
+    fm_write_secondmate_meta "$state/hibit.meta" "$home/sm" "sess:fm-hibit"
+    run_send "$fb" "$home" "$log" hibit --kind request "report the result" \
+      || fail "explicit request should send"
+    corr=$(fm_pending_reply_extract_corr "$(cat "$log")")
+    [ -n "$corr" ] || fail "explicit request must create a reply expectation"
+    rec=$(fm_pending_reply_path "$state" "$corr")
+    printf 'done [corr=%s]: result reported\n' "$corr" > "$state/hibit.status"
+    fm_pending_reply_try_resolve "$state" "$corr" || fail "request should resolve"
+    before=$(cat "$rec")
+    # An existing correlation override must not make an acknowledgement reuse
+    # or mutate a request record, including when the token is in its body.
+    FM_PENDING_REPLY_EXISTING_CORR=$corr run_send "$fb" "$home" "$log" hibit \
+      --kind "$kind" "received corr=$corr" || fail "$kind should send"
+    [ "$(find "$state/pending-replies" -type f | wc -l | tr -d ' ')" = 1 ] \
+      || fail "$kind must not create a reply expectation"
+    [ "$(cat "$rec")" = "$before" ] || fail "$kind must not mutate the resolved request"
+    got=$(cat "$log")
+    case "$got" in
+      "$FM_FROMFIRST_MARK"*) ;;
+      *) fail "$kind must preserve secondmate routing" ;;
+    esac
+    case "$got" in
+      *"kind=$kind"*"No reply required."*) ;;
+      *) fail "$kind must explicitly communicate that no reply is required" ;;
+    esac
+    FM_PENDING_REPLY_SEND_HOOK=false fm_pending_reply_tick "$state"
+    [ "$(cat "$rec")" = "$before" ] || fail "$kind must not trigger a repost"
+  done
+  pass "closure and ack terminate a resolved request without another expectation"
+}
+
+test_fm_send_rejects_invalid_message_kind() {
+  local dir fb log home rc
+  dir="$TMP_ROOT/send-invalid-kind"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_parent invalid-kind)
+  fm_write_secondmate_meta "$home/state/hibit.meta" "$home/sm" "sess:fm-hibit"
+  run_send "$fb" "$home" "$log" hibit --kind typo "report the result"; rc=$?
+  [ "$rc" -ne 0 ] || fail "unknown kind must refuse rather than suppress reporting"
+  [ ! -s "$log" ] || fail "unknown kind must refuse before delivery"
+  [ ! -d "$home/state/pending-replies" ] || fail "unknown kind must refuse before registration"
+  run_send "$fb" "$home" "$log" hibit --kind ack --key Enter; rc=$?
+  [ "$rc" -ne 0 ] || fail "message kind must refuse the key path"
+  pass "invalid kind and kind/key combinations refuse before delivery"
+}
+
 test_document_pointer_resolves() {
   local home state corr
   home=$(setup_parent doc-pointer)
@@ -1108,6 +1162,8 @@ test_restart_preserves_expectation_and_parent_destination
 test_wrong_home_detected_not_acknowledged
 test_unmarked_captain_input_creates_no_expectation
 test_fm_send_marked_secondmate_creates_pending_and_embeds_corr
+test_fm_send_nonrequest_kinds_terminate_handshake
+test_fm_send_rejects_invalid_message_kind
 test_document_pointer_resolves
 test_helper_report_resolves
 test_busy_idle_observation_via_backend_abstraction
