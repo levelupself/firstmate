@@ -343,6 +343,80 @@ fs.writeFileSync(file, JSON.stringify(entries) + "\n")
   pass "fm-spawn: relaunch and reattach carry the task's own lease and refuse another holder's"
 }
 
+# A project's current pool can change after origin is added. Status lists the
+# new pool; explicit-path return still resolves the old containing pool.
+recorded_pool_case() {
+  local dir id slot wt lease
+  dir=$(new_case recorded-pool)
+  for slot in 1 2; do
+    id="old-$slot"; wt="$dir/pool/$slot/proj"; lease="lease-old-$slot"
+    git -C "$wt" checkout -q -b "fm/$id"
+    fm_write_meta "$dir/home/state/$id.meta" \
+      "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+      "worktree=$wt" "project=$dir/proj" "kind=ship" "mode=no-mistakes" \
+      "pool_lease_id=$lease" "allocation_project=$dir/proj"
+    FM_HOME="$dir/home" "$ROOT/bin/fm-worktree-allocation.sh" acquire \
+      "$id" "$dir/proj" "$wt" 2026-10-18T00:00:00Z reused >/dev/null || exit 1
+  done
+  fm_fake_pool_inventory \
+    "$(fm_fake_pool_entry 1 "$dir/pool/1/proj" leased '[]' lease-old-1 old-1)" \
+    "$(fm_fake_pool_entry 2 "$dir/pool/2/proj" leased '[]' lease-old-2 old-2)" \
+    > "$dir/fake/status.json"
+  node - "$dir" <<'NODE'
+const fs = require('fs'), dir = process.argv[2];
+const entries = JSON.parse(fs.readFileSync(`${dir}/fake/status.json`));
+fs.writeFileSync(`${dir}/pool/treehouse-state.json`, JSON.stringify({worktrees:entries.map(e => ({
+  name:e.name, path:e.path, leased:true, lease_id:e.lease_id, lease_holder:e.lease_holder
+}))}));
+fs.writeFileSync(`${dir}/fake/current.json`, JSON.stringify(entries.map(e => ({...e,
+  path:`${dir}/new-pool/${e.name}/proj`, lease_id:`new-${e.name}`, lease_holder:`outsider-${e.name}`
+}))));
+NODE
+  mv "$dir/fakebin/treehouse" "$dir/fakebin/treehouse-real"
+  cat > "$dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = status ]; then
+  printf '%s\n' "$*" >> "$FM_FAKE_DIR/treehouse.log"
+  cat "$FM_FAKE_DIR/current.json"
+else
+  exec "$(dirname "$0")/treehouse-real" "$@"
+fi
+SH
+  chmod +x "$dir/fakebin/treehouse"
+  printf '%s\n' "$dir"
+}
+
+test_recorded_pool_identity_drift_returns_only_exact_old_leases() {
+  local dir slot out rc current_before holder
+  dir=$(recorded_pool_case) || fail 'could not prepare recorded pool fixture'
+  current_before=$(cat "$dir/fake/current.json")
+  for slot in 1 2; do
+    rc=0
+    out=$(run_teardown "$dir" "old-$slot") || rc=$?
+    expect_code 0 "$rc" "recorded-pool: clean landed old copy $slot should return under its lease"$'\n'"$out"
+    assert_grep "return --force --if-lease-id lease-old-$slot $dir/pool/$slot/proj" \
+      "$dir/fake/treehouse.log" 'old copy was not returned under its exact recorded lease'
+    assert_absent "$dir/home/state/old-$slot.meta" 'returned task record was not retired'
+    [ "$(fm_fake_pool_field "$dir/fake/status.json" "$dir/pool/$slot/proj" lease_id)" = '' ] \
+      || fail 'the old pool lease was not released'
+    holder=$(FM_HOME="$dir/home" "$ROOT/bin/fm-worktree-allocation.sh" holder "$dir/proj" "$dir/pool/$slot/proj") \
+      || fail 'allocation holder query failed'
+    [ -z "$holder" ] || fail 'allocation ledger was not released after return'
+    if [ "$slot" = 1 ]; then
+      [ "$(fm_fake_pool_field "$dir/fake/status.json" "$dir/pool/2/proj" lease_id)" = lease-old-2 ] \
+        || fail 'returning copy 1 changed copy 2 lease'
+    fi
+  done
+  [ "$(cat "$dir/fake/current.json")" = "$current_before" ] || fail 'current pool was changed'
+  pass 'cleanup resolves both old copies by absolute path after pool identity drift, preserving current same-number slots'
+}
+
+if [ "${1:-}" = --recorded-pool ]; then
+  test_recorded_pool_identity_drift_returns_only_exact_old_leases
+  exit 0
+fi
+
+test_recorded_pool_identity_drift_returns_only_exact_old_leases
 test_finished_workers_copy_stays_leased_until_cleanup
 test_concurrent_spawns_receive_distinct_leased_copies
 test_failed_spawn_returns_its_lease
