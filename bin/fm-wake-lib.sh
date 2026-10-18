@@ -491,7 +491,10 @@ fm_lock_mid_acquire_is_fresh() {
   case "$pid" in
     ''|*[!0-9]*)
       [ "$(fm_path_age "$lockdir")" -lt "$(fm_lock_settle_grace)" ]
-      return
+      # In an EXIT trap, a bare return inherits the status that entered the
+      # trap, not this age comparison. Preserve the comparison explicitly so
+      # cleanup can reclaim an interrupted empty-pid claim after its grace.
+      return $?
       ;;
   esac
   return 1
