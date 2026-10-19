@@ -39,6 +39,8 @@ Observed output and protocol results:
 | After selection | Footer displayed `GPT-6-Luna medium fast`; `/status` reported the selected model and reasoning; no explanatory model-switch chat message was observed. |
 | Subsequent `account/rateLimits/updated` with primary `usedPercent=0` | The footer still displayed Luna medium through the end of the 25-second session observation; this is not an observation of a real reset or later service restoration. |
 
+The proxy continued answering later usage reads with the arm's original percentage, so usage was not held at zero throughout the remaining observation.
+
 Matching upstream-source inspection used tag `rust-v0.160.0`, commit `a956835d020762cb2b570053af06f643a11c0ecc`, fetched through `gh-axi api`.
 [rate_limits.rs](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/tui/src/chatwidget/rate_limits.rs) defines `RATE_LIMIT_SWITCH_PROMPT_THRESHOLD = 90.0`, tests either ordinary-bucket window, and applies the credit, reminder, preset, current-model, and banner conditions recorded in the adapter.
 Its switch action takes `preset.default_reasoning_effort` and updates both selection axes; the keep-current action is empty and the never-show action persists the hidden reminder preference.
