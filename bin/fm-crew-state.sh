@@ -101,6 +101,10 @@ KIND=$(meta_value kind)
 HARNESS=$(meta_value harness)
 [ -n "$KIND" ] || KIND=ship
 
+if [ -n "$(meta_value copy_released_at)" ]; then
+  emit "done" copy-release "released-awaiting-landing (branch fm/$ID retained)"
+fi
+
 # A torn-down (or never-created) worktree has no current state to read.
 if [ -z "$WT" ] || [ ! -d "$WT" ]; then
   emit unknown none "worktree gone (torn down?)"

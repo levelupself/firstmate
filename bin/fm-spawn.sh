@@ -4070,10 +4070,13 @@ if [ "$RECOVERY" -eq 1 ]; then
   SPAWN_META_PATH=$SPAWN_META_TMP
 fi
 preserve_relaunch_meta() {
-  awk -F= '
+  awk -F= -v reacquire="$REACQUIRE" -v released="$(fm_meta_get "$RELAUNCH_META" copy_release_head)" '
     BEGIN {
       split("window endpoint_task_id worktree worktree_allocation pool_lease_id allocation_project project harness kind mode yolo tasktmp spawned_at incarnation_at model effort env_file busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
+      if (reacquire == 1 && released != "") {
+        owned["copy_release_head"] = owned["copy_release_pending_at"] = owned["copy_released_at"] = owned["teardown_at"] = 1
+      }
     }
     !($1 in owned)
   ' "$RELAUNCH_META"

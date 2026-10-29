@@ -530,12 +530,18 @@ test_watcher_honours_warn_and_step_overrides() {
 }
 
 test_watcher_skips_unbound_and_secondmate_tasks() {
-  local dir home fakebin out
+  local dir home fakebin out file wt
   dir=$(make_case ctx-skip); home=$dir; fakebin="$dir/fakebin"; out="$dir/watch.out"
   mkdir -p "$home/data"
   fm_write_meta "$home/state/ctx-pi.meta" "worktree=$home/wt" "harness=pi" "kind=ship"
   fm_write_meta "$home/state/ctx-mate.meta" "worktree=$home/mate" "harness=claude" "kind=secondmate"
-  expect_quiet "$home" "$fakebin" "$out" "unbound and secondmate tasks"
+  wt="$home/released"
+  bind_task "$home/data" ctx-released claude "$home/store" "$wt" "$CLAUDE_STAMP"
+  fm_write_meta "$home/state/ctx-released.meta" "worktree=$wt" "harness=claude" "kind=ship" "copy_released_at=2026-10-01T00:00:00Z"
+  file=$(claude_open "$home/store" "$wt" "$CLAUDE_STAMP")
+  claude_usage "$file" "$wt" "$CLAUDE_STAMP" 1 0 0 310000
+  expect_quiet "$home" "$fakebin" "$out" "unbound, secondmate, and released tasks"
+  [ ! -e "$home/state/ctx-released.context-watch" ] || fail "a released task must not be context-watched"
   [ ! -e "$home/state/ctx-mate.context-watch" ] || fail "a secondmate must not be context-watched"
   pass "watcher: tasks without a bound record and secondmates never produce a context wake"
 }

@@ -325,7 +325,7 @@ function tick() {
   for (const name of names.filter(n => n.endsWith('.meta')).sort()) {
     const id = name.slice(0, -'.meta'.length)
     const meta = readMeta(id)
-    if (!meta || meta.kind === 'secondmate' || !SUPPORTED.has(meta.harness)) continue
+    if (!meta || meta.copy_released_at || meta.kind === 'secondmate' || !SUPPORTED.has(meta.harness)) continue
     let wakes
     try { wakes = tickTask(id, nowSecs) } catch (e) {
       process.stderr.write(`fm-context-watch: ${id}: ${e.message}\n`)

@@ -1477,9 +1477,14 @@ EOF
   printf 'window=fm-sess:live-window\nkind=ship\n' > "$home/state/task-live.meta"
   printf 'window=fm-sess:dead-window\nkind=ship\n' > "$home/state/task-dead.meta"
 
+  printf 'window=fm-sess:released-window\nkind=ship\ncopy_released_at=2026-10-01T00:00:00Z\n' > "$home/state/task-released.meta"
+
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   assert_contains "$out" "endpoint: alive (backend=tmux window=fm-sess:live-window)" "live tmux endpoint not reported alive"
   assert_contains "$out" "endpoint: dead (backend=tmux window=fm-sess:dead-window)" "dead tmux endpoint not reported dead"
+
+  assert_contains "$out" "endpoint: released-awaiting-landing (shared branch retained)" "released copy not reported as awaiting landing"
+  assert_not_contains "$out" "endpoint: dead (backend=tmux window=fm-sess:released-window)" "released task raised a dead endpoint diagnostic"
 
   pass "tmux endpoint liveness is reported per task: alive for a live window, dead for a gone one"
 }
