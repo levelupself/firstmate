@@ -1,0 +1,2 @@
+Isolated XDG configuration, data, runtime, and lab-state directories; fm-herdr-lab.sh prepare fm-lab-release-check
+fm-herdr-lab: fleet-state tripwire requires exactly one running default session

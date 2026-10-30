@@ -1,0 +1,34 @@
+[
+  {
+    "command": "/usr/bin/time -p env TMPDIR=<workspace>/.test-phase/tmp bash tests/fm-release-copy.test.sh",
+    "real_seconds": 70.63,
+    "completed_successfully": true,
+    "phase": "before split"
+  },
+  {
+    "command": "/usr/bin/time -p env TMPDIR=<workspace>/.test-phase/tmp bash tests/fm-release-copy.test.sh",
+    "real_seconds": 27.92,
+    "completed_successfully": true
+  },
+  {
+    "command": "/usr/bin/time -p env TMPDIR=<workspace>/.test-phase/tmp bash tests/fm-release-copy-guards.test.sh",
+    "real_seconds": 14.44,
+    "completed_successfully": true
+  },
+  {
+    "command": "/usr/bin/time -p env TMPDIR=<workspace>/.test-phase/tmp bash tests/fm-release-copy-recovery.test.sh",
+    "real_seconds": 35.9,
+    "completed_successfully": true
+  },
+  {
+    "command": "/usr/bin/time -p env TMPDIR=<workspace>/.test-phase/tmp bash tests/fm-release-copy-retry.test.sh",
+    "real_seconds": 30.67,
+    "completed_successfully": true
+  },
+  {
+    "command": "/usr/bin/time -p env TMPDIR=<workspace>/.test-phase/tmp bash tests/fm-release-copy.test.sh",
+    "phase": "final test-only edit",
+    "real_seconds": 38.73,
+    "completed_successfully": true
+  }
+]

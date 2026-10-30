@@ -1,0 +1,73 @@
+Real reacquisition: fresh pool lease and cleared journal
+WARNING: watcher still down (same stale episode; last beat: 199s ago, grace 300s) - full banner already printed this episode.
+notice: lead ships mode=local-only while the standing posture for proj is no-mistakes - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state
+spawned lead harness=codex kind=ship mode=local-only yolo= window=firstmate:fm-lead worktree=<workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj
+state: unknown · source: pane · harness state unavailable (unknown codex-rollout)
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+[{"name":"1","path":"<workspace>/.test-phase/pool-root/.treehouse/proj-17d021/1/proj","status":"leased","lease_id":"a68a078573d50a21817a101e082978ee","lease_holder":"successor","leased_at":"2026-10-30T15:27:48.954953099-05:00","processes":[{"pid":837790,"name":"bash"},{"pid":838149,"name":"bash"}]},{"name":"2","path":"<workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj","status":"leased","lease_id":"5ff0b8ce3a2d69f984e5842cfbad0f54","lease_holder":"lead","leased_at":"2026-10-30T15:31:08.308492421-05:00","processes":[{"pid":942748,"name":"bash"},{"pid":945518,"name":"node"},{"pid":945576,"name":"codex"}]}]
+Verified: reacquire published a fresh lease and cleared release markers.
+
+
+Interrupted real leased pool return and retries
+release-copy: stopped lead
+
+Interrupted after real pool return, before finalization.
+teardown: copy already returned; its pool lease 5ff0b8ce3a2d69f984e5842cfbad0f54 was released and the pool holds no lease on it - retiring only task lead's records, leaving <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj and its processes untouched
+released-awaiting-landing lead: shared branch fm/lead retained; ignored files are disposable
+teardown: copy already returned; released-awaiting-landing - retiring only task lead's records, leaving <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj and its processes untouched
+released-awaiting-landing lead: shared branch fm/lead retained; ignored files are disposable
+Verified: interrupted return recovered and repeated release succeeded.
+
+
+Interrupted real legacy pre-lease pool return and retries
+release-copy: already-stopped legacy
+
+Interrupted after real pool return, before finalization.
+teardown: copy already returned; journaled copy return completed; the pool reports it free - retiring only task legacy's records, leaving <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj and its processes untouched
+released-awaiting-landing legacy: shared branch fm/legacy retained; ignored files are disposable
+teardown: copy already returned; released-awaiting-landing - retiring only task legacy's records, leaving <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj and its processes untouched
+released-awaiting-landing legacy: shared branch fm/legacy retained; ignored files are disposable
+Verified: interrupted return recovered and repeated release succeeded.
+
+Real treehouse return failure: inject stale lease argument only at return; preserve branch across failed release and landed cleanup; remove injection and retry.
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+🌳 Setting up worktree...
+🌳 Leased worktree at <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj. Run 'treehouse return <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj' to release it.
+release-copy: already-stopped retryguard2
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+failed to return worktree: lease precondition failed: lease identity does not match worktree <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  6 task(s) in flight, but no watcher has a fresh beacon (last beat: 666s ago, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Backlog: retryguard2 recorded complete. Run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+teardown: reaping leaked worktree process(es) for retryguard2: 1259578
+teardown: force-killing leaked worktree process(es) for retryguard2: 1259578
+fm-task-usage: cannot read <workspace>/.test-phase/home/data/retryguard2
+teardown: warning: could not snapshot codeburn usage for retryguard2
+captured retryguard2; ingestion queued by lifecycle entry point
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+failed to return worktree: lease precondition failed: lease identity does not match worktree <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj
+error: treehouse return failed for worktree <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj; teardown aborted
+WARNING: watcher still down (same stale episode; last beat: 676s ago, grace 300s) - full banner already printed this episode.
+Backlog: retryguard2 recorded complete. Run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+fm-task-usage: cannot read <workspace>/.test-phase/home/data/retryguard2
+teardown: warning: could not snapshot codeburn usage for retryguard2
+captured retryguard2; ingestion queued by lifecycle entry point
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+🌳 Worktree returned to pool.
+teardown retryguard2 complete (window firstmate:fm-retryguard2, worktree <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj)
+Verified: actual pool return failure retained the shared branch during release and landed cleanup; retry completed.

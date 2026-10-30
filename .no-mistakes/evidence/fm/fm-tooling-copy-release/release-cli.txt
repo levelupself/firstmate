@@ -1,0 +1,111 @@
+Real pool and tmux: refusal guards, successful release, repeated release, unlanded cleanup
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+WT=<workspace>/.test-phase/pool-root/.treehouse/proj-17d021/1/proj lease=5fe49d679d4173ed327f3c7b8d0fb2ac
+REFUSED: release-copy requires this home's local-only ship task
+REFUSED: release-copy requires this home's local-only ship task
+REFUSED: release-copy requires a treehouse-pooled backend
+REFUSED: endpoint metadata belongs to task foreign, not member; preserving task state.
+REFUSED: latest status must be done: before releasing a copy
+REFUSED: latest status must be done: before releasing a copy
+REFUSED: latest status must be done: before releasing a copy
+REFUSED: worktree <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/1/proj has uncommitted changes (including non-ignored untracked files).
+REFUSED: worktree <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/1/proj has uncommitted changes (including non-ignored untracked files).
+REFUSED: worktree <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/1/proj has uncommitted changes (including non-ignored untracked files).
+REFUSED: worktree <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/1/proj has uncommitted changes (including non-ignored untracked files).
+REFUSED: worktree <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/1/proj has tracked paths hidden from ordinary dirty checks.
+hidden index flag skip-worktree: change
+Clear every listed index flag and inspect the revealed changes before teardown, or get the captain's explicit OK to discard, then --force.
+REFUSED: worktree <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/1/proj has tracked paths hidden from ordinary dirty checks.
+hidden index flag assume-unchanged: change
+Clear every listed index flag and inspect the revealed changes before teardown, or get the captain's explicit OK to discard, then --force.
+release-copy: already-stopped member
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+🌳 Terminated lingering processes: bash (830996)
+🌳 Worktree returned to pool.
+released-awaiting-landing member: shared branch fm/member retained; ignored files are disposable
+state: done · source: copy-release · released-awaiting-landing (branch fm/member retained)
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REFUSED: released task member is not landed in local main
+teardown: copy already returned; released-awaiting-landing - retiring only task member's records, leaving <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/1/proj and its processes untouched
+released-awaiting-landing member: shared branch fm/member retained; ignored files are disposable
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+[{"name":"1","path":"<workspace>/.test-phase/pool-root/.treehouse/proj-17d021/1/proj","status":"available","lease_id":"","lease_holder":"","leased_at":null,"processes":[]}]
+
+
+Real spawn, batch landing, and records-only cleanup
+notice: successor ships mode=local-only while the standing posture for proj is no-mistakes - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state
+spawned successor harness=bash kind=ship mode=local-only yolo=off window=firstmate:fm-successor worktree=<workspace>/.test-phase/pool-root/.treehouse/proj-17d021/1/proj
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+[{"name":"1","path":"<workspace>/.test-phase/pool-root/.treehouse/proj-17d021/1/proj","status":"leased","lease_id":"a68a078573d50a21817a101e082978ee","lease_holder":"successor","leased_at":"2026-10-30T15:27:48.954953099-05:00","processes":[{"pid":837790,"name":"bash"},{"pid":838149,"name":"bash"}]}]
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+🌳 Setting up worktree...
+🌳 Leased worktree at <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj. Run 'treehouse return <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj' to release it.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  3 task(s) in flight, but no live watcher process holds this home lock (last beat: 6s ago).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+published remote origin: refs/heads/main at 6fc5405e46eed59550c5fc9e60bc7832aed0620b
+merged fm/lead into local main (f5e2b93 -> 6fc5405) in <workspace>/.test-phase/proj
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+WARNING: watcher still down (same stale episode; last beat: 11s ago, grace 300s) - full banner already printed this episode.
+teardown: copy already returned; released-awaiting-landing - retiring only task member's records, leaving <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/1/proj and its processes untouched
+Backlog: member recorded complete. Run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+fm-task-usage: cannot read <workspace>/.test-phase/home/data/member
+teardown: warning: could not snapshot codeburn usage for member
+captured member; ingestion queued by lifecycle entry point
+teardown member complete (window firstmate:fm-member, worktree <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/1/proj)
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+Verified: freed copy reused by spawn; released branch landed by name; records-only cleanup preserved successor.
+
+
+Additional real branch and ownership refusal guards
+Deleted branch fm/lead (was 6fc5405).
+REFUSED: shared branch fm/lead must exist and equal the copy's HEAD
+REFUSED: shared branch fm/lead must exist and equal the copy's HEAD
+REFUSED: copy <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj is held by task other (its record still binds the copy), not by task lead (expected branch fm/lead).
+Resetting or returning it would destroy that holder's session; reconcile which task owns the copy before cleanup. --force does not override this.
+unknown
+REFUSED: the allocation ledger names task other as the holder of copy <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj, yet task lead has never released it (no teardown_at= in its record).
+That is a ledger inconsistency; reconcile which task owns the copy before cleanup. --force does not override this.
+Verified: missing or mismatched shared branch and conflicting record/allocation ownership refused.
+
+
+Real Codex control-plane exit before return
+release-copy: stopped lead
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+🌳 Terminated lingering processes: bash (874207)
+🌳 Worktree returned to pool.
+released-awaiting-landing lead: shared branch fm/lead retained; ignored files are disposable
+
+Real pool foreign-lease and missing-inventory refusals
+REFUSED: copy <workspace>/.test-phase/pool-root/.treehouse/proj-17d021/1/proj is leased by the pool to successor (lease a68a078573d50a21817a101e082978ee), not under task probe's recorded lease wrong-lease, yet task probe has never released it (no teardown_at= in its record).
+That is a lease inconsistency; reconcile which task owns the copy before cleanup. --force does not override this.
+REFUSED: release-copy requires the pool inventory to list this copy

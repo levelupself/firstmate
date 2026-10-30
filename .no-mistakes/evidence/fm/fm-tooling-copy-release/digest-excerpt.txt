@@ -1,0 +1,31 @@
+fm-session-start.sh --reemit (isolated read-only fixture)
+--- lead ---
+detail: full
+window=firstmate:fm-lead
+endpoint_task_id=lead
+worktree=<workspace>/.test-phase/pool-root/.treehouse/proj-17d021/2/proj
+worktree_allocation=reused
+pool_lease_id=5ff0b8ce3a2d69f984e5842cfbad0f54
+allocation_project=<workspace>/.test-phase/proj
+project=<workspace>/.test-phase/proj
+harness=codex
+kind=ship
+mode=local-only
+tasktmp=<task-temp>
+spawned_at=2026-10-01T00:00:00Z
+incarnation_at=2026-10-30T20:31:10Z
+model=default
+effort=default
+env_file=<workspace>/.test-phase/agent.env
+spawn_gen=s1793392271.940676.21515
+local_landed_at=2026-10-30T20:27:55Z
+copy_release_head=6fc5405e46eed59550c5fc9e60bc7832aed0620b
+copy_release_pending_at=2026-10-30T20:31:47Z
+teardown_at=2026-10-30T20:31:47Z
+copy_released_at=2026-10-30T20:31:47Z
+endpoint: released-awaiting-landing (shared branch retained)
+status tail (last 5 line(s), each capped at 220 characters, wake-EVENT history, not current state; full log: <workspace>/.test-phase/home/state/lead.status):
+done: ready in branch
+
+
+fm-watch.sh (isolated released-task fixture): ran for 2 seconds; timeout exit 124; no output or endpoint-stale notification.
