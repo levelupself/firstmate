@@ -81,6 +81,8 @@
 #   copy_release_head= pins the saved commit; copy_release_pending_at= plus
 #   teardown_at= journal the return, and copy_released_at= confirms success.
 #   A retry can finish a journaled return without touching a newly leased copy.
+#   The shared branch survives failed returns and post-landing cleanup retries.
+#   Successful reacquisition publishes a fresh binding and clears this journal.
 #   Released records report released-awaiting-landing without endpoint monitoring.
 #   Normal cleanup still requires the saved commit and shared branch in the local
 #   default branch, then reuses records-only cleanup and never returns that copy.
@@ -123,7 +125,7 @@
 # line that fails that rule is a lease-bound record whose lease cannot be
 # trusted and is refused by name before anything else runs, never downgraded
 # to the pre-lease rules. A record without pool_lease_id= (spawned before
-# leases) keeps every pre-lease rule below unchanged and returns without a
+# leases) follows the pre-lease rules below and returns without a
 # lease precondition.
 # Every record is then keyed on the worktree allocation ledger, the
 # firstmate-side mirror of the pool's binding, which says who
@@ -132,8 +134,8 @@
 # release only after a successful treehouse return, and only a fresh spawn or
 # a --reacquire-worktree in bin/fm-spawn.sh writes a ledger acquire, while a
 # --reattach-worktree deliberately writes none). An unreadable or
-# malformed ledger is unknown, not free, and refuses. Records-only mode is
-# selected only by a two-part condition: this task's record carries
+# malformed ledger is unknown, not free, and refuses. The ledger selects
+# records-only mode by a two-part condition: this task's record carries
 # teardown_at= (it already ran a return) AND the ledger names another task as
 # the holder. A live record (no teardown_at=) whose ledger holder is another
 # task is a ledger inconsistency (a stale acquire the pool later re-leased
@@ -173,9 +175,12 @@
 # pool's lease and processes are this task's own (the pool reports every
 # leased copy in use with its agent inside), so the inventory is not
 # consulted and a detached or main-checked-out copy of a live task, or a
-# stamped copy whose return failed, proceeds to the reap and return. The
-# inventory never by itself selects records-only. A copy that no other task
-# holds - on fm/<task-id>, detached, or on a branch that is not another
+# stamped copy whose return failed, proceeds to the reap and return.
+# For a pre-lease copy-release journal with copy_release_head= and teardown_at=,
+# a copy no longer on fm/<task-id> and proved free by the pool also selects
+# records-only mode. A completed copy_released_at= selects records-only before
+# any copy inspection. Otherwise inventory alone never selects records-only.
+# A copy that no other task holds - on fm/<task-id>, detached, or on a branch that is not another
 # task's fm/<other-id> - remains this task's own, and the landed-work checks
 # below decide whether it may be reset. A copy that is not an inspectable git
 # worktree (a scout scratch directory) skips this check.

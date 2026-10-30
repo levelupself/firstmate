@@ -6,7 +6,16 @@ set -eu
 fm_git_identity fmtest fmtest@example.invalid
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 TMP_ROOT=$(fm_test_tmproot fm-release-copy-retry)
-trap fm_test_cleanup EXIT
+cleanup() {
+  local queue home
+  for queue in "$TMP_ROOT"/*/home/state/.effort-queue-*; do
+    [ -d "$queue" ] || continue
+    home=${queue%/state/*}
+    FM_HOME="$home" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || return 1
+  done
+  fm_test_cleanup
+}
+trap cleanup EXIT
 
 for journal in partial complete; do
   dir=$(new_case "$journal")
