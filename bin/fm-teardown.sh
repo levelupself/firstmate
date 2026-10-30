@@ -185,15 +185,17 @@
 # below decide whether it may be reset. A copy that is not an inspectable git
 # worktree (a scout scratch directory) skips this check.
 #
-# Footprint post-condition (footprint-gate): once the landed-work, run-abort, and
-# process-reap steps have passed, a Treehouse task copy is pruned through the
+# Footprint post-condition (footprint-gate): after the applicable ordinary
+# teardown or copy-release safety checks, a Treehouse task copy is pruned through the
 # return rule table and its remaining ignored footprint is measured through
 # bin/fm-pool-footprint-lib.sh (git's ignored listing summed with du, symlinks
 # not followed). A copy over FM_POOL_COPY_BUDGET_GB (default 12 decimal GB,
 # docs/configuration.md) is neither returned to the pool nor retired: teardown
 # prints `REFUSED: copy over footprint budget` with its ten largest ignored
-# paths and exits non-zero before teardown_at= is stamped, so the record still
-# binds the copy for inspection. Every Treehouse return attempt also applies
+# paths and exits non-zero. Ordinary teardown checks before stamping teardown_at=;
+# copy release has already stamped its retry journal and retains the failed-return
+# binding for retry. Copy release permits no footprint override.
+# Every Treehouse return attempt also applies
 # the gate, including direct and nested children during forced retirement.
 # A refused child retains its records without a deletion fallback. --force never skips
 # this gate; --footprint-override --reason <text> bypasses only the

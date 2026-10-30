@@ -1,68 +1,9 @@
 #!/usr/bin/env bash
-# Guarded copy release preserves branch-backed work until local landing.
 set -eu
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-# shellcheck source=tests/pool-helpers.sh
-. "$(dirname "${BASH_SOURCE[0]}")/pool-helpers.sh"
-# shellcheck source=tests/pool-lease-helpers.sh
-. "$(dirname "${BASH_SOURCE[0]}")/pool-lease-helpers.sh"
-fm_git_identity fmtest fmtest@example.invalid
-SPAWN="$ROOT/bin/fm-spawn.sh"
-TEARDOWN="$ROOT/bin/fm-teardown.sh"
-TMP_ROOT=$(fm_test_tmproot fm-release-copy)
-TASK_TMPS=()
-cleanup() {
-  local task_tmp queue home
-  for task_tmp in "${TASK_TMPS[@]:-}"; do
-    [ -z "$task_tmp" ] || rm -rf "$task_tmp"
-  done
-  for queue in "$TMP_ROOT"/*/home/state/.effort-queue-*; do
-    [ -d "$queue" ] || continue
-    home=${queue%/state/*}
-    FM_HOME="$home" "$ROOT/bin/fm-effort-store.sh" report --sync >/dev/null || return 1
-  done
-  fm_test_cleanup
-}
-trap cleanup EXIT
-successor="successor-copy-release-$$"
-case_number=0
+# shellcheck source=tests/release-copy-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/release-copy-helpers.sh"
 
-# Create records directly for cheap guard cases; the success case uses spawn.
-setup_case() {
-  case_number=$((case_number + 1))
-  dir=$(new_case "release-$case_number")
-  wt="$dir/pool/1/proj"
-  meta="$dir/home/state/member.meta"
-  git -C "$wt" checkout -qb fm/member
-  printf 'change\n' > "$wt/change"
-  git -C "$wt" add change
-  git -C "$wt" commit -qm change
-  fm_write_meta "$meta" "backend=tmux" "window=firstmate:fm-member" \
-    "endpoint_task_id=member" "worktree=$wt" "project=$dir/proj" \
-    'kind=ship' 'mode=local-only' 'harness=codex' 'pool_lease_id=member-lease' 'spawned_at=2026-10-01T00:00:00Z'
-  fm_test_backlog_ensure_queue "$dir/home" member
-  printf 'done: ready in branch\n' > "$dir/home/state/member.status"
-  printf 'instructions\n' > "$dir/home/state/member.brief"
-  printf 'fm-member\n' > "$dir/fake/windows"
-  fm_fake_pool_inventory "$(fm_fake_pool_entry 1 "$wt" leased '[]' member-lease member)" \
-    > "$dir/fake/status.json"
-}
-refuses() {
-  local reason=$1 before after out
-  before=$(git -C "$wt" rev-parse HEAD)
-  cp "$meta" "$dir/prior.meta"
-  cp "$dir/fake/status.json" "$dir/prior.pool"
-  cp "$dir/fake/tmux.log" "$dir/prior.tmux"
-  if out=$(run_teardown "$dir" member --release-copy); then fail "release accepted $reason"; fi
-  assert_contains "$out" "$reason" 'refusal did not explain the guard'
-  cmp "$meta" "$dir/prior.meta" || fail 'refusal changed task metadata'
-  cmp "$dir/fake/status.json" "$dir/prior.pool" || fail 'refusal returned the copy'
-  cmp "$dir/fake/tmux.log" "$dir/prior.tmux" || fail 'refusal touched the endpoint'
-  after=$(git -C "$wt" rev-parse HEAD)
-  [ "$before" = "$after" ] || fail 'refusal reset the copy'
-  pass "release refuses $reason without changing task, endpoint, or copy"
-}
+successor="successor-copy-release-$$"
 setup_case
 # Model an agent that becomes a shell only when the control plane sends /quit.
 mv "$dir/fakebin/tmux" "$dir/fakebin/tmux-base"
@@ -133,62 +74,6 @@ cmp "$dir/fake/status.json" "$dir/after-spawn.pool" || fail 'cleanup returned su
 cmp "$dir/home/state/$successor.meta" "$dir/successor.meta" || fail 'cleanup changed successor'
 pass 'release, re-lease by spawn, batch landing, and post-landing cleanup'
 
-for spec in 'kind=scout' 'mode=no-mistakes' 'backend=orca' 'endpoint_task_id=foreign'; do
-  setup_case
-  key=${spec%%=*}
-  sed -i "s/^$key=.*/$spec/" "$meta"
-  case "$key" in endpoint_task_id) reason='endpoint' ;; *) reason='release-copy requires' ;; esac
-  refuses "$reason"
-done
-for verb in working paused needs-decision; do
-  setup_case
-  printf '%s: still active\n' "$verb" >> "$dir/home/state/member.status"
-  refuses 'latest status must be done:'
-done
-for dirty in unstaged staged untracked hook-untracked hidden-untracked; do
-  setup_case
-  case "$dirty" in
-    unstaged) echo dirty >> "$wt/change" ;;
-    staged) echo dirty >> "$wt/change"; git -C "$wt" add change ;;
-    untracked) echo dirty > "$wt/extra" ;;
-    hidden-untracked) git -C "$wt" config status.showUntrackedFiles no; echo dirty > "$wt/extra" ;;
-    hook-untracked) mkdir "$wt/.claude"; echo dirty > "$wt/.claude/extra" ;;
-  esac
-  refuses 'uncommitted'
-done
-# Inject the git public index-inspection response, without setting hidden flags.
-for flag in S h; do
-  setup_case
-  real_git=$(command -v git)
-  cat > "$dir/fakebin/git" <<EOF
-#!/usr/bin/env bash
-if [ "\${3:-} \${4:-}" = 'ls-files -v' ]; then printf '$flag change\n'; exit 0; fi
-exec '$real_git' "\$@"
-EOF
-  chmod +x "$dir/fakebin/git"
-  refuses 'hidden from ordinary dirty checks'
-done
-setup_case
-git -C "$wt" checkout -q --detach
-git -C "$dir/proj" branch -D fm/member >/dev/null
-refuses 'shared branch'
-setup_case
-git -C "$wt" checkout -q --detach
-git -C "$wt" commit --allow-empty -qm extra
-refuses 'shared branch'
-setup_case
-cp "$meta" "$dir/home/state/landing.meta"
-sed -i 's/endpoint_task_id=member/endpoint_task_id=landing/' "$dir/home/state/landing.meta"
-refuses 'task landing'
-setup_case
-FM_HOME="$dir/home" "$ROOT/bin/fm-worktree-allocation.sh" acquire other "$dir/proj" "$wt" 2026-10-01T00:00:00Z >/dev/null
-refuses 'holder'
-setup_case
-node -e 'const fs=require("fs"),p=process.argv[1],s=JSON.parse(fs.readFileSync(p));s[0].lease_id="foreign";s[0].lease_holder="other";fs.writeFileSync(p,JSON.stringify(s))' "$dir/fake/status.json"
-refuses 'leased by the pool'
-setup_case
-printf '[]\n' > "$dir/fake/status.json"
-refuses 'pool inventory'
 setup_case
 # The pool may refuse its compare-and-return after the journal was written.
 if out=$(FM_FAKE_RETURN_FAIL=1 run_teardown "$dir" member --release-copy); then fail 'failed return reported success'; fi
@@ -237,31 +122,3 @@ cmp "$meta" "$dir/prior.meta" || fail 'ordinary refusal changed metadata'
 cmp "$dir/fake/status.json" "$dir/prior.pool" || fail 'ordinary refusal returned copy'
 pass 'ordinary teardown includes untracked files despite display configuration'
 
-for lease_mode in leased legacy; do
-  for gap in pool-return ledger-release; do
-    setup_case
-    printf 'worktree_allocation=reused\n' >> "$meta"
-    FM_HOME="$dir/home" "$ROOT/bin/fm-worktree-allocation.sh" acquire member "$dir/proj" "$wt" 2026-10-01T00:00:00Z >/dev/null
-    if [ "$lease_mode" = legacy ]; then
-      sed -i '/^pool_lease_id=/d' "$meta"
-      fm_fake_pool_inventory "$(fm_fake_pool_entry 1 "$wt" available '[]')" > "$dir/fake/status.json"
-    fi
-    if out=$(FM_FAKE_RETURN_FAIL=1 run_teardown "$dir" member --release-copy); then fail 'failed return succeeded'; fi
-    at=2026-10-02T00:00:00Z
-    sed -i "s/^teardown_at=.*/teardown_at=$at/" "$meta"
-    (cd "$dir/proj" && PATH="$dir/fakebin:$PATH" FM_FAKE_DIR="$dir/fake" treehouse return --force "$wt") >/dev/null
-    if [ "$gap" = ledger-release ]; then
-      FM_HOME="$dir/home" "$ROOT/bin/fm-worktree-allocation.sh" release member "$dir/proj" "$wt" "$at"
-    fi
-    cp "$dir/fake/status.json" "$dir/returned.pool"
-    out=$(run_teardown "$dir" member --release-copy) || fail "$lease_mode $gap recovery failed: $out"
-    [ "$(meta_value "$meta" copy_released_at)" = "$at" ] || fail 'release timestamp changed'
-    out=$(run_teardown "$dir" member --release-copy) || fail "repeated release failed: $out"
-    cmp "$dir/fake/status.json" "$dir/returned.pool" || fail 'retry returned copy again'
-    git -C "$dir/proj" merge -q --ff-only fm/member
-    out=$(run_teardown "$dir" member) || fail "recovered cleanup failed: $out"
-    [ ! -f "$meta" ] || fail 'recovered records survived landing'
-    cmp "$dir/fake/status.json" "$dir/returned.pool" || fail 'cleanup returned copy again'
-    pass "$lease_mode $gap recovery, repeated release, and landed cleanup"
-  done
-done
