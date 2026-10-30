@@ -1577,7 +1577,7 @@ validate_worktree_teardown_safety() {
     return 1
   fi
 
-  if ! dirty_raw=$(git -C "$WT" status --porcelain 2>/dev/null); then
+  if ! dirty_raw=$(git -C "$WT" status --porcelain --untracked-files=all 2>/dev/null); then
     if worktree_safety_blocked_by_lock "uncommitted changes"; then
       return "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED"
     fi
@@ -1801,6 +1801,16 @@ teardown_copy_binding_check() {
       "fm/$ID") ;;
       fm/*) holder="task ${branch#fm/} (branch $branch is checked out)" ;;
     esac
+  fi
+  if [ -z "$holder" ] && [ "$branch" != "fm/$ID" ] && [ "$lease_proved" -eq 0 ] \
+    && [ -n "$(fm_meta_get "$META" copy_release_head)" ] \
+    && [ -n "$(fm_meta_get "$META" teardown_at)" ]; then
+    if occupant=$(teardown_copy_pool_occupant) && [ -z "$occupant" ]; then
+      teardown_copy_records_only "journaled copy return completed; the pool reports it free"
+      return 0
+    fi
+    echo "REFUSED: journaled copy return cannot be proved complete by the pool inventory." >&2
+    return 1
   fi
   if [ -z "$holder" ] && [ -z "$ledger_holder" ] && [ "$branch" != "fm/$ID" ] && [ "$lease_proved" -eq 0 ]; then
     if occupant=$(teardown_copy_pool_occupant); then
@@ -2939,7 +2949,9 @@ release_copy_validate_branch() {
 
 release_copy_commit_return() {
   local at project
-  at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  at=$(fm_meta_get "$META" copy_released_at)
+  [ -n "$at" ] || at=$(fm_meta_get "$META" teardown_at)
+  [ -n "$at" ] || return 1
   project=$(fm_meta_get "$META" allocation_project)
   [ -n "$project" ] || project=$PROJ
   "$SCRIPT_DIR/fm-worktree-allocation.sh" release "$ID" "$project" "$WT" "$at" || return 1
@@ -3254,7 +3266,8 @@ fi
 
 WORKTREE_ALLOCATION=$(meta_value "$META" worktree_allocation)
 if [ "$KIND" != secondmate ] && [ -n "$WORKTREE_ALLOCATION" ]; then
-  RELEASED_AT=$(meta_value "$META" teardown_at)
+  RELEASED_AT=$(meta_value "$META" copy_released_at)
+  [ -n "$RELEASED_AT" ] || RELEASED_AT=$(meta_value "$META" teardown_at)
   [ -n "$RELEASED_AT" ] || RELEASED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   ALLOCATION_PROJECT=$(meta_value "$META" allocation_project)
   [ -n "$ALLOCATION_PROJECT" ] || ALLOCATION_PROJECT=$PROJ

@@ -26,10 +26,12 @@ cleanup() {
 }
 trap cleanup EXIT
 successor="successor-copy-release-$$"
+case_number=0
 
 # Create records directly for cheap guard cases; the success case uses spawn.
 setup_case() {
-  dir=$(new_case release)
+  case_number=$((case_number + 1))
+  dir=$(new_case "release-$case_number")
   wt="$dir/pool/1/proj"
   meta="$dir/home/state/member.meta"
   git -C "$wt" checkout -qb fm/member
@@ -143,12 +145,13 @@ for verb in working paused needs-decision; do
   printf '%s: still active\n' "$verb" >> "$dir/home/state/member.status"
   refuses 'latest status must be done:'
 done
-for dirty in unstaged staged untracked hook-untracked; do
+for dirty in unstaged staged untracked hook-untracked hidden-untracked; do
   setup_case
   case "$dirty" in
     unstaged) echo dirty >> "$wt/change" ;;
     staged) echo dirty >> "$wt/change"; git -C "$wt" add change ;;
     untracked) echo dirty > "$wt/extra" ;;
+    hidden-untracked) git -C "$wt" config status.showUntrackedFiles no; echo dirty > "$wt/extra" ;;
     hook-untracked) mkdir "$wt/.claude"; echo dirty > "$wt/.claude/extra" ;;
   esac
   refuses 'uncommitted'
@@ -220,3 +223,45 @@ assert_leased_to "$dir" "$recovery"
 [ -z "$(meta_value "$dir/home/state/$recovery.meta" copy_released_at)" ] || fail 'reacquired task still reports released'
 [ -z "$(meta_value "$dir/home/state/$recovery.meta" teardown_at)" ] || fail 'reacquired copy is not bound'
 pass 'reacquire publishes a fresh binding without obsolete release markers'
+
+setup_case
+git -C "$dir/proj" merge -q --ff-only fm/member
+git -C "$wt" config status.showUntrackedFiles no
+printf 'evidence\n' > "$wt/extra"
+cp "$meta" "$dir/prior.meta"
+cp "$dir/fake/status.json" "$dir/prior.pool"
+if out=$(run_teardown "$dir" member); then fail 'ordinary teardown discarded hidden untracked evidence'; fi
+assert_contains "$out" 'uncommitted' 'ordinary teardown missed hidden untracked file'
+[ -f "$wt/extra" ] || fail 'ordinary teardown removed evidence'
+cmp "$meta" "$dir/prior.meta" || fail 'ordinary refusal changed metadata'
+cmp "$dir/fake/status.json" "$dir/prior.pool" || fail 'ordinary refusal returned copy'
+pass 'ordinary teardown includes untracked files despite display configuration'
+
+for lease_mode in leased legacy; do
+  for gap in pool-return ledger-release; do
+    setup_case
+    printf 'worktree_allocation=reused\n' >> "$meta"
+    FM_HOME="$dir/home" "$ROOT/bin/fm-worktree-allocation.sh" acquire member "$dir/proj" "$wt" 2026-10-01T00:00:00Z >/dev/null
+    if [ "$lease_mode" = legacy ]; then
+      sed -i '/^pool_lease_id=/d' "$meta"
+      fm_fake_pool_inventory "$(fm_fake_pool_entry 1 "$wt" available '[]')" > "$dir/fake/status.json"
+    fi
+    if out=$(FM_FAKE_RETURN_FAIL=1 run_teardown "$dir" member --release-copy); then fail 'failed return succeeded'; fi
+    at=2026-10-02T00:00:00Z
+    sed -i "s/^teardown_at=.*/teardown_at=$at/" "$meta"
+    (cd "$dir/proj" && PATH="$dir/fakebin:$PATH" FM_FAKE_DIR="$dir/fake" treehouse return --force "$wt") >/dev/null
+    if [ "$gap" = ledger-release ]; then
+      FM_HOME="$dir/home" "$ROOT/bin/fm-worktree-allocation.sh" release member "$dir/proj" "$wt" "$at"
+    fi
+    cp "$dir/fake/status.json" "$dir/returned.pool"
+    out=$(run_teardown "$dir" member --release-copy) || fail "$lease_mode $gap recovery failed: $out"
+    [ "$(meta_value "$meta" copy_released_at)" = "$at" ] || fail 'release timestamp changed'
+    out=$(run_teardown "$dir" member --release-copy) || fail "repeated release failed: $out"
+    cmp "$dir/fake/status.json" "$dir/returned.pool" || fail 'retry returned copy again'
+    git -C "$dir/proj" merge -q --ff-only fm/member
+    out=$(run_teardown "$dir" member) || fail "recovered cleanup failed: $out"
+    [ ! -f "$meta" ] || fail 'recovered records survived landing'
+    cmp "$dir/fake/status.json" "$dir/returned.pool" || fail 'cleanup returned copy again'
+    pass "$lease_mode $gap recovery, repeated release, and landed cleanup"
+  done
+done
