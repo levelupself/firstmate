@@ -10,6 +10,7 @@ agent_state() {
 }
 
 busy_verdict() {
+  # shellcheck disable=SC2153 # STATE is the caller-supplied task state directory.
   fm_busy_classify_meta "$META" "$ID" "$STATE"
 }
 
