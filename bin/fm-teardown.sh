@@ -68,6 +68,25 @@
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
 # Usage: fm-teardown.sh <task-id> [--force] [--footprint-override --reason <text>]
+#        fm-teardown.sh <task-id> --release-copy
+#   --release-copy returns only a finished local-only ship task's pooled copy
+#   after explicit captain approval while its branch awaits a batch landing.
+#   Requires this home's validated endpoint, latest done: status, a fully clean
+#   index and tree (including all non-ignored untracked files), the shared
+#   fm/<task-id> branch at exactly the copy's HEAD, and exclusive copy ownership.
+#   Uses the control plane's verified exit before the ordinary pool return path.
+#   Ignored files, including logs and pinned tools, are disposable with the copy;
+#   commit every required artifact because landing reads only the shared branch.
+#   Preserves branch, brief, status history, backlog row, and task metadata.
+#   copy_release_head= pins the saved commit; copy_release_pending_at= plus
+#   teardown_at= journal the return, and copy_released_at= confirms success.
+#   A retry can finish a journaled return without touching a newly leased copy.
+#   The shared branch survives failed returns and post-landing cleanup retries.
+#   Successful reacquisition publishes a fresh binding and clears this journal.
+#   Released records report released-awaiting-landing without endpoint monitoring.
+#   Normal cleanup still requires the saved commit and shared branch in the local
+#   default branch, then reuses records-only cleanup and never returns that copy.
+#   --release-copy cannot be combined with --force or footprint overrides.
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
 #   when the captain has explicitly said to discard the work.
@@ -106,7 +125,7 @@
 # line that fails that rule is a lease-bound record whose lease cannot be
 # trusted and is refused by name before anything else runs, never downgraded
 # to the pre-lease rules. A record without pool_lease_id= (spawned before
-# leases) keeps every pre-lease rule below unchanged and returns without a
+# leases) follows the pre-lease rules below and returns without a
 # lease precondition.
 # Every record is then keyed on the worktree allocation ledger, the
 # firstmate-side mirror of the pool's binding, which says who
@@ -115,8 +134,8 @@
 # release only after a successful treehouse return, and only a fresh spawn or
 # a --reacquire-worktree in bin/fm-spawn.sh writes a ledger acquire, while a
 # --reattach-worktree deliberately writes none). An unreadable or
-# malformed ledger is unknown, not free, and refuses. Records-only mode is
-# selected only by a two-part condition: this task's record carries
+# malformed ledger is unknown, not free, and refuses. The ledger selects
+# records-only mode by a two-part condition: this task's record carries
 # teardown_at= (it already ran a return) AND the ledger names another task as
 # the holder. A live record (no teardown_at=) whose ledger holder is another
 # task is a ledger inconsistency (a stale acquire the pool later re-leased
@@ -156,22 +175,27 @@
 # pool's lease and processes are this task's own (the pool reports every
 # leased copy in use with its agent inside), so the inventory is not
 # consulted and a detached or main-checked-out copy of a live task, or a
-# stamped copy whose return failed, proceeds to the reap and return. The
-# inventory never by itself selects records-only. A copy that no other task
-# holds - on fm/<task-id>, detached, or on a branch that is not another
+# stamped copy whose return failed, proceeds to the reap and return.
+# For a pre-lease copy-release journal with copy_release_head= and teardown_at=,
+# a copy no longer on fm/<task-id> and proved free by the pool also selects
+# records-only mode. A completed copy_released_at= selects records-only before
+# any copy inspection. Otherwise inventory alone never selects records-only.
+# A copy that no other task holds - on fm/<task-id>, detached, or on a branch that is not another
 # task's fm/<other-id> - remains this task's own, and the landed-work checks
 # below decide whether it may be reset. A copy that is not an inspectable git
 # worktree (a scout scratch directory) skips this check.
 #
-# Footprint post-condition (footprint-gate): once the landed-work, run-abort, and
-# process-reap steps have passed, a Treehouse task copy is pruned through the
+# Footprint post-condition (footprint-gate): after the applicable ordinary
+# teardown or copy-release safety checks, a Treehouse task copy is pruned through the
 # return rule table and its remaining ignored footprint is measured through
 # bin/fm-pool-footprint-lib.sh (git's ignored listing summed with du, symlinks
 # not followed). A copy over FM_POOL_COPY_BUDGET_GB (default 12 decimal GB,
 # docs/configuration.md) is neither returned to the pool nor retired: teardown
 # prints `REFUSED: copy over footprint budget` with its ten largest ignored
-# paths and exits non-zero before teardown_at= is stamped, so the record still
-# binds the copy for inspection. Every Treehouse return attempt also applies
+# paths and exits non-zero. Ordinary teardown checks before stamping teardown_at=;
+# copy release has already stamped its retry journal and retains the failed-return
+# binding for retry. Copy release permits no footprint override.
+# Every Treehouse return attempt also applies
 # the gate, including direct and nested children during forced retirement.
 # A refused child retains its records without a deletion fallback. --force never skips
 # this gate; --footprint-override --reason <text> bypasses only the
@@ -296,6 +320,10 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-build-output-lib.sh"
 # shellcheck source=bin/fm-pool-footprint-lib.sh
 . "$SCRIPT_DIR/fm-pool-footprint-lib.sh"
+if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
+  sed -n '2,/^set -eu/{ /^#/{ s/^# \{0,1\}//; p; }; }' "$0"
+  exit 0
+fi
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -303,10 +331,12 @@ fi
 ID=$1
 shift
 FORCE=
+RELEASE_COPY=0
 FOOTPRINT_OVERRIDE=0
 FOOTPRINT_REASON=
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --release-copy) RELEASE_COPY=1 ;;
     --force) FORCE=--force ;;
     --footprint-override) FOOTPRINT_OVERRIDE=1 ;;
     --reason)
@@ -318,6 +348,10 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+if [ "$RELEASE_COPY" = 1 ] && { [ -n "$FORCE" ] || [ "$FOOTPRINT_OVERRIDE" = 1 ] || [ -n "$FOOTPRINT_REASON" ]; }; then
+  echo "error: --release-copy cannot be combined with discard or footprint overrides" >&2
+  exit 2
+fi
 if [ "$FOOTPRINT_OVERRIDE" -eq 1 ] && [ -z "$FOOTPRINT_REASON" ]; then
   echo "error: --footprint-override requires --reason <text>; the reason is recorded in state/teardown.log" >&2
   exit 2
@@ -335,6 +369,8 @@ CONTROL_LOCK="$STATE/.control-$ID.lock"
 CONTROL_LOCK_HELD=0
 META_LOCK=
 META_LOCK_HELD=0
+RELEASE_TASK_SET_LOCK=
+RELEASE_LANDING_LOCK=
 DESCENDANT_LOCK_PATHS=()
 DESCENDANT_TASK_STATES=()
 DESCENDANT_TASK_IDS=()
@@ -357,14 +393,36 @@ teardown_release_locks() {
     fm_lock_release "$CONTROL_LOCK" || true
     CONTROL_LOCK_HELD=0
   fi
+  if [ -n "$RELEASE_LANDING_LOCK" ]; then
+    fm_lock_release "$RELEASE_LANDING_LOCK" || true
+  fi
+  if [ -n "$RELEASE_TASK_SET_LOCK" ]; then
+    fm_lock_release "$RELEASE_TASK_SET_LOCK" || true
+  fi
   return "$status"
 }
 trap teardown_release_locks EXIT
+if [ "$RELEASE_COPY" = 1 ]; then
+  RELEASE_TASK_SET_LOCK=$(fm_task_set_lock_path "$STATE") || exit 1
+  fm_lock_try_acquire "$RELEASE_TASK_SET_LOCK" || {
+    RELEASE_TASK_SET_LOCK=
+    echo "REFUSED: another task allocation is in progress; nothing was changed" >&2
+    exit 1
+  }
+fi
 fm_lock_try_acquire "$CONTROL_LOCK" || {
   echo "error: another lifecycle action is already running for task $ID; nothing was changed" >&2
   exit 1
 }
 CONTROL_LOCK_HELD=1
+if [ "$RELEASE_COPY" = 1 ]; then
+  RELEASE_LANDING_LOCK="$STATE/.local-landing-$ID.lock"
+  fm_lock_try_acquire "$RELEASE_LANDING_LOCK" || {
+    RELEASE_LANDING_LOCK=
+    echo "REFUSED: local landing is currently using task $ID; nothing was changed" >&2
+    exit 1
+  }
+fi
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never tear
 # down a worktree (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -400,6 +458,18 @@ META_LOCK=$(fm_meta_lock_path "$META") || exit 1
 fm_lock_acquire_wait "$META_LOCK"
 META_LOCK_HELD=1
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
+
+if [ "$RELEASE_COPY" = 1 ]; then
+  case "$(fm_backend_of_meta "$META")" in
+    tmux|herdr) ;;
+    *) echo "REFUSED: release-copy requires a treehouse-pooled backend" >&2; exit 1 ;;
+  esac
+  if [ "$(fm_meta_get "$META" kind)" != ship ] || [ "$(fm_meta_get "$META" mode)" != local-only ] \
+    || [ -n "$(fm_meta_get "$META" remote_host)" ]; then
+    echo "REFUSED: release-copy requires this home's local-only ship task" >&2
+    exit 1
+  fi
+fi
 
 REMOTE_HANDOFF_DIR_PRESENT=0
 REMOTE_HANDOFF_DIR_REAL=
@@ -630,7 +700,7 @@ if grep -q '^pool_lease_id=' "$META" 2>/dev/null; then
 fi
 T_ORCA=
 [ "$BACKEND" != orca ] || T_ORCA=$T
-if [ "${FM_TEARDOWN_GUARD_DONE:-0}" != 1 ]; then
+if [ "$RELEASE_COPY" != 1 ] && [ "${FM_TEARDOWN_GUARD_DONE:-0}" != 1 ]; then
   "$FM_ROOT/bin/fm-guard.sh" || true
 fi
 HOME_PATH=$(grep '^home=' "$META" | cut -d= -f2- || true)
@@ -1514,13 +1584,20 @@ validate_worktree_teardown_safety() {
     return 1
   fi
 
-  if ! dirty_raw=$(git -C "$WT" status --porcelain 2>/dev/null); then
+  if ! dirty_raw=$(git -C "$WT" status --porcelain --untracked-files=all 2>/dev/null); then
     if worktree_safety_blocked_by_lock "uncommitted changes"; then
       return "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED"
     fi
     echo "REFUSED: cannot inspect worktree $WT for uncommitted changes." >&2
     echo "Restore the git index state, or get the captain's explicit OK to discard, then --force." >&2
     return 1
+  fi
+  if [ "$RELEASE_COPY" = 1 ]; then
+    if [ -n "$dirty_raw" ]; then
+      echo "REFUSED: worktree $WT has uncommitted changes (including non-ignored untracked files)." >&2
+      return 1
+    fi
+    return 0
   fi
   dirty=$(printf '%s\n' "$dirty_raw" | grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' | head -1 || true)
 
@@ -1696,6 +1773,10 @@ teardown_copy_lease_check() {
 
 teardown_copy_binding_check() {
   local branch other='' holder='' ledger_holder occupant lease_proved=0
+  if [ -n "$(fm_meta_get "$META" copy_released_at)" ]; then
+    teardown_copy_records_only "released-awaiting-landing"
+    return 0
+  fi
   inspectable_git_worktree "$WT" || return 0
   if [ -n "$POOL_LEASE_ID" ]; then
     teardown_copy_lease_check || return 1
@@ -1727,6 +1808,16 @@ teardown_copy_binding_check() {
       "fm/$ID") ;;
       fm/*) holder="task ${branch#fm/} (branch $branch is checked out)" ;;
     esac
+  fi
+  if [ -z "$holder" ] && [ "$branch" != "fm/$ID" ] && [ "$lease_proved" -eq 0 ] \
+    && [ -n "$(fm_meta_get "$META" copy_release_head)" ] \
+    && [ -n "$(fm_meta_get "$META" teardown_at)" ]; then
+    if occupant=$(teardown_copy_pool_occupant) && [ -z "$occupant" ]; then
+      teardown_copy_records_only "journaled copy return completed; the pool reports it free"
+      return 0
+    fi
+    echo "REFUSED: journaled copy return cannot be proved complete by the pool inventory." >&2
+    return 1
   fi
   if [ -z "$holder" ] && [ -z "$ledger_holder" ] && [ "$branch" != "fm/$ID" ] && [ "$lease_proved" -eq 0 ]; then
     if occupant=$(teardown_copy_pool_occupant); then
@@ -2843,6 +2934,114 @@ remove_secondmate_registry_entry() {
 
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
 
+# Separate copy-release operation: all ordinary cleanup below remains gated on
+# landed work. These helpers also recover an interrupted pool return.
+release_copy_validate_branch() {
+  local head branch_head latest
+  latest=$(grep -v '^[[:space:]]*$' "$STATE/$ID.status" 2>/dev/null | tail -1) || latest=
+  [ "$(status_line_verb "$latest")" = "done" ] || {
+    echo "REFUSED: latest status must be done: before releasing a copy" >&2; return 1;
+  }
+  inspectable_git_worktree "$WT" || {
+    echo "REFUSED: release-copy requires an inspectable pooled copy" >&2; return 1;
+  }
+  head=$(git -C "$WT" rev-parse --verify HEAD) || return 1
+  branch_head=$(git -C "$PROJ" rev-parse --verify "refs/heads/fm/$ID^{commit}" 2>/dev/null) || branch_head=
+  [ -n "$branch_head" ] && [ "$branch_head" = "$head" ] || {
+    echo "REFUSED: shared branch fm/$ID must exist and equal the copy's HEAD" >&2; return 1;
+  }
+  RELEASE_HEAD=$head
+  validate_worktree_teardown_safety
+}
+
+release_copy_commit_return() {
+  local at project
+  at=$(fm_meta_get "$META" copy_released_at)
+  [ -n "$at" ] || at=$(fm_meta_get "$META" teardown_at)
+  [ -n "$at" ] || return 1
+  project=$(fm_meta_get "$META" allocation_project)
+  [ -n "$project" ] || project=$PROJ
+  "$SCRIPT_DIR/fm-worktree-allocation.sh" release "$ID" "$project" "$WT" "$at" || return 1
+  teardown_meta_set_once_locked copy_released_at "$at" || return 1
+  echo "released-awaiting-landing $ID: shared branch fm/$ID retained; ignored files are disposable"
+}
+
+release_copy() {
+  local result lease pool_lease pool_holder
+  # Confirm ownership before looking inside the copy. An interrupted successful
+  # return uses the ordinary lease/ledger proof to complete records-only.
+  teardown_copy_binding_check || return 1
+  if [ "$TEARDOWN_COPY_RECORDS_ONLY" = 1 ]; then
+    [ -n "$(fm_meta_get "$META" copy_release_head)" ] || {
+      echo "REFUSED: copy already returned without a copy-release journal" >&2; return 1;
+    }
+    release_copy_commit_return
+    return $?
+  fi
+  release_copy_validate_branch || return 1
+  lease=$(teardown_copy_pool_lease) || {
+    echo "REFUSED: release-copy requires the pool inventory to list this copy" >&2; return 1;
+  }
+  pool_lease=${lease%%$'\t'*}
+  pool_holder=${lease#*$'\t'}
+  if [ -n "$POOL_LEASE_ID" ] && [ "$pool_holder" != "$ID" ]; then
+    echo "REFUSED: pool lease holder $pool_holder is not task $ID" >&2
+    return 1
+  fi
+  if [ -z "$POOL_LEASE_ID" ] && [ -n "$pool_lease" ]; then
+    echo "REFUSED: copy carries an unrecorded pool lease; ownership is unknown" >&2
+    return 1
+  fi
+  # Exit has the same implementation and postcondition as fm-control.sh exit,
+  # under the control lock already held by this lifecycle operation.
+  # shellcheck source=bin/fm-busy-lib.sh
+  . "$SCRIPT_DIR/fm-busy-lib.sh"
+  # shellcheck source=bin/fm-control-actions-lib.sh
+  . "$SCRIPT_DIR/fm-control-actions-lib.sh"
+  HARNESS=$(fm_control_harness_family "$(fm_meta_get "$META" harness)") || {
+    echo "REFUSED: release-copy requires verified harness control mechanics" >&2; return 1;
+  }
+  LABEL="fm-$ID"
+  POLL=${FM_CONTROL_POLL:-0.5}
+  SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
+  EXIT_WAIT=${FM_CONTROL_EXIT_WAIT:-30}
+  EXIT_RETRIES=${FM_CONTROL_EXIT_RETRIES:-3}
+  fm_backend_validate "$BACKEND" || return 1
+  result=$(do_exit) || return 1
+  printf 'release-copy: %s %s\n' "$result" "$ID"
+  # A stopped worker can have written during exit. Recheck every guard before
+  # publishing the return journal or allowing any pool reset.
+  teardown_copy_binding_check || return 1
+  release_copy_validate_branch || return 1
+  teardown_meta_set_once_locked copy_release_head "$RELEASE_HEAD" || return 1
+  teardown_meta_set_once_locked copy_release_pending_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
+  teardown_meta_set_once_locked teardown_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
+  git -C "$WT" checkout --detach -q || return 1
+  teardown_treehouse_return "$WT" "$PROJ" worktree release_copy_validate_branch prune "$POOL_LEASE_ID" || return 1
+  release_copy_commit_return
+}
+
+# Shared control helpers use the same error contract in each executable.
+die() { echo "error: $1" >&2; exit 1; }
+
+if [ "$RELEASE_COPY" = 1 ]; then
+  release_copy
+  exit $?
+fi
+
+# A released task is still unlanded work. Records-only cleanup must prove its
+# saved commit AND current shared branch are ancestors of the local default,
+# without consulting a copy which may now belong to another worker.
+if [ -n "$(fm_meta_get "$META" copy_release_head)" ]; then
+  released_head=$(fm_meta_get "$META" copy_release_head)
+  released_default=$(default_branch) || exit 1
+  if ! git -C "$PROJ" merge-base --is-ancestor "$released_head" "$released_default" \
+    || ! git -C "$PROJ" merge-base --is-ancestor "refs/heads/fm/$ID" "$released_default"; then
+    echo "REFUSED: released task $ID is not landed in local $released_default" >&2
+    exit 1
+  fi
+fi
+
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
   validate_firstmate_home_for_removal "$HOME_PATH" "secondmate home" "$ID" >/dev/null || exit 1
@@ -3037,7 +3236,9 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
     branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
     if [ "$branch" != "HEAD" ]; then
       if git -C "$WT" checkout --detach -q 2>/dev/null; then
-        git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
+        if [ -z "$(fm_meta_get "$META" copy_release_head)" ]; then
+          git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
+        fi
       fi
     fi
     rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" \
@@ -3052,7 +3253,9 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   if [ "$branch" != "HEAD" ]; then
     if git -C "$WT" checkout --detach -q 2>/dev/null; then
-      git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
+      if [ -z "$(fm_meta_get "$META" copy_release_head)" ]; then
+        git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
+      fi
     fi
   fi
   # Remove our hook file so a reused pool worktree cannot fire signals for a dead task.
@@ -3075,7 +3278,8 @@ fi
 
 WORKTREE_ALLOCATION=$(meta_value "$META" worktree_allocation)
 if [ "$KIND" != secondmate ] && [ -n "$WORKTREE_ALLOCATION" ]; then
-  RELEASED_AT=$(meta_value "$META" teardown_at)
+  RELEASED_AT=$(meta_value "$META" copy_released_at)
+  [ -n "$RELEASED_AT" ] || RELEASED_AT=$(meta_value "$META" teardown_at)
   [ -n "$RELEASED_AT" ] || RELEASED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   ALLOCATION_PROJECT=$(meta_value "$META" allocation_project)
   [ -n "$ALLOCATION_PROJECT" ] || ALLOCATION_PROJECT=$PROJ

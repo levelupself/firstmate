@@ -177,7 +177,7 @@ Confirming it and launching are therefore one step: a shell still in the primary
 `fm-spawn.sh` also owns the base-freshness boundary for every fresh ship and scout: a clean task worktree with no remotes visibly keeps its local base, while one with any configured remote must match the fetched tip of origin's resolved default branch, and any unsafe or unverifiable base stops the spawn.
 Its header owns the exact refusal mechanics, while `tests/fm-spawn-worktree-settle.test.sh` and `tests/fm-spawn-pool-base-freshen.test.sh` own the portable regression coverage.
 
-Returned task copies shed reproducible ignored build output after teardown's landed-work and process checks, before Treehouse releases the copy.
+Returned task copies shed reproducible ignored build output after the applicable safety checks owned by the teardown header, before Treehouse releases the copy.
 Build output is not unlanded work: tracked files and non-ignored files remain protected, including files hidden by Git index flags.
 The single extensible rule table for return pruning and live sweeping is in [`bin/fm-build-output-lib.sh`](../bin/fm-build-output-lib.sh); [`docs/configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns output eligibility and scratch evidence retention.
 [`bin/fm-pool-prune.sh`](../bin/fm-pool-prune.sh) applies that same table to idle copies in this home's pools, with a dry-run size report and exclusions for leases, live processes, and every task-record worktree reference.

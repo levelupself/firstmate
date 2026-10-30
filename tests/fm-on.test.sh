@@ -221,13 +221,19 @@ MANAGER_DIRS=(
   "$ACCOUNT_HOME"/.local/share/mise/installs/*/*/bin
   "$ACCOUNT_HOME"/.mise/installs/*/*/bin
 )
-OPTIONAL_DIRS=(
+NIX_DIRS=(
   "$ACCOUNT_HOME/.nix-profile/bin"
   "/etc/profiles/per-user/$ACCOUNT_USER/bin"
   /run/current-system/sw/bin
-  /opt/homebrew/bin
-  /usr/local/bin
 )
+OPTIONAL_DIRS=()
+for candidate in "${NIX_DIRS[@]}"; do
+  if [ -d "$candidate" ] && [ -L "$candidate" ]; then
+    candidate=$(CDPATH='' cd -- "$candidate" && pwd -P)
+  fi
+  OPTIONAL_DIRS+=("$candidate")
+done
+OPTIONAL_DIRS+=(/opt/homebrew/bin /usr/local/bin)
 EXPECTED_PATH=
 expect_dir() {
   case ":$EXPECTED_PATH:" in *":$1:"*) return 0 ;; esac

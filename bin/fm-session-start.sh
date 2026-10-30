@@ -897,7 +897,9 @@ for meta in "${META_FILES[@]}"; do
 
   window=$(fm_meta_get "$meta" window)
   target=$(fm_backend_target_of_meta "$meta")
-  if [ -n "$window" ]; then
+  if [ -n "$(fm_meta_get "$meta" copy_released_at)" ]; then
+    printf 'endpoint: released-awaiting-landing (shared branch retained)\n'
+  elif [ -n "$window" ]; then
     backend=$(fm_backend_of_meta "$meta")
     if fm_backend_target_exists "$backend" "${target:-$window}" "fm-$id"; then
       printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"

@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+set -eu
+# shellcheck source=tests/release-copy-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/release-copy-helpers.sh"
+
+successor="successor-copy-release-$$"
+setup_case
+# Model an agent that becomes a shell only when the control plane sends /quit.
+mv "$dir/fakebin/tmux" "$dir/fakebin/tmux-base"
+cat > "$dir/fakebin/tmux" <<'EOF'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  [ "$arg" != /quit ] || touch "$FM_FAKE_DIR/agent-stopped"
+done
+if [ -e "$FM_FAKE_DIR/agent-stopped" ]; then
+  export FM_FAKE_PANE_COMMAND=bash
+else
+  export FM_FAKE_PANE_COMMAND=codex
+fi
+exec "$(dirname "$0")/tmux-base" "$@"
+EOF
+chmod +x "$dir/fakebin/tmux"
+# RED first: a finished branch must be releasable even though it is not landed.
+cp "$dir/home/data/backlog.md" "$dir/prior.backlog"
+out=$(run_teardown "$dir" member --release-copy) || fail "finished branch release failed: $out"
+assert_contains "$out" 'released-awaiting-landing' 'release did not report retained work'
+[ -f "$dir/fake/agent-stopped" ] || fail 'release bypassed verified control-plane exit'
+cmp "$dir/home/data/backlog.md" "$dir/prior.backlog" || fail 'release changed backlog'
+[ -f "$meta" ] && [ -f "$dir/home/state/member.brief" ] || fail 'release removed task records'
+assert_grep 'done:' "$dir/home/state/member.status" 'release changed status history'
+head=$(git -C "$dir/proj" rev-parse refs/heads/fm/member)
+[ "$(meta_value "$meta" copy_release_head)" = "$head" ] || fail 'release lost branch identity'
+[ -z "$(fm_fake_pool_field "$dir/fake/status.json" "$wt" lease_id)" ] || fail 'lease still held'
+[ -z "$(FM_HOME="$dir/home" "$ROOT/bin/fm-worktree-allocation.sh" holder "$dir/proj" "$wt")" ] || fail 'allocation still held'
+out=$(FM_HOME="$dir/home" "$ROOT/bin/fm-crew-state.sh" member)
+assert_contains "$out" 'released-awaiting-landing' 'crew state treated released task as dead'
+# A released task's retained records must never produce an endpoint stale wake.
+FM_HOME="$dir/home" bash -c '
+  . "$1"
+  file="$STATE/member.status"
+  printf "%s" "$(fm_wake_signal_sig "$file")" > "$(fm_wake_signal_seen_path "$STATE" "$file")"
+' _ "$ROOT/bin/fm-wake-lib.sh"
+touch "$dir/home/state/.last-heartbeat"
+watch_rc=0
+timeout 2 env FM_HOME="$dir/home" PATH="$dir/fakebin:$PATH" FM_FAKE_DIR="$dir/fake" \
+  FM_POLL=0.1 FM_HEARTBEAT=999999 FM_CHECK_INTERVAL=999999 FM_SIGNAL_GRACE=0 \
+  "$ROOT/bin/fm-watch.sh" > "$dir/watch.out" 2>&1 || watch_rc=$?
+[ "$watch_rc" = 124 ] || fail "released task produced a wake: $(cat "$dir/watch.out")"
+assert_no_grep 'stale:' "$dir/watch.out" 'released task produced an endpoint stale wake'
+# Ordinary cleanup must still refuse before landing, even with the copy gone.
+if out=$(run_teardown "$dir" member); then fail 'unlanded released task retired'; fi
+assert_contains "$out" 'not landed' 'cleanup lost landed-work refusal'
+# Reuse the only free slot through the real spawn interface.
+prepare_task "$dir" "$successor"
+sed -i s/mode=no-mistakes/mode=local-only/ "$dir/home/data/$successor/brief.md"
+out=$(run_spawn "$dir" "$dir/fake" "$successor" "$dir/proj" --mode local-only --yolo off) || fail "$out"
+assert_leased_to "$dir" "$successor"
+[ "$(meta_value "$dir/home/state/$successor.meta" worktree)" = "$wt" ] || fail 'spawn did not reuse freed copy'
+# A landing lead merges the member by branch name, from a separate copy.
+lead="$dir/pool/2/proj"
+git -C "$lead" checkout -qb fm/lead main
+git -C "$lead" merge -q --no-ff fm/member -m batch
+fm_write_meta "$dir/home/state/lead.meta" "backend=tmux" 'window=firstmate:fm-lead' \
+  'endpoint_task_id=lead' "project=$dir/proj" "worktree=$lead" 'kind=ship' 'mode=local-only' 'spawned_at=2026-10-01T00:00:00Z'
+fm_test_backlog_ensure_queue "$dir/home" lead
+out=$(FM_HOME="$dir/home" PATH="$dir/fakebin:$PATH" "$ROOT/bin/fm-merge-local.sh" lead 2>&1) || fail "$out"
+git -C "$dir/proj" merge-base --is-ancestor "$head" main || fail 'batch omitted released member'
+cp "$dir/fake/status.json" "$dir/after-spawn.pool"
+cp "$dir/home/state/$successor.meta" "$dir/successor.meta"
+out=$(run_teardown "$dir" member) || fail "post-landing cleanup failed: $out"
+assert_contains "$out" 'copy already returned' 'cleanup did not reuse records-only path'
+[ ! -f "$meta" ] || fail 'post-landing records survived'
+cmp "$dir/fake/status.json" "$dir/after-spawn.pool" || fail 'cleanup returned successor copy'
+cmp "$dir/home/state/$successor.meta" "$dir/successor.meta" || fail 'cleanup changed successor'
+pass 'release, re-lease by spawn, batch landing, and post-landing cleanup'
+
+setup_case
+# The pool may refuse its compare-and-return after the journal was written.
+if out=$(FM_FAKE_RETURN_FAIL=1 run_teardown "$dir" member --release-copy); then fail 'failed return reported success'; fi
+[ -z "$(meta_value "$meta" copy_released_at)" ] || fail 'failed return marked released'
+[ "$(fm_fake_pool_field "$dir/fake/status.json" "$wt" lease_id)" = member-lease ] || fail 'failed return lost lease'
+out=$(run_teardown "$dir" member --release-copy) || fail "retry failed: $out"
+assert_contains "$out" 'released-awaiting-landing' 'retry did not finish'
+pass 'failed pool return retains the lease and can be retried'
+
+setup_case
+# An omitted backend is the supported legacy tmux default.
+sed -i '/^backend=/d' "$meta"
+out=$(run_teardown "$dir" member --release-copy) || fail "legacy tmux release failed: $out"
+pass 'legacy tmux default uses the same release protections'
+
+setup_case
+# A newly approved recovery must own a fresh lease and stop reporting release.
+recovery="release-recovery-$$"
+git -C "$wt" branch -m "fm/$recovery"
+sed -i "s/member/$recovery/g" "$meta"
+mv "$meta" "$dir/home/state/$recovery.meta"
+mv "$dir/home/state/member.status" "$dir/home/state/$recovery.status"
+sed -i "s/member/$recovery/g" "$dir/home/data/backlog.md"
+printf 'fm-%s\n' "$recovery" > "$dir/fake/windows"
+fm_fake_pool_inventory "$(fm_fake_pool_entry 1 "$wt" leased '[]' "$recovery-lease" "$recovery")" \
+  > "$dir/fake/status.json"
+out=$(run_teardown "$dir" "$recovery" --release-copy) || fail "$out"
+prepare_task "$dir" "$recovery"
+sed -i s/mode=no-mistakes/mode=local-only/ "$dir/home/data/$recovery/brief.md"
+out=$(run_spawn "$dir" "$dir/fake" "$recovery" --reacquire-worktree) || fail "$out"
+assert_leased_to "$dir" "$recovery"
+[ -z "$(meta_value "$dir/home/state/$recovery.meta" copy_released_at)" ] || fail 'reacquired task still reports released'
+[ -z "$(meta_value "$dir/home/state/$recovery.meta" teardown_at)" ] || fail 'reacquired copy is not bound'
+pass 'reacquire publishes a fresh binding without obsolete release markers'
+
+setup_case
+git -C "$dir/proj" merge -q --ff-only fm/member
+git -C "$wt" config status.showUntrackedFiles no
+printf 'evidence\n' > "$wt/extra"
+cp "$meta" "$dir/prior.meta"
+cp "$dir/fake/status.json" "$dir/prior.pool"
+if out=$(run_teardown "$dir" member); then fail 'ordinary teardown discarded hidden untracked evidence'; fi
+assert_contains "$out" 'uncommitted' 'ordinary teardown missed hidden untracked file'
+[ -f "$wt/extra" ] || fail 'ordinary teardown removed evidence'
+cmp "$meta" "$dir/prior.meta" || fail 'ordinary refusal changed metadata'
+cmp "$dir/fake/status.json" "$dir/prior.pool" || fail 'ordinary refusal returned copy'
+pass 'ordinary teardown includes untracked files despite display configuration'
+
