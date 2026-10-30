@@ -1,0 +1,25 @@
+SCENARIO reacquire released task
+notice: active-validation ships mode=local-only while the standing posture for project is no-mistakes - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state
+spawned active-validation harness=codex kind=ship mode=local-only yolo=off window=firstmate:fm-active-validation worktree=$LAB/.treehouse/project-3d29fb/1/project
+window=firstmate:fm-active-validation
+endpoint_task_id=active-validation
+worktree=$LAB/.treehouse/project-3d29fb/1/project
+worktree_allocation=reused
+pool_lease_id=e6680dbe80bd7288da13e2619112e1be
+allocation_project=$LAB/project
+project=$LAB/project
+harness=codex
+kind=ship
+mode=local-only
+yolo=off
+tasktmp=/tmp/fm-active-validation
+spawned_at=2026-10-30T18:40:59Z
+incarnation_at=2026-10-30T18:41:24Z
+model=default
+effort=default
+spawn_gen=s1793385684.3760615.21278
+state: unknown · source: pane · harness state unavailable (unknown codex-rollout)
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+[{"name":"1","path":"$LAB/.treehouse/project-3d29fb/1/project","status":"leased","lease_id":"e6680dbe80bd7288da13e2619112e1be","lease_holder":"active-validation","leased_at":"2026-10-30T13:41:22.37676459-05:00","processes":[{"pid":3762060,"name":"bash"},{"pid":3766850,"name":"node"},{"pid":3766881,"name":"codex"},{"pid":3767439,"name":"no-mistakes"},{"pid":3767497,"name":"no-mistakes"}]}]

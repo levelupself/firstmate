@@ -1,0 +1,66 @@
+SCENARIO refusal dirty
+REFUSED: worktree $LAB/.treehouse/project-aa4398/1/project has uncommitted changes (including non-ignored untracked files).
+SCENARIO refusal hidden
+REFUSED: worktree $LAB/.treehouse/project-aa4398/1/project has uncommitted changes (including non-ignored untracked files).
+SCENARIO refusal skip
+REFUSED: worktree $LAB/.treehouse/project-aa4398/1/project has tracked paths hidden from ordinary dirty checks.
+hidden index flag skip-worktree: change
+Clear every listed index flag and inspect the revealed changes before teardown, or get the captain's explicit OK to discard, then --force.
+SCENARIO refusal assume
+REFUSED: worktree $LAB/.treehouse/project-aa4398/1/project has tracked paths hidden from ordinary dirty checks.
+hidden index flag assume-unchanged: change
+Clear every listed index flag and inspect the revealed changes before teardown, or get the captain's explicit OK to discard, then --force.
+SCENARIO refusal working
+REFUSED: latest status must be done: before releasing a copy
+SCENARIO refusal paused
+REFUSED: latest status must be done: before releasing a copy
+SCENARIO refusal needs-decision
+REFUSED: latest status must be done: before releasing a copy
+SCENARIO release real pool
+release-copy: already-stopped member
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+🌳 Worktree returned to pool.
+released-awaiting-landing member: shared branch fm/member retained; ignored files are disposable
+state: done · source: copy-release · released-awaiting-landing (branch fm/member retained)
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+[{"name":"1","path":"$LAB/.treehouse/project-aa4398/1/project","status":"available","lease_id":"","lease_holder":"","leased_at":null,"processes":[]}]
+SCENARIO unlanded cleanup refusal
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REFUSED: released task member is not landed in local main
+SCENARIO repeated release
+teardown: copy already returned; released-awaiting-landing - retiring only task member's records, leaving $LAB/.treehouse/project-aa4398/1/project and its processes untouched
+released-awaiting-landing member: shared branch fm/member retained; ignored files are disposable
+SCENARIO re-lease real pool
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+🌳 Setting up worktree...
+🌳 Leased worktree at $LAB/.treehouse/project-aa4398/1/project. Run 'treehouse return $LAB/.treehouse/project-aa4398/1/project' to release it.
+{"path":"$LAB/.treehouse/project-aa4398/1/project","lease_id":"2479b15bd133717f10906f28613a81db","lease_holder":"successor","leased_at":"2026-10-30T13:37:36.621506959-05:00"}
+SCENARIO landing by shared branch name
+SCENARIO post-landing records-only cleanup
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+teardown: copy already returned; released-awaiting-landing - retiring only task member's records, leaving $LAB/.treehouse/project-aa4398/1/project and its processes untouched
+Backlog: member recorded complete. Run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+fm-task-usage: cannot read $LAB/home/data/member
+teardown: warning: could not snapshot codeburn usage for member
+captured member; ingestion queued by lifecycle entry point
+teardown member complete (window firstmate:fm-member, worktree $LAB/.treehouse/project-aa4398/1/project)
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+[{"name":"1","path":"$LAB/.treehouse/project-aa4398/1/project","status":"leased","lease_id":"2479b15bd133717f10906f28613a81db","lease_holder":"successor","leased_at":"2026-10-30T13:37:36.621506959-05:00","processes":[]}]
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+🌳 Worktree returned to pool.

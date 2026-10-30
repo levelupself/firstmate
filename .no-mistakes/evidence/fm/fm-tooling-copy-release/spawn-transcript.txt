@@ -1,0 +1,24 @@
+notice: live-successor ships mode=local-only while the standing posture for project is no-mistakes - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state
+notice: pooled worktree '$LAB/.treehouse/project-aa4398/1/project' has no remotes; using its local base without a remote freshness check
+spawned live-successor harness=codex kind=ship mode=local-only yolo=off window=firstmate:fm-live-successor worktree=$LAB/.treehouse/project-aa4398/1/project
+window=firstmate:fm-live-successor
+endpoint_task_id=live-successor
+worktree=$LAB/.treehouse/project-aa4398/1/project
+worktree_allocation=reused
+pool_lease_id=a1bba90f5c31a62f3d888d7b3bae4b46
+allocation_project=$LAB/project
+project=$LAB/project
+harness=codex
+kind=ship
+mode=local-only
+yolo=off
+tasktmp=/tmp/fm-live-successor
+spawned_at=2026-10-30T18:38:04Z
+incarnation_at=2026-10-30T18:38:04Z
+model=default
+effort=default
+spawn_gen=s1793385484.3503727.3874
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+[{"name":"1","path":"$LAB/.treehouse/project-aa4398/1/project","status":"leased","lease_id":"a1bba90f5c31a62f3d888d7b3bae4b46","lease_holder":"live-successor","leased_at":"2026-10-30T13:38:02.42427395-05:00","processes":[{"pid":3504173,"name":"bash"},{"pid":3504591,"name":"node"},{"pid":3504608,"name":"codex"}]}]

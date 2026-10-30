@@ -1,0 +1,57 @@
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+🌳 Setting up worktree...
+🌳 Leased worktree at $LAB/.treehouse/project-3d29fb/1/project. Run 'treehouse return $LAB/.treehouse/project-3d29fb/1/project' to release it.
+SCENARIO real pool return fails with injected Git index lock
+release-copy: already-stopped retry
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+failed to return worktree: git checkout --detach --force refs/remotes/origin/main: fatal: Unable to create '$LAB/project/.git/worktrees/project1/index.lock': File exists.
+
+Another git process seems to be running in this repository, e.g.
+an editor opened by 'git commit'. Please make sure all processes
+are terminated then try again. If it still fails, a git process
+may have crashed in this repository earlier:
+remove the file manually to continue.
+teardown: worktree return failed: git lock $LAB/project/.git/worktrees/project1/index.lock persisted across 0 retries (waiting 1s each) and is not provably stale (may belong to a live process); leaving it in place
+SCENARIO landed cleanup fails with same real Git lock
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no live watcher process holds this home lock (last beat: 2s ago).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Backlog: retry recorded complete. Run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+fm-task-usage: cannot read $LAB/retry-home/data/retry
+teardown: warning: could not snapshot codeburn usage for retry
+captured retry; ingestion queued by lifecycle entry point
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+failed to return worktree: git checkout --detach --force main: fatal: Unable to create '$LAB/project/.git/worktrees/project1/index.lock': File exists.
+
+Another git process seems to be running in this repository, e.g.
+an editor opened by 'git commit'. Please make sure all processes
+are terminated then try again. If it still fails, a git process
+may have crashed in this repository earlier:
+remove the file manually to continue.
+teardown: worktree return failed: git lock $LAB/project/.git/worktrees/project1/index.lock persisted across 0 retries (waiting 1s each) and is not provably stale (may belong to a live process); leaving it in place
+error: treehouse return failed for worktree $LAB/.treehouse/project-3d29fb/1/project; teardown aborted
+SCENARIO retry cleanup after removing lock
+WARNING: watcher still down (same stale episode; last beat: 7s ago, grace 300s) - full banner already printed this episode.
+Backlog: retry recorded complete. Run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+fm-task-usage: cannot read $LAB/retry-home/data/retry
+teardown: warning: could not snapshot codeburn usage for retry
+captured retry; ingestion queued by lifecycle entry point
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+🌳 Worktree returned to pool.
+teardown retry complete (window firstmate:fm-retry, worktree $LAB/.treehouse/project-3d29fb/1/project)
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+[{"name":"1","path":"$LAB/.treehouse/project-3d29fb/1/project","status":"available","lease_id":"","lease_holder":"","leased_at":null,"processes":[]}]

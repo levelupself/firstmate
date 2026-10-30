@@ -1,0 +1,45 @@
+SCENARIO refusal kind=scout
+REFUSED: release-copy requires this home's local-only ship task
+SCENARIO refusal mode=no-mistakes
+REFUSED: release-copy requires this home's local-only ship task
+SCENARIO refusal backend=orca
+REFUSED: release-copy requires a treehouse-pooled backend
+SCENARIO refusal endpoint_task_id=foreign
+REFUSED: endpoint metadata belongs to task foreign, not live-successor; preserving task state.
+SCENARIO overlapping ownership refusal
+REFUSED: copy $LAB/.treehouse/project-aa4398/1/project is held by task other (its record still binds the copy), not by task live-successor (expected branch fm/live-successor).
+Resetting or returning it would destroy that holder's session; reconcile which task owns the copy before cleanup. --force does not override this.
+SCENARIO release spawned task
+release-copy: already-stopped live-successor
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+🌳 Worktree returned to pool.
+released-awaiting-landing live-successor: shared branch fm/live-successor retained; ignored files are disposable
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+🌳 Setting up worktree...
+🌳 Leased worktree at $LAB/.treehouse/project-aa4398/1/project. Run 'treehouse return $LAB/.treehouse/project-aa4398/1/project' to release it.
+SCENARIO actual batch landing interface
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  2 task(s) in flight, but no live watcher process holds this home lock (last beat: 83s ago).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+published remote origin: refs/heads/main at 8cd04e175ea7516043c7574ccb4541397579c318
+merged fm/lead into local main (a097b14 -> 8cd04e1) in $LAB/project
+SCENARIO records-only cleanup after batch landing
+WARNING: watcher still down (same stale episode; last beat: 86s ago, grace 300s) - full banner already printed this episode.
+teardown: copy already returned; released-awaiting-landing - retiring only task live-successor's records, leaving $LAB/.treehouse/project-aa4398/1/project and its processes untouched
+Backlog: live-successor recorded complete. Run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+fm-task-usage: cannot read store $LAB/codex/sessions: ENOENT
+teardown: warning: could not snapshot codeburn usage for live-successor
+captured live-successor; ingestion queued by lifecycle entry point
+teardown live-successor complete (window firstmate:fm-live-successor, worktree $LAB/.treehouse/project-aa4398/1/project)
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+🌳 Worktree returned to pool.

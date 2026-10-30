@@ -1,0 +1,45 @@
+notice: active-validation ships mode=local-only while the standing posture for project is no-mistakes - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state
+spawned active-validation harness=codex kind=ship mode=local-only yolo=off window=firstmate:fm-active-validation worktree=$LAB/.treehouse/project-3d29fb/1/project
+SCENARIO active agent screen
+  Welcome to Codex, OpenAI's command-line coding agent
+
+  Sign in with ChatGPT to use Codex as part of your paid plan
+  or connect an API key for usage-based billing
+
+> 1. Sign in with ChatGPT
+     Usage included with Plus, Pro, Business, and Enterprise plans
+
+  2. Sign in with Device Code
+     Sign in from another device with a one-time code
+
+  3. Provide your own API key
+     Pay for what you use
+
+  Press enter to continue
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+SCENARIO active agent release
+release-copy: stopped active-validation
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+🌳 Terminated lingering processes: bash (3715983)
+🌳 Worktree returned to pool.
+released-awaiting-landing active-validation: shared branch fm/active-validation retained; ignored files are disposable
+A new version of treehouse is available: v2.1.0 → v3.1.7
+Run "treehouse update" to update
+
+[{"name":"1","path":"$LAB/.treehouse/project-3d29fb/1/project","status":"available","lease_id":"","lease_holder":"","leased_at":null,"processes":[]}]
