@@ -3009,6 +3009,7 @@ release_copy() {
   teardown_meta_set_once_locked copy_release_head "$RELEASE_HEAD" || return 1
   teardown_meta_set_once_locked copy_release_pending_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
   teardown_meta_set_once_locked teardown_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
+  git -C "$WT" checkout --detach -q || return 1
   teardown_treehouse_return "$WT" "$PROJ" worktree release_copy_validate_branch prune "$POOL_LEASE_ID" || return 1
   release_copy_commit_return
 }
@@ -3228,7 +3229,9 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
     branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
     if [ "$branch" != "HEAD" ]; then
       if git -C "$WT" checkout --detach -q 2>/dev/null; then
-        git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
+        if [ -z "$(fm_meta_get "$META" copy_release_head)" ]; then
+          git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
+        fi
       fi
     fi
     rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" \
@@ -3243,7 +3246,9 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   if [ "$branch" != "HEAD" ]; then
     if git -C "$WT" checkout --detach -q 2>/dev/null; then
-      git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
+      if [ -z "$(fm_meta_get "$META" copy_release_head)" ]; then
+        git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
+      fi
     fi
   fi
   # Remove our hook file so a reused pool worktree cannot fire signals for a dead task.
