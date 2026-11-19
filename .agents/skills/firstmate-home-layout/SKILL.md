@@ -46,6 +46,7 @@ The named data producers and `docs/effort-store.md` and `docs/task-usage.md` own
 `state/` holds private runtime records and append-only status events, not durable project knowledge.
 Each producer script's header owns the exact fields, trust binding, and cleanup contract for the state it creates.
 Task turn-end tokens and harness session bindings are firstmate-owned volatile state removed by teardown.
+`state/<id>.turn-progress` is the tool-boundary marker the Claude hooks written by [`bin/fm-spawn.sh`](../../../bin/fm-spawn.sh) touch and [`bin/fm-watch.sh`](../../../bin/fm-watch.sh)'s busy-turn bound ages; it is never a wake signal, is removed by teardown and a harness switch, and is safe to delete because a missing marker falls back to the completed-turn rule.
 A task's Herdr presentation journal is quarantinable attempt and restart-binding state, never task or endpoint authority.
 The watcher executes only byte-identified trusted poll shims, validated private PR data, or registered custom checks bound to hash-validated private snapshots; it rejects every other state check without execution.
 PR-poll sidecars, registrations, retirement receipts, migration logs, and quarantine are private provenance, and quarantined checks are non-runnable.

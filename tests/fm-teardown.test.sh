@@ -1950,6 +1950,24 @@ test_teardown_missing_busy_sidecar_completes() {
   pass "teardown completes when an exact busy-state sidecar is already absent"
 }
 
+test_teardown_retires_turn_markers() {
+  local case_dir rc
+  case_dir=$(make_case turn-markers)
+  write_meta "$case_dir" local-only ship
+  : > "$case_dir/state/task-x1.turn-ended"
+  : > "$case_dir/state/task-x1.turn-progress"
+
+  set +e
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "turn-markers: teardown should succeed"
+  assert_absent "$case_dir/state/task-x1.turn-ended" "turn-markers: teardown left the turn-ended marker"
+  assert_absent "$case_dir/state/task-x1.turn-progress" "turn-markers: teardown left the tool-boundary progress marker"
+  pass "teardown retires the turn-ended and tool-boundary progress markers"
+}
+
 test_herdr_teardown_clears_escalation_marker() {
   local case_dir marker
   case_dir=$(make_case herdr-marker-cleanup)
@@ -4604,6 +4622,7 @@ test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
 test_teardown_missing_busy_sidecar_completes
+test_teardown_retires_turn_markers
 test_herdr_teardown_clears_escalation_marker
 test_teardown_removes_usage_cache_entry
 test_teardown_captures_effort_before_removing_meta

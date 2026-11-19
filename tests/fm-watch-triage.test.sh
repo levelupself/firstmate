@@ -1923,6 +1923,261 @@ test_busy_pane_long_run_declaration_superseded_by_later_status_line() {
   pass "only the latest status line can declare a long run: a later working: note without the token restores the ordinary bound"
 }
 
+# --- busy-turn bound: Claude tool-boundary progress and declared parks --------
+#
+# A Claude worker keeps one turn open for hours by design, so its completed-turn
+# marker ages past the bound while it is healthy. These cases reproduce that
+# shape - a real claude-hook busy record, a stable busy pane, no completed turn
+# for over an hour, and a wedge ladder already mid-escalation - at the
+# production thresholds, and pin which evidence keeps it off the wedge ladder.
+
+record_claude_busy() {  # <state-dir> <id>
+  local state=$1 id=$2 gen
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$id")
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" "$id" busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+}
+
+# Set <id>'s status file to <status-line>, <age> seconds old, and prime its
+# signal suppressor so the per-poll scan does not fire on the fixture itself.
+claude_busy_status() {  # <state-dir> <id> <status-line> <age-secs>
+  local state=$1 id=$2 line=$3 age=$4
+  printf '%s\n' "$line" > "$state/$id.status"
+  set_mtime $(( $(date +%s) - age )) "$state/$id.status"
+  printf '%s' "$(seen_sig "$state/$id.status")" > "$state/.seen-${id}_status"
+}
+
+# <turn-ended>: old (completed turn 2h ago), fresh (just completed), or none
+# (no turn ever completed; the spawn record is 2h old - the ui-t100 shape).
+# <progress>: fresh, old (last tool boundary 2h ago), or none.
+claude_busy_case() {  # <name> <id> <window> <status-line> <status-age> <turn-ended> <progress>  -> sets CB_DIR
+  local name=$1 id=$2 window=$3 status_line=$4 status_age=$5 te=$6 prog=$7 dir state key old
+  dir=$(make_case "$name"); state="$dir/state"; CB_DIR=$dir
+  old=$(( $(date +%s) - 7200 ))
+  printf '* Incubating... (7h 21m 9s)' > "$dir/pane.txt"
+  printf 'window=%s\nkind=ship\nharness=claude\n' "$window" > "$state/$id.meta"
+  record_claude_busy "$state" "$id"
+  claude_busy_status "$state" "$id" "$status_line" "$status_age"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  printf '%s' "$(hash_text '* Incubating... (7h 21m 9s)')" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  case "$te" in
+    old)   touch "$state/$id.turn-ended"; set_mtime "$old" "$state/$id.turn-ended"; prime_turnend_seen "$state/$id.turn-ended" ;;
+    fresh) touch "$state/$id.turn-ended"; prime_turnend_seen "$state/$id.turn-ended" ;;
+    none)  set_mtime "$old" "$state/$id.meta" ;;
+  esac
+  case "$prog" in
+    fresh) touch "$state/$id.turn-progress" ;;
+    old)   touch "$state/$id.turn-progress"; set_mtime "$old" "$state/$id.turn-progress" ;;
+  esac
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  printf '2\n' > "$state/.wedge-escalations-$key"
+}
+
+claude_busy_watch() {  # <dir> <window> <out>  -> background watcher pid in CB_PID
+  local dir=$1 window=$2 out=$3
+  PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
+    FM_STATE_OVERRIDE="$dir/state" FM_BUSY_TURN_MAX_SECS=3600 FM_STALE_ESCALATE_SECS=240 \
+    FM_PAUSE_RESURFACE_SECS=3600 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
+  CB_PID=$!
+  await_watcher_loop "$dir/state" "$CB_PID"
+}
+
+# Two further stable-hash polls of the pane must finish triage with the watcher
+# still running and silent; fails with <what> otherwise. The count advances at the
+# START of each poll's scan, and the starting read may land on either side of the
+# first poll, so waiting for three advances proves two complete triage passes.
+claude_busy_expect_quiet() {  # <dir> <window> <pid> <out> <what>
+  local dir=$1 window=$2 pid=$3 out=$4 what=$5 key count
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  count=$(cat "$dir/state/.count-$key" 2>/dev/null || echo 0)
+  if ! wait_count_at_least "$dir/state/.count-$key" $(( count + 3 )) 150; then
+    if kill -0 "$pid" 2>/dev/null; then
+      reap "$pid"; fail "$what: the watcher never completed two polls of the pane: $(cat "$out")"
+    fi
+    wait "$pid" 2>/dev/null || true
+    fail "$what: surfaced a wake: $(cat "$out")"
+  fi
+  kill -0 "$pid" 2>/dev/null || fail "$what: surfaced a wake: $(cat "$out")"
+  [ ! -s "$out" ] || { reap "$pid"; fail "$what: printed a wake reason: $(cat "$out")"; }
+  [ "$(count_window_stale_wakes "$dir/state" "$window")" = 0 ] || { reap "$pid"; fail "$what: queued a stale wake"; }
+}
+
+# The same check for a pane whose rendered elapsed counter changes every poll, so
+# every poll takes the new-hash branch and the stable-hash count never advances:
+# each poll of a busy park logs one absorbed-pause triage line, so three new
+# lines prove two complete triage passes stayed silent.
+claude_busy_expect_quiet_ticking() {  # <dir> <window> <pid> <out> <what>
+  local dir=$1 window=$2 pid=$3 out=$4 what=$5 log start i=0
+  log="$dir/state/.watch-triage.log"
+  start=$(grep -cF "absorbed stale (paused, awaiting external" "$log" 2>/dev/null || true)
+  while [ "$(grep -cF "absorbed stale (paused, awaiting external" "$log" 2>/dev/null || true)" -lt $(( ${start:-0} + 3 )) ]; do
+    kill -0 "$pid" 2>/dev/null || { wait "$pid" 2>/dev/null || true; fail "$what: surfaced a wake: $(cat "$out")"; }
+    [ "$i" -lt 150 ] || { reap "$pid"; fail "$what: the watcher never completed two polls of the pane: $(cat "$out")"; }
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ ! -s "$out" ] || { reap "$pid"; fail "$what: printed a wake reason: $(cat "$out")"; }
+}
+
+test_claude_busy_fresh_tool_progress_absorbed_past_turn_age_bound() {
+  local label status_line te dir state out window key
+  for label in working-no-turn-yet working-poll done-final-turn; do
+    case "$label" in
+      working-no-turn-yet) status_line='working: polling desert rerun with memory guard'; te=none ;;
+      working-poll)        status_line='working: gate running; output reaches its log only at the end'; te=old ;;
+      done-final-turn)     status_line='done: ready in branch fm/x, tests pass, tree clean'; te=old ;;
+    esac
+    window="test:fm-cl-progress-$label"
+    claude_busy_case "cl-progress-$label" "cl-progress-$label" "$window" "$status_line" 600 "$te" fresh
+    dir=$CB_DIR; state="$dir/state"; out="$dir/watch.out"
+    key=$(printf '%s' "$window" | tr ':/.' '___')
+    claude_busy_watch "$dir" "$window" "$out"
+    claude_busy_expect_quiet "$dir" "$window" "$CB_PID" "$out" "a Claude worker ($label) with a fresh tool boundary"
+    [ ! -e "$state/.stale-since-$key" ] || { reap "$CB_PID"; fail "a fresh tool boundary ($label) did not clear the wedge timer"; }
+    [ ! -e "$state/.wedge-escalations-$key" ] || { reap "$CB_PID"; fail "a fresh tool boundary ($label) did not clear the escalation counter"; }
+    reap "$CB_PID"
+  done
+  pass "a busy Claude worker past the turn-age bound with a fresh tool boundary is alive: no wake, and its wedge ladder collapses"
+}
+
+test_claude_busy_hung_tool_call_still_escalates() {
+  local dir state out window
+  window="test:fm-cl-hung"
+  claude_busy_case cl-hung cl-hung "$window" 'working: polling desert rerun with memory guard' 600 old old
+  dir=$CB_DIR; state="$dir/state"; out="$dir/watch.out"
+  claude_busy_watch "$dir" "$window" "$out"
+  wait_for_exit "$CB_PID" 100 || fail "a Claude worker with no tool boundary for two hours was not wedge-escalated"
+  grep -F "stale: $window" "$out" >/dev/null || fail "hung-call escalation did not print the stale wake"
+  grep -F "possible wedge, escalation 3" "$out" >/dev/null \
+    || fail "hung-call escalation did not continue the wedge ladder: $(cat "$out")"
+  pass "a busy Claude worker whose last tool boundary and last completed turn are both past the bound still escalates as a possible wedge"
+}
+
+test_claude_busy_newest_turn_marker_wins() {
+  local dir state out window key
+  # A fresh completed turn is newer than an old tool boundary: absorbed.
+  window="test:fm-cl-newest-turn"
+  claude_busy_case cl-newest-turn cl-newest-turn "$window" 'working: next phase' 600 fresh old
+  dir=$CB_DIR; state="$dir/state"; out="$dir/watch.out"
+  claude_busy_watch "$dir" "$window" "$out"
+  claude_busy_expect_quiet "$dir" "$window" "$CB_PID" "$out" "a fresh completed turn hidden behind an old tool boundary"
+  reap "$CB_PID"
+  # No tool-boundary marker at all keeps today's completed-turn rule.
+  window="test:fm-cl-no-marker"
+  claude_busy_case cl-no-marker cl-no-marker "$window" 'working: next phase' 600 old none
+  dir=$CB_DIR; out="$dir/watch.out"
+  claude_busy_watch "$dir" "$window" "$out"
+  wait_for_exit "$CB_PID" 100 || fail "a Claude worker with no tool-boundary marker lost the completed-turn bound"
+  grep -F "possible wedge" "$out" >/dev/null || fail "missing-marker escalation did not flag a possible wedge: $(cat "$out")"
+  pass "the busy bound ages the newest of the completed-turn and tool-boundary markers, and a missing marker keeps the completed-turn rule"
+}
+
+test_busy_declared_park_past_turn_age_bound_is_absorbed() {
+  local label status_line dir state out window key
+  for label in paused captain-held; do
+    case "$label" in
+      paused)       status_line='paused: [key=b100-cutoff] waiting for the handoff until 18:00Z' ;;
+      captain-held) status_line="captain-held: waiting on the captain's call" ;;
+    esac
+    window="test:fm-busy-park-$label"
+    claude_busy_case "busy-park-$label" "busy-park-$label" "$window" "$status_line" 600 old none
+    dir=$CB_DIR; state="$dir/state"; out="$dir/watch.out"
+    key=$(printf '%s' "$window" | tr ':/.' '___')
+    claude_busy_watch "$dir" "$window" "$out"
+    claude_busy_expect_quiet "$dir" "$window" "$CB_PID" "$out" "a busy $label park inside its recheck window"
+    [ ! -e "$state/.stale-since-$key" ] || { reap "$CB_PID"; fail "a busy $label park kept a wedge timer"; }
+    [ ! -e "$state/.wedge-escalations-$key" ] || { reap "$CB_PID"; fail "a busy $label park kept the wedge escalation counter"; }
+    [ -e "$state/.paused-$key" ] || { reap "$CB_PID"; fail "a busy $label park did not use the declared-pause cadence"; }
+    reap "$CB_PID"
+  done
+  pass "a busy worker past the turn-age bound under a declared paused: or captain-held: park is absorbed with no wedge ladder"
+}
+
+test_busy_declared_park_resurfaces_once_per_long_cadence() {
+  local label status_line dir state out window key ticker rc
+  for label in paused captain-held; do
+    case "$label" in
+      paused)       status_line='paused: [key=b100-cutoff] waiting for the handoff until 18:00Z' ;;
+      captain-held) status_line="captain-held: waiting on the captain's call" ;;
+    esac
+    window="test:fm-busy-park-old-$label"
+    claude_busy_case "busy-park-old-$label" "busy-park-old-$label" "$window" "$status_line" 4000 old none
+    dir=$CB_DIR; state="$dir/state"; out="$dir/watch.out"
+    key=$(printf '%s' "$window" | tr ':/.' '___')
+    claude_busy_watch "$dir" "$window" "$out"
+    wait_for_exit "$CB_PID" 100 || fail "a busy $label park older than the recheck cadence never re-surfaced"
+    grep -F "stale: $window (paused " "$out" >/dev/null || fail "the busy $label recheck did not use the declared-pause wording: $(cat "$out")"
+    grep -F "possible wedge" "$out" >/dev/null && fail "a busy $label park was escalated as a possible wedge: $(cat "$out")"
+    [ -e "$state/.paused-resurfaced-$key" ] || fail "the busy $label recheck did not record its throttle"
+    [ "$(count_window_stale_wakes "$state" "$window")" -eq 1 ] || fail "the busy $label recheck queued more than one wake"
+    ack_stopped_cycle "$state" || fail "could not acknowledge the busy $label recheck"
+
+    # Still inside the same recheck window: the busy branch must not clear the
+    # throttle, so later polls stay quiet rather than re-surfacing every poll.
+    : > "$out"
+    claude_busy_watch "$dir" "$window" "$out"
+    claude_busy_expect_quiet "$dir" "$window" "$CB_PID" "$out" "a busy $label park already rechecked in this window"
+    reap "$CB_PID"
+    ack_stopped_cycle "$state" || fail "could not acknowledge the intentional stable-pane stop"
+
+    # A ticking busy pane takes the new-hash branch every poll, which must keep
+    # the throttle too.
+    ( i=0; while :; do printf '* Incubating... (%ss)' "$i" > "$dir/pane.txt"; i=$((i + 1)); sleep 0.3; done ) &
+    ticker=$!
+    claude_busy_watch "$dir" "$window" "$out"
+    ( claude_busy_expect_quiet_ticking "$dir" "$window" "$CB_PID" "$out" "a ticking busy $label park already rechecked in this window" )
+    rc=$?
+    reap "$CB_PID"; reap "$ticker"
+    [ "$rc" -eq 0 ] || exit "$rc"
+  done
+  pass "a busy declared park re-surfaces once per long cadence with declared-pause wording, never as a possible wedge, on a stable or ticking pane"
+}
+
+test_busy_declared_park_ended_by_working_line_resumes_bound() {
+  local dir state out window key since
+  window="test:fm-busy-park-ended"
+  claude_busy_case busy-park-ended busy-park-ended "$window" \
+    'paused: waiting for the handoff' 600 old none
+  dir=$CB_DIR; state="$dir/state"; out="$dir/watch.out"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  : > "$state/.paused-$key"
+  date +%s > "$state/.paused-resurfaced-$key"
+  printf 'working: handoff arrived, resuming the rerun\n' >> "$state/busy-park-ended.status"
+  printf '%s' "$(seen_sig "$state/busy-park-ended.status")" > "$state/.seen-busy-park-ended_status"
+  claude_busy_watch "$dir" "$window" "$out"
+  claude_busy_expect_quiet "$dir" "$window" "$CB_PID" "$out" "a park just ended by a working: line"
+  [ ! -e "$state/.paused-$key" ] || { reap "$CB_PID"; fail "a later working: line did not end the park's pause tracking"; }
+  [ ! -e "$state/.paused-resurfaced-$key" ] || { reap "$CB_PID"; fail "a later working: line left the park's recheck throttle"; }
+  since=$(cat "$state/.stale-since-$key" 2>/dev/null || true)
+  case "$since" in ''|*[!0-9]*) reap "$CB_PID"; fail "the busy bound did not resume its wedge timer after the park ended" ;; esac
+  reap "$CB_PID"
+  pass "a later working: line ends a busy park and the ordinary busy bound resumes"
+}
+
+test_afk_busy_declared_park_hands_off_plain_stale_on_long_cadence() {
+  local dir state out window key
+  window="test:fm-afk-busy-park"
+  claude_busy_case afk-busy-park afk-busy-park "$window" \
+    'paused: [key=b100-cutoff] waiting for the handoff until 18:00Z' 4000 old none
+  dir=$CB_DIR; state="$dir/state"; out="$dir/watch.out"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  date '+%s' > "$state/.afk"
+  claude_busy_watch "$dir" "$window" "$out"
+  wait_for_exit "$CB_PID" 100 || fail "an away-mode busy park older than the recheck cadence was never handed off"
+  grep -Fx "stale: $window" "$out" >/dev/null || fail "the away-mode busy park was not handed off with its plain identity: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null && fail "an away-mode busy park was escalated as a possible wedge"
+  [ ! -e "$state/.paused-$key" ] || fail "the away-mode watcher recorded normal-mode pause tracking instead of handing off"
+  [ ! -e "$state/.stale-since-$key" ] || fail "an away-mode busy park kept a wedge timer"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the away-mode busy park handoff"
+  : > "$out"
+  claude_busy_watch "$dir" "$window" "$out"
+  claude_busy_expect_quiet "$dir" "$window" "$CB_PID" "$out" "an away-mode busy park already handed off in this window"
+  reap "$CB_PID"
+  pass "in away mode a busy declared park hands its plain identity to the daemon once per long cadence, never as a possible wedge"
+}
+
 test_nonterminal_stale_repairs_missing_or_corrupt_timer() {
   local dir state fakebin out capture_file window key pane_hash sig pid since
   dir=$(make_case nonterminal-stale-timer-repair); state="$dir/state"; fakebin="$dir/fakebin"
@@ -2438,6 +2693,13 @@ test_busy_pane_declared_long_run_with_live_artifact_collapses_wedge_ladder
 test_busy_pane_declared_long_run_with_quiet_artifact_still_escalates
 test_busy_pane_declared_long_run_with_missing_artifact_still_escalates
 test_busy_pane_long_run_declaration_superseded_by_later_status_line
+test_claude_busy_fresh_tool_progress_absorbed_past_turn_age_bound
+test_claude_busy_hung_tool_call_still_escalates
+test_claude_busy_newest_turn_marker_wins
+test_busy_declared_park_past_turn_age_bound_is_absorbed
+test_busy_declared_park_resurfaces_once_per_long_cadence
+test_busy_declared_park_ended_by_working_line_resumes_bound
+test_afk_busy_declared_park_hands_off_plain_stale_on_long_cadence
 test_nonterminal_stale_not_working_surfaced
 test_nonterminal_stale_paused_absorbed_then_resurfaced
 test_declared_pause_is_bounded_whether_or_not_the_agent_exited

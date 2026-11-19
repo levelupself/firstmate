@@ -283,6 +283,25 @@ The Codex rollout bracket above is refreshed by the opt-in live guard, which exe
 FM_CODEX_BUSY_LIVE_E2E=1 tests/fm-codex-busy-live-e2e.test.sh
 ```
 
+### Claude tool-boundary progress marker, 2026-11-19
+
+The `state/<id>.turn-progress` marker that the watcher's busy-turn bound ages was live-verified against Claude Code 2.1.291 with the settings the real `fm-spawn` generates, loaded alone through `--setting-sources local`.
+A Haiku print-mode run executed an eight-second Bash call, a four-second Bash call that exited non-zero, and a general-purpose subagent's Bash call while the marker's mtime was sampled every 100 ms.
+The marker was touched when each call started and ended, never while the eight-second call ran, and the subagent's own call touched it.
+A failing call ends in `PostToolUseFailure`, not `PostToolUse`: with that hook removed from the generated settings the same guard failed with `PostToolUseFailure did not touch the marker when a failing call ended`.
+
+```sh
+FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-tool-progress-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - claude 2.1.291 (Claude Code) touches the tool-boundary progress marker at every successful, failing, and subagent tool call end, and never mid-call
+```
+
+`tests/fm-busy-adapter-wiring.test.sh` pins the generated hooks hermetically, and `tests/fm-watch-triage.test.sh` pins the watcher's use of the marker, including a hung call that still escalates.
+
 ## Turn-end guard
 
 The blocking and bounded-follow-up mechanisms were validated across six harnesses on 2026-07-08 through 2026-08-13, with Claude's replacement Stop-owned path revalidated on 2026-07-24 and Cursor's stop-hook park validated on 2026-08-13.

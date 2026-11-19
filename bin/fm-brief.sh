@@ -484,10 +484,10 @@ $SEARCH_GUIDANCE
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
    would act on and the needs-decision/blocked/paused/done/failed states. No step-by-step
    FYI progress lines; firstmate reads your pane for that.
-   Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
-   known external wait you expect to clear on its own (an upstream release, a rate-limit reset):
-   firstmate then leaves your idle pane alone and rechecks it on a long cadence instead of
-   treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
+   Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately waiting,
+   idle or in a foreground wait loop, on a known external wait you expect to clear on its own
+   (an upstream release, a rate-limit reset): firstmate then leaves your pane alone and rechecks
+   it on a long cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
    For a long foreground job whose output goes to a file instead of the screen (a full test suite,
    a long build), put the file it keeps writing on your \`working:\` line as a whole-word
    \`$FM_CLASSIFY_LONG_RUN_TOKEN=<absolute path>\` token: while that file keeps changing, firstmate treats your quiet
@@ -651,10 +651,10 @@ $SUITE_GUIDANCE
    firstmate reads your pane for that.
    A mid-task \`working:\` line (including setup complete) is nonterminal: do not end the turn
    after it; continue until this mode's one terminal report under Definition of done, the only \`done:\` you write.
-   Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
-   known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
-   a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long
-   cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
+   Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately waiting,
+   idle or in a foreground wait loop, on a known external wait you expect to clear on its own
+   (an upstream release, a rate-limit reset, a scheduled window): firstmate then leaves your pane
+   alone and rechecks it on a long cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
    For a long foreground job whose output goes to a file instead of the screen (a full test suite,
    a long build), put the file it keeps writing on your \`working:\` line as a whole-word
    \`$FM_CLASSIFY_LONG_RUN_TOKEN=<absolute path>\` token, e.g. \`working: full suite under way, ~2h $FM_CLASSIFY_LONG_RUN_TOKEN=/tmp/suite.log\`:

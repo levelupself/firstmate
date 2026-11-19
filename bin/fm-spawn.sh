@@ -3672,6 +3672,7 @@ mkdir -p "$TASK_TMP/gotmp"
 mkdir -p "$STATE"
 STATE_REAL=$(cd "$STATE" && pwd -P)
 TURNEND="$STATE_REAL/$ID.turn-ended"
+TURNPROGRESS="$STATE_REAL/$ID.turn-progress"
 exclude_path() {
   local rel=$1 EXCL
   EXCL=$(git -C "$WT" rev-parse --git-path info/exclude 2>/dev/null || true)
@@ -3750,9 +3751,14 @@ if [ "$KIND" != secondmate ]; then
       # never leave a stale busy record. Claude fires no hook for a manual
       # interrupt: fm-control preserves the adapter-owned state, while the
       # legacy fm-send --key Escape path records idle/fm-interrupt. Stop keeps
-      # the turn-ended NOTIFICATION touch for the watcher. Every
-      # hook command tolerates a refused event (|| true) so a stale-gen writer
-      # can never break Claude's own lifecycle.
+      # the turn-ended NOTIFICATION touch for the watcher. PreToolUse,
+      # PostToolUse, and PostToolUseFailure (a failed call ends there, not in
+      # PostToolUse), with no matcher so every tool (subagent calls included)
+      # counts, only touch the state/<id>.turn-progress tool-boundary marker that
+      # fm-watch.sh's busy-turn bound ages; it is never a wake signal and never
+      # rewrites the busy record. Every hook command tolerates a refused event or
+      # a missing state directory (|| true) so firstmate can never break
+      # Claude's own lifecycle.
       mkdir -p "$WT/.claude"
       busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
       busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source claude-hook"
@@ -3760,8 +3766,9 @@ if [ "$KIND" != secondmate ]; then
       j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
       j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
       j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
+      j_progress=$(json_escape "touch $(shell_quote "$TURNPROGRESS") 2>/dev/null || true")
       cat > "$WT/.claude/settings.local.json" <<EOF
-{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
+{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"PreToolUse":[{"hooks":[{"type":"command","command":"$j_progress"}]}],"PostToolUse":[{"hooks":[{"type":"command","command":"$j_progress"}]}],"PostToolUseFailure":[{"hooks":[{"type":"command","command":"$j_progress"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
       exclude_path '.claude/settings.local.json'
       ;;

@@ -297,6 +297,33 @@ test_claude_hooks_semantic_lifecycle() {
   pass "claude hooks open on UserPromptSubmit and close on Stop, StopFailure, and SessionEnd"
 }
 
+test_claude_tool_boundary_hooks_touch_progress_marker_only() {
+  local rec id=busy-cl-3 out state settings ev
+  rec=$(make_spawn_case claude-progress claude "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "claude spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  settings="$WT_DIR/.claude/settings.local.json"
+  run_claude_hook "$settings" UserPromptSubmit || fail "UserPromptSubmit hook command failed"
+  rm -f "$state/$id.turn-ended"
+  for ev in PreToolUse PostToolUse PostToolUseFailure; do
+    jq -e ".hooks[\"$ev\"]" "$settings" >/dev/null || fail "claude hook settings lack $ev"
+    jq -e ".hooks[\"$ev\"][0].matcher // empty" "$settings" >/dev/null \
+      && fail "the $ev progress hook must match every tool, not a subset"
+    rm -f "$state/$id.turn-progress"
+    run_claude_hook "$settings" "$ev" || fail "$ev hook command failed"
+    [ -f "$state/$id.turn-progress" ] || fail "$ev did not touch the tool-boundary progress marker"
+    out=$(classify claude "$id" "$state")
+    [ "$out" = "busy claude-hook" ] || fail "$ev must leave the open turn busy, got '$out'"
+  done
+  assert_absent "$state/$id.turn-ended" "a tool-boundary hook touched the turn-ended wake marker"
+  # A missing state directory must never break Claude's own tool call.
+  rm -rf "$state"
+  run_claude_hook "$settings" PreToolUse || fail "the progress hook failed when its state directory was gone"
+  pass "claude PreToolUse, PostToolUse, and PostToolUseFailure touch only the tool-boundary progress marker for every tool, never the turn-ended wake marker or the busy record"
+}
+
 test_claude_hooks_stale_incarnation_harmless() {
   local rec id=busy-cl-2 out state settings
   rec=$(make_spawn_case claude-stale claude "$id")
@@ -357,6 +384,7 @@ test_pi_extension_stale_incarnation_rejected
 test_kimi_and_grok_install_no_unverified_wiring
 test_opencode_plugin_semantic_lifecycle
 test_claude_hooks_semantic_lifecycle
+test_claude_tool_boundary_hooks_touch_progress_marker_only
 test_claude_hooks_stale_incarnation_harmless
 test_codex_binds_its_rollout_log_without_arming_a_push_source
 
