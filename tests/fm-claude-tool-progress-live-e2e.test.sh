@@ -25,6 +25,7 @@ CLAUDE_BIN=$(command -v claude || true)
 [ -n "$CLAUDE_BIN" ] || fail "claude not found: the tool-boundary progress guard checked nothing"
 command -v jq >/dev/null 2>&1 || fail "jq not found"
 CLAUDE_VERSION=$("$CLAUDE_BIN" --version)
+command -v perl >/dev/null 2>&1 || fail "claude $CLAUDE_VERSION guard requires perl"
 MODEL=${FM_CLAUDE_LIVE_MODEL:-claude-haiku-4-5-20251001}
 TMP_ROOT=$(fm_test_tmproot fm-claude-tool-progress-live)
 ID=progress-live
@@ -34,7 +35,7 @@ SAMPLER=
 mtime_ms() {  # <file>
   local m
   if [ "$(uname)" = Darwin ]; then m=$(stat -f %Fm "$1"); else m=$(stat -c %.3Y "$1"); fi || return 1
-  awk -v m="$m" 'BEGIN { printf "%d\n", m * 1000 }'
+  awk -v m="$m" 'BEGIN { printf "%.0f\n", m * 1000 }'
 }
 
 cleanup() {
@@ -90,40 +91,42 @@ TOUCHES="$CASE_DIR/touches"
   while :; do
     m=$(mtime_ms "$MARKER" 2>/dev/null || true)
     if [ -n "$m" ] && [ "$m" != "$prev" ]; then printf '%s\n' "$m" >> "$TOUCHES"; prev=$m; fi
-    sleep 0.1
+    sleep 0.05
   done
 ) &
 SAMPLER=$!
 
 MARKS="$CASE_DIR/marks"
 mkdir -p "$MARKS"
-prompt="Do exactly these steps in order, one tool call each, then reply DONE.
-1) Use the Bash tool to run: date +%s%3N > $MARKS/a-start; sleep 8; date +%s%3N > $MARKS/a-end
-2) Use the Bash tool to run: sleep 4; date +%s%3N > $MARKS/b-end; exit 3
-3) Use the Agent tool to launch a general-purpose subagent whose only job is to use the Bash tool to run: date +%s%3N > $MARKS/c-end"
+CLOCK="perl -MTime::HiRes=time -e 'printf \"%.0f\\n\", time*1000'"
+prompt="Do exactly these steps in order, then reply DONE. Do not run any other tools.
+1) Use one Bash call to run: $CLOCK > '$MARKS/a-start'; sleep 8; $CLOCK > '$MARKS/a-end'
+2) Use one Bash call to run: $CLOCK > '$MARKS/b-start'; sleep 4; $CLOCK > '$MARKS/b-end'; exit 3
+3) Use one Bash call to run only: $CLOCK > '$MARKS/after-b-start'
+4) Use the Agent tool to launch a general-purpose subagent whose only job is to run exactly two sequential Bash calls and then return. Its first Bash call must run: $CLOCK > '$MARKS/c-start'; sleep 3; $CLOCK > '$MARKS/c-end'
+Its second Bash call must run only: sleep 3"
 (cd "$WT_DIR" && timeout 300 "$CLAUDE_BIN" -p --model "$MODEL" --setting-sources local \
   --permission-mode bypassPermissions "$prompt") > "$CASE_DIR/claude.out" 2>&1 \
   || fail "claude $CLAUDE_VERSION run failed: $(tail -5 "$CASE_DIR/claude.out")"
 sleep 1
 kill "$SAMPLER" 2>/dev/null || true; wait "$SAMPLER" 2>/dev/null || true; SAMPLER=
 
-for f in a-start a-end b-end c-end; do
+for f in a-start a-end b-start b-end after-b-start c-start c-end; do
   [ -s "$MARKS/$f" ] || fail "claude $CLAUDE_VERSION did not run step $f; the guard checked nothing: $(tail -5 "$CASE_DIR/claude.out")"
 done
 [ -s "$TOUCHES" ] || fail "claude $CLAUDE_VERSION never touched the tool-boundary marker"
 
-# touched_within <from-ms> <to-ms>: 0 iff some observed touch lies in the window.
 touched_within() {
-  awk -v lo="$1" -v hi="$2" '$1 >= lo && $1 <= hi { found=1 } END { exit !found }' "$TOUCHES"
+  awk -v lo="$1" -v hi="$2" -v required="${3:-1}" '$1 >= lo && $1 <= hi { seen[$1]=1 } END { for (m in seen) count++; exit count < required }' "$TOUCHES"
 }
 a_start=$(cat "$MARKS/a-start"); a_end=$(cat "$MARKS/a-end")
-b_end=$(cat "$MARKS/b-end"); c_end=$(cat "$MARKS/c-end")
-# Nothing fires while one call runs (the sampler polls every 100ms).
+b_start=$(cat "$MARKS/b-start"); b_end=$(cat "$MARKS/b-end")
+after_b_start=$(cat "$MARKS/after-b-start"); c_end=$(cat "$MARKS/c-end")
 touched_within $(( a_start + 500 )) $(( a_end - 500 )) \
   && fail "claude $CLAUDE_VERSION touched the marker while a single tool call was still running: $(tr '\n' ' ' < "$TOUCHES")"
-touched_within "$a_end" $(( a_end + 1000 )) \
+touched_within "$a_end" "$b_start" 2 \
   || fail "claude $CLAUDE_VERSION PostToolUse did not touch the marker when a successful call ended: $(tr '\n' ' ' < "$TOUCHES")"
-touched_within "$b_end" $(( b_end + 1000 )) \
+touched_within "$b_end" "$after_b_start" 2 \
   || fail "claude $CLAUDE_VERSION PostToolUseFailure did not touch the marker when a failing call ended: $(tr '\n' ' ' < "$TOUCHES")"
 touched_within "$c_end" $(( c_end + 1000 )) \
   || fail "claude $CLAUDE_VERSION did not touch the marker for a subagent's tool call: $(tr '\n' ' ' < "$TOUCHES")"
