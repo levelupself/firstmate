@@ -99,7 +99,7 @@ function isChildPidExpansion(value) {
 // Static analysis: find every signal send and every variable binding.
 
 function newAnalysis() {
-  return { sends: [], candidates: new Set(), disqualified: new Set(), unclassifiable: false };
+  return { sends: [], candidates: new Set(), disqualified: new Set(), unclassifiable: false, unprovable: false };
 }
 
 function recordAssignment(analysis, word) {
@@ -129,18 +129,20 @@ function skipWrapperOptions(words, index, takesArgument) {
 function resolveCommand(tokens) {
   let position = commandPosition(tokens);
   let viaStdin = false;
+  const wrapperPayloads = [];
   for (let hops = 0; hops < 16; hops += 1) {
+    wrapperPayloads.push(...position.wrapperPayloads);
     const command = position.command;
     if (!command) break;
     const name = commandName(command.value);
     if (!Object.hasOwn(EXTRA_WRAPPERS, name)) {
-      return { position, name, args: position.words.slice(position.index + 1), viaStdin };
+      return { position, name, args: position.words.slice(position.index + 1), viaStdin, wrapperPayloads };
     }
     if (name === "xargs") viaStdin = true;
     const next = skipWrapperOptions(position.words, position.index + 1, EXTRA_WRAPPERS[name]);
     position = commandPosition(position.words.slice(next));
   }
-  return { position, name: "", args: [], viaStdin };
+  return { position, name: "", args: [], viaStdin, wrapperPayloads };
 }
 
 function shellPayload(name, args) {
@@ -150,7 +152,7 @@ function shellPayload(name, args) {
     if (/^-[A-Za-z]*c[A-Za-z]*$/.test(value)) {
       let payloadIndex = i + 1;
       if (args[payloadIndex]?.value === "--") payloadIndex += 1;
-      return args[payloadIndex] ? { kind: "command", text: args[payloadIndex].value } : { kind: "none" };
+      return args[payloadIndex] ? { kind: "command", word: args[payloadIndex] } : { kind: "none" };
     }
     if (/^[-+]O$/.test(value)) {
       i += 1;
@@ -177,14 +179,22 @@ function recordSignalSend(analysis, name, args, source) {
   }
 }
 
-function recordFindExec(analysis, args) {
+function analyzePayload(words, analysis, depth) {
+  const text = words.map((word) => [word.value, ...word.subs.map((sub) => sub.content)].join(" ")).join(" ");
+  if (words.some((word) => !word.literal || word.subs.length || word.unquotedExpansion)) {
+    if (mentionsSignalTool(text)) analysis.unprovable = true;
+    return;
+  }
+  analyzeProgram(words.map((word) => word.value).join(" "), analysis, depth + 1);
+}
+
+function recordFindExec(analysis, args, depth) {
   for (let i = 0; i < args.length; i += 1) {
     if (!FIND_EXEC_ACTIONS.has(args[i].value)) continue;
-    const command = args[i + 1];
-    if (!command) continue;
     const end = args.findIndex((word, index) => index > i + 1 && (word.value === ";" || word.value === "+"));
-    const execArgs = args.slice(i + 2, end === -1 ? undefined : end);
-    recordSignalSend(analysis, commandName(command.value), execArgs, "find");
+    analyzeNode(args.slice(i + 1, end === -1 ? undefined : end), analysis, depth + 1, "find");
+    if (end === -1) break;
+    i = end;
   }
 }
 
@@ -202,9 +212,20 @@ function analyzeProgram(text, analysis, depth = 0) {
   for (const node of nodes) analyzeNode(node, analysis, depth);
 }
 
-function analyzeNode(rawTokens, analysis, depth) {
+function analyzeNode(rawTokens, analysis, depth, source = "argv") {
+  if (depth > 12) {
+    analysis.unclassifiable = true;
+    return;
+  }
   // Nested programs run wherever they appear, so recurse into every one.
   for (const token of rawTokens) {
+    if (typeof token.heredoc === "string" && !token.heredocQuoted) {
+      const lexer = new Lexer(token.heredoc);
+      const word = { value: "", subs: [], literal: true };
+      lexer.readDoubleQuoted(word, true);
+      if (lexer.error && mentionsSignalTool(token.heredoc)) analysis.unclassifiable = true;
+      for (const sub of word.subs) analyzeProgram(sub.content, analysis, depth + 1);
+    }
     if (token.type === "group") analyzeProgram(token.content, analysis, depth + 1);
     if (token.type === "word") {
       for (const substitution of token.subs) analyzeProgram(substitution.content, analysis, depth + 1);
@@ -222,7 +243,7 @@ function analyzeNode(rawTokens, analysis, depth) {
   const resolved = resolveCommand(tokens);
   const { position, name, args, viaStdin } = resolved;
   for (const word of position.words.slice(0, position.prefixAssignments)) recordAssignment(analysis, word);
-  for (const payload of position.wrapperPayloads) analyzeProgram(payload, analysis, depth + 1);
+  for (const payload of resolved.wrapperPayloads) analyzePayload([payload], analysis, depth);
   if (!name) return;
 
   if (["declare", "local", "export", "typeset", "readonly"].includes(name)) {
@@ -241,23 +262,23 @@ function analyzeNode(rawTokens, analysis, depth) {
   }
 
   const shell = shellPayload(name, args);
-  if (shell.kind === "command") analyzeProgram(shell.text, analysis, depth + 1);
+  if (shell.kind === "command") analyzePayload([shell.word], analysis, depth);
   if (shell.kind === "stdin") {
     for (let i = 0; i < tokens.length; i += 1) {
       const token = tokens[i];
       if (token.type !== "redir" || token.fd !== 0) continue;
       if (typeof token.heredoc === "string") analyzeProgram(token.heredoc, analysis, depth + 1);
-      if (token.value === "<<<" && tokens[i + 1]?.type === "word") analyzeProgram(tokens[i + 1].value, analysis, depth + 1);
+      if (token.value === "<<<" && tokens[i + 1]?.type === "word") analyzePayload([tokens[i + 1]], analysis, depth);
     }
   }
-  if (name === "eval" && args.length > 0) analyzeProgram(args.map((word) => word.value).join(" "), analysis, depth + 1);
+  if (name === "eval" && args.length > 0) analyzePayload(args, analysis, depth);
   if (name === "trap") {
     const payload = args.find((word) => !word.value.startsWith("-"));
-    if (payload && payload.value) analyzeProgram(payload.value, analysis, depth + 1);
+    if (payload) analyzePayload([payload], analysis, depth);
   }
-  if (name === "find") recordFindExec(analysis, args);
+  if (name === "find") recordFindExec(analysis, args, depth);
 
-  recordSignalSend(analysis, name, args, viaStdin ? "stdin" : "argv");
+  recordSignalSend(analysis, name, args, viaStdin ? "stdin" : source);
 }
 
 // ---------------------------------------------------------------------------
@@ -267,12 +288,13 @@ function analyzeNode(rawTokens, analysis, depth) {
 // first dash word names the signal, so a later -N is a process-group operand.
 function parseKillArguments(args) {
   let signal = null;
+  const scheduled = args.some((word) => word.value === "--timeout" || word.value.startsWith("--timeout="));
   for (let i = 0; i < args.length; i += 1) {
     const word = args[i];
-    if (word.subs.length > 0 || !word.value.startsWith("-") || word.value === "-") return { listing: false, signal, operands: args.slice(i) };
+    if (word.subs.length > 0 || !word.value.startsWith("-") || word.value === "-") return { listing: false, signal, scheduled, operands: args.slice(i) };
     const value = word.value;
-    if (value === "--") return { listing: false, signal, operands: args.slice(i + 1) };
-    if (["-l", "-L", "--list", "--table"].includes(value) || value.startsWith("--list=")) return { listing: true, signal, operands: [] };
+    if (value === "--") return { listing: false, signal, scheduled, operands: args.slice(i + 1) };
+    if (["-l", "-L", "--list", "--table"].includes(value) || value.startsWith("--list=")) return { listing: true, signal, scheduled, operands: [] };
     if (value === "-s" || value === "-n" || value === "--signal") {
       signal = args[i + 1]?.value ?? "";
       i += 1;
@@ -286,8 +308,8 @@ function parseKillArguments(args) {
       i += 1;
       continue;
     }
-    if (value === "--timeout") {
-      i += 2;
+    if (value === "--timeout" || value.startsWith("--timeout=")) {
+      i += value === "--timeout" ? 2 : 1;
       continue;
     }
     if (["-a", "--all", "-p", "--pid", "--verbose", "-r", "--require-handler"].includes(value)) continue;
@@ -295,9 +317,9 @@ function parseKillArguments(args) {
       signal = value.slice(1);
       continue;
     }
-    return { listing: false, signal, operands: args.slice(i) };
+    return { listing: false, signal, scheduled, operands: args.slice(i) };
   }
-  return { listing: false, signal, operands: [] };
+  return { listing: false, signal, scheduled, operands: [] };
 }
 
 // Lex a substitution body that reads a PID file: `cat <path>` or `< <path>`.
@@ -306,8 +328,13 @@ function pidFilePath(content) {
   if (lexed.error) return null;
   const tokens = lexed.tokens.filter((token) => !(token.type === "op" && token.value === "newline"));
   const plain = (token) => token?.type === "word" && token.literal && token.subs.length === 0 && !token.unquotedExpansion;
-  if (tokens.length === 2 && tokens[0].type === "word" && !tokens[0].quoted && tokens[0].value === "cat" && plain(tokens[1])) return tokens[1].value;
-  if (tokens.length === 2 && tokens[0].type === "redir" && tokens[0].value === "<" && plain(tokens[1])) return tokens[1].value;
+  if (tokens.length !== 2 || !plain(tokens[1])) return null;
+  const reader = tokens[0];
+  if (!(reader.type === "word" && !reader.quoted && reader.value === "cat") &&
+      !(reader.type === "redir" && reader.value === "<")) return null;
+  const file = tokens[1];
+  if (path.isAbsolute(file.value)) return file.value;
+  if (!file.quoted && !file.escaped && file.value.startsWith("~/")) return path.join(os.homedir(), file.value.slice(2));
   return null;
 }
 
@@ -421,10 +448,7 @@ function makeVerifier(token) {
   return { root, verify, verifyGroup };
 }
 
-function readPidFile(file, cwd) {
-  let resolved = file;
-  if (resolved === "~" || resolved.startsWith("~/")) resolved = path.join(os.homedir(), resolved.slice(1));
-  if (!path.isAbsolute(resolved)) resolved = path.resolve(cwd, resolved);
+function readPidFile(resolved) {
   let stat;
   try {
     stat = statSync(resolved);
@@ -444,9 +468,10 @@ function deny(code, detail = "") {
   return { decision: "deny", code, reason: reason.replace(/[\t\r\n]+/g, " ") };
 }
 
-function decision(command, scope = "", cwd = process.cwd()) {
+function decision(command, scope = "") {
   const analysis = newAnalysis();
   analyzeProgram(command, analysis);
+  if (analysis.unprovable) return deny("signal-unprovable-target");
   if (analysis.unclassifiable) return deny("signal-unclassifiable");
   if (analysis.sends.length === 0) return { decision: "allow" };
 
@@ -459,7 +484,7 @@ function decision(command, scope = "", cwd = process.cwd()) {
       continue;
     }
     const parsed = parseKillArguments(send.args);
-    if (parsed.listing || parsed.signal === "0") continue;
+    if (parsed.listing || (parsed.signal === "0" && !parsed.scheduled)) continue;
     if (send.source !== "argv") {
       staticDeny ||= deny("signal-unprovable-target");
       continue;
@@ -486,7 +511,7 @@ function decision(command, scope = "", cwd = process.cwd()) {
     if (check.kind === "pid") problem = verifier.verify(check.pid);
     if (check.kind === "group") problem = verifier.verifyGroup(check.pgid);
     if (check.kind === "pidfile") {
-      const file = readPidFile(check.path, cwd);
+      const file = readPidFile(check.path);
       problem = file.problem || null;
       for (const pid of file.pids || []) problem ||= verifier.verify(pid);
     }
@@ -524,7 +549,7 @@ function invokedDirectly() {
 if (invokedDirectly()) {
   try {
     const args = parseArguments(process.argv.slice(2));
-    const result = args.command ? decision(args.command, args.scope, args.cwd || process.cwd()) : { decision: "allow" };
+    const result = args.command ? decision(args.command, args.scope) : { decision: "allow" };
     if (result.decision === "allow") {
       process.stdout.write("allow\n");
     } else {

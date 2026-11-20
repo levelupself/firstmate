@@ -363,6 +363,90 @@ test_missing_runtime_fails_closed_for_signals_only() {
   pass "a missing policy runtime denies only commands that send a signal"
 }
 
+
+test_review_regressions() {
+  local cmd action out n
+  for cmd in \
+    'bash -c "kill $(pgrep -f service)"' \
+    'bash -c "kill $target"' \
+    'bash <<< "kill $(pgrep service)"' \
+    'eval "kill $(pgrep service)"' \
+    'trap "kill $(pgrep service)" EXIT' \
+    'env -S "kill $(pgrep service)"' \
+    'env -S"kill $(pgrep service)"' \
+    'env --split-string "kill $(pgrep service)"' \
+    'env --split-string="kill $(pgrep service)"' \
+    'env -S "nice $(echo kill) $(pgrep service)"' \
+    'env -S "kill $(pgrep service)" nice true'; do
+    expect_line "$(check "$cmd")" "2 signal-unprovable-target" "expanded executable text must be denied: $cmd"
+  done
+  for cmd in \
+    "bash -c 'sleep 1 & kill \$!'" \
+    "bash <<< 'sleep 1 & kill \$!'" \
+    "eval 'sleep 1 & kill \$!'" \
+    "trap 'kill -0 1' EXIT" \
+    "nice env -S 'kill -0 1'"; do
+    expect_line "$(check "$cmd")" "0 " "literal safe payload must remain allowed: $cmd"
+  done
+  for action in -exec -execdir -ok -okdir; do
+    cmd="find . -name '*.pid' $action sh -c 'kill \$(cat \"\$1\")' sh {} \\;"
+    expect_line "$(check "$cmd")" "2 signal-unprovable-target" "find shell payload must recurse: $action"
+    cmd="find . $action nice env FOO=1 sh -c 'kill \$PPID' sh {} +"
+    expect_line "$(check "$cmd")" "2 signal-unprovable-target" "find wrappers must recurse: $action"
+    expect_line "$(check "find . $action kill {} \\;")" "2 signal-unprovable-target" "find operands must remain unprovable"
+    expect_line "$(check "find . $action sh -c 'kill -0 1' \\;")" "0 " "find harmless nested probe must pass"
+  done
+  for cmd in \
+    $'cat <<EOF\n$(kill $PPID)\nEOF' \
+    $'cat <<EOF\n\'$(kill $PPID)\'\nEOF' \
+    $'cat <<-EOF\n\t$(kill "$PPID")\n\tEOF' \
+    $'cat <<EOF\n`kill $PPID`\nEOF' \
+    $'cat 3<<EOF\n$(kill $PPID)\nEOF'; do
+    expect_line "$(check "$cmd")" "2 signal-unprovable-target" "unquoted heredoc substitutions execute for any consumer"
+  done
+  for cmd in \
+    $'cat <<\'EOF\'\n$(kill $PPID)\nEOF' \
+    $'cat <<"EOF"\n$(kill $PPID)\nEOF' \
+    $'cat <<\\EOF\n$(kill $PPID)\nEOF' \
+    $'cat <<EOF\n\\$(kill $PPID)\nEOF'; do
+    expect_line "$(check "$cmd")" "0 " "literal heredoc data must remain allowed"
+  done
+  expect_line "$(check $'sh <<\'EOF\'\nkill $PPID\nEOF')" "2 signal-unprovable-target" "quoted shell heredocs still execute as programs"
+  out=$(in_agent '
+    sleep 120 >/dev/null 2>&1 & own=$!; record_pid "$own"
+    mkdir -p "$TMP_ROOT/path-case/other"
+    printf "%s\n" "$own" > "$TMP_ROOT/path-case/job.pid"
+    printf "%s\n" "$$" > "$TMP_ROOT/path-case/other/job.pid"
+    cd "$TMP_ROOT/path-case" || exit 1
+    check "cd other && kill \"\$(cat job.pid)\""
+    check "cd other && kill \$(< job.pid)"
+    check "env -C other kill \"\$(cat job.pid)\""
+    check "sh -c '\''cd other; kill \"\$(cat job.pid)\"'\''"
+    check "kill \"\$(cat '\''~/job.pid'\'')\""
+    check "kill \$(< \"~/job.pid\")"
+    check "cd other && kill \"\$(cat $TMP_ROOT/path-case/job.pid)\""
+    HOME="$TMP_ROOT/path-case" check "kill \"\$(cat ~/job.pid)\""
+    HOME="$TMP_ROOT/path-case" check "kill \$(< ~/job.pid)"
+    check "/usr/bin/kill --timeout 1000 KILL --signal 0 $$"
+    check "/usr/bin/kill --timeout=1000 KILL --signal=0 $$"
+    check "/usr/bin/kill --signal 0 --timeout 1000 KILL $own"
+    check "/usr/bin/kill --signal 0 $$"
+    check "/usr/bin/kill --signal 0 $$ --timeout 1000 KILL"
+    kill "$own"
+  ')
+  for n in 1 2 3 4 5 6; do
+    expect_line "$(line "$out" "$n")" "2 signal-unprovable-target" "relative and quoted tilde PID paths must be unprovable"
+  done
+  for n in 7 8 9 12 13; do
+    expect_line "$(line "$out" "$n")" "0 " "absolute own PID files, unquoted tilde, owned scheduled sends, and ordinary probes remain allowed"
+  done
+  for n in 10 11; do
+    expect_line "$(line "$out" "$n")" "2 signal-outside-session" "scheduled sends must verify targets even with initial signal zero"
+  done
+  expect_line "$(line "$out" 14)" "2 signal-unprovable-target" "a delayed signal after operands must also disable the probe exemption"
+  pass "expanded payloads, nested execution, PID paths, and scheduled signals obey the allow rule"
+}
+
 # --- fm-spawn wiring ---------------------------------------------------------
 
 make_spawn_fakebin() {
@@ -500,6 +584,8 @@ EOF
   [ -n "$(launch_scope)" ] || fail "the pi launch line must carry FM_PROC_SCOPE: $(cat "$SENDLOG")"
   pass "pi crew spawn installs the signal guard in its per-task extension"
 }
+
+test_review_regressions
 
 test_incident_command_is_denied
 test_own_process_stop_is_allowed

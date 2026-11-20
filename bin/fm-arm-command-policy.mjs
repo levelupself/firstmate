@@ -235,6 +235,7 @@ export class Lexer {
       }
       this.tokens.push(word);
       if (this.expectHeredoc) {
+        this.expectHeredoc.token.heredocQuoted = word.quoted || word.escaped;
         this.pendingHeredocs.push({ delimiter: word.value, stripTabs: this.expectHeredoc.stripTabs, token: this.expectHeredoc.token });
         this.expectHeredoc = null;
       }
@@ -328,6 +329,7 @@ export class Lexer {
           this.index += 2;
           continue;
         }
+        word.escaped = true;
         word.value += this.source[this.index + 1];
         this.index += 2;
         continue;
@@ -390,11 +392,11 @@ export class Lexer {
     return consumed ? word : null;
   }
 
-  readDoubleQuoted(word) {
-    this.index += 1;
+  readDoubleQuoted(word, heredoc = false) {
+    if (!heredoc) this.index += 1;
     while (this.index < this.source.length) {
       const char = this.source[this.index];
-      if (char === '"') {
+      if (char === '"' && !heredoc) {
         this.index += 1;
         return true;
       }
@@ -404,6 +406,7 @@ export class Lexer {
           this.index += 2;
           continue;
         }
+        word.escaped = true;
         word.value += this.source[this.index + 1];
         this.index += 2;
         continue;
@@ -428,6 +431,7 @@ export class Lexer {
       word.value += char;
       this.index += 1;
     }
+    if (heredoc && this.index === this.source.length) return true;
     this.error = "unclosed double quote";
     return false;
   }
@@ -513,12 +517,12 @@ function consumeWrapperOptions(name, words, index) {
       }
       if (!long.takesArgument.has(option)) return { index: next, unresolved: true, embeddedPayloads };
       if (equals !== -1) {
-        if (name === "env" && option === "split-string") embeddedPayloads.push(value.slice(equals + 1));
+        if (name === "env" && option === "split-string") embeddedPayloads.push({ ...words[next], value: value.slice(equals + 1) });
         next += 1;
         continue;
       }
       if (!words[next + 1]) return { index: next, unresolved: true, embeddedPayloads };
-      if (name === "env" && option === "split-string") embeddedPayloads.push(words[next + 1].value);
+      if (name === "env" && option === "split-string") embeddedPayloads.push(words[next + 1]);
       next += 2;
       continue;
     }
@@ -529,10 +533,10 @@ function consumeWrapperOptions(name, words, index) {
       if (!short.takesArgument.has(option)) return { index: next, unresolved: true, embeddedPayloads };
       if (offset + 1 === value.length) {
         if (!words[next + 1]) return { index: next, unresolved: true, embeddedPayloads };
-        if (name === "env" && option === "S") embeddedPayloads.push(words[next + 1].value);
+        if (name === "env" && option === "S") embeddedPayloads.push(words[next + 1]);
         next += 2;
       } else {
-        if (name === "env" && option === "S") embeddedPayloads.push(value.slice(offset + 1));
+        if (name === "env" && option === "S") embeddedPayloads.push({ ...words[next], value: value.slice(offset + 1) });
         next += 1;
       }
       consumedArgument = true;
@@ -761,11 +765,11 @@ function analyzeProgram(command, context, depth = 0) {
     let nodePgrepWatcher = false;
     const substitutionResults = new Map();
     for (const payload of position.wrapperPayloads) {
-      const nested = analyzeProgram(payload, nodeContext, depth + 1);
+      const nested = analyzeProgram(payload.value, nodeContext, depth + 1);
       nodeNestedProtected ||= nested.protectedFound;
       broadKill ||= nested.broadKill;
       nodePgrepWatcher ||= nested.pgrepWatcher;
-      if (nested.error && rawMentionsProtected(payload)) unsupported = true;
+      if (nested.error && rawMentionsProtected(payload.value)) unsupported = true;
     }
     for (const token of tokens) {
       if (token.type === "group") {
