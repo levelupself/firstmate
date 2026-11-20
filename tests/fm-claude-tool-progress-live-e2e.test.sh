@@ -102,7 +102,7 @@ CLOCK="perl -MTime::HiRes=time -e 'printf \"%.0f\\n\", time*1000'"
 prompt="Do exactly these steps in order, then reply DONE. Do not run any other tools.
 1) Use one Bash call to run: $CLOCK > '$MARKS/a-start'; sleep 8; $CLOCK > '$MARKS/a-end'
 2) Use one Bash call to run: $CLOCK > '$MARKS/b-start'; sleep 4; $CLOCK > '$MARKS/b-end'; exit 3
-3) Use one Bash call to run only: $CLOCK > '$MARKS/after-b-start'
+3) Use one Bash call to run only: $CLOCK > '$MARKS/after-b-start'; sleep 2
 4) Use the Agent tool to launch a general-purpose subagent whose only job is to run exactly two sequential Bash calls and then return. Its first Bash call must run: $CLOCK > '$MARKS/c-start'; sleep 3; $CLOCK > '$MARKS/c-end'
 Its second Bash call must run only: sleep 3"
 (cd "$WT_DIR" && timeout 300 "$CLAUDE_BIN" -p --model "$MODEL" --setting-sources local \
@@ -124,9 +124,11 @@ b_start=$(cat "$MARKS/b-start"); b_end=$(cat "$MARKS/b-end")
 after_b_start=$(cat "$MARKS/after-b-start"); c_end=$(cat "$MARKS/c-end")
 touched_within $(( a_start + 500 )) $(( a_end - 500 )) \
   && fail "claude $CLAUDE_VERSION touched the marker while a single tool call was still running: $(tr '\n' ' ' < "$TOUCHES")"
-touched_within "$a_end" "$b_start" 2 \
+# Allow mtime rounding and hook scheduling skew; the following calls sleep long
+# enough to keep their completion hooks outside these windows.
+touched_within $(( a_end - 20 )) $(( b_start + 500 )) 2 \
   || fail "claude $CLAUDE_VERSION PostToolUse did not touch the marker when a successful call ended: $(tr '\n' ' ' < "$TOUCHES")"
-touched_within "$b_end" "$after_b_start" 2 \
+touched_within $(( b_end - 20 )) $(( after_b_start + 500 )) 2 \
   || fail "claude $CLAUDE_VERSION PostToolUseFailure did not touch the marker when a failing call ended: $(tr '\n' ' ' < "$TOUCHES")"
 touched_within "$c_end" $(( c_end + 1000 )) \
   || fail "claude $CLAUDE_VERSION did not touch the marker for a subagent's tool call: $(tr '\n' ' ' < "$TOUCHES")"
