@@ -1,0 +1,8 @@
+ok - a busy Claude worker past the turn-age bound with a fresh tool boundary is alive: no wake, and its wedge ladder collapses
+ok - a busy Claude worker whose last tool boundary and last completed turn are both past the bound still escalates as a possible wedge
+ok - the busy bound ages the newest of the completed-turn and tool-boundary markers, and a missing marker keeps the completed-turn rule
+ok - a busy worker past the turn-age bound under a declared paused: or captain-held: park is absorbed with no wedge ladder
+ok - a busy declared park re-surfaces once per long cadence with declared-pause wording, never as a possible wedge, on a stable or ticking pane
+ok - a later working: line ends a busy park and the ordinary busy bound resumes
+ok - in away mode a busy declared park hands its plain identity to the daemon once per long cadence, never as a possible wedge
+stale: test:fm-done-hung (idle 501s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)

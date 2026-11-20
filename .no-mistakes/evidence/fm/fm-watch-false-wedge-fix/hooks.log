@@ -1,0 +1,5 @@
+event=PreToolUse progress=present turn-ended=absent classifier=busy claude-hook
+event=PostToolUse progress=present turn-ended=absent classifier=busy claude-hook
+event=PostToolUseFailure progress=present turn-ended=absent classifier=busy claude-hook
+missing state directory: hook exit=0
+ok - claude PreToolUse, PostToolUse, and PostToolUseFailure touch only the tool-boundary progress marker for every tool, never the turn-ended wake marker or the busy record

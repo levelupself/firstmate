@@ -1,0 +1,21 @@
+ok - build output: rust
+ok - build output: non-rust
+ok - build output: refused
+ok - build output: reacquired
+ok - footprint gate: an over-budget copy is refused with its largest paths and every record intact
+ok - footprint gate: an under-budget copy is returned and its record retired
+ok - footprint gate: the return prune runs before the measurement
+ok - footprint gate: --footprint-override --reason proceeds and records the reason
+ok - footprint gate: --footprint-override without --reason is rejected before any change
+ok - failed ignored listing refuses measurement, reporting, and forced teardown
+ok - measurement and reports preserve literal Git and child paths without following symlinks
+not ok - descendant bypassed footprint gate (missing: 'REFUSED: copy over footprint budget')
+--- output ---
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no live watcher process holds this home lock (last beat: 0s ago).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REFUSED: unsafe secondmate home removal target /home/fungiman/.no-mistakes/worktrees/6be0eeed9e9c/01M7TXNZGNH1HJG06BF82ZYK9Y/.phase-test/tmp/fm-teardown-tests.RfqYrh/footprint-child-no/secondmate-home is inside the active firstmate home

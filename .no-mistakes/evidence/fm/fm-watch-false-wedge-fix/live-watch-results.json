@@ -1,0 +1,112 @@
+[
+  {
+    "scenario": "fresh-working",
+    "result": "pass",
+    "wake": "",
+    "triage": "",
+    "pane": "bash-5.2$ ^C\nbash-5.2$ while :; do sleep 1; done",
+    "queue": "",
+    "pause_tracking": false,
+    "resurface_tracking": false
+  },
+  {
+    "scenario": "fresh-no-turn",
+    "result": "pass",
+    "wake": "",
+    "triage": "",
+    "pane": "bash-5.2$ ^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done",
+    "queue": "",
+    "pause_tracking": false,
+    "resurface_tracking": false
+  },
+  {
+    "scenario": "fresh-done",
+    "result": "pass",
+    "wake": "",
+    "triage": "",
+    "pane": "bash-5.2$ ^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^Cwhile :; do sleep 1; done\n\nbash-5.2$ while :; do sleep 1; done",
+    "queue": "",
+    "pause_tracking": false,
+    "resurface_tracking": false
+  },
+  {
+    "scenario": "newest-turn",
+    "result": "pass",
+    "wake": "",
+    "triage": "",
+    "pane": "bash-5.2$ ^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^Cwhile :; do sleep 1; done\n\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done",
+    "queue": "",
+    "pause_tracking": false,
+    "resurface_tracking": false
+  },
+  {
+    "scenario": "hung-call",
+    "result": "pass",
+    "wake": "stale: isolated:fm-sample (idle 501s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)",
+    "triage": "",
+    "pane": "bash-5.2$ ^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^Cwhile :; do sleep 1; done\n\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done",
+    "queue": "1795126471\t1\tstale\tisolated:fm-sample\tstale: isolated:fm-sample (idle 501s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)\n",
+    "pause_tracking": false,
+    "resurface_tracking": false
+  },
+  {
+    "scenario": "missing-progress",
+    "result": "pass",
+    "wake": "stale: isolated:fm-sample (idle 501s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)",
+    "triage": "",
+    "pane": "bash-5.2$ ^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^Cwhile :; do sleep 1; done\n\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done",
+    "queue": "1795126472\t1\tstale\tisolated:fm-sample\tstale: isolated:fm-sample (idle 501s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)\n",
+    "pause_tracking": false,
+    "resurface_tracking": false
+  },
+  {
+    "scenario": "done-without-progress",
+    "result": "pass",
+    "wake": "stale: isolated:fm-sample (idle 501s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)",
+    "triage": "",
+    "pane": "bash-5.2$ ^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^Cwhile :; do sleep 1; done\n\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done",
+    "queue": "1795126474\t1\tstale\tisolated:fm-sample\tstale: isolated:fm-sample (idle 501s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)\n",
+    "pause_tracking": false,
+    "resurface_tracking": false
+  },
+  {
+    "scenario": "paused-stable",
+    "result": "pass",
+    "wake": "stale: isolated:fm-sample (paused 4002s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)",
+    "triage": "[2026-11-19T16:14:39-0600] absorbed stale (paused, awaiting external, age 4005s): isolated:fm-sample\n[2026-11-19T16:14:41-0600] absorbed stale (paused, awaiting external, age 4007s): isolated:fm-sample\n[2026-11-19T16:14:43-0600] absorbed stale (paused, awaiting external, age 4009s): isolated:fm-sample\n[2026-11-19T16:14:45-0600] absorbed busy (no completed turn) timer reset: isolated:fm-sample\n",
+    "pane": "bash-5.2$ ^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^Cwhile :; do sleep 1; done\n\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done",
+    "queue": "",
+    "pause_tracking": false,
+    "resurface_tracking": false
+  },
+  {
+    "scenario": "held-ticking",
+    "result": "pass",
+    "wake": "stale: isolated:fm-sample (paused 4002s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)",
+    "triage": "[2026-11-19T16:14:52-0600] absorbed stale (paused, awaiting external, age 4006s): isolated:fm-sample\n[2026-11-19T16:14:54-0600] absorbed stale (paused, awaiting external, age 4008s): isolated:fm-sample\n",
+    "pane": "bash-5.2$ ^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^Cwhile :; do sleep 1; done\n\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do printf 'foreground wait %s\\n' \"$(date +%s)\"; sleep 1; done\nforeground wait 1795126486\nforeground wait 1795126487\nforeground wait 1795126488\nforeground wait 1795126489\nforeground wait 1795126490\nforeground wait 1795126491\nforeground wait 1795126492\nforeground wait 1795126493\nforeground wait 1795126494\nforeground wait 1795126495",
+    "queue": "",
+    "pause_tracking": true,
+    "resurface_tracking": true
+  },
+  {
+    "scenario": "afk-ticking",
+    "result": "pass",
+    "wake": "stale: isolated:fm-sample",
+    "triage": "[2026-11-19T16:15:09-0600] absorbed busy (declared park, away mode, age 4013s): isolated:fm-sample\n",
+    "pane": "bash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do printf 'foreground wait %s\\n' \"$(date +%s)\"; sleep 1; done\nforeground wait 1795126486\nforeground wait 1795126487\nforeground wait 1795126488\nforeground wait 1795126489\nforeground wait 1795126490\nforeground wait 1795126491\nforeground wait 1795126492\nforeground wait 1795126493\nforeground wait 1795126494\nforeground wait 1795126495\n^C\nbash-5.2$ while :; do printf 'foreground wait %s\\n' \"$(date +%s)\"; sleep 1; done\nforeground wait 1795126496\nforeground wait 1795126497\nforeground wait 1795126498\nforeground wait 1795126499\nforeground wait 1795126500\nforeground wait 1795126501\nforeground wait 1795126502\nforeground wait 1795126503\nforeground wait 1795126504\nforeground wait 1795126505\nforeground wait 1795126506\nforeground wait 1795126507\nforeground wait 1795126508\nforeground wait 1795126509\nforeground wait 1795126510",
+    "queue": "",
+    "pause_tracking": false,
+    "resurface_tracking": true
+  },
+  {
+    "scenario": "recent-pause",
+    "result": "pass",
+    "wake": "",
+    "triage": "[2026-11-19T16:15:14-0600] absorbed stale (paused, awaiting external, age 603s): isolated:fm-sample\n",
+    "pane": "bash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do sleep 1; done\n^C\nbash-5.2$ while :; do printf 'foreground wait %s\\n' \"$(date +%s)\"; sleep 1; done\nforeground wait 1795126486\nforeground wait 1795126487\nforeground wait 1795126488\nforeground wait 1795126489\nforeground wait 1795126490\nforeground wait 1795126491\nforeground wait 1795126492\nforeground wait 1795126493\nforeground wait 1795126494\nforeground wait 1795126495\n^C\nbash-5.2$ while :; do printf 'foreground wait %s\\n' \"$(date +%s)\"; sleep 1; done\nforeground wait 1795126496\nforeground wait 1795126497\nforeground wait 1795126498\nforeground wait 1795126499\nforeground wait 1795126500\nforeground wait 1795126501\nforeground wait 1795126502\nforeground wait 1795126503\nforeground wait 1795126504\nforeground wait 1795126505\nforeground wait 1795126506\nforeground wait 1795126507\nforeground wait 1795126508\nforeground wait 1795126509\nforeground wait 1795126510\n^C\nbash-5.2$ while :; do sleep 1; done",
+    "queue": "",
+    "pause_tracking": true,
+    "resurface_tracking": false
+  }
+]

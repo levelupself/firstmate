@@ -1,0 +1,9 @@
+teardown task-x1 complete (window firstmate:fm-task-x1, worktree /home/fungiman/.no-mistakes/worktrees/6be0eeed9e9c/01M7TXNZGNH1HJG06BF82ZYK9Y/.phase-tmp/fm-teardown-tests.VvdOm8/nested-progress/wt)
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no live watcher process holds this home lock (last beat: 1s ago).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+child-a.turn-progress=absent child-b.turn-progress=absent

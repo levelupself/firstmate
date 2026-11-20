@@ -1,0 +1,4 @@
+warning: /home/fungiman/.no-mistakes/worktrees/6be0eeed9e9c/01M7TXNZGNH1HJG06BF82ZYK9Y/.phase-tmp/fm-control-relaunch.GY2st3/switch-5359/home/data/rl4/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+relaunched rl4 harness=codex from=claude model=default effort=default backend=tmux endpoint=fmses:fm-rl4 worktree=/home/fungiman/.no-mistakes/worktrees/6be0eeed9e9c/01M7TXNZGNH1HJG06BF82ZYK9Y/.phase-tmp/fm-control-relaunch.GY2st3/switch-5359/wt
+retired progress marker: absent
+ok - fm-control relaunch: switching harness is one ordinary relaunch, and the old wiring goes with the old agent

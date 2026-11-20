@@ -1,0 +1,15 @@
+Backlog: cleanup for cleanup proceeded with no backlog present; there was no lifecycle row to update.
+captured cleanup; ingestion queued by lifecycle entry point
+disposable: skipped: not a directory
+teardown cleanup complete (window isolated:fm-cleanup, worktree /home/fungiman/.no-mistakes/worktrees/6be0eeed9e9c/01M7TXNZGNH1HJG06BF82ZYK9Y/.phase-test/teardown-live/already-returned)
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+fm-task-usage: cannot read /home/fungiman/.no-mistakes/worktrees/6be0eeed9e9c/01M7TXNZGNH1HJG06BF82ZYK9Y/.phase-test/teardown-live/data/cleanup
+teardown: warning: could not snapshot codeburn usage for cleanup
+
+{"exit": 0, "turn_ended_exists": false, "turn_progress_exists": false, "meta_exists": false}

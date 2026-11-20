@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/home/fungiman/.no-mistakes/worktrees/6be0eeed9e9c/01M7TXNZGNH1HJG06BF82ZYK9Y/.phase-test/base_watch.py", line 57, in <module>
+    check('fresh-working')
+  File "/home/fungiman/.no-mistakes/worktrees/6be0eeed9e9c/01M7TXNZGNH1HJG06BF82ZYK9Y/.phase-test/base_watch.py", line 34, in check
+    time.sleep(5); assert p.poll() is None,output(); assert not output(),output(); assert (state/('.hash-'+key)).exists(),'pane never scanned'
+                          ^^^^^^^^^^^^^^^^
+AssertionError: stale: isolated:fm-sample (idle 501s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)
+

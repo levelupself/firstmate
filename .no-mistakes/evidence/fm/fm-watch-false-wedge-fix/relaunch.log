@@ -1,0 +1,3 @@
+ok - fm-control relaunch: a same-harness relaunch replaces the agent in the same endpoint and worktree
+ok - fm-control relaunch: durable task metadata survives replacement launch publication
+not ok - relaunch did not reach trace delivery

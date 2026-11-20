@@ -1,0 +1,126 @@
+
+afk-busy-park/state/.paused-resurfaced-test_fm-afk-busy-park
+1795150613
+
+
+afk-busy-park/state/.wake-queue
+
+
+afk-busy-park/state/.watch-triage.log
+[2026-11-19T22:56:59-0600] absorbed busy (declared park, away mode, age 4008s): test:fm-afk-busy-park
+[2026-11-19T22:57:01-0600] absorbed busy (declared park, away mode, age 4010s): test:fm-afk-busy-park
+[2026-11-19T22:57:03-0600] absorbed busy (declared park, away mode, age 4012s): test:fm-afk-busy-park
+
+
+afk-busy-park/watch.out
+
+
+busy-park-captain-held/state/.paused-test_fm-busy-park-captain-held
+
+
+busy-park-captain-held/state/.watch-triage.log
+[2026-11-19T22:56:08-0600] absorbed stale (paused, awaiting external, age 603s): test:fm-busy-park-captain-held
+[2026-11-19T22:56:11-0600] absorbed stale (paused, awaiting external, age 606s): test:fm-busy-park-captain-held
+[2026-11-19T22:56:13-0600] absorbed stale (paused, awaiting external, age 608s): test:fm-busy-park-captain-held
+
+
+busy-park-captain-held/watch.out
+
+
+busy-park-ended/state/.watch-triage.log
+[2026-11-19T22:56:47-0600] absorbed busy (no completed turn) timer reset: test:fm-busy-park-ended
+
+
+busy-park-ended/watch.out
+
+
+busy-park-old-captain-held/state/.paused-resurfaced-test_fm-busy-park-old-captain-held
+1795150591
+
+
+busy-park-old-captain-held/state/.paused-test_fm-busy-park-old-captain-held
+
+
+busy-park-old-captain-held/state/.wake-queue
+
+
+busy-park-old-captain-held/state/.watch-triage.log
+[2026-11-19T22:56:33-0600] absorbed stale (paused, awaiting external, age 4003s): test:fm-busy-park-old-captain-held
+[2026-11-19T22:56:36-0600] absorbed stale (paused, awaiting external, age 4006s): test:fm-busy-park-old-captain-held
+[2026-11-19T22:56:41-0600] absorbed stale (paused, awaiting external, age 4011s): test:fm-busy-park-old-captain-held
+[2026-11-19T22:56:43-0600] absorbed stale (paused, awaiting external, age 4013s): test:fm-busy-park-old-captain-held
+[2026-11-19T22:56:46-0600] absorbed stale (paused, awaiting external, age 4016s): test:fm-busy-park-old-captain-held
+
+
+busy-park-old-captain-held/watch.out
+
+
+busy-park-old-paused/state/.paused-resurfaced-test_fm-busy-park-old-paused
+1795150576
+
+
+busy-park-old-paused/state/.paused-test_fm-busy-park-old-paused
+
+
+busy-park-old-paused/state/.wake-queue
+
+
+busy-park-old-paused/state/.watch-triage.log
+[2026-11-19T22:56:22-0600] absorbed stale (paused, awaiting external, age 4009s): test:fm-busy-park-old-paused
+[2026-11-19T22:56:24-0600] absorbed stale (paused, awaiting external, age 4011s): test:fm-busy-park-old-paused
+[2026-11-19T22:56:25-0600] absorbed stale (paused, awaiting external, age 4012s): test:fm-busy-park-old-paused
+[2026-11-19T22:56:27-0600] absorbed stale (paused, awaiting external, age 4014s): test:fm-busy-park-old-paused
+[2026-11-19T22:56:29-0600] absorbed stale (paused, awaiting external, age 4016s): test:fm-busy-park-old-paused
+[2026-11-19T22:56:30-0600] absorbed stale (paused, awaiting external, age 4017s): test:fm-busy-park-old-paused
+
+
+busy-park-old-paused/watch.out
+
+
+busy-park-paused/state/.paused-test_fm-busy-park-paused
+
+
+busy-park-paused/state/.watch-triage.log
+[2026-11-19T22:56:00-0600] absorbed stale (paused, awaiting external, age 602s): test:fm-busy-park-paused
+[2026-11-19T22:56:02-0600] absorbed stale (paused, awaiting external, age 604s): test:fm-busy-park-paused
+[2026-11-19T22:56:05-0600] absorbed stale (paused, awaiting external, age 607s): test:fm-busy-park-paused
+
+
+busy-park-paused/watch.out
+
+
+cl-hung/state/.wake-queue
+1795150550	1	stale	test:fm-cl-hung	stale: test:fm-cl-hung (idle 501s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)
+
+
+cl-hung/watch.out
+stale: test:fm-cl-hung (idle 501s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)
+
+
+cl-newest-turn/watch.out
+
+
+cl-no-marker/state/.wake-queue
+1795150558	1	stale	test:fm-cl-no-marker	stale: test:fm-cl-no-marker (idle 502s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)
+
+
+cl-no-marker/watch.out
+stale: test:fm-cl-no-marker (idle 502s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)
+
+
+cl-progress-done-final-turn/watch.out
+
+
+cl-progress-working-no-turn-yet/watch.out
+
+
+cl-progress-working-poll/watch.out
+
+
+done-hung/state/.wake-queue
+1795150624	1	stale	test:fm-done-hung	stale: test:fm-done-hung (idle 501s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)
+
+
+done-hung/watch.out
+stale: test:fm-done-hung (idle 501s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)
+

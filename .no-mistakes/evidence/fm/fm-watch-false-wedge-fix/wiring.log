@@ -1,0 +1,11 @@
+ok - pi extension reports agent_start busy, settles idle only via ctx.isIdle(), and keeps turn_end a notification
+ok - pi extension awaits agent_settled before the next agent_start without a test delay
+ok - pi extension events from a superseded incarnation are rejected as stale
+ok - kimi and grok install no unverified semantic wiring and classify through their own gates
+ok - opencode plugin classifies from session.status, scoped to the latched worker session
+ok - claude hooks open on UserPromptSubmit and close on Stop, StopFailure, and SessionEnd
+rm: cannot remove '/home/fungiman/.no-mistakes/worktrees/6be0eeed9e9c/01M7TXNZGNH1HJG06BF82ZYK9Y/.test-phase/tmp/fm-busy-adapter-wiring.5gymAu/claude-progress/home/state': Directory not empty
+ok - claude PreToolUse, PostToolUse, and PostToolUseFailure touch only the tool-boundary progress marker for every tool, never the turn-ended wake marker or the busy record
+ok - claude hook events from a superseded incarnation are rejected without breaking the hook
+ok - codex binds its own rollout log at spawn and classifies unknown until that log speaks
+all fm-busy-adapter-wiring tests passed

@@ -1,0 +1,5 @@
+Backlog: cleanup for task-x1 proceeded with no backlog present; there was no lifecycle row to update.
+captured task-x1; ingestion queued by lifecycle entry point
+teardown task-x1 complete (window firstmate:fm-task-x1, worktree /home/fungiman/.no-mistakes/worktrees/6be0eeed9e9c/01M7TXNZGNH1HJG06BF82ZYK9Y/.phase-tmp/fm-teardown-tests.LWEW3n/turn-markers/wt)
+turn-ended=absent turn-progress=absent
+ok - teardown retires the turn-ended and tool-boundary progress markers

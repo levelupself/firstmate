@@ -1,0 +1,83 @@
+[
+  {
+    "name": "working",
+    "pass_": true,
+    "exited": false,
+    "polls": "4",
+    "stdout": "",
+    "stderr": "",
+    "triage": ""
+  },
+  {
+    "name": "no-turn",
+    "pass_": true,
+    "exited": false,
+    "polls": "4",
+    "stdout": "",
+    "stderr": "",
+    "triage": ""
+  },
+  {
+    "name": "done",
+    "pass_": true,
+    "exited": false,
+    "polls": "4",
+    "stdout": "",
+    "stderr": "",
+    "triage": ""
+  },
+  {
+    "name": "newest-turn",
+    "pass_": true,
+    "exited": false,
+    "polls": "4",
+    "stdout": "",
+    "stderr": "",
+    "triage": ""
+  },
+  {
+    "name": "hung",
+    "pass_": true,
+    "exited": true,
+    "polls": "1",
+    "stdout": "stale: live:worker (idle 2s, possible wedge, escalation 1)\n",
+    "stderr": "",
+    "triage": "[2026-11-19T22:47:03-0600] absorbed busy (no completed turn) timer reset: live:worker\n"
+  },
+  {
+    "name": "missing-marker",
+    "pass_": true,
+    "exited": true,
+    "polls": "1",
+    "stdout": "stale: live:worker (idle 2s, possible wedge, escalation 1)\n",
+    "stderr": "",
+    "triage": "[2026-11-19T22:47:07-0600] absorbed busy (no completed turn) timer reset: live:worker\n"
+  },
+  {
+    "name": "paused",
+    "pass_": true,
+    "exited": false,
+    "polls": "4",
+    "stdout": "",
+    "stderr": "",
+    "triage": "[2026-11-19T22:47:12-0600] absorbed stale (paused, awaiting external, age 2s): live:worker\n[2026-11-19T22:47:14-0600] absorbed stale (paused, awaiting external, age 4s): live:worker\n[2026-11-19T22:47:16-0600] absorbed stale (paused, awaiting external, age 6s): live:worker\n[2026-11-19T22:47:18-0600] absorbed stale (paused, awaiting external, age 8s): live:worker\n[2026-11-19T22:47:20-0600] absorbed stale (paused, awaiting external, age 10s): live:worker\n"
+  },
+  {
+    "name": "held",
+    "pass_": true,
+    "exited": false,
+    "polls": "4",
+    "stdout": "",
+    "stderr": "",
+    "triage": "[2026-11-19T22:47:22-0600] absorbed stale (paused, awaiting external, age 1s): live:worker\n[2026-11-19T22:47:24-0600] absorbed stale (paused, awaiting external, age 3s): live:worker\n[2026-11-19T22:47:26-0600] absorbed stale (paused, awaiting external, age 5s): live:worker\n[2026-11-19T22:47:27-0600] absorbed stale (paused, awaiting external, age 6s): live:worker\n[2026-11-19T22:47:29-0600] absorbed stale (paused, awaiting external, age 8s): live:worker\n"
+  },
+  {
+    "name": "afk",
+    "pass_": true,
+    "exited": true,
+    "polls": "0",
+    "stdout": "stale: live:worker\n",
+    "stderr": "",
+    "triage": ""
+  }
+]
