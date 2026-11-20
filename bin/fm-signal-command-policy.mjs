@@ -1,0 +1,539 @@
+#!/usr/bin/env node
+// Semantic policy for the crew signal guard: may this shell command signal the
+// processes it targets?
+//
+// A crew session must never signal a process it cannot prove it started. The
+// rule is an ALLOW rule, not a deny list: every signal target must resolve,
+// before the command runs, to a process inside this session's own process
+// tree - a live descendant of the agent process, or an orphaned background job
+// that still carries this session's process-scope marker (FM_PROC_SCOPE, set by
+// bin/fm-spawn.sh on the agent launch) - and never the agent itself or any of
+// its ancestors. Targets that exist only at run time (a pattern search, a
+// parent PID, a loop or stdin variable) cannot be proven and are denied, and
+// tools that select targets by name are denied outright. See docs/signal-guard.md
+// for the full contract; bin/fm-signal-pretool-check.sh is the harness
+// transport.
+//
+// The shell tokenizer and command-position analysis are imported from
+// bin/fm-arm-command-policy.mjs, the sole owner of firstmate's shell
+// classification. This policy never evaluates, expands, sources, or runs any
+// byte of the submitted command. Its only side effects are reading the process
+// table, the environment of candidate processes, and a PID file the command
+// names.
+
+import { Lexer, splitProgram, commandPosition } from "./fm-arm-command-policy.mjs";
+import { readFileSync, statSync, realpathSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const SCOPE_VARIABLE = "FM_PROC_SCOPE";
+const SCOPE_PATTERN = /^[A-Za-z0-9._:-]{1,256}$/;
+
+const SAFE_WAY =
+  "Signal only a process this session started: use $! (or a variable assigned from $!) in the same command, a job spec such as %1, $(jobs -p), kill \"$(cat /abs/path/job.pid)\" for a PID file this session wrote when it launched the job (cmd & echo $! > /abs/path/job.pid), or a literal PID confirmed with ps; the guard verifies that literal and PID-file targets belong to this session's own process tree.";
+
+const LEAVE_OTHERS =
+  "This session may signal only processes it started: live descendants of its agent process, or its orphaned background jobs that still carry its process-scope marker. Leave every other process alone - the agent itself, its shells, the terminal server, and the service manager included; if one of them must be stopped, report it instead of signalling it.";
+
+const REASONS = {
+  "signal-unclassifiable": `the command mentions a process-signalling tool but uses shell syntax this guard cannot parse, so it cannot prove the target is a process this session started. Put the signal in its own simple command. ${SAFE_WAY}`,
+  "signal-by-name": `pkill, killall, skill, killall5, and fuser -k choose their targets by name or pattern, which can match processes this session did not start, including the shared terminal server and the user service manager every worker depends on. ${SAFE_WAY}`,
+  "signal-broadcast": `kill -1 signals every process this user owns and kill 0 signals the caller's whole process group, which can include the agent itself. ${SAFE_WAY}`,
+  "signal-unprovable-target": `the signal target is computed at run time - a pattern search (ps | grep, pgrep, pidof), a parent PID ($PPID or a ppid column), a loop, read, or stdin variable, or another substitution - so the guard cannot prove it is a process this session started, and signalling a matched process's parent can take down the shared terminal server or the user service manager. ${SAFE_WAY}`,
+  "signal-no-scope": `this session's process-scope marker (${SCOPE_VARIABLE}) was not found on any of its ancestor processes, so the guard cannot verify that a literal or PID-file target is a process this session started. Within one command, $!, a variable assigned from $!, a job spec, and $(jobs -p) still work; anything else needs a worker launched through fm-spawn, which sets the marker.`,
+  "signal-unverifiable": "the guard could not read the process table to verify the signal target, so it refuses rather than guessing. Retry once; if it keeps failing, report it instead of signalling.",
+  "signal-outside-session": LEAVE_OTHERS,
+};
+
+// Tools that pick their targets by name, pattern, user, or resource.
+const BY_NAME_TOOLS = new Set(["pkill", "killall", "skill", "killall5"]);
+const BY_NAME_HARMLESS_ARGS = new Set(["-h", "--help", "-V", "--version", "-l", "--list"]);
+
+// Reserved words that may precede a command word in one list node.
+const RESERVED_PREFIXES = new Set(["!", "if", "then", "else", "elif", "while", "until", "do", "time"]);
+
+// Shells whose -c payload, heredoc, or here-string is itself a shell program.
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "mksh"]);
+
+// Wrappers commandPosition does not already skip, each with the options that
+// consume a separate argument. xargs additionally feeds its command's
+// operands from stdin.
+const EXTRA_WRAPPERS = {
+  builtin: new Set(),
+  nice: new Set(["-n", "--adjustment"]),
+  setsid: new Set(),
+  stdbuf: new Set(["-i", "-o", "-e", "--input", "--output", "--error"]),
+  ionice: new Set(["-c", "-n", "--class", "--classdata"]),
+  time: new Set(["-f", "-o", "--format", "--output"]),
+  doas: new Set(["-u", "-C"]),
+  unbuffer: new Set(),
+  xargs: new Set(["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--eof", "--max-lines", "--max-args", "--max-procs", "--max-chars", "--process-slot-var"]),
+};
+
+const FIND_EXEC_ACTIONS = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+
+function commandName(value) {
+  return value.split("/").filter(Boolean).at(-1) || value;
+}
+
+function mentionsSignalTool(text) {
+  return /kill|fuser/.test(text.replace(/\\\r?\n/g, "").replace(/["'\\]/g, ""));
+}
+
+function identifier(value) {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
+
+function assignmentParts(value) {
+  const match = value.match(/^([A-Za-z_][A-Za-z0-9_]*)(\+?)=(.*)$/s);
+  return match ? { name: match[1], append: match[2] === "+", value: match[3] } : null;
+}
+
+function isChildPidExpansion(value) {
+  return value === "$!" || value === "${!}";
+}
+
+// ---------------------------------------------------------------------------
+// Static analysis: find every signal send and every variable binding.
+
+function newAnalysis() {
+  return { sends: [], candidates: new Set(), disqualified: new Set(), unclassifiable: false };
+}
+
+function recordAssignment(analysis, word) {
+  const parts = assignmentParts(word.value);
+  if (!parts) return;
+  if (!parts.append && word.subs.length === 0 && isChildPidExpansion(parts.value)) analysis.candidates.add(parts.name);
+  else analysis.disqualified.add(parts.name);
+}
+
+function stripReservedPrefixes(tokens) {
+  let index = 0;
+  while (index < tokens.length && tokens[index].type === "word" && !tokens[index].quoted && RESERVED_PREFIXES.has(tokens[index].value)) index += 1;
+  return tokens.slice(index);
+}
+
+function skipWrapperOptions(words, index, takesArgument) {
+  let next = index;
+  while (words[next] && words[next].value.startsWith("-") && words[next].value !== "-") {
+    const value = words[next].value;
+    if (value === "--") return next + 1;
+    next += takesArgument.has(value) ? 2 : 1;
+  }
+  return next;
+}
+
+// Follow wrappers to the command that actually runs.
+function resolveCommand(tokens) {
+  let position = commandPosition(tokens);
+  let viaStdin = false;
+  for (let hops = 0; hops < 16; hops += 1) {
+    const command = position.command;
+    if (!command) break;
+    const name = commandName(command.value);
+    if (!Object.hasOwn(EXTRA_WRAPPERS, name)) {
+      return { position, name, args: position.words.slice(position.index + 1), viaStdin };
+    }
+    if (name === "xargs") viaStdin = true;
+    const next = skipWrapperOptions(position.words, position.index + 1, EXTRA_WRAPPERS[name]);
+    position = commandPosition(position.words.slice(next));
+  }
+  return { position, name: "", args: [], viaStdin };
+}
+
+function shellPayload(name, args) {
+  if (!SHELLS.has(name)) return { kind: "none" };
+  for (let i = 0; i < args.length; i += 1) {
+    const value = args[i].value;
+    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(value)) {
+      let payloadIndex = i + 1;
+      if (args[payloadIndex]?.value === "--") payloadIndex += 1;
+      return args[payloadIndex] ? { kind: "command", text: args[payloadIndex].value } : { kind: "none" };
+    }
+    if (/^[-+]O$/.test(value)) {
+      i += 1;
+      continue;
+    }
+    if (value === "--" || /^[-+]/.test(value)) continue;
+    return { kind: "script" };
+  }
+  return { kind: "stdin" };
+}
+
+function recordSignalSend(analysis, name, args, source) {
+  if (name === "kill") {
+    analysis.sends.push({ tool: "kill", args, source });
+    return;
+  }
+  if (BY_NAME_TOOLS.has(name)) {
+    if (args.length > 0 && args.every((word) => BY_NAME_HARMLESS_ARGS.has(word.value))) return;
+    analysis.sends.push({ tool: name, byName: true });
+    return;
+  }
+  if (name === "fuser" && args.some((word) => word.value === "--kill" || /^-[A-Za-z]*k[A-Za-z]*$/.test(word.value))) {
+    analysis.sends.push({ tool: "fuser", byName: true });
+  }
+}
+
+function recordFindExec(analysis, args) {
+  for (let i = 0; i < args.length; i += 1) {
+    if (!FIND_EXEC_ACTIONS.has(args[i].value)) continue;
+    const command = args[i + 1];
+    if (!command) continue;
+    const end = args.findIndex((word, index) => index > i + 1 && (word.value === ";" || word.value === "+"));
+    const execArgs = args.slice(i + 2, end === -1 ? undefined : end);
+    recordSignalSend(analysis, commandName(command.value), execArgs, "find");
+  }
+}
+
+function analyzeProgram(text, analysis, depth = 0) {
+  if (depth > 12) {
+    if (mentionsSignalTool(text)) analysis.unclassifiable = true;
+    return;
+  }
+  const lexed = new Lexer(text).tokenize();
+  if (lexed.error) {
+    if (mentionsSignalTool(text)) analysis.unclassifiable = true;
+    return;
+  }
+  const { nodes } = splitProgram(lexed.tokens);
+  for (const node of nodes) analyzeNode(node, analysis, depth);
+}
+
+function analyzeNode(rawTokens, analysis, depth) {
+  // Nested programs run wherever they appear, so recurse into every one.
+  for (const token of rawTokens) {
+    if (token.type === "group") analyzeProgram(token.content, analysis, depth + 1);
+    if (token.type === "word") {
+      for (const substitution of token.subs) analyzeProgram(substitution.content, analysis, depth + 1);
+    }
+  }
+
+  const tokens = stripReservedPrefixes(rawTokens);
+  const head = tokens.find((token) => token.type === "word");
+  if (head && !head.quoted && (head.value === "for" || head.value === "select")) {
+    const variable = tokens.filter((token) => token.type === "word")[1];
+    if (variable && identifier(variable.value)) analysis.disqualified.add(variable.value);
+    return;
+  }
+
+  const resolved = resolveCommand(tokens);
+  const { position, name, args, viaStdin } = resolved;
+  for (const word of position.words.slice(0, position.prefixAssignments)) recordAssignment(analysis, word);
+  for (const payload of position.wrapperPayloads) analyzeProgram(payload, analysis, depth + 1);
+  if (!name) return;
+
+  if (["declare", "local", "export", "typeset", "readonly"].includes(name)) {
+    for (const word of args) recordAssignment(analysis, word);
+  }
+  if (["read", "mapfile", "readarray", "getopts", "let"].includes(name)) {
+    for (const word of args) {
+      if (identifier(word.value)) analysis.disqualified.add(word.value);
+      const parts = assignmentParts(word.value);
+      if (parts) analysis.disqualified.add(parts.name);
+    }
+  }
+  if (name === "printf") {
+    const flag = args.findIndex((word) => word.value === "-v");
+    if (flag !== -1 && args[flag + 1] && identifier(args[flag + 1].value)) analysis.disqualified.add(args[flag + 1].value);
+  }
+
+  const shell = shellPayload(name, args);
+  if (shell.kind === "command") analyzeProgram(shell.text, analysis, depth + 1);
+  if (shell.kind === "stdin") {
+    for (let i = 0; i < tokens.length; i += 1) {
+      const token = tokens[i];
+      if (token.type !== "redir" || token.fd !== 0) continue;
+      if (typeof token.heredoc === "string") analyzeProgram(token.heredoc, analysis, depth + 1);
+      if (token.value === "<<<" && tokens[i + 1]?.type === "word") analyzeProgram(tokens[i + 1].value, analysis, depth + 1);
+    }
+  }
+  if (name === "eval" && args.length > 0) analyzeProgram(args.map((word) => word.value).join(" "), analysis, depth + 1);
+  if (name === "trap") {
+    const payload = args.find((word) => !word.value.startsWith("-"));
+    if (payload && payload.value) analyzeProgram(payload.value, analysis, depth + 1);
+  }
+  if (name === "find") recordFindExec(analysis, args);
+
+  recordSignalSend(analysis, name, args, viaStdin ? "stdin" : "argv");
+}
+
+// ---------------------------------------------------------------------------
+// Static classification of kill arguments.
+
+// Parse kill's options the way bash's builtin and util-linux kill do: only the
+// first dash word names the signal, so a later -N is a process-group operand.
+function parseKillArguments(args) {
+  let signal = null;
+  for (let i = 0; i < args.length; i += 1) {
+    const word = args[i];
+    if (word.subs.length > 0 || !word.value.startsWith("-") || word.value === "-") return { listing: false, signal, operands: args.slice(i) };
+    const value = word.value;
+    if (value === "--") return { listing: false, signal, operands: args.slice(i + 1) };
+    if (["-l", "-L", "--list", "--table"].includes(value) || value.startsWith("--list=")) return { listing: true, signal, operands: [] };
+    if (value === "-s" || value === "-n" || value === "--signal") {
+      signal = args[i + 1]?.value ?? "";
+      i += 1;
+      continue;
+    }
+    if (value.startsWith("--signal=")) {
+      signal = value.slice("--signal=".length);
+      continue;
+    }
+    if (value === "-q" || value === "--queue") {
+      i += 1;
+      continue;
+    }
+    if (value === "--timeout") {
+      i += 2;
+      continue;
+    }
+    if (["-a", "--all", "-p", "--pid", "--verbose", "-r", "--require-handler"].includes(value)) continue;
+    if (signal === null) {
+      signal = value.slice(1);
+      continue;
+    }
+    return { listing: false, signal, operands: args.slice(i) };
+  }
+  return { listing: false, signal, operands: [] };
+}
+
+// Lex a substitution body that reads a PID file: `cat <path>` or `< <path>`.
+function pidFilePath(content) {
+  const lexed = new Lexer(content).tokenize();
+  if (lexed.error) return null;
+  const tokens = lexed.tokens.filter((token) => !(token.type === "op" && token.value === "newline"));
+  const plain = (token) => token?.type === "word" && token.literal && token.subs.length === 0 && !token.unquotedExpansion;
+  if (tokens.length === 2 && tokens[0].type === "word" && !tokens[0].quoted && tokens[0].value === "cat" && plain(tokens[1])) return tokens[1].value;
+  if (tokens.length === 2 && tokens[0].type === "redir" && tokens[0].value === "<" && plain(tokens[1])) return tokens[1].value;
+  return null;
+}
+
+function classifyOperand(word, childPidVars) {
+  if (word.subs.length === 0) {
+    const value = word.value;
+    if (word.literal) {
+      if (/^\d+$/.test(value)) return Number(value) === 0 ? { kind: "broadcast" } : { kind: "pid", pid: Number(value) };
+      if (/^-\d+$/.test(value)) return Number(value.slice(1)) <= 1 ? { kind: "broadcast" } : { kind: "group", pgid: Number(value.slice(1)) };
+      if (value.startsWith("%")) return { kind: "own" };
+      return { kind: "unprovable" };
+    }
+    if (isChildPidExpansion(value)) return { kind: "own" };
+    const variable = value.match(/^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))$/);
+    if (variable && childPidVars.has(variable[1] || variable[2])) return { kind: "own" };
+    return { kind: "unprovable" };
+  }
+  if (word.subs.length === 1 && word.value === "" && word.subs[0].kind === "command") {
+    const content = word.subs[0].content.trim();
+    if (/^jobs(?:\s+-[A-Za-z]+)*$/.test(content)) return { kind: "own" };
+    const file = pidFilePath(content);
+    if (file !== null) return { kind: "pidfile", path: file };
+  }
+  return { kind: "unprovable" };
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic verification against the live process table.
+
+function processTable() {
+  const output = execFileSync("ps", ["-A", "-o", "pid=,ppid=,pgid="], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 10000,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const table = new Map();
+  for (const line of output.split("\n")) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)$/);
+    if (match) table.set(Number(match[1]), { ppid: Number(match[2]), pgid: Number(match[3]) });
+  }
+  if (!table.has(process.pid)) throw new Error("process table does not list this policy process");
+  return table;
+}
+
+function carriesScope(pid, token) {
+  let raw;
+  try {
+    raw = readFileSync(`/proc/${pid}/environ`);
+  } catch {
+    return false;
+  }
+  return raw.toString("utf8").split("\0").includes(`${SCOPE_VARIABLE}=${token}`);
+}
+
+function ancestry(table, pid) {
+  const chain = [];
+  const seen = new Set();
+  let current = pid;
+  while (table.has(current) && !seen.has(current)) {
+    chain.push(current);
+    seen.add(current);
+    const parent = table.get(current).ppid;
+    if (parent === 0 || parent === current) break;
+    current = parent;
+  }
+  return chain;
+}
+
+// The session root is the topmost process of the contiguous run of ancestors
+// that carry this session's marker, starting from the first carrier above this
+// policy process. fm-spawn sets the marker on the agent launch only, so the
+// agent's own parent shell does not carry it and the run stops at the agent.
+function sessionRoot(chain, token) {
+  let index = chain.findIndex((pid) => carriesScope(pid, token));
+  if (index === -1) return null;
+  while (index + 1 < chain.length && carriesScope(chain[index + 1], token)) index += 1;
+  return chain[index];
+}
+
+function makeVerifier(token) {
+  const table = processTable();
+  const chain = ancestry(table, process.pid);
+  const ancestors = new Set(chain);
+  const root = SCOPE_PATTERN.test(token) ? sessionRoot(chain, token) : null;
+  const verify = (pid) => {
+    if (!table.has(pid)) return `PID ${pid} does not exist`;
+    if (pid === root) return `PID ${pid} is this session's own agent process`;
+    if (ancestors.has(pid)) return `PID ${pid} is an ancestor of this session (its shell, the terminal server, or the service manager above it)`;
+    const seen = new Set();
+    let current = pid;
+    while (table.has(current) && !seen.has(current)) {
+      seen.add(current);
+      const parent = table.get(current).ppid;
+      if (parent === root) return null;
+      if (parent <= 1) break;
+      current = parent;
+    }
+    if (carriesScope(pid, token)) return null;
+    return `PID ${pid} is not a descendant of this session's agent process and does not carry this session's process-scope marker`;
+  };
+  const verifyGroup = (pgid) => {
+    const members = [...table].filter(([, info]) => info.pgid === pgid).map(([pid]) => pid);
+    if (members.length === 0) return `process group ${pgid} does not exist`;
+    for (const member of members) {
+      const problem = verify(member);
+      if (problem) return `process group ${pgid} includes a process outside this session: ${problem}`;
+    }
+    return null;
+  };
+  return { root, verify, verifyGroup };
+}
+
+function readPidFile(file, cwd) {
+  let resolved = file;
+  if (resolved === "~" || resolved.startsWith("~/")) resolved = path.join(os.homedir(), resolved.slice(1));
+  if (!path.isAbsolute(resolved)) resolved = path.resolve(cwd, resolved);
+  let stat;
+  try {
+    stat = statSync(resolved);
+  } catch {
+    return { problem: `PID file ${resolved} does not exist yet; within the command that starts the job, use $! instead` };
+  }
+  if (!stat.isFile() || stat.size > 4096) return { problem: `PID file ${resolved} is not a small regular file` };
+  const words = readFileSync(resolved, "utf8").split(/\s+/).filter(Boolean);
+  if (words.length === 0 || !words.every((value) => /^\d+$/.test(value))) return { problem: `PID file ${resolved} does not hold only PIDs` };
+  return { pids: words.map(Number) };
+}
+
+// ---------------------------------------------------------------------------
+
+function deny(code, detail = "") {
+  const reason = detail ? `${detail}. ${REASONS[code]}` : REASONS[code];
+  return { decision: "deny", code, reason: reason.replace(/[\t\r\n]+/g, " ") };
+}
+
+function decision(command, scope = "", cwd = process.cwd()) {
+  const analysis = newAnalysis();
+  analyzeProgram(command, analysis);
+  if (analysis.unclassifiable) return deny("signal-unclassifiable");
+  if (analysis.sends.length === 0) return { decision: "allow" };
+
+  const childPidVars = new Set([...analysis.candidates].filter((name) => !analysis.disqualified.has(name)));
+  const checks = [];
+  let staticDeny = null;
+  for (const send of analysis.sends) {
+    if (send.byName) {
+      staticDeny ||= deny("signal-by-name");
+      continue;
+    }
+    const parsed = parseKillArguments(send.args);
+    if (parsed.listing || parsed.signal === "0") continue;
+    if (send.source !== "argv") {
+      staticDeny ||= deny("signal-unprovable-target");
+      continue;
+    }
+    for (const operand of parsed.operands) {
+      const classified = classifyOperand(operand, childPidVars);
+      if (classified.kind === "broadcast") staticDeny ||= deny("signal-broadcast");
+      else if (classified.kind === "unprovable") staticDeny ||= deny("signal-unprovable-target");
+      else if (classified.kind !== "own") checks.push(classified);
+    }
+  }
+  if (staticDeny) return staticDeny;
+  if (checks.length === 0) return { decision: "allow" };
+
+  let verifier;
+  try {
+    verifier = makeVerifier(scope);
+  } catch {
+    return deny("signal-unverifiable");
+  }
+  if (verifier.root === null) return deny("signal-no-scope");
+  for (const check of checks) {
+    let problem = null;
+    if (check.kind === "pid") problem = verifier.verify(check.pid);
+    if (check.kind === "group") problem = verifier.verifyGroup(check.pgid);
+    if (check.kind === "pidfile") {
+      const file = readPidFile(check.path, cwd);
+      problem = file.problem || null;
+      for (const pid of file.pids || []) problem ||= verifier.verify(pid);
+    }
+    if (problem) return deny("signal-outside-session", problem);
+  }
+  return { decision: "allow" };
+}
+
+function parseArguments(argv) {
+  const result = { command: "", scope: "", cwd: "" };
+  for (let i = 0; i < argv.length; i += 1) {
+    const name = argv[i];
+    if (name === "--command" || name === "--scope" || name === "--cwd") {
+      if (i + 1 >= argv.length) throw new Error(`${name} requires a value`);
+      result[name.slice(2)] = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    throw new Error(`unknown argument: ${name}`);
+  }
+  return result;
+}
+
+function invokedDirectly() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const self = fileURLToPath(import.meta.url);
+  try {
+    return realpathSync(entry) === realpathSync(self);
+  } catch {
+    return entry === self;
+  }
+}
+
+if (invokedDirectly()) {
+  try {
+    const args = parseArguments(process.argv.slice(2));
+    const result = args.command ? decision(args.command, args.scope, args.cwd || process.cwd()) : { decision: "allow" };
+    if (result.decision === "allow") {
+      process.stdout.write("allow\n");
+    } else {
+      process.stdout.write(`deny\t${result.code}\t${result.reason}\n`);
+    }
+  } catch (error) {
+    process.stderr.write(`${error.message}\n`);
+    process.exitCode = 1;
+  }
+}
+
+export { decision };
