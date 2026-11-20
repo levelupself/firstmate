@@ -86,11 +86,6 @@ function identifier(value) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
-function assignmentParts(value) {
-  const match = value.match(/^([A-Za-z_][A-Za-z0-9_]*)(\+?)=(.*)$/s);
-  return match ? { name: match[1], append: match[2] === "+", value: match[3] } : null;
-}
-
 function isChildPidExpansion(value) {
   return value === "$!" || value === "${!}";
 }
@@ -98,15 +93,22 @@ function isChildPidExpansion(value) {
 // ---------------------------------------------------------------------------
 // Static analysis: find every signal send and every variable binding.
 
-function newAnalysis(cwd) {
-  return { cwd, paths: new Map(), visited: new WeakSet(), sends: [], candidates: new Set(), disqualified: new Set(), unclassifiable: false, unprovable: false };
+function newAnalysis() {
+  return { sends: [], candidates: new Set(), disqualified: new Set(), unclassifiable: false, unprovable: false };
 }
 
 function recordAssignment(analysis, word) {
-  const parts = assignmentParts(word.value);
-  if (!parts) return;
-  if (!parts.append && word.subs.length === 0 && isChildPidExpansion(parts.value)) analysis.candidates.add(parts.name);
-  else analysis.disqualified.add(parts.name);
+  const match = word.value.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s);
+  if (match && !word.subs.length && isChildPidExpansion(match[2])) analysis.candidates.add(match[1]);
+}
+
+function childPidVariables(command, { candidates, disqualified }) {
+  return new Set([...candidates].filter((name) => {
+    if (disqualified.has(name)) return false;
+    const assignments = [...command.matchAll(new RegExp(name + "\\+?=", "g"))];
+    return assignments.length > 0 && assignments.every((match) => match[0] === name + "=" &&
+      /^(?:"\$(?:!|\{!\})"|'\$(?:!|\{!\})'|\$(?:!|\{!\}))(?=$|[\s;&|()<>])/.test(command.slice(match.index + match[0].length)));
+  }));
 }
 
 function stripReservedPrefixes(tokens) {
@@ -232,12 +234,6 @@ function analyzeSplitPayload(payload, analysis, depth, source, tokens) {
   analyzeNode([...split.tokens, ...payload.trailingWords, ...redirections], analysis, depth + 1, source);
 }
 
-function normalizedPath(word, cwd) {
-  if (!word.literal || word.subs.length || word.unquotedExpansion || !word.value) return null;
-  if (!word.quoted && !word.escaped && word.value.startsWith("~/")) return path.resolve(os.homedir(), word.value.slice(2));
-  return path.resolve(cwd, word.value);
-}
-
 function recordFindExec(analysis, args, depth) {
   for (let i = 0; i < args.length; i += 1) {
     if (!FIND_EXEC_ACTIONS.has(args[i].value)) continue;
@@ -273,12 +269,6 @@ function analyzeNode(rawTokens, analysis, depth, source = "argv") {
   const shell = shellPayload(name, args);
   // Nested programs run wherever they appear, so recurse into every one.
   for (const token of rawTokens) {
-    if (analysis.visited.has(token)) continue;
-    analysis.visited.add(token);
-    if (token.type === "word") {
-      const file = normalizedPath(token, analysis.cwd);
-      if (file !== null) analysis.paths.set(file, (analysis.paths.get(file) || 0) + 1);
-    }
     if (typeof token.heredoc === "string" && !token.heredocQuoted && !(shell.kind === "stdin" && token.fd === 0 && !resolved.wrapperPayloads.length)) {
       const lexer = new Lexer(token.heredoc);
       const word = { value: "", subs: [], literal: true };
@@ -306,19 +296,19 @@ function analyzeNode(rawTokens, analysis, depth, source = "argv") {
   }
   if (!name) return;
 
-  if (["declare", "local", "export", "typeset", "readonly"].includes(name)) {
-    for (const word of args) recordAssignment(analysis, word);
-  }
-  if (["read", "mapfile", "readarray", "getopts", "let"].includes(name)) {
+  if (["declare", "local", "export", "typeset", "readonly", "read", "mapfile", "readarray", "getopts", "let"].includes(name)) {
     for (const word of args) {
-      if (identifier(word.value)) analysis.disqualified.add(word.value);
-      const parts = assignmentParts(word.value);
-      if (parts) analysis.disqualified.add(parts.name);
+      const bound = word.value.match(/^([A-Za-z_][A-Za-z0-9_]*)/);
+      if (bound) analysis.disqualified.add(bound[1]);
     }
   }
   if (name === "printf") {
-    const flag = args.findIndex((word) => word.value === "-v");
-    if (flag !== -1 && args[flag + 1] && identifier(args[flag + 1].value)) analysis.disqualified.add(args[flag + 1].value);
+    for (let i = 0; i < args.length; i += 1) {
+      const value = args[i].value;
+      const target = value === "-v" ? args[i + 1]?.value : (value.startsWith("-v") ? value.slice(2) : "");
+      const bound = target?.match(/^([A-Za-z_][A-Za-z0-9_]*)/);
+      if (bound) analysis.disqualified.add(bound[1]);
+    }
   }
 
   if (shell.kind === "unresolved" && nodeMentionsSignal(rawTokens)) analysis.unprovable = true;
@@ -528,14 +518,14 @@ function deny(code, detail = "") {
   return { decision: "deny", code, reason: reason.replace(/[\t\r\n]+/g, " ") };
 }
 
-function decision(command, scope = "", cwd = process.cwd()) {
-  const analysis = newAnalysis(cwd);
+function decision(command, scope = "") {
+  const analysis = newAnalysis();
   analyzeProgram(command, analysis);
   if (analysis.unprovable) return deny("signal-unprovable-target");
   if (analysis.unclassifiable) return deny("signal-unclassifiable");
   if (analysis.sends.length === 0) return { decision: "allow" };
 
-  const childPidVars = new Set([...analysis.candidates].filter((name) => !analysis.disqualified.has(name)));
+  const childPidVars = childPidVariables(command, analysis);
   const checks = [];
   let staticDeny = null;
   for (const send of analysis.sends) {
@@ -553,7 +543,7 @@ function decision(command, scope = "", cwd = process.cwd()) {
       const classified = classifyOperand(operand, childPidVars);
       if (classified.kind === "broadcast") staticDeny ||= deny("signal-broadcast");
       else if (classified.kind === "unprovable") staticDeny ||= deny("signal-unprovable-target");
-      else if (classified.kind === "pidfile" && (analysis.paths.get(path.resolve(classified.path)) || 0) > 1) staticDeny ||= deny("signal-unprovable-target");
+      else if (classified.kind === "pidfile" && command.split(path.basename(classified.path)).length !== 2) staticDeny ||= deny("signal-unprovable-target");
       else if (classified.kind !== "own") checks.push(classified);
     }
   }
@@ -610,7 +600,7 @@ function invokedDirectly() {
 if (invokedDirectly()) {
   try {
     const args = parseArguments(process.argv.slice(2));
-    const result = args.command ? decision(args.command, args.scope, args.cwd || process.cwd()) : { decision: "allow" };
+    const result = args.command ? decision(args.command, args.scope) : { decision: "allow" };
     if (result.decision === "allow") {
       process.stdout.write("allow\n");
     } else {

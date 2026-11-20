@@ -521,6 +521,68 @@ test_shell_modes_split_arguments_and_pidfile_conflicts() {
   pass "shell modes, env split arguments, and PID-file conflicts are checked"
 }
 
+
+test_conservative_pid_records_and_env_signal_options() {
+  local option suffix cmd binding out n
+  for option in --default-signal --block-signal --ignore-signal; do
+    for suffix in '' '=TERM'; do
+      expect_line "$(check "env $option$suffix pkill -f service")" "2 signal-by-name" "env signal option must preserve the following command"
+      expect_line "$(check "nice env $option$suffix kill \$PPID")" "2 signal-unprovable-target" "env signal option must preserve literal kill"
+      expect_line "$(check "env $option$suffix kill -0 1")" "0 " "env signal option must preserve harmless probes"
+    done
+  done
+  for cmd in \
+    'sleep 30 & pid=$!; env pid="$PPID" sh -c '\''kill "$pid"'\''' \
+    'pid=$!; sudo pid=1 sh -c '\''kill "$pid"'\''' \
+    'pid=$!; sh -c '\''pid=$PPID; kill "$pid"'\''' \
+    'pid=$!; eval '\''pid=1; kill "$pid"'\''' \
+    'pid=$!; trap '\''pid=1; kill "$pid"'\'' EXIT' \
+    'pid=$!; env -S '\''pid=1 kill'\'' "$pid"' \
+    'pid=$!; pid+=$!; kill $pid' \
+    'pid=$!; pid="$!"123; kill $pid' \
+    'pid=$!; pid="$!"'\''123'\''; kill $pid' \
+    'echo "pid=$!"; kill $pid'; do
+    expect_line "$(check "$cmd")" "2 signal-unprovable-target" "every raw assignment must prove the child PID: $cmd"
+  done
+  for binding in \
+    'read pid' 'for pid in 1; do true; done' 'select pid in 1; do true; done' \
+    'mapfile pid' 'readarray pid' 'getopts x pid' 'let pid++' \
+    'printf -v pid %s 1' 'printf -vpid %s 1' \
+    'declare pid' 'declare pid=$!' 'local pid' 'export pid' 'typeset pid' 'readonly pid'; do
+    expect_line "$(check "pid=\$!; $binding; kill \$pid")" "2 signal-unprovable-target" "binding commands invalidate child PID variables: $binding"
+  done
+  for cmd in \
+    'sleep 1 & pid=$!; kill "$pid"' \
+    'sleep 1 & pid=${!}; kill "$pid"' \
+    'sleep 1 & pid="$!"; kill "$pid"' \
+    'sleep 1 & pid="${!}"; kill "$pid"' \
+    'sleep 1 & pid=$!; pid=$!; kill "$pid"' \
+    'sh -c '\''sleep 1 & pid=$!; kill "$pid"'\'''; do
+    expect_line "$(check "$cmd")" "0 " "plain child PID records remain allowed: $cmd"
+  done
+  out=$(in_agent '
+    sleep 120 >/dev/null 2>&1 & own=$!; record_pid "$own"
+    mkdir -p "$TMP_ROOT/basename-case"
+    printf "%s\n" "$own" > "$TMP_ROOT/basename-case/job.pid"
+    check "cd $TMP_ROOT/basename-case; pgrep -f service > job.pid; kill \$(cat $TMP_ROOT/basename-case/job.pid)"
+    check "cd $TMP_ROOT/basename-case; pgrep -f service > job.pid; kill \$(< $TMP_ROOT/basename-case/job.pid)"
+    check "env -C $TMP_ROOT/basename-case sh -c '\''tee job.pid'\''; kill \$(cat $TMP_ROOT/basename-case/job.pid)"
+    check "sh -c '\''cd $TMP_ROOT/basename-case; cp other.pid job.pid'\''; kill \$(< $TMP_ROOT/basename-case/job.pid)"
+    check "mv other.pid elsewhere/job.pid; kill \$(cat $TMP_ROOT/basename-case/job.pid)"
+    check "echo job.pid; kill \$(cat $TMP_ROOT/basename-case/job.pid)"
+    check "kill \$(cat $TMP_ROOT/basename-case/job.pid)"
+    check "kill \$(< $TMP_ROOT/basename-case/job.pid)"
+    kill "$own"
+  ')
+  for n in 1 2 3 4 5 6; do
+    expect_line "$(line "$out" "$n")" "2 signal-unprovable-target" "any repeated raw PID-file basename must deny"
+  done
+  for n in 7 8; do
+    expect_line "$(line "$out" "$n")" "0 " "single PID-file reads remain verified and allowed"
+  done
+  pass "basename uniqueness, raw PID assignments, and env optional signal arguments are enforced"
+}
+
 # --- fm-spawn wiring ---------------------------------------------------------
 
 make_spawn_fakebin() {
@@ -659,6 +721,7 @@ EOF
   pass "pi crew spawn installs the signal guard in its per-task extension"
 }
 
+test_conservative_pid_records_and_env_signal_options
 test_shell_modes_split_arguments_and_pidfile_conflicts
 test_review_regressions
 

@@ -55,8 +55,9 @@ A raw escape-hatch launch command and a secondmate launch carry no marker.
 | --- | --- |
 | Literal PID, such as `kill 4242` or `kill -TERM 4242` | Verified against the live process table. |
 | Literal process group, such as `kill -- -4242` | Allowed only when the group exists and every member passes the PID check. |
-| `$!`, a variable assigned only from `$!` in the same command, a job spec such as `%1`, or `$(jobs -p)` | Allowed without lookup, because each names a child of the command's own shell. |
-| `"$(cat /abs/job.pid)"` or `$(< /abs/job.pid)` with a literal absolute path | The file is read at check time; every PID in it is verified. An unquoted leading `~/` expands to the home directory; relative paths and quoted tilde paths are denied as unprovable. The normalized path must occur nowhere else as a command argument or redirection target in the submitted program, including nested programs. |
+| `$!`, a job spec such as `%1`, or `$(jobs -p)` | Allowed without lookup, because each names a child of the command's own shell. |
+| A child-PID variable such as `$pid` | Requires a plain assignment from `$!` or `${!}`; every textual `pid=` occurrence anywhere in the raw command must assign exactly one of those forms, optionally quoted. Binding by `read`, `for`, `select`, `mapfile`, `readarray`, `getopts`, `let`, `printf -v`, or the declare family makes it unprovable. |
+| `"$(cat /abs/job.pid)"` or `$(< /abs/job.pid)` with a literal absolute path | The file is read at check time; every PID in it is verified. An unquoted leading `~/` expands to the home directory; relative paths and quoted tilde paths are denied as unprovable. The file basename must occur exactly once in the raw submitted command, at that read; any other mention makes the target unprovable, regardless of directory changes or nesting. |
 | Any other run-time value: `$PPID`, a `read`, `for`, or other loop variable, `$(pgrep ...)`, `$(pidof ...)`, a `ps` column, a name operand, or `xargs kill` and `find -exec kill` | Denied as unprovable. |
 | `kill -1` or `kill 0` | Denied: every process of the user, or the caller's whole process group. |
 | `pkill`, `killall`, `skill`, `killall5`, and `fuser -k` | Denied: they choose targets by name, pattern, user, or resource. |
