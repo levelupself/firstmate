@@ -321,7 +321,9 @@ test_relaunch_serializes_concurrent_durable_metadata_publication() {
     FM_FAKE_TRACE_EXPORTED="$exported" \
     run_control "$dir" rl28 relaunch --note "continue after publication" > "$dir/control.out" &
   control_pid=$!
-  while [ ! -e "$prepare" ] && [ "$i" -lt 200 ]; do
+  # Allow up to ten seconds for readiness on loaded hosts; proceed immediately
+  # once each handshake is ready so the publication overlap stays deterministic.
+  while [ ! -e "$prepare" ] && [ "$i" -lt 1000 ]; do
     /bin/sleep 0.01
     i=$((i + 1))
   done
@@ -339,7 +341,7 @@ test_relaunch_serializes_concurrent_durable_metadata_publication() {
       --carry-platform x --carry-max 280 > "$dir/link.out" 2>&1 &
   link_pid=$!
   i=0
-  while { [ ! -e "$ready" ] || [ ! -e "$exported" ]; } && [ "$i" -lt 200 ]; do
+  while { [ ! -e "$ready" ] || [ ! -e "$exported" ]; } && [ "$i" -lt 1000 ]; do
     /bin/sleep 0.01
     i=$((i + 1))
   done
@@ -424,6 +426,7 @@ test_harness_switch_moves_the_record_and_clears_prior_wiring() {
   # Wiring the previous claude incarnation left in the worktree.
   mkdir -p "$dir/wt/.claude"
   printf '{"hooks":{}}\n' > "$dir/wt/.claude/settings.local.json"
+  : > "$dir/home/state/rl4.turn-progress"
   printf 'codex' > "$dir/fake/becomes"
   out=$(run_control "$dir" rl4 relaunch --harness codex --note "switching runtime"); rc=$?
   expect_code 0 "$rc" "a harness switch should succeed"$'\n'"$out"
@@ -431,6 +434,8 @@ test_harness_switch_moves_the_record_and_clears_prior_wiring() {
   [ "$(meta_field "$dir" rl4 harness)" = codex ] || fail "the record should follow the switch"
   [ ! -e "$dir/wt/.claude/settings.local.json" ] \
     || fail "the previous harness's per-task wiring must be cleared on a switch"
+  [ ! -e "$dir/home/state/rl4.turn-progress" ] \
+    || fail "the previous claude incarnation's tool-boundary marker must be retired on a switch"
   assert_grep "codex" "$dir/fake/literal" "the replacement launch should be the new harness"
   [ "$(journal_field "$dir" rl4 from_harness)" = claude ] || fail "the journal should record the origin harness"
   [ "$(journal_field "$dir" rl4 to_harness)" = codex ] || fail "the journal should record the target harness"
