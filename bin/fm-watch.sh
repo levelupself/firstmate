@@ -380,7 +380,7 @@ long_run_alive() {  # <task>
 
 # busy_bound_check: the one busy-pane bound decision, shared by both the
 # stable-hash and new-hash branches of the stale loop. A busy pane past
-# BUSY_TURN_MAX_SECS with no completed turn routes through wedge_timer_check
+# BUSY_TURN_MAX_SECS with no completed turn or tool boundary routes through wedge_timer_check
 # unless its declared long-run artifact is provably still being written; every
 # other busy or not-yet-stable pane resets the pending escalation bookkeeping.
 # A declaration that gave no relief is named in the wedge timer's triage label
@@ -1350,7 +1350,7 @@ EOF
       else
         # Pane busy or not yet stably stale: reset pending escalation bookkeeping,
         # unless a genuinely busy pane has gone too long with no completed turn
-        # and shows no live declared long-run artifact - then route it through
+        # or tool boundary and shows no live declared long-run artifact - then route it through
         # the same wedge timer instead of erasing it. A busy pane parked past
         # the bound keeps its pause cadence tracking.
         busy_bound_check "$w" "$task" "$busy_now" "$ssf" "$ewf" "$h"

@@ -285,20 +285,24 @@ FM_CODEX_BUSY_LIVE_E2E=1 tests/fm-codex-busy-live-e2e.test.sh
 
 ### Claude tool-boundary progress marker, 2026-11-19
 
-The `state/<id>.turn-progress` marker that the watcher's busy-turn bound ages was live-verified against Claude Code 2.1.291 with the settings the real `fm-spawn` generates, loaded alone through `--setting-sources local`.
+An earlier revision of the tool-boundary guard was run against Claude Code 2.1.291 with the settings the real `fm-spawn` generates, loaded alone through `--setting-sources local`.
 A Haiku print-mode run executed an eight-second Bash call, a four-second Bash call that exited non-zero, and a general-purpose subagent's Bash call while the marker's mtime was sampled every 100 ms.
-The marker was touched when each call started and ended, never while the eight-second call ran, and the subagent's own call touched it.
+That revision reported successful, failing, and subagent completion touches and no mid-call touch, but its completion windows did not isolate those hooks from subsequent or enclosing tool events.
 A failing call ends in `PostToolUseFailure`, not `PostToolUse`: with that hook removed from the generated settings the same guard failed with `PostToolUseFailure did not touch the marker when a failing call ended`.
 
 ```sh
 FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-tool-progress-live-e2e.test.sh
 ```
 
-Observed output:
+Output from that earlier revision (not validation of the current guard):
 
 ```text
 ok - claude 2.1.291 (Claude Code) touches the tool-boundary progress marker at every successful, failing, and subagent tool call end, and never mid-call
 ```
+
+The current guard samples every 50 ms, uses a portable millisecond clock for step marks, requires two distinct touches around each parent-call completion, and delays the enclosing Agent completion to isolate subagent progress.
+Its parent-call windows allow 20 ms of mtime rounding and 500 ms of hook scheduling skew; subsequent calls sleep beyond those windows.
+A separate opt-in live rerun is pending before the current guard can supply refreshed verification evidence.
 
 `tests/fm-busy-adapter-wiring.test.sh` pins the generated hooks hermetically, and `tests/fm-watch-triage.test.sh` pins the watcher's use of the marker, including a hung call that still escalates.
 
