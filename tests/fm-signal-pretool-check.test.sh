@@ -447,6 +447,80 @@ test_review_regressions() {
   pass "expanded payloads, nested execution, PID paths, and scheduled signals obey the allow rule"
 }
 
+
+test_shell_modes_split_arguments_and_pidfile_conflicts() {
+  local cmd action out n
+  for cmd in \
+    "bash -o pipefail -c 'kill \$(pgrep -f service)'" \
+    "bash +o pipefail -c 'kill \$PPID'" \
+    "bash -O extglob -c 'kill \$PPID'" \
+    "bash +O extglob -c 'kill \$PPID'" \
+    "bash -eo pipefail -c 'kill \$PPID'" \
+    "bash -co pipefail 'kill \$PPID'" \
+    "bash -c -o pipefail 'kill \$PPID'" \
+    "bash -c -- 'kill \$PPID'" \
+    "bash -o pipefail <<< 'kill \$PPID'" \
+    $'bash -o pipefail <<\'EOF\'\nkill $PPID\nEOF' \
+    "bash -o <<< 'kill 1'" \
+    "env -S 'bash -o pipefail' <<< 'kill \$PPID'" \
+    "bash --unknown-option 'kill \$PPID'" \
+    "bash -o \"\$option\" -c 'kill \$PPID'"; do
+    expect_line "$(check "$cmd")" "2 signal-unprovable-target" "shell option parsing must not conceal sends: $cmd"
+  done
+  for action in -exec -execdir -ok -okdir; do
+    cmd="find . $action nice bash -o pipefail -c 'kill \$PPID' \\;"
+    expect_line "$(check "$cmd")" "2 signal-unprovable-target" "find shell mode must be resolved: $action"
+  done
+  for cmd in \
+    "bash -o pipefail -c 'sleep 1 & kill \$!'" \
+    "bash -eo pipefail -c 'kill -0 1'" \
+    "bash -co pipefail 'kill -0 1'" \
+    "bash -c -o pipefail 'kill -0 1'" \
+    "bash -c -- 'kill -0 1'" \
+    "bash +O extglob <<< 'kill -0 1'" \
+    "bash -s argument <<< 'kill -0 1'"; do
+    expect_line "$(check "$cmd")" "0 " "resolved safe shell payload must stay allowed: $cmd"
+  done
+  out=$(in_agent '
+    sleep 120 >/dev/null 2>&1 & own=$!; record_pid "$own"
+    for prefix in "env -S" "command env -S" "env --split-string" "env --split-string=" "nice env -S" "env FOO=1 env -S"; do
+      case "$prefix" in
+        *"=") check "$prefix\"kill -TERM\" $$" ;;
+        *) check "$prefix '\''kill -TERM'\'' $$" ;;
+      esac
+    done
+    check "env -S'\''kill -TERM'\'' $$"
+    check "env -S '\''nice kill -TERM'\'' $$"
+    check "env -S '\''kill'\'' -TERM $$"
+    check "env -S '\''kill -TERM'\'' $own"
+    check "env -S '\''kill -0'\'' $$"
+    check "env -S '\''bash -c \"kill 1\"'\''"
+    printf "%s\n" "$own" > "$TMP_ROOT/review.pid"
+    cd "$TMP_ROOT" || exit 1
+    check "pgrep -f service > $TMP_ROOT/review.pid; kill \$(cat $TMP_ROOT/review.pid)"
+    check "pgrep -f service > $TMP_ROOT/review.pid; kill \$(< $TMP_ROOT/review.pid)"
+    check "tee $TMP_ROOT/./review.pid; kill \$(cat $TMP_ROOT/review.pid)"
+    check "kill \$(cat $TMP_ROOT/review.pid); cp other.pid ./review.pid"
+    check "sh -c '\''printf 1 > $TMP_ROOT/review.pid'\''; kill \$(cat $TMP_ROOT/review.pid)"
+    check "echo \$(cat $TMP_ROOT/review.pid); kill \$(cat $TMP_ROOT/review.pid)"
+    check "kill \$(cat $TMP_ROOT/review.pid)"
+    check "kill \$(< $TMP_ROOT/review.pid)"
+    check "echo unrelated.pid; kill \$(cat $TMP_ROOT/review.pid)"
+    check "sh -o pipefail -c '\''kill \$(cat $TMP_ROOT/review.pid)'\''"
+    kill "$own"
+  ')
+  for n in 1 2 3 4 5 6 7 8 9; do
+    expect_line "$(line "$out" "$n")" "2 signal-outside-session" "env split arguments must reach target verification"
+  done
+  for n in 10 11 19 20 21 22; do
+    expect_line "$(line "$out" "$n")" "0 " "owned targets and isolated PID-file reads must remain allowed"
+  done
+  for n in 12 13 14 15 16 17 18; do
+    expect_line "$(line "$out" "$n")" "2 signal-unprovable-target" "uncertain split syntax and repeated PID paths must fail closed"
+  done
+  pass "shell modes, env split arguments, and PID-file conflicts are checked"
+}
+
 # --- fm-spawn wiring ---------------------------------------------------------
 
 make_spawn_fakebin() {
@@ -585,6 +659,7 @@ EOF
   pass "pi crew spawn installs the signal guard in its per-task extension"
 }
 
+test_shell_modes_split_arguments_and_pidfile_conflicts
 test_review_regressions
 
 test_incident_command_is_denied

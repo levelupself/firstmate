@@ -98,8 +98,8 @@ function isChildPidExpansion(value) {
 // ---------------------------------------------------------------------------
 // Static analysis: find every signal send and every variable binding.
 
-function newAnalysis() {
-  return { sends: [], candidates: new Set(), disqualified: new Set(), unclassifiable: false, unprovable: false };
+function newAnalysis(cwd) {
+  return { cwd, paths: new Map(), visited: new WeakSet(), sends: [], candidates: new Set(), disqualified: new Set(), unclassifiable: false, unprovable: false };
 }
 
 function recordAssignment(analysis, word) {
@@ -147,21 +147,42 @@ function resolveCommand(tokens) {
 
 function shellPayload(name, args) {
   if (!SHELLS.has(name)) return { kind: "none" };
-  for (let i = 0; i < args.length; i += 1) {
-    const value = args[i].value;
-    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(value)) {
-      let payloadIndex = i + 1;
-      if (args[payloadIndex]?.value === "--") payloadIndex += 1;
-      return args[payloadIndex] ? { kind: "command", word: args[payloadIndex] } : { kind: "none" };
-    }
-    if (/^[-+]O$/.test(value)) {
+  let command = false;
+  let stdin = false;
+  let i = 0;
+  for (; i < args.length; i += 1) {
+    const word = args[i];
+    if (command && (!word.literal || word.subs.length || !/^[-+]/.test(word.value))) break;
+    if (!word.literal || word.subs.length || word.unquotedExpansion) return { kind: "unresolved" };
+    const value = word.value;
+    if (value === "--" || value === "-") {
       i += 1;
+      break;
+    }
+    if (!/^[-+]/.test(value)) break;
+    if (value.startsWith("--")) {
+      if (["--rcfile", "--init-file"].includes(value)) {
+        if (!args[++i]?.literal || args[i].subs.length) return { kind: "unresolved" };
+      } else if (!["--noprofile", "--norc", "--posix", "--restricted", "--verbose", "--login"].includes(value)) {
+        return { kind: "unresolved" };
+      }
       continue;
     }
-    if (value === "--" || /^[-+]/.test(value)) continue;
-    return { kind: "script" };
+    for (let offset = 1; offset < value.length; offset += 1) {
+      const flag = value[offset];
+      if (flag === "o" || flag === "O") {
+        if (offset !== value.length - 1 || !args[++i]?.literal || args[i].subs.length) return { kind: "unresolved" };
+      } else if (flag === "c" && value[0] === "-") {
+        command = true;
+      } else if (flag === "s" && value[0] === "-") {
+        stdin = true;
+      } else if (!"abefhiklmnprtuvxBCEHPT".includes(flag)) {
+        return { kind: "unresolved" };
+      }
+    }
   }
-  return { kind: "stdin" };
+  if (command) return args[i] ? { kind: "command", word: args[i] } : { kind: "unresolved" };
+  return { kind: stdin || i === args.length ? "stdin" : "script" };
 }
 
 function recordSignalSend(analysis, name, args, source) {
@@ -186,6 +207,35 @@ function analyzePayload(words, analysis, depth) {
     return;
   }
   analyzeProgram(words.map((word) => word.value).join(" "), analysis, depth + 1);
+}
+
+function nodeMentionsSignal(tokens) {
+  return tokens.some((token) => mentionsSignalTool([
+    token.value || "", token.content || "", token.heredoc || "",
+    ...(token.subs || []).map((sub) => sub.content),
+  ].join(" ")));
+}
+
+function analyzeSplitPayload(payload, analysis, depth, source, tokens) {
+  if (!payload.literal || payload.subs.length || payload.unquotedExpansion ||
+      !/^[A-Za-z0-9_./=+: \t-]*$/.test(payload.value)) {
+    if (nodeMentionsSignal(tokens)) analysis.unprovable = true;
+    return;
+  }
+  const split = new Lexer(payload.value).tokenize();
+  const redirections = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    if (tokens[i].type !== "redir") continue;
+    redirections.push(tokens[i]);
+    if (!tokens[i].inlineTarget && tokens[i + 1]?.type === "word") redirections.push(tokens[++i]);
+  }
+  analyzeNode([...split.tokens, ...payload.trailingWords, ...redirections], analysis, depth + 1, source);
+}
+
+function normalizedPath(word, cwd) {
+  if (!word.literal || word.subs.length || word.unquotedExpansion || !word.value) return null;
+  if (!word.quoted && !word.escaped && word.value.startsWith("~/")) return path.resolve(os.homedir(), word.value.slice(2));
+  return path.resolve(cwd, word.value);
 }
 
 function recordFindExec(analysis, args, depth) {
@@ -217,9 +267,19 @@ function analyzeNode(rawTokens, analysis, depth, source = "argv") {
     analysis.unclassifiable = true;
     return;
   }
+  const tokens = stripReservedPrefixes(rawTokens);
+  const resolved = resolveCommand(tokens);
+  const { position, name, args, viaStdin } = resolved;
+  const shell = shellPayload(name, args);
   // Nested programs run wherever they appear, so recurse into every one.
   for (const token of rawTokens) {
-    if (typeof token.heredoc === "string" && !token.heredocQuoted) {
+    if (analysis.visited.has(token)) continue;
+    analysis.visited.add(token);
+    if (token.type === "word") {
+      const file = normalizedPath(token, analysis.cwd);
+      if (file !== null) analysis.paths.set(file, (analysis.paths.get(file) || 0) + 1);
+    }
+    if (typeof token.heredoc === "string" && !token.heredocQuoted && !(shell.kind === "stdin" && token.fd === 0 && !resolved.wrapperPayloads.length)) {
       const lexer = new Lexer(token.heredoc);
       const word = { value: "", subs: [], literal: true };
       lexer.readDoubleQuoted(word, true);
@@ -232,7 +292,6 @@ function analyzeNode(rawTokens, analysis, depth, source = "argv") {
     }
   }
 
-  const tokens = stripReservedPrefixes(rawTokens);
   const head = tokens.find((token) => token.type === "word");
   if (head && !head.quoted && (head.value === "for" || head.value === "select")) {
     const variable = tokens.filter((token) => token.type === "word")[1];
@@ -240,10 +299,11 @@ function analyzeNode(rawTokens, analysis, depth, source = "argv") {
     return;
   }
 
-  const resolved = resolveCommand(tokens);
-  const { position, name, args, viaStdin } = resolved;
   for (const word of position.words.slice(0, position.prefixAssignments)) recordAssignment(analysis, word);
-  for (const payload of resolved.wrapperPayloads) analyzePayload([payload], analysis, depth);
+  if (resolved.wrapperPayloads.length) {
+    analyzeSplitPayload(resolved.wrapperPayloads[0], analysis, depth, viaStdin ? "stdin" : source, rawTokens);
+    return;
+  }
   if (!name) return;
 
   if (["declare", "local", "export", "typeset", "readonly"].includes(name)) {
@@ -261,7 +321,7 @@ function analyzeNode(rawTokens, analysis, depth, source = "argv") {
     if (flag !== -1 && args[flag + 1] && identifier(args[flag + 1].value)) analysis.disqualified.add(args[flag + 1].value);
   }
 
-  const shell = shellPayload(name, args);
+  if (shell.kind === "unresolved" && nodeMentionsSignal(rawTokens)) analysis.unprovable = true;
   if (shell.kind === "command") analyzePayload([shell.word], analysis, depth);
   if (shell.kind === "stdin") {
     for (let i = 0; i < tokens.length; i += 1) {
@@ -468,8 +528,8 @@ function deny(code, detail = "") {
   return { decision: "deny", code, reason: reason.replace(/[\t\r\n]+/g, " ") };
 }
 
-function decision(command, scope = "") {
-  const analysis = newAnalysis();
+function decision(command, scope = "", cwd = process.cwd()) {
+  const analysis = newAnalysis(cwd);
   analyzeProgram(command, analysis);
   if (analysis.unprovable) return deny("signal-unprovable-target");
   if (analysis.unclassifiable) return deny("signal-unclassifiable");
@@ -493,6 +553,7 @@ function decision(command, scope = "") {
       const classified = classifyOperand(operand, childPidVars);
       if (classified.kind === "broadcast") staticDeny ||= deny("signal-broadcast");
       else if (classified.kind === "unprovable") staticDeny ||= deny("signal-unprovable-target");
+      else if (classified.kind === "pidfile" && (analysis.paths.get(path.resolve(classified.path)) || 0) > 1) staticDeny ||= deny("signal-unprovable-target");
       else if (classified.kind !== "own") checks.push(classified);
     }
   }
@@ -549,7 +610,7 @@ function invokedDirectly() {
 if (invokedDirectly()) {
   try {
     const args = parseArguments(process.argv.slice(2));
-    const result = args.command ? decision(args.command, args.scope) : { decision: "allow" };
+    const result = args.command ? decision(args.command, args.scope, args.cwd || process.cwd()) : { decision: "allow" };
     if (result.decision === "allow") {
       process.stdout.write("allow\n");
     } else {

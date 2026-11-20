@@ -517,12 +517,12 @@ function consumeWrapperOptions(name, words, index) {
       }
       if (!long.takesArgument.has(option)) return { index: next, unresolved: true, embeddedPayloads };
       if (equals !== -1) {
-        if (name === "env" && option === "split-string") embeddedPayloads.push({ ...words[next], value: value.slice(equals + 1) });
+        if (name === "env" && option === "split-string") embeddedPayloads.push({ ...words[next], value: value.slice(equals + 1), trailingWords: words.slice(next + 1) });
         next += 1;
         continue;
       }
       if (!words[next + 1]) return { index: next, unresolved: true, embeddedPayloads };
-      if (name === "env" && option === "split-string") embeddedPayloads.push(words[next + 1]);
+      if (name === "env" && option === "split-string") embeddedPayloads.push({ ...words[next + 1], trailingWords: words.slice(next + 2) });
       next += 2;
       continue;
     }
@@ -533,10 +533,10 @@ function consumeWrapperOptions(name, words, index) {
       if (!short.takesArgument.has(option)) return { index: next, unresolved: true, embeddedPayloads };
       if (offset + 1 === value.length) {
         if (!words[next + 1]) return { index: next, unresolved: true, embeddedPayloads };
-        if (name === "env" && option === "S") embeddedPayloads.push(words[next + 1]);
+        if (name === "env" && option === "S") embeddedPayloads.push({ ...words[next + 1], trailingWords: words.slice(next + 2) });
         next += 2;
       } else {
-        if (name === "env" && option === "S") embeddedPayloads.push({ ...words[next], value: value.slice(offset + 1) });
+        if (name === "env" && option === "S") embeddedPayloads.push({ ...words[next], value: value.slice(offset + 1), trailingWords: words.slice(next + 1) });
         next += 1;
       }
       consumedArgument = true;

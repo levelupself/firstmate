@@ -56,7 +56,7 @@ A raw escape-hatch launch command and a secondmate launch carry no marker.
 | Literal PID, such as `kill 4242` or `kill -TERM 4242` | Verified against the live process table. |
 | Literal process group, such as `kill -- -4242` | Allowed only when the group exists and every member passes the PID check. |
 | `$!`, a variable assigned only from `$!` in the same command, a job spec such as `%1`, or `$(jobs -p)` | Allowed without lookup, because each names a child of the command's own shell. |
-| `"$(cat /abs/job.pid)"` or `$(< /abs/job.pid)` with a literal absolute path | The file is read at check time; every PID in it is verified. An unquoted leading `~/` expands to the home directory; relative paths and quoted tilde paths are denied as unprovable. |
+| `"$(cat /abs/job.pid)"` or `$(< /abs/job.pid)` with a literal absolute path | The file is read at check time; every PID in it is verified. An unquoted leading `~/` expands to the home directory; relative paths and quoted tilde paths are denied as unprovable. The normalized path must occur nowhere else as a command argument or redirection target in the submitted program, including nested programs. |
 | Any other run-time value: `$PPID`, a `read`, `for`, or other loop variable, `$(pgrep ...)`, `$(pidof ...)`, a `ps` column, a name operand, or `xargs kill` and `find -exec kill` | Denied as unprovable. |
 | `kill -1` or `kill 0` | Denied: every process of the user, or the caller's whole process group. |
 | `pkill`, `killall`, `skill`, `killall5`, and `fuser -k` | Denied: they choose targets by name, pattern, user, or resource. |
@@ -64,6 +64,8 @@ A raw escape-hatch launch command and a secondmate launch carry no marker.
 
 A signal send is found at every executed command position: pipeline stages, lists, loop and conditional bodies, subshells and brace groups, command substitutions, `sh`/`bash -c` payloads, shell heredocs and here-strings, `eval` and `trap` payloads, and behind the wrappers `env`, `sudo`, `doas`, `exec`, `command`, `builtin`, `nohup`, `timeout`, `nice`, `setsid`, `stdbuf`, `ionice`, `time`, `unbuffer`, and `xargs`.
 Expanded executable payloads in shell `-c`, here-strings, `eval`, `trap`, and `env -S` are denied as unprovable when their text or substitutions mention a signal tool; literal payloads are analyzed recursively.
+Shell options and their arguments are consumed before choosing command, script, or stdin mode; unresolved modes mentioning a signal tool are denied as unprovable.
+Literal simple-word `env -S` payloads are combined with their trailing arguments before analysis; uncertain split syntax mentioning a signal tool is denied as unprovable.
 All `find -exec/-execdir/-ok/-okdir` commands are inspected recursively, and command substitutions in unquoted-delimiter heredocs are inspected for every consumer.
 Quoted-delimiter heredocs remain literal data unless consumed as shell programs.
 Shell lexing and command positions come from `bin/fm-arm-command-policy.mjs`, the sole owner of firstmate's shell classification; this guard never evaluates or runs any byte of the command.
