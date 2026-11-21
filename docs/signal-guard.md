@@ -94,6 +94,7 @@ Once that prefilter matches, the guard fails closed: unparseable syntax, a missi
 This is the opposite of the cd-guard's fail-open choice (`docs/cd-guard.md`), because a missed signal here can take down every worker, while a false deny only costs rewriting one command.
 An empty hook payload allows.
 If jq is unavailable or the payload cannot be parsed, raw payload text matching the signal prefilter is denied as signal-unverifiable.
+The generated Claude hook buffers the payload and preserves transport exits zero and two; any other transport exit (including a missing or non-executable transport) denies raw payloads matching the same prefilter with an exit-two signal-unverifiable object on stderr and empty stdout.
 OpenCode and Pi also deny signalling commands when checker execution fails, including missing executables, spawn errors, timeouts, signals, and unexpected nonzero exits; clean exit zero allows, and exit two preserves the policy denial.
 Commands without a signal-tool mention remain allowed when the checker is unavailable.
 

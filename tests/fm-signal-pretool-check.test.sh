@@ -685,12 +685,11 @@ launch_scope() {
 }
 
 test_claude_spawn_installs_the_guard() {
-  local settings hook scope payload rc own_out
+  local settings hook scope payload rc own_out broken_hook checker mode cmd out
   spawn_case claude-wiring claude sig-claude-1
   settings="$WT_DIR/.claude/settings.local.json"
   [ -f "$settings" ] || fail "claude spawn must write $settings"
   hook=$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command' "$settings")
-  case "$hook" in *fm-signal-pretool-check.sh*--claude*) ;; *) fail "claude settings must carry the signal guard PreToolUse hook, got: $hook" ;; esac
   jq -e '.hooks.Stop and .hooks.UserPromptSubmit' "$settings" >/dev/null || fail "the busy-state hooks must stay in place"
   scope=$(launch_scope)
   [ -n "$scope" ] || fail "the launch line must carry FM_PROC_SCOPE: $(cat "$SENDLOG")"
@@ -709,6 +708,27 @@ test_claude_spawn_installs_the_guard() {
     true
   ')
   expect_line "$own_out" "rc=0" "the installed Claude hook must allow stopping the agent's own process under the launch's marker"
+  checker="$TMP_ROOT/failed-checker"
+  for mode in missing nonexecutable 1 3 143; do
+    rm -f "$checker"
+    if [ "$mode" != missing ]; then
+      printf '#!/bin/sh\nexit %s\n' "${mode/nonexecutable/1}" > "$checker"
+      [ "$mode" = nonexecutable ] || chmod +x "$checker"
+    fi
+    broken_hook=${hook//"$CHECK"/"$checker"}
+    for cmd in 'kill 12345' 'k"il"l 12345' 'fu\ser -k 12345' "\$'\\153ill' 12345" '$"kill" 12345' 'echo ordinary'; do
+      payload=$(jq -cn --arg c "$cmd" '{tool_input:{command:$c}}')
+      out=$(printf '%s' "$payload" | sh -c "$broken_hook" 2>"$TMP_ROOT/hook.err")
+      rc=$?
+      if [ "$cmd" = 'echo ordinary' ]; then
+        expect_code 0 "$rc" "unavailable Claude transport must allow ordinary payloads ($mode)"
+      else
+        expect_code 2 "$rc" "unavailable Claude transport must block signal payloads ($mode): $cmd"
+        [ -z "$out" ] || fail "Claude fallback deny must keep stdout empty"
+        jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.systemMessage | contains("[signal-unverifiable]"))' "$TMP_ROOT/hook.err" >/dev/null || fail "Claude fallback must emit a structured unverifiable denial"
+      fi
+    done
+  done
   pass "claude crew spawn installs the signal guard with a scope token matching the launch marker"
 }
 

@@ -3777,7 +3777,33 @@ if [ "$KIND" != secondmate ]; then
       j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
       j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
       j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
-      j_signal=$(json_escape "$(shell_quote "$SIGNAL_GUARD") --claude --scope $(shell_quote "$SIGNAL_SCOPE")")
+      # Keep the failure boundary in the generated command: the transport itself
+      # may be unavailable, and Claude treats exits other than 2 as nonblocking.
+      signal_hook_body=$(cat <<'SH'
+payload=$(cat)
+{
+  error=$(printf '%s' "$payload" | "$1" --claude --scope "$2" 2>&1 1>&3)
+  rc=$?
+} 3>&1
+case "$rc" in
+  0|2) [ -z "$error" ] || printf '%s\n' "$error" >&2; exit "$rc" ;;
+esac
+prefilter=$payload
+prefilter=${prefilter//\\/}
+prefilter=${prefilter//\"/}
+prefilter=${prefilter//\'/}
+prefilter=${prefilter//$'\n'/}
+prefilter=${prefilter//$'\r'/}
+case "$payload" in
+  *"\$'"*|*'$"'*) ;;
+  *) case "$prefilter" in *kill*|*fuser*) ;; *) exit 0 ;; esac ;;
+esac
+printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"[signal-unverifiable] The signal check could not run, so the target cannot be verified. Restore the checker, then signal only a recorded own PID or use $! in the command that starts the job."}' >&2
+exit 2
+SH
+)
+      j_signal=$(json_escape "bash -c $(shell_quote "$signal_hook_body") signal-guard $(shell_quote "$SIGNAL_GUARD") $(shell_quote "$SIGNAL_SCOPE")")
+      j_signal=${j_signal//$'\n'/\\n}
       cat > "$WT/.claude/settings.local.json" <<EOF
 {"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"$j_signal"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
