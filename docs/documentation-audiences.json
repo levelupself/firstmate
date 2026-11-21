@@ -59,6 +59,14 @@
       "target": "docs/calm-mode-feasibility.md"
     },
     {
+      "source": "docs/signal-guard.md",
+      "target": "docs/verification/signal-guard.md"
+    },
+    {
+      "source": "docs/verification/signal-guard.md",
+      "target": "docs/signal-guard.md"
+    },
+    {
       "source": "docs/calm-mode-feasibility.md",
       "target": "docs/calm.md"
     },
@@ -365,6 +373,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/signal-guard.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/subagent-guard.md",
       "audience": "maintainer-architecture"
     },
@@ -462,6 +474,10 @@
     },
     {
       "path": "docs/verification/stow-memory.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/verification/signal-guard.md",
       "audience": "maintainer-verification"
     },
     {

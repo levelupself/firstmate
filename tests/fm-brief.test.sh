@@ -216,6 +216,8 @@ test_ship_modes_generate_clean_briefs() {
       "$id: brief missing captain-held from the ship status vocabulary"
     assert_grep "Never set Git's \`skip-worktree\` or \`assume-unchanged\` index flags" "$brief" \
       "$id: brief did not prohibit dirty-check-hiding index flags"
+    assert_grep "Signal only processes you started and recorded" "$brief" \
+      "$id: brief did not limit signals to processes the worker started"
     assert_grep 'ast-grep` is an optional structural-search aid' "$brief" \
       "$id: brief did not teach the optional structural-search layer"
     # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
@@ -260,6 +262,8 @@ test_scout_brief_teaches_optional_structural_search() {
   # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
   assert_grep 'confirm an empty ast-grep result with `rg`' "$brief" \
     "scout brief did not tell a worker how to tell the two apart"
+  assert_grep "Signal only processes you started and recorded" "$brief" \
+    "scout brief did not limit signals to processes the worker started"
   pass "fm-brief.sh: scout briefs teach trial-backed optional structural search"
 }
 

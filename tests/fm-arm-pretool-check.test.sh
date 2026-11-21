@@ -141,6 +141,11 @@ matrix_case E15 allow '$FM_HOME/bin/fm-watch-arm.sh'
 matrix_case E16 allow '~/firstmate/bin/fm-watch-checkpoint.sh --seconds 180'
 matrix_case E17 allow 'for f in 1; do echo fm-watch; done'
 
+for env_signal_option in --default-signal --block-signal --ignore-signal; do
+  matrix_case "env-$env_signal_option" deny "env $env_signal_option pkill -f /bin/fm-watch.sh"
+  matrix_case "env-$env_signal_option-attached" deny "env $env_signal_option=TERM pkill -f /bin/fm-watch.sh"
+done
+
 MATRIX_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-arm-policy-matrix.XXXXXX")
 FM_TEST_CLEANUP_DIRS+=("$MATRIX_TMP")
 trap fm_test_cleanup EXIT

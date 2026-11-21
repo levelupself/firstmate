@@ -41,6 +41,10 @@
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # Ship briefs prohibit skip-worktree and assume-unchanged index flags because
 # they conceal tracked changes from ordinary dirty-worktree checks.
+# Ship and scout briefs limit signals to processes the worker started and
+# recorded; the crew signal guard (docs/signal-guard.md) enforces that only on
+# harnesses with a per-task pre-tool hook, so this line is the whole defense
+# on the others.
 # Ship briefs require behavioral tests red-first - observed failing before the
 # implementation exists - because a retroactive check goes stale on the next fix
 # round and an assertion written last describes the code rather than the product.
@@ -477,6 +481,7 @@ $SEARCH_GUIDANCE
 
 1. Never push to any remote and never open a PR.
 2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
+   Signal only processes you started and recorded (\`\$!\` or a PID file you wrote when launching them); never \`pkill\` or \`killall\` by name, and never signal a parent PID or a process found by a pattern search - one such signal can stop the shared terminal server and every worker with it.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
@@ -633,6 +638,7 @@ $SEARCH_GUIDANCE
 $RULE1
 $PR_DESTINATION
 2. Stay inside this worktree; modify nothing outside it.
+   Signal only processes you started and recorded (\`\$!\` or a PID file you wrote when launching them); never \`pkill\` or \`killall\` by name, and never signal a parent PID or a process found by a pattern search - one such signal can stop the shared terminal server and every worker with it.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Never set Git's \`skip-worktree\` or \`assume-unchanged\` index flags; they conceal tracked changes from safety checks.
 5. Write behavioral tests RED-FIRST: run the new test before the implementation exists,

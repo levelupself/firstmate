@@ -1806,6 +1806,7 @@ launch_template() {
 case "$ARG3" in
   *' '*)  # raw launch command (unverified-adapter escape hatch)
     LAUNCH=$ARG3
+    LAUNCH_FROM_TEMPLATE=0
     HARNESS=""
     for word in $LAUNCH; do
       case "$word" in [A-Za-z_]*=*) continue ;; *) HARNESS=$(basename "$word"); break ;; esac
@@ -3706,6 +3707,20 @@ elif [ "$REATTACH" -eq 1 ]; then
   RELAUNCH_REPLACEMENT_STATE=$STATE_REAL
   RELAUNCH_REPLACEMENT_WT=$WT
 fi
+# Crew signal guard (docs/signal-guard.md owns the contract). Every crew and
+# scout launch carries a fresh per-incarnation process-scope token: the launch
+# line below exports it as FM_PROC_SCOPE onto the agent, so the agent and every
+# process it starts inherit it, and the per-task pre-tool hooks armed below hand
+# the same token to bin/fm-signal-pretool-check.sh, which lets a signal through
+# only when its target is provably inside that agent's own process tree.
+SIGNAL_SCOPE=
+SIGNAL_GUARD="$FM_ROOT/bin/fm-signal-pretool-check.sh"
+if [ "$KIND" != secondmate ]; then
+  SIGNAL_SCOPE="$ID.$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  case "$SIGNAL_SCOPE" in
+    "$ID.") SIGNAL_SCOPE="$ID.$$.$RANDOM$RANDOM" ;;
+  esac
+fi
 if [ "$KIND" != secondmate ]; then
   # Arm the semantic busy-state contract (bin/fm-busy-lib.sh) for every
   # adapter with a verified semantic source. The launch brief sent below IS a
@@ -3752,7 +3767,9 @@ if [ "$KIND" != secondmate ]; then
       # legacy fm-send --key Escape path records idle/fm-interrupt. Stop keeps
       # the turn-ended NOTIFICATION touch for the watcher. Every
       # hook command tolerates a refused event (|| true) so a stale-gen writer
-      # can never break Claude's own lifecycle.
+      # can never break Claude's own lifecycle. The PreToolUse Bash hook is the
+      # crew signal guard; Claude blocks on its exit 2 and needs --claude to
+      # keep stdout empty on deny.
       mkdir -p "$WT/.claude"
       busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
       busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source claude-hook"
@@ -3760,8 +3777,35 @@ if [ "$KIND" != secondmate ]; then
       j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
       j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
       j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
+      # Keep the failure boundary in the generated command: the transport itself
+      # may be unavailable, and Claude treats exits other than 2 as nonblocking.
+      signal_hook_body=$(cat <<'SH'
+payload=$(cat)
+{
+  error=$(printf '%s' "$payload" | "$1" --claude --scope "$2" 2>&1 1>&3)
+  rc=$?
+} 3>&1
+case "$rc" in
+  0|2) [ -z "$error" ] || printf '%s\n' "$error" >&2; exit "$rc" ;;
+esac
+prefilter=$payload
+prefilter=${prefilter//\\/}
+prefilter=${prefilter//\"/}
+prefilter=${prefilter//\'/}
+prefilter=${prefilter//$'\n'/}
+prefilter=${prefilter//$'\r'/}
+case "$payload" in
+  *"\$'"*|*'$"'*) ;;
+  *) case "$prefilter" in *kill*|*fuser*) ;; *) exit 0 ;; esac ;;
+esac
+printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"[signal-unverifiable] The signal check could not run, so the target cannot be verified. Restore the checker, then signal only a recorded own PID or use $! in the command that starts the job."}' >&2
+exit 2
+SH
+)
+      j_signal=$(json_escape "bash -c $(shell_quote "$signal_hook_body") signal-guard $(shell_quote "$SIGNAL_GUARD") $(shell_quote "$SIGNAL_SCOPE")")
+      j_signal=${j_signal//$'\n'/\\n}
       cat > "$WT/.claude/settings.local.json" <<EOF
-{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
+{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"$j_signal"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
       exclude_path '.claude/settings.local.json'
       ;;
@@ -3777,6 +3821,8 @@ EOF
 // sessions' status until the latched session settles, so a child's idle can
 // never clear the worker's busy state. The session.idle touch stays the
 // watcher's wake NOTIFICATION, never current-state truth.
+// tool.execute.before is the crew signal guard (docs/signal-guard.md): it
+// blocks denied signals and signalling commands whose check fails.
 import { execFile } from "node:child_process";
 const busyEvent = (state, event) =>
   new Promise((resolve) => {
@@ -3785,9 +3831,26 @@ const busyEvent = (state, event) =>
       "--gen", "$BUSY_GEN", "--source", "opencode-plugin", "--event", event,
     ], () => resolve());
   });
-export const FmBusyState = async () => {
+const signalCheck = (command, cwd) =>
+  new Promise((resolve) => {
+    execFile("$SIGNAL_GUARD", [
+      "--command", command, "--scope", "$SIGNAL_SCOPE", "--cwd", cwd,
+    ], (error, _stdout, stderr) => resolve({ code: error ? (error.code || -1) : 0, stderr: String(stderr || "") }));
+  });
+export const FmBusyState = async ({ directory } = {}) => {
   let activeSession = null;
   return {
+    "tool.execute.before": async (input, output) => {
+      if (input?.tool !== "bash") return;
+      const command = output?.args?.command;
+      if (!command || typeof command !== "string") return;
+      const cwd = output?.args?.workdir || directory || process.cwd();
+      const result = await signalCheck(command, cwd).catch(() => ({ code: -1, stderr: "" }));
+      if (result.code === 2) throw new Error(result.stderr.trim() || "denied by the crew signal guard");
+      if (result.code !== 0 && (/kill|fuser/.test(command.replace(/[^a-z]/g, "")) || command.includes(String.fromCharCode(36, 39)) || command.includes(String.fromCharCode(36, 34)))) {
+        throw new Error("[signal-unverifiable] the signal check could not run. Restore the checker, then signal only a recorded own PID or use the job PID in its starting command.");
+      }
+    },
     event: async ({ event }) => {
       if (event.type === "session.status") {
         const sessionID = event.properties.sessionID;
@@ -3833,6 +3896,8 @@ EOF
 // "turn_end" fires at every inner turn boundary (one LLM response plus its
 // tool calls) and stays a wake NOTIFICATION touch for the watcher, never
 // current-state truth.
+// "tool_call" is the crew signal guard (docs/signal-guard.md): it returns
+// {block: true} for denied signals and signalling commands whose check fails.
 import { execFile } from "node:child_process";
 const busyEvent = (state: string, event: string) =>
   new Promise<void>((resolve) => {
@@ -3841,7 +3906,24 @@ const busyEvent = (state: string, event: string) =>
       "--gen", "$BUSY_GEN", "--source", "pi-ext", "--event", event,
     ], () => resolve());
   });
+const signalCheck = (command: string, cwd: string) =>
+  new Promise<{ code: unknown; stderr: string }>((resolve) => {
+    execFile("$SIGNAL_GUARD", [
+      "--command", command, "--scope", "$SIGNAL_SCOPE", "--cwd", cwd,
+    ], (error: any, _stdout: unknown, stderr: unknown) => resolve({ code: error ? (error.code || -1) : 0, stderr: String(stderr || "") }));
+  });
 export default function (pi: any) {
+  pi.on("tool_call", async (event: any, ctx: any) => {
+    if (event?.type !== "tool_call" || event?.toolName !== "bash") return {};
+    const command = String(event?.input?.command ?? "");
+    if (!command) return {};
+    const result = await signalCheck(command, String(ctx?.cwd || process.cwd())).catch(() => ({ code: -1, stderr: "" }));
+    if (result.code !== 0 && result.code !== 2 && (/kill|fuser/.test(command.replace(/[^a-z]/g, "")) || command.includes(String.fromCharCode(36, 39)) || command.includes(String.fromCharCode(36, 34)))) {
+      return { block: true, reason: "[signal-unverifiable] the signal check could not run. Restore the checker, then signal only a recorded own PID or use the job PID in its starting command." };
+    }
+    if (result.code !== 2) return {};
+    return { block: true, reason: result.stderr.trim() || "denied by the crew signal guard" };
+  });
   pi.on("agent_start", () => busyEvent("busy", "agent-start"));
   pi.on("agent_settled", (_event: any, ctx: any) => {
     if (ctx && typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
@@ -4196,6 +4278,13 @@ case "$HARNESS" in
   cursor) LAUNCH=${LAUNCH//__CURSORBIN__/"$(shell_quote "$CURSOR_BIN")"} ;;
 esac
 LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}
+# The crew signal guard's process-scope marker rides the verified launch
+# templates only, as a plain assignment on the agent command, so the agent and
+# everything it starts inherit it while the pane shell above it never carries
+# it. A raw escape-hatch launch has no known command position to attach it to.
+if [ -n "$SIGNAL_SCOPE" ] && [ "${LAUNCH_FROM_TEMPLATE:-1}" -eq 1 ]; then
+  LAUNCH="FM_PROC_SCOPE=$(shell_quote "$SIGNAL_SCOPE") $LAUNCH"
+fi
 case "$HARNESS" in
   claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
     LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS $LAUNCH"
