@@ -583,6 +583,50 @@ test_conservative_pid_records_and_env_signal_options() {
   pass "basename uniqueness, raw PID assignments, and env optional signal arguments are enforced"
 }
 
+
+test_implicit_bindings_and_jobs_output() {
+  local cmd binding
+  for binding in 'read' 'read -r' 'read -p prompt' 'read -t 1'; do
+    expect_line "$(check "sleep 30 & REPLY=\$!; $binding <<< \"\$PPID\"; kill \"\$REPLY\"")" "2 signal-unprovable-target" "implicit REPLY binding must invalidate a child PID"
+  done
+  for binding in 'mapfile' 'readarray' 'mapfile -t' 'readarray -n 1'; do
+    expect_line "$(check "sleep 30 & MAPFILE=\$!; $binding <<< \"\$PPID\"; kill \"\$MAPFILE\"")" "2 signal-unprovable-target" "implicit MAPFILE binding must invalidate a child PID"
+  done
+  for cmd in 'jobs' 'jobs -l' 'jobs -pl' 'jobs -n' 'jobs -x' 'jobs -r'; do
+    expect_line "$(check "sleep 12345 & kill \$($cmd)")" "2 signal-unprovable-target" "only PID-only jobs output may qualify"
+  done
+  for cmd in 'jobs -p' 'jobs -pr' 'jobs -p -s' 'jobs -r -p' 'jobs -p %1' 'jobs -ps %+ %-'; do
+    expect_line "$(check "sleep 12345 & kill \$($cmd)")" "0 " "PID-only jobs output must remain allowed"
+  done
+  pass "implicit bindings invalidate child PID variables and jobs accepts only PID output"
+}
+
+test_unreadable_payload_fails_closed() {
+  local nojq tool mode payload err rc
+  local -a mode_flags
+  nojq="$TMP_ROOT/nojq"
+  mkdir -p "$nojq"
+  for tool in bash cat sed tr; do
+    ln -s "$(command -v "$tool")" "$nojq/$tool"
+  done
+  for mode in '' '--claude'; do
+    mode_flags=()
+    [ -z "$mode" ] || mode_flags=("$mode")
+    for payload in '{"tool_input":{"command":"kill 123"}}' '{"toolInput":{"command":"fuser -k 80/tcp"}}' 'malformed kill 123'; do
+      err=$(printf '%s' "$payload" | PATH="$nojq" "$CHECK" "${mode_flags[@]}" 2>&1)
+      rc=$?
+      expect_code 2 "$rc" "missing jq with signalling payload must deny"
+      case "$err" in *signal-unverifiable*) ;; *) fail "missing jq must explain the unavailable check: $err" ;; esac
+    done
+    err=$(printf '%s' 'malformed fuser' | "$CHECK" "${mode_flags[@]}" 2>&1)
+    expect_code 2 $? "malformed signalling payload must deny even with jq"
+    case "$err" in *signal-unverifiable*) ;; *) fail "malformed payload must explain the unavailable check" ;; esac
+    printf '%s' '{"tool_input":{"command":"ls"}}' | PATH="$nojq" "$CHECK" "${mode_flags[@]}" >/dev/null 2>&1
+    expect_code 0 $? "missing jq must not block a nonsignalling payload"
+  done
+  pass "missing jq and malformed signalling payloads fail closed on both stdin transports"
+}
+
 # --- fm-spawn wiring ---------------------------------------------------------
 
 make_spawn_fakebin() {
@@ -688,9 +732,32 @@ try {
 }
 await before({ tool: "bash" }, { args: { command: "ls -la" } });
 await before({ tool: "read" }, { args: { command: "pkill x" } });
+
+const childProcess = await import("node:child_process");
+const { syncBuiltinESMExports } = await import("node:module");
+const realExecFile = childProcess.default.execFile;
+for (const failure of ["missing", "exit", "signal", "timeout", "throw"]) {
+  childProcess.default.execFile = (file, args, callback) => {
+    if (failure === "missing") return realExecFile(process.env.TMP_ROOT + "/absent-checker", args, callback);
+    if (failure === "throw") throw new Error("spawn failed");
+    callback(failure === "exit" ? { code: 1 } : failure === "timeout" ? { code: "ETIMEDOUT" } : { code: null, signal: "SIGTERM" }, "", "");
+  };
+  syncBuiltinESMExports();
+  for (const command of ["kill 123", "fuser -k 80/tcp", "k\'i\'ll 123", String.fromCharCode(36, 39) + "k\\x69ll\' 123"]) {
+    let blocked = false;
+    try { await before({ tool: "bash" }, { args: { command } }); }
+    catch (error) { blocked = String(error.message).includes("signal-unverifiable"); }
+    if (!blocked) throw new Error("checker failure allowed a signal: " + failure);
+  }
+  await before({ tool: "bash" }, { args: { command: "ls -la" } });
+}
+childProcess.default.execFile = realExecFile;
+syncBuiltinESMExports();
+
 console.log("ok");
 EOF
 )
+  expect_code 0 $? "OpenCode failure-mode checks must pass: $out"
   expect_line "$(line "$out" 1)" "denied" "the OpenCode plugin must throw on the incident command"
   expect_line "$(line "$out" 2)" "ok" "the OpenCode plugin must pass ordinary bash and non-bash tools"
   [ -n "$(launch_scope)" ] || fail "the opencode launch line must carry FM_PROC_SCOPE: $(cat "$SENDLOG")"
@@ -712,15 +779,39 @@ if (typeof toolCall !== "function") { console.log("missing"); process.exit(0); }
 const denied = await toolCall({ type: "tool_call", toolName: "bash", input: { command: process.env.CMD_DENY } }, {});
 console.log(denied && denied.block === true && String(denied.reason).includes("[signal-unprovable-target]") ? "denied" : `other:${JSON.stringify(denied)}`);
 const allowed = await toolCall({ type: "tool_call", toolName: "bash", input: { command: "ls -la" } }, {});
+
+const childProcess = await import("node:child_process");
+const { syncBuiltinESMExports } = await import("node:module");
+const realExecFile = childProcess.default.execFile;
+for (const failure of ["missing", "exit", "signal", "timeout", "throw"]) {
+  childProcess.default.execFile = (file, args, callback) => {
+    if (failure === "missing") return realExecFile(process.env.TMP_ROOT + "/absent-checker", args, callback);
+    if (failure === "throw") throw new Error("spawn failed");
+    callback(failure === "exit" ? { code: 1 } : failure === "timeout" ? { code: "ETIMEDOUT" } : { code: null, signal: "SIGTERM" }, "", "");
+  };
+  syncBuiltinESMExports();
+  for (const command of ["kill 123", "fuser -k 80/tcp", "k\'i\'ll 123", String.fromCharCode(36, 39) + "k\\x69ll\' 123"]) {
+    const result = await toolCall({ type: "tool_call", toolName: "bash", input: { command } }, {});
+    if (!result?.block || !String(result.reason).includes("signal-unverifiable")) throw new Error("checker failure allowed a signal: " + failure);
+  }
+  const ordinary = await toolCall({ type: "tool_call", toolName: "bash", input: { command: "ls -la" } }, {});
+  if (ordinary?.block) throw new Error("checker failure blocked ordinary command");
+}
+childProcess.default.execFile = realExecFile;
+syncBuiltinESMExports();
+
 console.log(allowed && allowed.block ? "blocked" : "ok");
 EOF
 )
+  expect_code 0 $? "Pi failure-mode checks must pass: $out"
   expect_line "$(line "$out" 1)" "denied" "the Pi extension must block the incident command"
   expect_line "$(line "$out" 2)" "ok" "the Pi extension must pass an ordinary bash command"
   [ -n "$(launch_scope)" ] || fail "the pi launch line must carry FM_PROC_SCOPE: $(cat "$SENDLOG")"
   pass "pi crew spawn installs the signal guard in its per-task extension"
 }
 
+test_implicit_bindings_and_jobs_output
+test_unreadable_payload_fails_closed
 test_conservative_pid_records_and_env_signal_options
 test_shell_modes_split_arguments_and_pidfile_conflicts
 test_review_regressions

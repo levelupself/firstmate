@@ -55,8 +55,8 @@ A raw escape-hatch launch command and a secondmate launch carry no marker.
 | --- | --- |
 | Literal PID, such as `kill 4242` or `kill -TERM 4242` | Verified against the live process table. |
 | Literal process group, such as `kill -- -4242` | Allowed only when the group exists and every member passes the PID check. |
-| `$!`, a job spec such as `%1`, or `$(jobs -p)` | Allowed without lookup, because each names a child of the command's own shell. |
-| A child-PID variable such as `$pid` | Requires a plain assignment from `$!` or `${!}`; every textual `pid=` occurrence anywhere in the raw command must assign exactly one of those forms, optionally quoted. Binding by `read`, `for`, `select`, `mapfile`, `readarray`, `getopts`, `let`, `printf -v`, or the declare family makes it unprovable. |
+| `$!`, a job spec such as `%1`, or `$(jobs -p)` (optionally with -r/-s filters and trailing job specs) | Allowed without lookup, because each names a child of the command's own shell. |
+| A child-PID variable such as `$pid` | Requires a plain assignment from `$!` or `${!}`; every textual `pid=` occurrence anywhere in the raw command must assign exactly one of those forms, optionally quoted. Binding by `read`, `for`, `select`, `mapfile`, `readarray`, `getopts`, `let`, `printf -v`, or the declare family makes it unprovable; read operations also invalidate their implicit REPLY or MAPFILE destination. |
 | `"$(cat /abs/job.pid)"` or `$(< /abs/job.pid)` with a literal absolute path | The file is read at check time; every PID in it is verified. An unquoted leading `~/` expands to the home directory; relative paths and quoted tilde paths are denied as unprovable. The file basename must occur exactly once in the raw submitted command, at that read; any other mention makes the target unprovable, regardless of directory changes or nesting. |
 | Any other run-time value: `$PPID`, a `read`, `for`, or other loop variable, `$(pgrep ...)`, `$(pidof ...)`, a `ps` column, a name operand, or `xargs kill` and `find -exec kill` | Denied as unprovable. |
 | `kill -1` or `kill 0` | Denied: every process of the user, or the caller's whole process group. |
@@ -92,7 +92,10 @@ The safe path every deny teaches is: record the PID when the job starts (`cmd & 
 The transport fast-allows any command whose quote-stripped text contains neither `kill` nor `fuser` and no ANSI-C or locale quoting marker, so ordinary commands never start Node and a broken runtime never blocks them.
 Once that prefilter matches, the guard fails closed: unparseable syntax, a missing or failing policy runtime, and an unreadable process table all deny.
 This is the opposite of the cd-guard's fail-open choice (`docs/cd-guard.md`), because a missed signal here can take down every worker, while a false deny only costs rewriting one command.
-An empty or unparseable hook payload carries no command and allows.
+An empty hook payload allows.
+If jq is unavailable or the payload cannot be parsed, raw payload text matching the signal prefilter is denied as signal-unverifiable.
+OpenCode and Pi also deny signalling commands when checker execution fails, including missing executables, spawn errors, timeouts, signals, and unexpected nonzero exits; clean exit zero allows, and exit two preserves the policy denial.
+Commands without a signal-tool mention remain allowed when the checker is unavailable.
 
 ## Accepted boundaries
 
@@ -109,8 +112,8 @@ An empty or unparseable hook payload carries no command and allows.
 | Harness | Per-task wiring written by `bin/fm-spawn.sh` | Behavior on checker exit 2 |
 | --- | --- | --- |
 | Claude | `.claude/settings.local.json` PreToolUse `Bash` hook running the transport with `--claude --scope <token>` | Blocks the tool call; stdout stays empty. |
-| OpenCode | `tool.execute.before` in `.opencode/plugins/fm-busy-state.js`, passing `--command`, `--scope`, and `--cwd` | Throws, which fails the bash tool call. |
-| Pi, pi-signed | `tool_call` handler in `state/<id>.pi-ext.ts`, passing `--command`, `--scope`, and `--cwd` | Returns `{block: true}` with the deny reason. |
+| OpenCode | `tool.execute.before` in `.opencode/plugins/fm-busy-state.js`, passing `--command`, `--scope`, and `--cwd` | Throws, which fails the bash tool call; checker failures also block signalling commands. |
+| Pi, pi-signed | `tool_call` handler in `state/<id>.pi-ext.ts`, passing `--command`, `--scope`, and `--cwd` | Returns `{block: true}` with the deny reason; checker failures also block signalling commands. |
 | Codex | None: firstmate-launched Codex workers did not fire per-task lifecycle hooks, so a per-task pre-tool hook has no verified delivery path. | Not guarded. |
 | Grok, Kimi | None: Grok loads a project hook only after a hook-trust grant firstmate cannot make without editing Grok's managed trust store, and Kimi hooks are global configuration, so a crew hook for either would change the user's global harness settings. | Not guarded. |
 | Cursor | None: its project hooks live in `<worktree>/.cursor/hooks.json`, a path a project may track. | Not guarded. |

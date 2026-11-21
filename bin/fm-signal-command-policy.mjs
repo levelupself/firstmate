@@ -296,6 +296,8 @@ function analyzeNode(rawTokens, analysis, depth, source = "argv") {
   }
   if (!name) return;
 
+  if (name === "read") analysis.disqualified.add("REPLY");
+  if (name === "mapfile" || name === "readarray") analysis.disqualified.add("MAPFILE");
   if (["declare", "local", "export", "typeset", "readonly", "read", "mapfile", "readarray", "getopts", "let"].includes(name)) {
     for (const word of args) {
       const bound = word.value.match(/^([A-Za-z_][A-Za-z0-9_]*)/);
@@ -404,7 +406,7 @@ function classifyOperand(word, childPidVars) {
   }
   if (word.subs.length === 1 && word.value === "" && word.subs[0].kind === "command") {
     const content = word.subs[0].content.trim();
-    if (/^jobs(?:\s+-[A-Za-z]+)*$/.test(content)) return { kind: "own" };
+    if (/^jobs(?=(?:\s+-[prs]+)*\s+-[prs]*p)(?:\s+-[prs]+)+(?:\s+%[^\s;&|()<>$`]+)*$/.test(content)) return { kind: "own" };
     const file = pidFilePath(content);
     if (file !== null) return { kind: "pidfile", path: file };
   }

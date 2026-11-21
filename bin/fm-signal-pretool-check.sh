@@ -26,10 +26,9 @@
 #   ALLOW - exit 0 and no output.
 #   DENY - exit 2, a Claude-shaped deny object on stderr, and a Grok-shaped
 #          deny object on stdout unless --claude was supplied.
-#   NO COMMAND - empty or unparseable stdin, or missing jq on the stdin path:
-#          exit 0, because there is no command to classify.
-#   UNVERIFIABLE - a command that mentions a signal tool when Node or the policy
-#          owner is missing or answers invalidly: DENY with
+#   NO COMMAND - empty stdin or a payload without a command: exit 0.
+#   UNVERIFIABLE - signalling text when payload decoding, Node, or the policy
+#          owner is unavailable or answers invalidly: DENY with
 #          [signal-unverifiable]. Commands that mention no signal tool are never
 #          blocked by a broken runtime.
 set -u
@@ -94,12 +93,33 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+json_escape() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n\t' '  '
+}
+
+render_deny() {  # <code> <reason>
+  local escaped
+  escaped=$(json_escape "[$1] $2")
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"%s"}\n' "$escaped" >&2
+  [ "$CLAUDE_MODE" -eq 1 ] || printf '{"decision":"deny","reason":"%s"}\n' "$escaped"
+  exit 2
+}
+
+unverifiable() {
+  render_deny signal-unverifiable "the signal check could not run or decode its payload, so the target cannot be verified. Restore the checker, then signal only a recorded own PID or use \$! in the command that starts the job."
+}
+
+UNVERIFIED=0
 if [ "$CMD_SET" -eq 0 ]; then
   PAYLOAD=$(cat 2>/dev/null || true)
   [ -n "$PAYLOAD" ] || exit 0
-  command -v jq >/dev/null 2>&1 || exit 0
-  CMD=$(printf '%s' "$PAYLOAD" | jq -r '(.toolInput.command // .tool_input.command // empty)' 2>/dev/null) || exit 0
-  [ -n "$RUN_CWD" ] || RUN_CWD=$(printf '%s' "$PAYLOAD" | jq -r '(.cwd // empty)' 2>/dev/null) || RUN_CWD=""
+  if ! command -v jq >/dev/null 2>&1 ||
+    ! CMD=$(printf '%s' "$PAYLOAD" | jq -r '(.toolInput.command // .tool_input.command // empty) | if type == "string" then . else error("command must be a string") end' 2>/dev/null); then
+    CMD=$PAYLOAD
+    UNVERIFIED=1
+  else
+    [ -n "$RUN_CWD" ] || RUN_CWD=$(printf '%s' "$PAYLOAD" | jq -r '(.cwd // empty)' 2>/dev/null) || RUN_CWD=""
+  fi
 fi
 
 [ -n "$CMD" ] || exit 0
@@ -128,21 +148,7 @@ case "$CMD" in
     ;;
 esac
 
-json_escape() {
-  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n\t' '  '
-}
-
-render_deny() {  # <code> <reason>
-  local escaped
-  escaped=$(json_escape "[$1] $2")
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"%s"}\n' "$escaped" >&2
-  [ "$CLAUDE_MODE" -eq 1 ] || printf '{"decision":"deny","reason":"%s"}\n' "$escaped"
-  exit 2
-}
-
-unverifiable() {
-  render_deny signal-unverifiable "the crew signal guard could not run its policy (Node or bin/fm-signal-command-policy.mjs is unavailable), so it refuses a command that may signal a process it cannot verify. Retry once; if it keeps failing, report it instead of signalling."
-}
+[ "$UNVERIFIED" -eq 0 ] || unverifiable
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) || unverifiable
 POLICY="$SCRIPT_DIR/fm-signal-command-policy.mjs"

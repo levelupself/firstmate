@@ -3796,7 +3796,7 @@ EOF
 // never clear the worker's busy state. The session.idle touch stays the
 // watcher's wake NOTIFICATION, never current-state truth.
 // tool.execute.before is the crew signal guard (docs/signal-guard.md): it
-// throws, which blocks the bash call, only when the checker exits 2.
+// blocks denied signals and signalling commands whose check fails.
 import { execFile } from "node:child_process";
 const busyEvent = (state, event) =>
   new Promise((resolve) => {
@@ -3809,7 +3809,7 @@ const signalCheck = (command, cwd) =>
   new Promise((resolve) => {
     execFile("$SIGNAL_GUARD", [
       "--command", command, "--scope", "$SIGNAL_SCOPE", "--cwd", cwd,
-    ], (error, _stdout, stderr) => resolve({ code: error ? error.code : 0, stderr: String(stderr || "") }));
+    ], (error, _stdout, stderr) => resolve({ code: error ? (error.code || -1) : 0, stderr: String(stderr || "") }));
   });
 export const FmBusyState = async ({ directory } = {}) => {
   let activeSession = null;
@@ -3819,8 +3819,11 @@ export const FmBusyState = async ({ directory } = {}) => {
       const command = output?.args?.command;
       if (!command || typeof command !== "string") return;
       const cwd = output?.args?.workdir || directory || process.cwd();
-      const result = await signalCheck(command, cwd);
+      const result = await signalCheck(command, cwd).catch(() => ({ code: -1, stderr: "" }));
       if (result.code === 2) throw new Error(result.stderr.trim() || "denied by the crew signal guard");
+      if (result.code !== 0 && (/kill|fuser/.test(command.replace(/[^a-z]/g, "")) || command.includes(String.fromCharCode(36, 39)) || command.includes(String.fromCharCode(36, 34)))) {
+        throw new Error("[signal-unverifiable] the signal check could not run. Restore the checker, then signal only a recorded own PID or use the job PID in its starting command.");
+      }
     },
     event: async ({ event }) => {
       if (event.type === "session.status") {
@@ -3868,7 +3871,7 @@ EOF
 // tool calls) and stays a wake NOTIFICATION touch for the watcher, never
 // current-state truth.
 // "tool_call" is the crew signal guard (docs/signal-guard.md): it returns
-// {block: true} only when the checker exits 2.
+// {block: true} for denied signals and signalling commands whose check fails.
 import { execFile } from "node:child_process";
 const busyEvent = (state: string, event: string) =>
   new Promise<void>((resolve) => {
@@ -3881,14 +3884,17 @@ const signalCheck = (command: string, cwd: string) =>
   new Promise<{ code: unknown; stderr: string }>((resolve) => {
     execFile("$SIGNAL_GUARD", [
       "--command", command, "--scope", "$SIGNAL_SCOPE", "--cwd", cwd,
-    ], (error: any, _stdout: unknown, stderr: unknown) => resolve({ code: error ? error.code : 0, stderr: String(stderr || "") }));
+    ], (error: any, _stdout: unknown, stderr: unknown) => resolve({ code: error ? (error.code || -1) : 0, stderr: String(stderr || "") }));
   });
 export default function (pi: any) {
   pi.on("tool_call", async (event: any, ctx: any) => {
     if (event?.type !== "tool_call" || event?.toolName !== "bash") return {};
     const command = String(event?.input?.command ?? "");
     if (!command) return {};
-    const result = await signalCheck(command, String(ctx?.cwd || process.cwd()));
+    const result = await signalCheck(command, String(ctx?.cwd || process.cwd())).catch(() => ({ code: -1, stderr: "" }));
+    if (result.code !== 0 && result.code !== 2 && (/kill|fuser/.test(command.replace(/[^a-z]/g, "")) || command.includes(String.fromCharCode(36, 39)) || command.includes(String.fromCharCode(36, 34)))) {
+      return { block: true, reason: "[signal-unverifiable] the signal check could not run. Restore the checker, then signal only a recorded own PID or use the job PID in its starting command." };
+    }
     if (result.code !== 2) return {};
     return { block: true, reason: result.stderr.trim() || "denied by the crew signal guard" };
   });
