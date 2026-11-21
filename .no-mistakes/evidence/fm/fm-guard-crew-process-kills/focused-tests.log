@@ -1,0 +1,22 @@
+ok - implicit bindings invalidate child PID variables and jobs accepts only PID output
+ok - missing jq and malformed signalling payloads fail closed on both stdin transports
+ok - basename uniqueness, raw PID assignments, and env optional signal arguments are enforced
+ok - shell modes, env split arguments, and PID-file conflicts are checked
+ok - expanded payloads, nested execution, PID paths, and scheduled signals obey the allow rule
+ok - the exact incident command (signal the parent of every pattern match) is denied with a safe alternative
+ok - stopping a process the session launched and recorded stays allowed
+ok - an orphaned background job is still recognized as the session's own by its marker
+ok - a live descendant of the agent is allowed by ancestry alone
+ok - a literal PID outside the session's own tree - an ancestor or a stranger - is denied
+ok - process-group signals are allowed only when every member is the session's own
+ok - pkill, killall, skill, killall5, and fuser -k are denied because they select targets by name
+ok - targets from pattern searches, parent PIDs, stdin, loops, and other substitutions are denied wherever the signal hides
+ok - signals to every process (-1) or to the caller's own process group (0) are denied
+ok - probes, signal listings, and kill mentioned as data are allowed
+ok - a command that mentions a signal tool but cannot be parsed is denied rather than guessed
+ok - without this session's marker among its ancestors, only same-command child forms are allowed
+ok - transport: silent allow, exit-2 deny objects for Claude and Grok shapes, and no block without a command
+ok - a missing policy runtime denies only commands that send a signal
+ok - claude crew spawn installs the signal guard with a scope token matching the launch marker
+ok - opencode crew spawn installs the signal guard in its per-task plugin
+ok - pi crew spawn installs the signal guard in its per-task extension

@@ -1,0 +1,57 @@
+
+COMMAND: ps -eo pid,ppid,cmd | grep "landing-ui-t102/recheck" | grep -v grep | grep python3 | awk '{print $1, $2}' | while read p pp; do kill $pp $p; done; sleep 3; ps -eo pid,cmd | grep "landing-ui-t102/recheck" | grep -v grep; mv work/landing-ui-t102/recheck work/landing-ui-t102/recheck-attempt4-queued 2>/dev/null; mv work/landing-ui-t102/recheck.log work/landing-ui-t102/recheck-attempt4-queued.log; git log --oneline -1 fm/ds2-build-persist-t72; git log --oneline 7fe361004..fm/ds2-build-persist-t72 | wc -l; git merge --no-ff --no-edit fm/ds2-build-persist-t72 2>&1 | tail -2; git status --short | grep -v "^??" | grep -E "^(U.|.U|AA|DD)"
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"[signal-unprovable-target] the signal target is computed at run time - a pattern search (ps | grep, pgrep, pidof), a parent PID ($PPID or a ppid column), a loop, read, or stdin variable, or another substitution - so the guard cannot prove it is a process this session started, and signalling a matched process's parent can take down the shared terminal server or the user service manager. Signal only a process this session started: use $! (or a variable assigned from $!) in the same command, a job spec such as %1, $(jobs -p), kill \"$(cat /abs/path/job.pid)\" for a PID file this session wrote when it launched the job (cmd & echo $! > /abs/path/job.pid), or a literal PID confirmed with ps; the guard verifies that literal and PID-file targets belong to this session's own process tree."}
+EXIT: 2 (expected 2)
+
+COMMAND: sleep 30 & REPLY=$!; read <<< "$PPID"; kill "$REPLY"
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"[signal-unprovable-target] the signal target is computed at run time - a pattern search (ps | grep, pgrep, pidof), a parent PID ($PPID or a ppid column), a loop, read, or stdin variable, or another substitution - so the guard cannot prove it is a process this session started, and signalling a matched process's parent can take down the shared terminal server or the user service manager. Signal only a process this session started: use $! (or a variable assigned from $!) in the same command, a job spec such as %1, $(jobs -p), kill \"$(cat /abs/path/job.pid)\" for a PID file this session wrote when it launched the job (cmd & echo $! > /abs/path/job.pid), or a literal PID confirmed with ps; the guard verifies that literal and PID-file targets belong to this session's own process tree."}
+EXIT: 2 (expected 2)
+
+COMMAND: sleep 30 & MAPFILE=$!; mapfile <<< "$PPID"; kill "$MAPFILE"
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"[signal-unprovable-target] the signal target is computed at run time - a pattern search (ps | grep, pgrep, pidof), a parent PID ($PPID or a ppid column), a loop, read, or stdin variable, or another substitution - so the guard cannot prove it is a process this session started, and signalling a matched process's parent can take down the shared terminal server or the user service manager. Signal only a process this session started: use $! (or a variable assigned from $!) in the same command, a job spec such as %1, $(jobs -p), kill \"$(cat /abs/path/job.pid)\" for a PID file this session wrote when it launched the job (cmd & echo $! > /abs/path/job.pid), or a literal PID confirmed with ps; the guard verifies that literal and PID-file targets belong to this session's own process tree."}
+EXIT: 2 (expected 2)
+
+COMMAND: sleep 12345 & kill $(jobs -l)
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"[signal-unprovable-target] the signal target is computed at run time - a pattern search (ps | grep, pgrep, pidof), a parent PID ($PPID or a ppid column), a loop, read, or stdin variable, or another substitution - so the guard cannot prove it is a process this session started, and signalling a matched process's parent can take down the shared terminal server or the user service manager. Signal only a process this session started: use $! (or a variable assigned from $!) in the same command, a job spec such as %1, $(jobs -p), kill \"$(cat /abs/path/job.pid)\" for a PID file this session wrote when it launched the job (cmd & echo $! > /abs/path/job.pid), or a literal PID confirmed with ps; the guard verifies that literal and PID-file targets belong to this session's own process tree."}
+EXIT: 2 (expected 2)
+
+COMMAND: sleep 30 & kill $(jobs -p)
+EXIT: 0 (expected 0)
+
+COMMAND: pkill -f decoy
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"[signal-by-name] pkill, killall, skill, killall5, and fuser -k choose their targets by name or pattern, which can match processes this session did not start, including the shared terminal server and the user service manager every worker depends on. Signal only a process this session started: use $! (or a variable assigned from $!) in the same command, a job spec such as %1, $(jobs -p), kill \"$(cat /abs/path/job.pid)\" for a PID file this session wrote when it launched the job (cmd & echo $! > /abs/path/job.pid), or a literal PID confirmed with ps; the guard verifies that literal and PID-file targets belong to this session's own process tree."}
+EXIT: 2 (expected 2)
+
+COMMAND: kill 2282051
+EXIT: 0 (expected 0)
+OWN STOP: wait=143
+
+COMMAND: kill 2282049
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"[signal-outside-session] PID 2282049 is this session's own agent process. This session may signal only processes it started: live descendants of its agent process, or its orphaned background jobs that still carry its process-scope marker. Leave every other process alone - the agent itself, its shells, the terminal server, and the service manager included; if one of them must be stopped, report it instead of signalling it."}
+EXIT: 2 (expected 2)
+
+COMMAND: kill 2280753
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"[signal-outside-session] PID 2280753 is an ancestor of this session (its shell, the terminal server, or the service manager above it). This session may signal only processes it started: live descendants of its agent process, or its orphaned background jobs that still carry its process-scope marker. Leave every other process alone - the agent itself, its shells, the terminal server, and the service manager included; if one of them must be stopped, report it instead of signalling it."}
+EXIT: 2 (expected 2)
+ORPHAN: pid=2282222 ppid=2860461 session=2282049
+
+COMMAND: kill "$(cat /home/fungiman/.no-mistakes/worktrees/6be0eeed9e9c/01M7W0B0NRHP16Z6AJG58GN7VY/.test-signal-tmp/fm-signal-pretool-check.nF5WFV/live-orphan.pid)"
+EXIT: 0 (expected 0)
+
+TRANSPORT FAILURE: missing
+
+COMMAND: kill 12345
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"[signal-unverifiable] The signal check could not run, so the target cannot be verified. Restore the checker, then signal only a recorded own PID or use $! in the command that starts the job."}
+EXIT: 2 (expected 2)
+
+COMMAND: echo ordinary
+EXIT: 0 (expected 0)
+
+TRANSPORT FAILURE: 1
+
+COMMAND: kill 12345
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"[signal-unverifiable] The signal check could not run, so the target cannot be verified. Restore the checker, then signal only a recorded own PID or use $! in the command that starts the job."}
+EXIT: 2 (expected 2)
+
+COMMAND: echo ordinary
+EXIT: 0 (expected 0)

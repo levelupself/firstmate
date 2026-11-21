@@ -1,0 +1,15 @@
+transport=real command=kill $PPID
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"[signal-unprovable-target] the signal target is computed at run time - a pattern search (ps | grep, pgrep, pidof), a parent PID ($PPID or a ppid column), a loop, read, or stdin variable, or another substitution - so the guard cannot prove it is a process this session started, and signalling a matched process's parent can take down the shared terminal server or the user service manager. Signal only a process this session started: use $! (or a variable assigned from $!) in the same command, a job spec such as %1, $(jobs -p), kill \"$(cat /abs/path/job.pid)\" for a PID file this session wrote when it launched the job (cmd & echo $! > /abs/path/job.pid), or a literal PID confirmed with ps; the guard verifies that literal and PID-file targets belong to this session's own process tree."}
+exit=2
+transport=real command=echo ORDINARY_RAN
+exit=0
+transport=missing command=kill $PPID
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"[signal-unverifiable] The signal check could not run, so the target cannot be verified. Restore the checker, then signal only a recorded own PID or use $! in the command that starts the job."}
+exit=2
+transport=missing command=echo ORDINARY_RAN
+exit=0
+transport=exit1 command=kill $PPID
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"[signal-unverifiable] The signal check could not run, so the target cannot be verified. Restore the checker, then signal only a recorded own PID or use $! in the command that starts the job."}
+exit=2
+transport=exit1 command=echo ORDINARY_RAN
+exit=0
