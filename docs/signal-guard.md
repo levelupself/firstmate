@@ -83,7 +83,7 @@ Every deny carries one stable code in square brackets, then why the command was 
 | `signal-outside-session` | A literal, group, or PID-file target resolved outside the session's own tree; the detail names the PID and why. |
 | `signal-no-scope` | No ancestor carries the session's marker, so a literal or PID-file target cannot be verified. |
 | `signal-unclassifiable` | The command mentions a signal tool in syntax the shared lexer cannot tokenize. |
-| `signal-unverifiable` | The process table, Node, or the policy owner was unavailable. |
+| `signal-unverifiable` | Payload decoding or checker execution failed, or the process table could not be read. |
 
 The safe path every deny teaches is: record the PID when the job starts (`cmd & echo $! > /abs/job.pid`), then signal only that PID (`kill "$(cat /abs/job.pid)"`), or use `$!` within the same command.
 
@@ -96,14 +96,15 @@ An empty hook payload allows.
 If jq is unavailable or the payload cannot be parsed, raw payload text matching the signal prefilter is denied as signal-unverifiable.
 The generated Claude hook buffers the payload and preserves transport exits zero and two; any other transport exit (including a missing or non-executable transport) denies raw payloads matching the same prefilter with an exit-two signal-unverifiable object on stderr and empty stdout.
 OpenCode and Pi also deny signalling commands when checker execution fails, including missing executables, spawn errors, timeouts, signals, and unexpected nonzero exits; clean exit zero allows, and exit two preserves the policy denial.
-Commands without a signal-tool mention remain allowed when the checker is unavailable.
+Commands that do not match the fallback prefilter remain allowed when the checker is unavailable.
 
 ## Accepted boundaries
 
 - The guard sees shell command text only.
   A signal sent from a program or script the command runs, such as Python's `os.kill` or a shell script file, is not inspected.
 - A process that drops its environment (`env -i`, a systemd service started on its behalf) loses the marker and is allowed only while it is still a live descendant of the agent.
-- The marker is read from `/proc/<pid>/environ`; on a host without procfs only the descendant rule applies.
+- Session-root detection requires reading the marker from `/proc/<pid>/environ`; without procfs, literal PID, process-group, and PID-file targets are denied with `signal-no-scope` even when they are descendants.
+  Statically allowed target forms remain available.
 - A PID file is trusted as the session's own record of what it launched; the guard verifies the PIDs inside it, not who wrote it.
 - The check runs before the command, so PID reuse between the check and the signal is not covered.
 - Service-manager operations such as `systemctl --user stop`, `systemctl --user exit`, and `loginctl terminate-user` are not process signals and are outside this guard.
